@@ -4,10 +4,26 @@
     <Filter Include="Bootstrap">
       <UniqueIdentifier>{DDB69424-AC32-49CD-BACB-E615C09193CB}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Foundation">
+      <UniqueIdentifier>{A574780E-CA47-4697-A734-E27D3996CFC7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Project">
+      <UniqueIdentifier>{93B3B55B-6041-44C2-A270-E16B59A217CB}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc">
+      <Filter>Bootstrap</Filter>
+    </ClCompile>
     <ClCompile Include="run_tests.cpp">
       <Filter>Bootstrap</Filter>
     </ClCompile>
+    <ClCompile Include="test_application_info.cpp">
+      <Filter>Bootstrap</Filter>
+    </ClCompile>
+    <ClCompile Include="test_asset_locator.cpp"><Filter>Project</Filter></ClCompile>
+    <ClCompile Include="test_hashing.cpp"><Filter>Foundation</Filter></ClCompile>
+    <ClCompile Include="test_local_game_project.cpp"><Filter>Project</Filter></ClCompile>
+    <ClCompile Include="test_result.cpp"><Filter>Foundation</Filter></ClCompile>
   </ItemGroup>
 </Project>

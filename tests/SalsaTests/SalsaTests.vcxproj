@@ -40,12 +40,21 @@
     <IntDir>$(SalsaRepositoryRoot)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\googletest\googletest\include;$(SalsaRepositoryRoot)third-party\googletest\googletest;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
+    <ClCompile Include="test_application_info.cpp" />
+    <ClCompile Include="test_asset_locator.cpp" />
+    <ClCompile Include="test_hashing.cpp" />
+    <ClCompile Include="test_local_game_project.cpp" />
+    <ClCompile Include="test_result.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\SalsaCore\SalsaCore.vcxproj">

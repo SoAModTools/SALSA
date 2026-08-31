@@ -4,15 +4,31 @@
     <Filter Include="Application">
       <UniqueIdentifier>{A7888D7A-B9E4-43D5-8BD5-842E93574978}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Foundation">
+      <UniqueIdentifier>{ED759807-5CB6-4429-BCA9-F63E6C3BEBE6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Project">
+      <UniqueIdentifier>{48B6096D-4B14-4E39-B280-2C8D826E78AA}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h">
       <Filter>Application</Filter>
     </ClInclude>
+    <ClInclude Include="include\SalsaCore\Foundation\Diagnostic.h"><Filter>Foundation</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Foundation\Hashing.h"><Filter>Foundation</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Foundation\Result.h"><Filter>Foundation</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Project\AssetLocator.h"><Filter>Project</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Project\GameProjectContext.h"><Filter>Project</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Project\LocalGameProject.h"><Filter>Project</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Project\ProjectTypes.h"><Filter>Project</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Application\ApplicationInfo.cpp">
       <Filter>Application</Filter>
     </ClCompile>
+    <ClCompile Include="src\Foundation\Hashing.cpp"><Filter>Foundation</Filter></ClCompile>
+    <ClCompile Include="src\Project\AssetLocator.cpp"><Filter>Project</Filter></ClCompile>
+    <ClCompile Include="src\Project\LocalGameProject.cpp"><Filter>Project</Filter></ClCompile>
   </ItemGroup>
 </Project>
