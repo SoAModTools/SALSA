@@ -1,0 +1,5 @@
+# SALSA Schemas
+
+Versioned schemas for SALSA-owned workspace manifests, semantic patches, authoring metadata, and publication receipts will live here as those formats are introduced.
+
+This directory does not define a shared GameProject format.

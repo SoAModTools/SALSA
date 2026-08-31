@@ -8,6 +8,11 @@
 /UserSettings/config.ini
 /.idea
 /.idea/SALSA.iml
+/\.vs/
+/bin/
+/obj/
+/x64/
+*.user
 /UserSettings/UserInstructions.json
 /compressed_scripts/
 /decompressed_scripts/
@@ -19,4 +24,5 @@
 /Instruction Counts.csv
 /_EU Scripts/
 /TODO.txt
+/planning/
 /TODO.txt
