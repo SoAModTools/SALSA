@@ -26,3 +26,11 @@
 /TODO.txt
 /planning/
 /TODO.txt
+
+# Python-generated caches and machine-local settings
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+UserSettings/

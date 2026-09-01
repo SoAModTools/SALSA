@@ -55,6 +55,7 @@
     <ClCompile Include="test_asset_locator.cpp" />
     <ClCompile Include="test_hashing.cpp" />
     <ClCompile Include="test_local_game_project.cpp" />
+    <ClCompile Include="test_patch_envelope_persistence.cpp" />
     <ClCompile Include="test_result.cpp" />
     <ClCompile Include="test_revision_history.cpp" />
   </ItemGroup>

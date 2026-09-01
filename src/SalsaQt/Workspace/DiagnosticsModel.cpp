@@ -37,6 +37,13 @@ namespace {
     case core::DiagnosticCode::HashUpdateFailed: return QStringLiteral("HashUpdateFailed");
     case core::DiagnosticCode::HashFinalizationFailed: return QStringLiteral("HashFinalizationFailed");
     case core::DiagnosticCode::HashStateInvalid: return QStringLiteral("HashStateInvalid");
+    case core::DiagnosticCode::MalformedPersistenceJson: return QStringLiteral("MalformedPersistenceJson");
+    case core::DiagnosticCode::InvalidPatchEnvelope: return QStringLiteral("InvalidPatchEnvelope");
+    case core::DiagnosticCode::UnsupportedPersistenceSchemaVersion: return QStringLiteral("UnsupportedPersistenceSchemaVersion");
+    case core::DiagnosticCode::PatchPayloadCorrupt: return QStringLiteral("PatchPayloadCorrupt");
+    case core::DiagnosticCode::PersistenceReadFailed: return QStringLiteral("PersistenceReadFailed");
+    case core::DiagnosticCode::PersistenceWriteFailed: return QStringLiteral("PersistenceWriteFailed");
+    case core::DiagnosticCode::PersistenceReplaceFailed: return QStringLiteral("PersistenceReplaceFailed");
     }
     return QStringLiteral("Unknown");
 }

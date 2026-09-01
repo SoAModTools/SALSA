@@ -39,12 +39,21 @@
     <OutDir>$(SalsaRepositoryRoot)bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SalsaRepositoryRoot)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
   </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Diagnostic.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Hashing.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Result.h" />
     <ClInclude Include="include\SalsaCore\History\RevisionHistory.h" />
+    <ClInclude Include="include\SalsaCore\Persistence\AtomicFile.h" />
+    <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelope.h" />
+    <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelopeCodec.h" />
+    <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelopeFileStore.h" />
     <ClInclude Include="include\SalsaCore\Project\AssetCatalogDiff.h" />
     <ClInclude Include="include\SalsaCore\Project\AssetLocator.h" />
     <ClInclude Include="include\SalsaCore\Project\GameProjectContext.h" />
@@ -54,6 +63,9 @@
   <ItemGroup>
     <ClCompile Include="src\Application\ApplicationInfo.cpp" />
     <ClCompile Include="src\Foundation\Hashing.cpp" />
+    <ClCompile Include="src\Persistence\AtomicFile.cpp" />
+    <ClCompile Include="src\Persistence\PatchEnvelopeCodec.cpp" />
+    <ClCompile Include="src\Persistence\PatchEnvelopeFileStore.cpp" />
     <ClCompile Include="src\Project\AssetCatalogDiff.cpp" />
     <ClCompile Include="src\Project\AssetLocator.cpp" />
     <ClCompile Include="src\Project\LocalGameProject.cpp" />

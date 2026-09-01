@@ -30,6 +30,13 @@ enum class DiagnosticCode {
     HashUpdateFailed,
     HashFinalizationFailed,
     HashStateInvalid,
+    MalformedPersistenceJson,
+    InvalidPatchEnvelope,
+    UnsupportedPersistenceSchemaVersion,
+    PatchPayloadCorrupt,
+    PersistenceReadFailed,
+    PersistenceWriteFailed,
+    PersistenceReplaceFailed,
 };
 
 struct Diagnostic {
