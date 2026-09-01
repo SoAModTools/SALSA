@@ -31,7 +31,9 @@
     <ClInclude Include="include\SalsaCore\Project\LocalGameProject.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Project\ProjectTypes.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentLoader.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Sct\SctEditSession.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Sct\SctSemanticUsageIndex.h"><Filter>SCT</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Application\ApplicationInfo.cpp">
@@ -42,6 +44,8 @@
     <ClCompile Include="src\Project\AssetLocator.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\LocalGameProject.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctDocumentLoader.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="src\Sct\SctEditSession.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctPresentation.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="src\Sct\SctSemanticUsageIndex.cpp"><Filter>SCT</Filter></ClCompile>
   </ItemGroup>
 </Project>

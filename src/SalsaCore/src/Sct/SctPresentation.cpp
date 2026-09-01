@@ -5,7 +5,11 @@
 #include "SpiceSCT/SctTextCodec.h"
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <iomanip>
+#include <limits>
+#include <locale>
 #include <sstream>
 #include <type_traits>
 
@@ -75,10 +79,92 @@ template <typename Range>
     return "Expression node";
 }
 
+[[nodiscard]] std::string numericValue(const double value, const int precision) {
+    if (std::isnan(value)) return "NaN";
+    if (std::isinf(value)) return std::signbit(value) ? "-Infinity" : "Infinity";
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream << std::setprecision(precision) << value;
+    return stream.str();
+}
+
+[[nodiscard]] std::optional<std::string> operatorValue(const std::uint32_t code) {
+    switch (code) {
+    case 0x00u: return "<";
+    case 0x01u: return "<=";
+    case 0x02u: return ">";
+    case 0x03u: return ">=";
+    case 0x04u: return "==";
+    case 0x06u: return "bitwise AND";
+    case 0x07u: return "bitwise OR";
+    case 0x08u: return "logical AND";
+    case 0x09u: return "logical OR";
+    case 0x0au: return "=";
+    case 0x0bu: return "*";
+    case 0x0cu: return "/";
+    case 0x0du: return "%";
+    case 0x0eu: return "+";
+    case 0x0fu: return "-";
+    default: return std::nullopt;
+    }
+}
+
+[[nodiscard]] std::string expressionEncodingNotes(
+    const spice::sct::SctCanonicalExpressionNode& node) {
+    auto notes = "Encoding " + hexValue(node.encodingCode);
+    if (!node.payloadWords.empty()) notes += "; payload " + hexList(node.payloadWords);
+    return notes;
+}
+
 [[nodiscard]] SctPropertyItem expressionNodeProperty(
     const spice::sct::SctCanonicalExpressionNode& node) {
-    SctPropertyItem item{ expressionKindName(node.kind), hexValue(node.encodingCode),
-        hexList(node.payloadWords), {} };
+    using enum spice::sct::SctCanonicalExpressionNodeKind;
+    std::string value = hexValue(node.encodingCode);
+    std::string notes;
+    switch (node.kind) {
+    case FloatLiteral:
+        notes = expressionEncodingNotes(node);
+        value = node.payloadWords.size() == 1u
+            ? numericValue(static_cast<double>(std::bit_cast<float>(node.payloadWords.front())),
+                std::numeric_limits<float>::max_digits10)
+            : "(invalid float payload)";
+        break;
+    case DecimalLiteral: {
+        const auto payload = node.encodingCode & 0x00ffffffu;
+        const auto whole = (payload & 0x00ffff00u) >> 8u;
+        const auto fraction = payload & 0xffu;
+        value = numericValue(static_cast<double>(whole)
+            + static_cast<double>(fraction) / 256.0,
+            std::numeric_limits<double>::max_digits10);
+        notes = expressionEncodingNotes(node);
+        break;
+    }
+    case IntVariable:
+    case FloatVariable:
+    case BitVariable:
+    case ByteVariable:
+        value = std::to_string(node.encodingCode & 0x00ffffffu);
+        notes = expressionEncodingNotes(node);
+        break;
+    case CompareOperator:
+    case ArithmeticOperator:
+    case AssignmentOperator:
+        value = operatorValue(node.encodingCode).value_or(
+            "Operator " + hexValue(node.encodingCode));
+        notes = expressionEncodingNotes(node);
+        break;
+    case Stop:
+        value = "Stop";
+        notes = expressionEncodingNotes(node);
+        break;
+    case NoLoopValue:
+    case RawValue:
+    case SecondaryValue:
+        if (!node.payloadWords.empty()) notes = "Payload " + hexList(node.payloadWords);
+        break;
+    }
+    SctPropertyItem item{ expressionKindName(node.kind), std::move(value),
+        std::move(notes), {} };
     for (const auto& child : node.children) item.children.push_back(expressionNodeProperty(child));
     return item;
 }

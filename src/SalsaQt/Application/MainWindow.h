@@ -1,9 +1,12 @@
 #pragma once
 
 #include "Workspace/WorkspaceController.h"
+#include "SalsaCore/Sct/SctEditSession.h"
 
 #include <QMainWindow>
 #include <QStringList>
+
+#include <optional>
 
 class QAction;
 class QCloseEvent;
@@ -44,6 +47,17 @@ private:
     void focusDocument(const QString& identityKey);
     void closeDocumentTab(int index);
     void rebuildDocumentTabTitles();
+    void syncEditActions();
+    void insertInstruction();
+    void deleteInstruction();
+    void moveInstruction(core::SctInstructionMoveDirection direction);
+    void undoActiveDocument();
+    void redoActiveDocument();
+    [[nodiscard]] SctDocumentWidget* activeDocumentWidget() const;
+    [[nodiscard]] std::optional<std::uint16_t> chooseInsertableOpcode(bool allowReturn);
+    [[nodiscard]] bool confirmDiscardDocument(
+        const core::AssetLocator& locator, const QString& action);
+    [[nodiscard]] bool confirmDiscardAll(const QString& action);
     void rebuildRecentMenu();
     void recordRecentDataset(const QString& canonicalRoot);
     void restoreApplicationSettings();
@@ -69,6 +83,12 @@ private:
     QAction* openAction_ = nullptr;
     QAction* closeWorkspaceAction_ = nullptr;
     QAction* refreshAction_ = nullptr;
+    QAction* undoAction_ = nullptr;
+    QAction* redoAction_ = nullptr;
+    QAction* insertInstructionAction_ = nullptr;
+    QAction* deleteInstructionAction_ = nullptr;
+    QAction* moveInstructionUpAction_ = nullptr;
+    QAction* moveInstructionDownAction_ = nullptr;
     QMenu* recentMenu_ = nullptr;
     QStringList recentDatasets_{};
 };

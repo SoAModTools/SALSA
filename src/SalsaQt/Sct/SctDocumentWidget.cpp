@@ -3,13 +3,18 @@
 
 #include "SalsaCore/Sct/SctPresentation.h"
 
+#include "SpiceSCT/SctDocumentIndex.h"
+
 #include <QComboBox>
 #include <QColor>
 #include <QFont>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMenu>
 #include <QPushButton>
+#include <QScrollBar>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QTextCursor>
 #include <QTextEdit>
@@ -31,6 +36,41 @@ void addProperty(QTreeWidget* tree, QTreeWidgetItem* parent, const core::SctProp
     item->setText(1, QString::fromStdString(property.value));
     item->setText(2, QString::fromStdString(property.notes));
     for (const auto& child : property.children) addProperty(tree, item, child);
+}
+
+[[nodiscard]] core::SctNavigationTarget targetOf(const QTreeWidgetItem& item) {
+    return { static_cast<core::SctNavigationKind>(item.data(0, KindRole).toInt()),
+        item.data(0, IdRole).toULongLong() };
+}
+
+[[nodiscard]] QTreeWidgetItem* findTarget(
+    QTreeWidgetItem* item,
+    const core::SctNavigationTarget target) {
+    if (targetOf(*item) == target) return item;
+    for (int index = 0; index < item->childCount(); ++index)
+        if (auto* result = findTarget(item->child(index), target)) return result;
+    return nullptr;
+}
+
+[[nodiscard]] QTreeWidgetItem* findTarget(
+    QTreeWidget& tree,
+    const core::SctNavigationTarget target) {
+    for (int index = 0; index < tree.topLevelItemCount(); ++index)
+        if (auto* result = findTarget(tree.topLevelItem(index), target)) return result;
+    return nullptr;
+}
+
+void collectExpandedTargets(
+    const QTreeWidgetItem& item,
+    std::vector<core::SctNavigationTarget>& targets) {
+    if (item.isExpanded()) targets.push_back(targetOf(item));
+    for (int index = 0; index < item.childCount(); ++index)
+        collectExpandedTargets(*item.child(index), targets);
+}
+
+void expandAncestors(QTreeWidgetItem* item) {
+    for (auto* parent = item->parent(); parent != nullptr; parent = parent->parent())
+        parent->setExpanded(true);
 }
 
 }  // namespace
@@ -67,9 +107,12 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
 
     auto* splitter = new QSplitter(this);
     outline_ = new QTreeWidget(splitter);
+    outline_->setContextMenuPolicy(Qt::CustomContextMenu);
     outline_->setHeaderLabels({ tr("Physical outline"), tr("Kind / ID") });
-    outline_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    outline_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    outline_->header()->setSectionResizeMode(QHeaderView::Interactive);
+    outline_->header()->setStretchLastSection(false);
+    outline_->header()->resizeSection(0, 420);
+    outline_->header()->resizeSection(1, 180);
 
     auto* details = new QWidget(splitter);
     auto* detailsLayout = new QVBoxLayout(details);
@@ -82,9 +125,11 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     subtitle_->setWordWrap(true);
     properties_ = new QTreeWidget(details);
     properties_->setHeaderLabels({ tr("Property"), tr("Value"), tr("Notes") });
-    properties_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    properties_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
-    properties_->header()->setSectionResizeMode(2, QHeaderView::Stretch);
+    properties_->header()->setSectionResizeMode(QHeaderView::Interactive);
+    properties_->header()->setStretchLastSection(false);
+    properties_->header()->resizeSection(0, 180);
+    properties_->header()->resizeSection(1, 240);
+    properties_->header()->resizeSection(2, 280);
     preview_ = new QTextEdit(details);
     preview_->setReadOnly(true);
     preview_->setPlaceholderText(tr("No visual text preview is available for this entity."));
@@ -107,6 +152,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
                 current->data(0, IdRole).toULongLong() };
             showTarget(*currentTarget_);
             emit becameActive(QString::fromStdString(locator_.identityKey()));
+            emit editContextChanged();
         });
     connect(applyConventionButton_, &QPushButton::clicked, this, [this]() {
         emit textConventionRequested(QString::fromStdString(locator_.identityKey()),
@@ -114,6 +160,35 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     });
     connect(reloadButton_, &QPushButton::clicked, this, [this]() {
         emit reloadRequested(QString::fromStdString(locator_.identityKey()));
+    });
+    connect(outline_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& position) {
+        QMenu menu(this);
+        auto* insert = menu.addAction(tr("Insert Instruction..."));
+        auto* remove = menu.addAction(tr("Delete Instruction"));
+        menu.addSeparator();
+        auto* moveUp = menu.addAction(tr("Move Up"));
+        auto* moveDown = menu.addAction(tr("Move Down"));
+        insert->setEnabled(editingEnabled_ && insertionContext().has_value());
+        remove->setEnabled(editingEnabled_ && canDeleteSelected());
+        moveUp->setEnabled(editingEnabled_
+            && canMoveSelected(core::SctInstructionMoveDirection::Up));
+        moveDown->setEnabled(editingEnabled_
+            && canMoveSelected(core::SctInstructionMoveDirection::Down));
+        connect(insert, &QAction::triggered, this, [this]() {
+            emit insertInstructionRequested(QString::fromStdString(locator_.identityKey()));
+        });
+        connect(remove, &QAction::triggered, this, [this]() {
+            emit deleteInstructionRequested(QString::fromStdString(locator_.identityKey()));
+        });
+        connect(moveUp, &QAction::triggered, this, [this]() {
+            emit moveInstructionRequested(QString::fromStdString(locator_.identityKey()),
+                static_cast<int>(core::SctInstructionMoveDirection::Up));
+        });
+        connect(moveDown, &QAction::triggered, this, [this]() {
+            emit moveInstructionRequested(QString::fromStdString(locator_.identityKey()),
+                static_cast<int>(core::SctInstructionMoveDirection::Down));
+        });
+        menu.exec(outline_->viewport()->mapToGlobal(position));
     });
 }
 
@@ -147,33 +222,110 @@ void SctDocumentWidget::setSnapshot(
     rebuildOutline();
 }
 
-void SctDocumentWidget::selectTarget(const core::SctNavigationTarget target) {
-    std::function<QTreeWidgetItem*(QTreeWidgetItem*)> find = [&](QTreeWidgetItem* item) -> QTreeWidgetItem* {
-        if (static_cast<core::SctNavigationKind>(item->data(0, KindRole).toInt()) == target.kind
-            && item->data(0, IdRole).toULongLong() == target.id) return item;
-        for (int i = 0; i < item->childCount(); ++i)
-            if (auto* result = find(item->child(i))) return result;
-        return nullptr;
-    };
-    for (int i = 0; i < outline_->topLevelItemCount(); ++i) {
-        if (auto* found = find(outline_->topLevelItem(i))) {
-            outline_->setCurrentItem(found);
-            outline_->scrollToItem(found);
-            return;
-        }
+void SctDocumentWidget::selectTarget(
+    const core::SctNavigationTarget target,
+    const bool reveal) {
+    auto* found = findTarget(*outline_, target);
+    if (found == nullptr) return;
+    if (reveal) expandAncestors(found);
+    outline_->setCurrentItem(found);
+    if (reveal) outline_->scrollToItem(found);
+}
+
+void SctDocumentWidget::setEditingEnabled(const bool enabled) {
+    if (editingEnabled_ == enabled) return;
+    editingEnabled_ = enabled;
+    emit editContextChanged();
+}
+
+std::optional<core::SctNavigationTarget> SctDocumentWidget::currentTarget() const noexcept {
+    return currentTarget_;
+}
+
+std::optional<SctDocumentWidget::InstructionInsertionContext>
+SctDocumentWidget::insertionContext() const {
+    if (!snapshot_ || !currentTarget_.has_value()) return std::nullopt;
+    const auto index = spice::sct::SctDocumentIndex::build(*snapshot_->document);
+    if (currentTarget_->kind == core::SctNavigationKind::Instruction) {
+        const auto instruction = spice::sct::SctInstructionId(currentTarget_->id);
+        const auto location = index.instructionLocation(instruction);
+        const auto* existing = index.find(instruction);
+        if (!location.has_value() || existing == nullptr || existing->opcode == 12u)
+            return std::nullopt;
+        const auto* section = index.find(location->sectionId);
+        const auto* script = section == nullptr ? nullptr
+            : std::get_if<spice::sct::SctScriptSectionContent>(&section->content);
+        if (script != nullptr)
+            return InstructionInsertionContext{ instruction,
+                location->instructionOrdinal + 1u == script->instructions.size() };
     }
+    return std::nullopt;
+}
+
+bool SctDocumentWidget::canDeleteSelected() const {
+    const auto instruction = selectedInstruction();
+    if (!snapshot_ || !instruction.has_value()) return false;
+    const auto index = spice::sct::SctDocumentIndex::build(*snapshot_->document);
+    const auto location = index.instructionLocation(*instruction);
+    const auto* existing = index.find(*instruction);
+    return location.has_value() && existing != nullptr
+        && !(existing->opcode == 9u && location->instructionOrdinal == 0u);
+}
+
+std::optional<spice::sct::SctInstructionId> SctDocumentWidget::selectedInstruction() const {
+    if (!currentTarget_.has_value()
+        || currentTarget_->kind != core::SctNavigationKind::Instruction) return std::nullopt;
+    return spice::sct::SctInstructionId(currentTarget_->id);
+}
+
+bool SctDocumentWidget::canMoveSelected(const core::SctInstructionMoveDirection direction) const {
+    const auto instruction = selectedInstruction();
+    if (!snapshot_ || !instruction.has_value()) return false;
+    const auto index = spice::sct::SctDocumentIndex::build(*snapshot_->document);
+    const auto location = index.instructionLocation(*instruction);
+    if (!location.has_value()) return false;
+    const auto* section = index.find(location->sectionId);
+    const auto* script = section == nullptr ? nullptr
+        : std::get_if<spice::sct::SctScriptSectionContent>(&section->content);
+    if (script == nullptr) return false;
+    const auto ordinal = location->instructionOrdinal;
+    const bool atBoundary = direction == core::SctInstructionMoveDirection::Up
+        ? ordinal == 0u : ordinal + 1u >= script->instructions.size();
+    if (atBoundary) return false;
+    const auto other = direction == core::SctInstructionMoveDirection::Up
+        ? ordinal - 1u : ordinal + 1u;
+    const auto opcode = script->instructions[ordinal].opcode;
+    const auto otherOpcode = script->instructions[other].opcode;
+    return opcode != 9u && opcode != 12u && otherOpcode != 9u && otherOpcode != 12u;
 }
 
 void SctDocumentWidget::rebuildOutline() {
+    std::vector<core::SctNavigationTarget> expandedTargets;
+    for (int index = 0; index < outline_->topLevelItemCount(); ++index)
+        collectExpandedTargets(*outline_->topLevelItem(index), expandedTargets);
+    const auto retained = currentTarget_;
+    const auto scrollPosition = outline_->verticalScrollBar()->value();
+
+    const QSignalBlocker blocker(outline_);
     outline_->clear();
     if (!snapshot_) return;
     for (const auto& item : core::SctPresentationService::outline(*snapshot_)) addOutlineItem(nullptr, item);
-    outline_->expandToDepth(1);
-    if (outline_->topLevelItemCount() != 0) {
-        const auto retained = currentTarget_;
-        outline_->setCurrentItem(outline_->topLevelItem(0));
-        if (retained.has_value()) selectTarget(*retained);
+
+    for (const auto target : expandedTargets)
+        if (auto* item = findTarget(*outline_, target)) item->setExpanded(true);
+
+    QTreeWidgetItem* selected = retained.has_value() ? findTarget(*outline_, *retained) : nullptr;
+    if (selected == nullptr && outline_->topLevelItemCount() != 0)
+        selected = outline_->topLevelItem(0);
+    if (selected != nullptr) {
+        currentTarget_ = targetOf(*selected);
+        outline_->setCurrentItem(selected);
+        showTarget(*currentTarget_);
+    } else {
+        currentTarget_.reset();
     }
+    outline_->doItemsLayout();
+    outline_->verticalScrollBar()->setValue(scrollPosition);
 }
 
 void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
@@ -183,7 +335,7 @@ void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
     subtitle_->setText(QString::fromStdString(presentation.subtitle));
     properties_->clear();
     for (const auto& property : presentation.properties) addProperty(properties_, nullptr, property);
-    properties_->expandToDepth(1);
+    properties_->collapseAll();
     preview_->clear();
     QTextCursor cursor(preview_->document());
     for (const auto& run : presentation.preview) {

@@ -7,7 +7,9 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <ranges>
 #include <stop_token>
@@ -87,6 +89,44 @@ private:
     DatasetContext dataset_;
     FakeCatalog catalog_;
 };
+
+void collectProperties(
+    const SctPropertyItem& property,
+    const std::string_view name,
+    std::vector<const SctPropertyItem*>& matches) {
+    if (property.name == name) matches.push_back(&property);
+    for (const auto& child : property.children) collectProperties(child, name, matches);
+}
+
+std::vector<const SctPropertyItem*> propertiesNamed(
+    const SctEntityPresentation& presentation,
+    const std::string_view name) {
+    std::vector<const SctPropertyItem*> matches;
+    for (const auto& property : presentation.properties)
+        collectProperties(property, name, matches);
+    return matches;
+}
+
+SctEntityPresentation expressionPresentation(
+    const std::vector<SctCanonicalExpressionNode>& nodes) {
+    const auto asset = locator();
+    FakeProject project(asset, inspectableSctBytes(false));
+    const auto loaded = SctDocumentLoader::load(project, asset);
+    EXPECT_TRUE(loaded.succeeded());
+    auto document = std::make_shared<SctDocument>(*loaded.document->document);
+    auto& script = std::get<SctScriptSectionContent>(document->sections.front().content);
+    SctDocumentInstruction instruction{document->allocateInstructionId(), 125};
+    for (std::uint32_t index = 0; index < nodes.size(); ++index) {
+        instruction.fixedParameters.push_back({index,
+            SctCanonicalExpression{nodes[index], SctExpressionTermination::StopCode}});
+    }
+    const auto instructionId = instruction.id;
+    script.instructions.insert(script.instructions.begin(), std::move(instruction));
+    auto snapshot = *loaded.document;
+    snapshot.document = std::move(document);
+    return SctPresentationService::describe(
+        snapshot, {SctNavigationKind::Instruction, instructionId.value()});
+}
 }  // namespace
 
 TEST(SctDocumentLoader, LoadsNoTextDocumentWithoutInventingAConvention) {
@@ -150,6 +190,65 @@ TEST(SctPresentation, ProjectsPhysicalOutlineAndInstructionDetails) {
         *loaded.document, section->children.front().target);
     EXPECT_NE(details.title.find("Return"), std::string::npos);
     EXPECT_FALSE(details.properties.empty());
+}
+
+TEST(SctPresentation, DisplaysSemanticExpressionValuesWithRawEncodingEvidence) {
+    SctCanonicalExpressionNode positiveFloat{SctCanonicalExpressionNodeKind::FloatLiteral,
+        0x04000000u, {std::bit_cast<std::uint32_t>(1.5f)}, {}};
+    SctCanonicalExpressionNode negativeFloat{SctCanonicalExpressionNodeKind::FloatLiteral,
+        0x04000000u, {std::bit_cast<std::uint32_t>(-12.25f)}, {}};
+    SctCanonicalExpressionNode decimal{SctCanonicalExpressionNodeKind::DecimalLiteral,
+        0x08000380u, {}, {}};
+    SctCanonicalExpressionNode variable{SctCanonicalExpressionNodeKind::BitVariable,
+        0x2000002au, {}, {}};
+    SctCanonicalExpressionNode add{SctCanonicalExpressionNodeKind::ArithmeticOperator,
+        0x0eu, {}, {decimal, variable}};
+
+    const auto presentation = expressionPresentation(
+        {positiveFloat, negativeFloat, decimal, variable, add});
+    const auto floats = propertiesNamed(presentation, "Float literal");
+    ASSERT_EQ(floats.size(), 2u);
+    EXPECT_EQ(floats[0]->value, "1.5");
+    EXPECT_EQ(floats[1]->value, "-12.25");
+    EXPECT_NE(floats[0]->notes.find("Encoding 0x04000000"), std::string::npos);
+    EXPECT_NE(floats[0]->notes.find("payload 0x3FC00000"), std::string::npos);
+
+    const auto decimals = propertiesNamed(presentation, "Decimal literal");
+    ASSERT_GE(decimals.size(), 2u);
+    EXPECT_EQ(decimals.front()->value, "3.5");
+    EXPECT_NE(decimals.front()->notes.find("0x08000380"), std::string::npos);
+    const auto variables = propertiesNamed(presentation, "Bit variable");
+    ASSERT_GE(variables.size(), 2u);
+    EXPECT_EQ(variables.front()->value, "42");
+    EXPECT_NE(variables.front()->notes.find("0x2000002A"), std::string::npos);
+    const auto operators = propertiesNamed(presentation, "Arithmetic");
+    ASSERT_EQ(operators.size(), 1u);
+    EXPECT_EQ(operators.front()->value, "+");
+    EXPECT_NE(operators.front()->notes.find("0x0000000E"), std::string::npos);
+}
+
+TEST(SctPresentation, KeepsNonFiniteAndMalformedFloatEvidenceInspectable) {
+    SctCanonicalExpressionNode infinity{SctCanonicalExpressionNodeKind::FloatLiteral,
+        0x04000000u, {std::bit_cast<std::uint32_t>(
+            std::numeric_limits<float>::infinity())}, {}};
+    SctCanonicalExpressionNode negativeInfinity{SctCanonicalExpressionNodeKind::FloatLiteral,
+        0x04000000u, {std::bit_cast<std::uint32_t>(
+            -std::numeric_limits<float>::infinity())}, {}};
+    SctCanonicalExpressionNode notANumber{SctCanonicalExpressionNodeKind::FloatLiteral,
+        0x04000000u, {std::bit_cast<std::uint32_t>(
+            std::numeric_limits<float>::quiet_NaN())}, {}};
+    SctCanonicalExpressionNode malformed{SctCanonicalExpressionNodeKind::FloatLiteral,
+        0x04000000u, {}, {}};
+
+    const auto presentation = expressionPresentation(
+        {infinity, negativeInfinity, notANumber, malformed});
+    const auto floats = propertiesNamed(presentation, "Float literal");
+    ASSERT_EQ(floats.size(), 4u);
+    EXPECT_EQ(floats[0]->value, "Infinity");
+    EXPECT_EQ(floats[1]->value, "-Infinity");
+    EXPECT_EQ(floats[2]->value, "NaN");
+    EXPECT_EQ(floats[3]->value, "(invalid float payload)");
+    EXPECT_EQ(floats[3]->notes, "Encoding 0x04000000");
 }
 
 TEST(SctDocumentLoader, ReportsMalformedAssetsWithoutInstallingADocument) {

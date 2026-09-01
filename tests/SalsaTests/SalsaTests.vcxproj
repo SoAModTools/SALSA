@@ -58,7 +58,9 @@
     <ClCompile Include="test_patch_envelope_persistence.cpp" />
     <ClCompile Include="test_result.cpp" />
     <ClCompile Include="test_revision_history.cpp" />
+    <ClCompile Include="test_sct_edit_session.cpp" />
     <ClCompile Include="test_sct_document_inspection.cpp" />
+    <ClCompile Include="test_sct_semantic_usage_index.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\third-party\SPICE\Compression\Compression.vcxproj">

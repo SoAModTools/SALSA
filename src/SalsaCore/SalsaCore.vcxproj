@@ -60,7 +60,9 @@
     <ClInclude Include="include\SalsaCore\Project\LocalGameProject.h" />
     <ClInclude Include="include\SalsaCore\Project\ProjectTypes.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentLoader.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctEditSession.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctSemanticUsageIndex.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Application\ApplicationInfo.cpp" />
@@ -72,7 +74,9 @@
     <ClCompile Include="src\Project\AssetLocator.cpp" />
     <ClCompile Include="src\Project\LocalGameProject.cpp" />
     <ClCompile Include="src\Sct\SctDocumentLoader.cpp" />
+    <ClCompile Include="src\Sct\SctEditSession.cpp" />
     <ClCompile Include="src\Sct\SctPresentation.cpp" />
+    <ClCompile Include="src\Sct\SctSemanticUsageIndex.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\third-party\SPICE\Compression\Compression.vcxproj">

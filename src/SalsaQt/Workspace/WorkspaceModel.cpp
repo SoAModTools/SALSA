@@ -118,7 +118,7 @@ int WorkspaceModel::rowCount(const QModelIndex& parentIndex) const {
 }
 
 int WorkspaceModel::columnCount(const QModelIndex&) const {
-    return 2;
+    return 1;
 }
 
 QVariant WorkspaceModel::data(const QModelIndex& index, const int role) const {
@@ -130,13 +130,11 @@ QVariant WorkspaceModel::data(const QModelIndex& index, const int role) const {
         if (index.column() == 0) {
             return node->name;
         }
-        if (index.column() == 1 && node->asset.has_value()) {
-            return tr("%1 bytes").arg(
-                QLocale().toString(static_cast<qulonglong>(node->asset->byteSize)));
-        }
     }
     if (role == Qt::ToolTipRole && node->asset.has_value()) {
-        return QString::fromStdWString(node->asset->locator.path().generic_wstring());
+        return tr("%1\n%2 bytes")
+            .arg(QString::fromStdWString(node->asset->locator.path().generic_wstring()))
+            .arg(QLocale().toString(static_cast<qulonglong>(node->asset->byteSize)));
     }
     return {};
 }
@@ -150,9 +148,6 @@ QVariant WorkspaceModel::headerData(
     }
     if (section == 0) {
         return tr("Asset");
-    }
-    if (section == 1) {
-        return tr("Size");
     }
     return {};
 }
