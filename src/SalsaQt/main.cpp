@@ -14,6 +14,7 @@ int main(int argc, char* argv[]) {
     const auto name = salsa::core::applicationName();
     QCoreApplication::setApplicationName(
         QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size())));
+    QCoreApplication::setOrganizationName(QStringLiteral("jahorta"));
 
     const auto version = salsa::core::applicationVersion();
     QCoreApplication::setApplicationVersion(

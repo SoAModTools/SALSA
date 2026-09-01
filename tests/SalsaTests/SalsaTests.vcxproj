@@ -51,10 +51,12 @@
     <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
     <ClCompile Include="test_application_info.cpp" />
+    <ClCompile Include="test_asset_catalog_diff.cpp" />
     <ClCompile Include="test_asset_locator.cpp" />
     <ClCompile Include="test_hashing.cpp" />
     <ClCompile Include="test_local_game_project.cpp" />
     <ClCompile Include="test_result.cpp" />
+    <ClCompile Include="test_revision_history.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\SalsaCore\SalsaCore.vcxproj">

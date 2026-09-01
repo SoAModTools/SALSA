@@ -8,6 +8,7 @@
 #include <fstream>
 #include <stop_token>
 #include <string_view>
+#include <vector>
 
 namespace salsa::core {
 namespace {
@@ -180,6 +181,69 @@ TEST(LocalGameProjectTest, HonorsPreRequestedCancellationWithoutPartialResults) 
     source.request_stop();
 
     auto result = LocalGameProject::inspect({ dataset.root() }, source.get_token());
+
+    ASSERT_FALSE(result);
+    EXPECT_FALSE(result.hasValue());
+    EXPECT_TRUE(hasCode(result.diagnostics(), DiagnosticCode::Cancelled));
+}
+
+TEST(LocalGameProjectTest, ReportsDiscoveryAndHashingProgressWithoutChangingResults) {
+    TemporaryDataset dataset{};
+    dataset.write(L"nested/a.sct", "a");
+    dataset.write(L"b.SCT", "bb");
+
+    std::vector<DatasetScanProgress> progress{};
+    auto observed = LocalGameProject::inspect(
+        { dataset.root() },
+        {},
+        [&progress](const DatasetScanProgress& update) {
+            progress.push_back(update);
+        });
+    auto unobserved = LocalGameProject::inspect({ dataset.root() });
+
+    ASSERT_TRUE(observed);
+    ASSERT_TRUE(unobserved);
+    EXPECT_EQ(observed.value().snapshot().fingerprint, unobserved.value().snapshot().fingerprint);
+    ASSERT_EQ(
+        observed.value().snapshot().assets.size(),
+        unobserved.value().snapshot().assets.size());
+    for (std::size_t index = 0; index < observed.value().snapshot().assets.size(); ++index) {
+        const auto& observedAsset = observed.value().snapshot().assets[index];
+        const auto& unobservedAsset = unobserved.value().snapshot().assets[index];
+        EXPECT_EQ(observedAsset.locator, unobservedAsset.locator);
+        EXPECT_EQ(observedAsset.byteSize, unobservedAsset.byteSize);
+        EXPECT_EQ(observedAsset.revision, unobservedAsset.revision);
+    }
+
+    EXPECT_EQ(std::ranges::count_if(progress, [](const auto& update) {
+        return update.phase == DatasetScanPhase::Discovering;
+    }), 2);
+    EXPECT_EQ(std::ranges::count_if(progress, [](const auto& update) {
+        return update.phase == DatasetScanPhase::Hashing;
+    }), 2);
+
+    const auto& final = progress.back();
+    EXPECT_EQ(final.phase, DatasetScanPhase::Hashing);
+    EXPECT_EQ(final.completed, 2U);
+    ASSERT_TRUE(final.total.has_value());
+    EXPECT_EQ(*final.total, 2U);
+    EXPECT_FALSE(final.currentPath.empty());
+}
+
+TEST(LocalGameProjectTest, ObserverCanCancelWithoutReturningPartialResults) {
+    TemporaryDataset dataset{};
+    dataset.write(L"a.sct", "a");
+    dataset.write(L"b.sct", "b");
+    std::stop_source source{};
+
+    auto result = LocalGameProject::inspect(
+        { dataset.root() },
+        source.get_token(),
+        [&source](const DatasetScanProgress& update) {
+            if (update.phase == DatasetScanPhase::Hashing && update.completed == 1U) {
+                source.request_stop();
+            }
+        });
 
     ASSERT_FALSE(result);
     EXPECT_FALSE(result.hasValue());

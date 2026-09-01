@@ -3,8 +3,10 @@
 #include "SalsaCore/Foundation/Hashing.h"
 #include "SalsaCore/Project/AssetLocator.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -20,6 +22,20 @@ enum class GameRegion {
     Europe,
     Japan,
 };
+
+enum class DatasetScanPhase {
+    Discovering,
+    Hashing,
+};
+
+struct DatasetScanProgress final {
+    DatasetScanPhase phase = DatasetScanPhase::Discovering;
+    std::size_t completed = 0;
+    std::optional<std::size_t> total{};
+    std::filesystem::path currentPath{};
+};
+
+using DatasetScanObserver = std::function<void(const DatasetScanProgress&)>;
 
 struct SourceRevision final {
     Sha256Digest digest;
@@ -51,6 +67,16 @@ struct AssetDescriptor final {
 struct AssetCatalogSnapshot final {
     std::vector<AssetDescriptor> assets{};
     DatasetFingerprint fingerprint;
+};
+
+struct AssetCatalogDelta final {
+    std::vector<AssetLocator> added{};
+    std::vector<AssetLocator> removed{};
+    std::vector<AssetLocator> changed{};
+
+    [[nodiscard]] bool empty() const noexcept {
+        return added.empty() && removed.empty() && changed.empty();
+    }
 };
 
 struct SourceAssetSnapshot final {

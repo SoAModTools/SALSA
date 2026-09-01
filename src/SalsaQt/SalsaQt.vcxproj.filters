@@ -4,16 +4,27 @@
     <Filter Include="Application">
       <UniqueIdentifier>{B806C850-4D36-49F9-BF27-4BCE79198177}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Workspace">
+      <UniqueIdentifier>{3275DE69-55D8-4C1A-A686-6DF9992A4EF9}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Application\MainWindow.cpp">
       <Filter>Application</Filter>
     </ClCompile>
+    <ClCompile Include="Workspace\DiagnosticsModel.cpp"><Filter>Workspace</Filter></ClCompile>
+    <ClCompile Include="Workspace\WorkspaceController.cpp"><Filter>Workspace</Filter></ClCompile>
+    <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp"><Filter>Workspace</Filter></ClCompile>
+    <ClCompile Include="Workspace\WorkspaceModel.cpp"><Filter>Workspace</Filter></ClCompile>
+    <QtMoc Include="Workspace\WorkspaceController.h"><Filter>Workspace</Filter></QtMoc>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Application\MainWindow.h">
       <Filter>Application</Filter>
     </ClInclude>
+    <ClInclude Include="Workspace\DiagnosticsModel.h"><Filter>Workspace</Filter></ClInclude>
+    <ClInclude Include="Workspace\WorkspaceDetailsWidget.h"><Filter>Workspace</Filter></ClInclude>
+    <ClInclude Include="Workspace\WorkspaceModel.h"><Filter>Workspace</Filter></ClInclude>
   </ItemGroup>
 </Project>

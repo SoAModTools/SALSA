@@ -10,10 +10,12 @@ class LocalGameProject final : public GameProjectContext, public AssetCatalog {
 public:
     [[nodiscard]] static Result<LocalGameProject> inspect(
         const LocalGameProjectOptions& options,
-        std::stop_token stopToken = {});
+        std::stop_token stopToken = {},
+        const DatasetScanObserver& observer = {});
 
     [[nodiscard]] Result<LocalGameProject> rescan(
-        std::stop_token stopToken = {}) const;
+        std::stop_token stopToken = {},
+        const DatasetScanObserver& observer = {}) const;
 
     [[nodiscard]] const DatasetContext& dataset() const noexcept override;
     [[nodiscard]] const AssetCatalog& assets() const noexcept override;

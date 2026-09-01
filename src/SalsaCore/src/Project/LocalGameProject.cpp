@@ -190,7 +190,8 @@ struct ScannedCatalog final {
 
 [[nodiscard]] Result<ScannedCatalog> scanDataset(
     const std::filesystem::path& root,
-    const std::stop_token stopToken) {
+    const std::stop_token stopToken,
+    const DatasetScanObserver& observer) {
     std::vector<Diagnostic> diagnostics{};
     std::vector<std::filesystem::path> candidates{};
     std::error_code iteratorError{};
@@ -230,6 +231,17 @@ struct ScannedCatalog final {
                 entryPath));
         } else if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 && isSctPath(entryPath)) {
             candidates.push_back(entryPath);
+            if (observer) {
+                observer(DatasetScanProgress{
+                    DatasetScanPhase::Discovering,
+                    candidates.size(),
+                    std::nullopt,
+                    entryPath,
+                });
+            }
+            if (stopToken.stop_requested()) {
+                return Result<ScannedCatalog>::failure(cancelled());
+            }
         }
 
         iterator.increment(iteratorError);
@@ -293,6 +305,17 @@ struct ScannedCatalog final {
             static_cast<std::uint64_t>(bytes.value().size()),
             SourceRevision{ std::move(revision).takeValue() },
         });
+        if (observer) {
+            observer(DatasetScanProgress{
+                DatasetScanPhase::Hashing,
+                assets.size(),
+                located.size(),
+                path,
+            });
+        }
+        if (stopToken.stop_requested()) {
+            return Result<ScannedCatalog>::failure(cancelled());
+        }
     }
 
     auto fingerprint = fingerprintCatalog(assets);
@@ -317,7 +340,8 @@ LocalGameProject::LocalGameProject(
 
 Result<LocalGameProject> LocalGameProject::inspect(
     const LocalGameProjectOptions& options,
-    const std::stop_token stopToken) {
+    const std::stop_token stopToken,
+    const DatasetScanObserver& observer) {
     if (stopToken.stop_requested()) {
         return Result<LocalGameProject>::failure(cancelled());
     }
@@ -351,7 +375,7 @@ Result<LocalGameProject> LocalGameProject::inspect(
             options.datasetRoot));
     }
 
-    auto scanned = scanDataset(root, stopToken);
+    auto scanned = scanDataset(root, stopToken, observer);
     if (!scanned) {
         return Result<LocalGameProject>::failure(scanned.diagnostics());
     }
@@ -369,8 +393,10 @@ Result<LocalGameProject> LocalGameProject::inspect(
         std::move(diagnostics));
 }
 
-Result<LocalGameProject> LocalGameProject::rescan(const std::stop_token stopToken) const {
-    return inspect(options_, stopToken);
+Result<LocalGameProject> LocalGameProject::rescan(
+    const std::stop_token stopToken,
+    const DatasetScanObserver& observer) const {
+    return inspect(options_, stopToken, observer);
 }
 
 const DatasetContext& LocalGameProject::dataset() const noexcept {
