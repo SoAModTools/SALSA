@@ -56,11 +56,15 @@
   <ItemGroup>
     <ClCompile Include="Application\MainWindow.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Sct\SctDocumentController.cpp" />
+    <ClCompile Include="Sct\SctDocumentWidget.cpp" />
     <ClCompile Include="Workspace\DiagnosticsModel.cpp" />
     <ClCompile Include="Workspace\WorkspaceController.cpp" />
     <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp" />
     <ClCompile Include="Workspace\WorkspaceModel.cpp" />
     <QtMoc Include="Workspace\WorkspaceController.h" />
+    <QtMoc Include="Sct\SctDocumentController.h" />
+    <QtMoc Include="Sct\SctDocumentWidget.h" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Application\MainWindow.h" />
@@ -69,6 +73,15 @@
     <ClInclude Include="Workspace\WorkspaceModel.h" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\third-party\SPICE\Compression\Compression.vcxproj">
+      <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\..\third-party\SPICE\SpiceRoot\SpiceRoot.vcxproj">
+      <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\..\third-party\SPICE\SpiceSCT\SpiceSCT.vcxproj">
+      <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\SalsaCore\SalsaCore.vcxproj">
       <Project>{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7}</Project>
     </ProjectReference>

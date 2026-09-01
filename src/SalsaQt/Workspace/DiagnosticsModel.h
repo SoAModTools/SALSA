@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SalsaCore/Foundation/Diagnostic.h"
+#include "SalsaCore/Sct/SctDocumentLoader.h"
 
 #include <QAbstractTableModel>
 
@@ -8,12 +9,26 @@
 
 namespace salsa::qt {
 
+struct DiagnosticRow final {
+    core::DiagnosticSeverity severity = core::DiagnosticSeverity::Error;
+    QString code{};
+    QString message{};
+    QString location{};
+    std::optional<core::AssetLocator> locator{};
+    std::optional<core::SctNavigationTarget> target{};
+};
+
 class DiagnosticsModel final : public QAbstractTableModel {
 public:
     explicit DiagnosticsModel(QObject* parent = nullptr);
 
     void setDiagnostics(std::vector<core::Diagnostic> diagnostics);
+    void setCombinedDiagnostics(
+        const std::vector<core::Diagnostic>& workspace,
+        const std::vector<core::SctPipelineDiagnostic>& document);
+    void setRows(std::vector<DiagnosticRow> rows);
     void clear();
+    [[nodiscard]] const DiagnosticRow* rowAt(int row) const noexcept;
 
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
     [[nodiscard]] int columnCount(const QModelIndex& parent = {}) const override;
@@ -24,7 +39,7 @@ public:
         int role) const override;
 
 private:
-    std::vector<core::Diagnostic> diagnostics_{};
+    std::vector<DiagnosticRow> rows_{};
 };
 
 }  // namespace salsa::qt

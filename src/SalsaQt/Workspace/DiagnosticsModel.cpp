@@ -32,6 +32,8 @@ namespace {
     case core::DiagnosticCode::AssetNotFound: return QStringLiteral("AssetNotFound");
     case core::DiagnosticCode::AssetReadFailed: return QStringLiteral("AssetReadFailed");
     case core::DiagnosticCode::SourceChanged: return QStringLiteral("SourceChanged");
+    case core::DiagnosticCode::SctParseFailed: return QStringLiteral("SctParseFailed");
+    case core::DiagnosticCode::SctImportFailed: return QStringLiteral("SctImportFailed");
     case core::DiagnosticCode::ReparsePointSkipped: return QStringLiteral("ReparsePointSkipped");
     case core::DiagnosticCode::HashInitializationFailed: return QStringLiteral("HashInitializationFailed");
     case core::DiagnosticCode::HashUpdateFailed: return QStringLiteral("HashUpdateFailed");
@@ -54,17 +56,70 @@ DiagnosticsModel::DiagnosticsModel(QObject* parent)
     : QAbstractTableModel(parent) {}
 
 void DiagnosticsModel::setDiagnostics(std::vector<core::Diagnostic> diagnostics) {
+    std::vector<DiagnosticRow> rows;
+    rows.reserve(diagnostics.size());
+    for (const auto& diagnostic : diagnostics) {
+        rows.push_back({ diagnostic.severity, codeText(diagnostic.code),
+            QString::fromStdString(diagnostic.message),
+            diagnostic.path.has_value() ? QString::fromStdWString(diagnostic.path->wstring()) : QString{},
+            std::nullopt, std::nullopt });
+    }
+    setRows(std::move(rows));
+}
+
+void DiagnosticsModel::setRows(std::vector<DiagnosticRow> rows) {
     beginResetModel();
-    diagnostics_ = std::move(diagnostics);
+    rows_ = std::move(rows);
     endResetModel();
 }
 
+void DiagnosticsModel::setCombinedDiagnostics(
+    const std::vector<core::Diagnostic>& workspace,
+    const std::vector<core::SctPipelineDiagnostic>& document) {
+    std::vector<DiagnosticRow> rows;
+    rows.reserve(workspace.size() + document.size());
+    for (const auto& diagnostic : workspace) {
+        rows.push_back({ diagnostic.severity, codeText(diagnostic.code),
+            QString::fromStdString(diagnostic.message),
+            diagnostic.path.has_value() ? QString::fromStdWString(diagnostic.path->wstring()) : QString{},
+            std::nullopt, std::nullopt });
+    }
+    for (const auto& diagnostic : document) {
+        QString location;
+        if (diagnostic.locator.has_value())
+            location = QString::fromStdWString(diagnostic.locator->path().wstring());
+        if (diagnostic.payloadOffset.has_value())
+            location += QStringLiteral(" @ 0x%1").arg(*diagnostic.payloadOffset, 0, 16);
+        if (diagnostic.schemaIndex.has_value())
+            location += QStringLiteral(" parameter %1").arg(*diagnostic.schemaIndex);
+        if (diagnostic.repeatedGroupOrdinal.has_value())
+            location += QStringLiteral(" group %1").arg(*diagnostic.repeatedGroupOrdinal);
+        if (!diagnostic.expressionChildPath.empty()) {
+            location += QStringLiteral(" expression");
+            for (const auto child : diagnostic.expressionChildPath)
+                location += QStringLiteral("/%1").arg(child);
+        }
+        if (diagnostic.textOffset.has_value())
+            location += QStringLiteral(" text[%1..%2)").arg(*diagnostic.textOffset)
+                .arg(*diagnostic.textOffset + diagnostic.textSize.value_or(0));
+        rows.push_back({ diagnostic.severity, QString::fromStdString(diagnostic.code),
+            QString::fromStdString(diagnostic.message), std::move(location),
+            diagnostic.locator, diagnostic.target });
+    }
+    setRows(std::move(rows));
+}
+
 void DiagnosticsModel::clear() {
-    setDiagnostics({});
+    setRows({});
+}
+
+const DiagnosticRow* DiagnosticsModel::rowAt(const int row) const noexcept {
+    return row >= 0 && static_cast<std::size_t>(row) < rows_.size()
+        ? &rows_[static_cast<std::size_t>(row)] : nullptr;
 }
 
 int DiagnosticsModel::rowCount(const QModelIndex& parent) const {
-    return parent.isValid() ? 0 : static_cast<int>(diagnostics_.size());
+    return parent.isValid() ? 0 : static_cast<int>(rows_.size());
 }
 
 int DiagnosticsModel::columnCount(const QModelIndex&) const {
@@ -72,19 +127,16 @@ int DiagnosticsModel::columnCount(const QModelIndex&) const {
 }
 
 QVariant DiagnosticsModel::data(const QModelIndex& index, const int role) const {
-    if (!index.isValid() || static_cast<std::size_t>(index.row()) >= diagnostics_.size()) {
+    if (!index.isValid() || static_cast<std::size_t>(index.row()) >= rows_.size()) {
         return {};
     }
-    const auto& diagnostic = diagnostics_[static_cast<std::size_t>(index.row())];
+    const auto& diagnostic = rows_[static_cast<std::size_t>(index.row())];
     if (role == Qt::DisplayRole) {
         switch (index.column()) {
         case 0: return severityText(diagnostic.severity);
-        case 1: return codeText(diagnostic.code);
-        case 2: return QString::fromStdString(diagnostic.message);
-        case 3:
-            return diagnostic.path.has_value()
-                ? QString::fromStdWString(diagnostic.path->wstring())
-                : QString{};
+        case 1: return diagnostic.code;
+        case 2: return diagnostic.message;
+        case 3: return diagnostic.location;
         default: return {};
         }
     }
@@ -96,7 +148,7 @@ QVariant DiagnosticsModel::data(const QModelIndex& index, const int role) const 
         }
     }
     if (role == Qt::ToolTipRole) {
-        return QString::fromStdString(diagnostic.message);
+        return diagnostic.message;
     }
     return {};
 }

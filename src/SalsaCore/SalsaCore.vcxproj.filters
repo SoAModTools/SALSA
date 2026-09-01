@@ -13,6 +13,9 @@
     <Filter Include="Project">
       <UniqueIdentifier>{48B6096D-4B14-4E39-B280-2C8D826E78AA}</UniqueIdentifier>
     </Filter>
+    <Filter Include="SCT">
+      <UniqueIdentifier>{5744D34F-4187-44F1-90D5-C68D43652E49}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h">
@@ -27,6 +30,8 @@
     <ClInclude Include="include\SalsaCore\Project\GameProjectContext.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Project\LocalGameProject.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Project\ProjectTypes.h"><Filter>Project</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Sct\SctDocumentLoader.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h"><Filter>SCT</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Application\ApplicationInfo.cpp">
@@ -36,5 +41,7 @@
     <ClCompile Include="src\Project\AssetCatalogDiff.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\AssetLocator.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\LocalGameProject.cpp"><Filter>Project</Filter></ClCompile>
+    <ClCompile Include="src\Sct\SctDocumentLoader.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="src\Sct\SctPresentation.cpp"><Filter>SCT</Filter></ClCompile>
   </ItemGroup>
 </Project>

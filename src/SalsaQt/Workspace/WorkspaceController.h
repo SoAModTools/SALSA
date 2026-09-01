@@ -43,6 +43,7 @@ public:
     [[nodiscard]] std::optional<core::AssetDescriptor> selectedAsset() const;
     [[nodiscard]] const std::optional<core::AssetLocator>& selectedLocator() const noexcept;
     [[nodiscard]] const std::vector<core::Diagnostic>& diagnostics() const noexcept;
+    [[nodiscard]] std::optional<core::LocalGameProject> projectSnapshot() const;
 
 signals:
     void workspaceChanged();

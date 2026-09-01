@@ -189,6 +189,10 @@ const std::vector<core::Diagnostic>& WorkspaceController::diagnostics() const no
     return diagnostics_;
 }
 
+std::optional<core::LocalGameProject> WorkspaceController::projectSnapshot() const {
+    return project_;
+}
+
 void WorkspaceController::beginOperation(const Operation operation) {
     operation_ = operation;
     stopSource_ = std::stop_source{};

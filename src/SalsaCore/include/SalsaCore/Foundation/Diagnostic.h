@@ -25,6 +25,8 @@ enum class DiagnosticCode {
     AssetNotFound,
     AssetReadFailed,
     SourceChanged,
+    SctParseFailed,
+    SctImportFailed,
     ReparsePointSkipped,
     HashInitializationFailed,
     HashUpdateFailed,

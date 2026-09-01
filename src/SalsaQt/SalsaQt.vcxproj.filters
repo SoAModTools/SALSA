@@ -7,6 +7,9 @@
     <Filter Include="Workspace">
       <UniqueIdentifier>{3275DE69-55D8-4C1A-A686-6DF9992A4EF9}</UniqueIdentifier>
     </Filter>
+    <Filter Include="SCT">
+      <UniqueIdentifier>{25345B88-F847-4A8C-9B83-82C6C45E5225}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -17,7 +20,11 @@
     <ClCompile Include="Workspace\WorkspaceController.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceModel.cpp"><Filter>Workspace</Filter></ClCompile>
+    <ClCompile Include="Sct\SctDocumentController.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="Sct\SctDocumentWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <QtMoc Include="Workspace\WorkspaceController.h"><Filter>Workspace</Filter></QtMoc>
+    <QtMoc Include="Sct\SctDocumentController.h"><Filter>SCT</Filter></QtMoc>
+    <QtMoc Include="Sct\SctDocumentWidget.h"><Filter>SCT</Filter></QtMoc>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Application\MainWindow.h">

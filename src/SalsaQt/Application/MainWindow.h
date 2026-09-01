@@ -11,12 +11,15 @@ class QDockWidget;
 class QMenu;
 class QProgressBar;
 class QTableView;
+class QTabWidget;
 class QToolButton;
 class QTreeView;
 
 namespace salsa::qt {
 
 class DiagnosticsModel;
+class SctDocumentController;
+class SctDocumentWidget;
 class WorkspaceDetailsWidget;
 class WorkspaceModel;
 
@@ -36,6 +39,11 @@ private:
     void syncSelection();
     void syncDiagnostics();
     void syncActions();
+    void activateSelectedAsset();
+    void syncDocument(const QString& identityKey);
+    void focusDocument(const QString& identityKey);
+    void closeDocumentTab(int index);
+    void rebuildDocumentTabTitles();
     void rebuildRecentMenu();
     void recordRecentDataset(const QString& canonicalRoot);
     void restoreApplicationSettings();
@@ -47,9 +55,11 @@ private:
         const QString& message);
 
     WorkspaceController* controller_ = nullptr;
+    SctDocumentController* documentController_ = nullptr;
     WorkspaceModel* workspaceModel_ = nullptr;
     DiagnosticsModel* diagnosticsModel_ = nullptr;
     WorkspaceDetailsWidget* details_ = nullptr;
+    QTabWidget* tabs_ = nullptr;
     QTreeView* projectTree_ = nullptr;
     QTableView* diagnosticsView_ = nullptr;
     QDockWidget* projectDock_ = nullptr;
