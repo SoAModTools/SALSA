@@ -61,6 +61,11 @@ struct SctTextRepairProvenance final {
     auto operator<=>(const SctTextRepairProvenance&) const = default;
 };
 
+struct SctTextRepairRecord final {
+    SctTextTarget target;
+    SctTextRepairProvenance provenance;
+};
+
 struct SctInstructionStructuralChange final {
     spice::sct::SctInstructionId instruction;
     std::optional<SctInstructionPlacement> before{};

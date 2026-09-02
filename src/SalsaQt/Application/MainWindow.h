@@ -1,12 +1,14 @@
 #pragma once
 
 #include "Workspace/WorkspaceController.h"
+#include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 
 #include <QMainWindow>
 #include <QStringList>
 
 #include <optional>
+#include <vector>
 
 class QAction;
 class QCloseEvent;
@@ -37,10 +39,18 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private:
+    enum class PendingLifecycle { None, CloseDocument, CloseDataset, Exit };
+
     void buildUi();
     void connectWorkspace();
     void chooseDataset();
     void openDataset(const QString& rootPath);
+    void associatePatchWorkspace();
+    void disconnectPatchWorkspace();
+    void restorePatchWorkspaceAssociation();
+    void rememberPatchWorkspaceAssociation(
+        const QString& datasetRoot, const QString& workspaceRoot);
+    void saveActiveDocument();
     void syncWorkspace();
     void syncSelection();
     void syncDiagnostics();
@@ -70,8 +80,12 @@ private:
     [[nodiscard]] SctDocumentWidget* activeDocumentWidget() const;
     [[nodiscard]] std::optional<std::uint16_t> chooseInsertableOpcode(bool allowReturn);
     [[nodiscard]] bool confirmDiscardDocument(
-        const core::AssetLocator& locator, const QString& action);
-    [[nodiscard]] bool confirmDiscardAll(const QString& action);
+        const core::AssetLocator& locator, const QString& action,
+        PendingLifecycle pending = PendingLifecycle::None);
+    [[nodiscard]] bool confirmDiscardAll(
+        const QString& action, PendingLifecycle pending = PendingLifecycle::None);
+    void continuePendingLifecycle(
+        const QString& identityKey, bool success, bool cancelled);
     void rebuildRecentMenu();
     void recordRecentDataset(const QString& canonicalRoot);
     void attemptRestoreDataset();
@@ -101,7 +115,10 @@ private:
     QToolButton* cancelButton_ = nullptr;
     QAction* openAction_ = nullptr;
     QAction* closeWorkspaceAction_ = nullptr;
+    QAction* saveAction_ = nullptr;
     QAction* refreshAction_ = nullptr;
+    QAction* associatePatchWorkspaceAction_ = nullptr;
+    QAction* disconnectPatchWorkspaceAction_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
     QAction* editMessageAction_ = nullptr;
@@ -126,7 +143,9 @@ private:
     QMenu* recentMenu_ = nullptr;
     QMenu* developerMenu_ = nullptr;
     QStringList recentDatasets_{};
+    QStringList patchWorkspaceAssociations_{};
     QString lastDataset_{};
+    std::shared_ptr<const core::LocalSalsaWorkspace> patchWorkspace_{};
     bool restoringDataset_ = false;
     bool diagnosticsSyncPending_ = false;
     bool editTimingsEnabled_ = false;
@@ -135,6 +154,9 @@ private:
     bool showSemanticControlFlowInstructions_ = false;
     bool structureAnalysisTimingsEnabled_ = false;
     bool restoringTabAfterCommitFailure_ = false;
+    PendingLifecycle pendingLifecycle_ = PendingLifecycle::None;
+    std::optional<core::AssetLocator> pendingLifecycleDocument_{};
+    std::vector<core::AssetLocator> pendingLifecycleSaves_{};
 };
 
 }  // namespace salsa::qt

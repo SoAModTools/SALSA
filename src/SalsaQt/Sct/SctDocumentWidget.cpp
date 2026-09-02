@@ -209,33 +209,33 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             if (context && context->verified && context->controller) {
                 menu.addSeparator();
                 if (context->regionKind
-                    == spice_sct_prototype::SctStructuredRegionKind::If
+                    == spice::sct::SctStructuredRegionKind::If
                     || context->regionKind
-                        == spice_sct_prototype::SctStructuredRegionKind::IfElse) {
+                        == spice::sct::SctStructuredRegionKind::IfElse) {
                     auto* insertThen = menu.addAction(tr("Insert Instruction into Then..."));
                     connect(insertThen, &QAction::triggered, this,
                         [this, controller = *context->controller] {
                             emit insertIntoStructuredArmRequested(
                                 QString::fromStdString(locator_.identityKey()),
                                 controller.value(), static_cast<int>(
-                                    spice_sct_prototype::SctStructuredArmKind::Then));
+                                    spice::sct::SctStructuredArmKind::Then));
                         });
                 }
                 if (context->regionKind
-                    == spice_sct_prototype::SctStructuredRegionKind::While
+                    == spice::sct::SctStructuredRegionKind::While
                     || context->regionKind
-                        == spice_sct_prototype::SctStructuredRegionKind::NaturalLoop) {
+                        == spice::sct::SctStructuredRegionKind::NaturalLoop) {
                     auto* insertBody = menu.addAction(tr("Insert Instruction into Body..."));
                     connect(insertBody, &QAction::triggered, this,
                         [this, controller = *context->controller] {
                             emit insertIntoStructuredArmRequested(
                                 QString::fromStdString(locator_.identityKey()),
                                 controller.value(), static_cast<int>(
-                                    spice_sct_prototype::SctStructuredArmKind::LoopBody));
+                                    spice::sct::SctStructuredArmKind::LoopBody));
                         });
                 }
                 if (context->regionKind
-                    == spice_sct_prototype::SctStructuredRegionKind::If) {
+                    == spice::sct::SctStructuredRegionKind::If) {
                     auto* addElse = menu.addAction(tr("Add Empty Else"));
                     connect(addElse, &QAction::triggered, this,
                         [this, controller = *context->controller] {
@@ -245,7 +245,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
                         });
                 }
                 if (context->regionKind
-                    == spice_sct_prototype::SctStructuredRegionKind::Switch) {
+                    == spice::sct::SctStructuredRegionKind::Switch) {
                     auto* addCase = menu.addAction(tr("Add Empty Case"));
                     connect(addCase, &QAction::triggered, this,
                         [this, controller = *context->controller] {
@@ -258,7 +258,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             if (context && context->authoredArm) {
                 menu.addSeparator();
                 if (context->armKind
-                    == spice_sct_prototype::SctStructuredArmKind::SwitchCase) {
+                    == spice::sct::SctStructuredArmKind::SwitchCase) {
                     auto* setValue = menu.addAction(tr("Set Case Value..."));
                     connect(setValue, &QAction::triggered, this,
                         [this, arm = *context->authoredArm] {
@@ -293,8 +293,8 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             }
             if (context && !context->authoredArm && context->verified
                 && context->controller && context->armKind
-                && *context->armKind != spice_sct_prototype::SctStructuredArmKind::Then
-                && *context->armKind != spice_sct_prototype::SctStructuredArmKind::LoopBody) {
+                && *context->armKind != spice::sct::SctStructuredArmKind::Then
+                && *context->armKind != spice::sct::SctStructuredArmKind::LoopBody) {
                 auto* insert = menu.addAction(tr("Insert Instruction into Arm..."));
                 connect(insert, &QAction::triggered, this,
                     [this, controller = *context->controller, arm = *context->armKind] {

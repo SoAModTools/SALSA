@@ -2,6 +2,7 @@
 
 #include "SpiceSCT/SctDocumentIndex.h"
 #include "SpiceSCT/SctOpcodeMetadata.h"
+#include "SpiceSCT/SctScptEncoding.h"
 #include "SpiceSCT/SctTextCodec.h"
 
 #include <algorithm>
@@ -58,26 +59,21 @@ template <typename Range>
     return "Unknown";
 }
 
-[[nodiscard]] std::string expressionKindName(
-    const spice::sct::SctCanonicalExpressionNodeKind kind) {
-    using enum spice::sct::SctCanonicalExpressionNodeKind;
+[[nodiscard]] std::string expressionKindName(const spice::sct::SctScptValueKind kind) {
+    using enum spice::sct::SctScptValueKind;
     switch (kind) {
-    case NoLoopValue: return "No-loop value";
+    case InlineValue: return "Inline value";
     case FloatLiteral: return "Float literal";
     case DecimalLiteral: return "Decimal literal";
-    case IntVariable: return "Integer variable";
+    case DirectIntVariable: return "Integer variable";
     case NegatedIntVariable: return "Negated integer variable";
     case NegatedIntVariableLow16Comparison: return "Negated integer variable (low-16 comparison)";
     case FloatVariable: return "Float variable";
     case BitVariable: return "Bit variable";
     case ByteVariable: return "Byte variable";
     case SecondaryValue: return "Secondary value";
-    case CompareOperator: return "Comparison";
-    case ArithmeticOperator: return "Arithmetic";
-    case AssignmentOperator: return "Assignment";
-    case Stop: return "Stop";
     }
-    return "Expression node";
+    return "SCPT value";
 }
 
 [[nodiscard]] std::string numericValue(const double value, const int precision) {
@@ -111,68 +107,96 @@ template <typename Range>
 }
 
 [[nodiscard]] std::string expressionEncodingNotes(
-    const spice::sct::SctCanonicalExpressionNode& node) {
-    auto notes = "Encoding " + hexValue(node.encodingCode);
-    if (!node.payloadWords.empty()) notes += "; payload " + hexList(node.payloadWords);
+    const std::uint32_t encodingWord,
+    const std::vector<std::uint32_t>& payloadWords = {}) {
+    auto notes = "Encoding " + hexValue(encodingWord);
+    if (!payloadWords.empty()) notes += "; payload " + hexList(payloadWords);
     return notes;
 }
 
-[[nodiscard]] SctPropertyItem expressionNodeProperty(
-    const spice::sct::SctCanonicalExpressionNode& node,
+[[nodiscard]] SctPropertyItem expressionOperationProperty(
+    const spice::sct::SctScptOperation& operation,
+    const spice::sct::SctExpressionSite& expressionSite,
+    const std::uint32_t ordinal,
+    std::string prefix = "Operation ") {
+    const auto location = SctInspectionLocation{spice::sct::SctExpressionOperationSite{
+        expressionSite, ordinal}};
+    return std::visit([&](const auto& typed) -> SctPropertyItem {
+        using T = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<T, spice::sct::SctScptValueOperation>) {
+            std::string value = hexValue(typed.encodingWord);
+            auto notes = expressionEncodingNotes(typed.encodingWord, typed.payloadWords);
+            using enum spice::sct::SctScptValueKind;
+            switch (typed.kind) {
+            case FloatLiteral:
+                value = typed.payloadWords.size() == 1u
+                    ? numericValue(static_cast<double>(std::bit_cast<float>(
+                        typed.payloadWords.front())), std::numeric_limits<float>::max_digits10)
+                    : "(invalid float payload)";
+                break;
+            case DecimalLiteral: {
+                const auto whole = static_cast<std::int16_t>(
+                    (typed.encodingWord >> 8u) & 0xffffu);
+                const auto fraction = typed.encodingWord & 0xffu;
+                value = numericValue(static_cast<double>(whole)
+                    + static_cast<double>(fraction) / 256.0,
+                    std::numeric_limits<double>::max_digits10);
+                break;
+            }
+            case DirectIntVariable:
+            case NegatedIntVariable:
+            case NegatedIntVariableLow16Comparison:
+            case FloatVariable:
+            case BitVariable:
+            case ByteVariable:
+                value = std::to_string(typed.encodingWord & 0x00ffffffu);
+                break;
+            case SecondaryValue: {
+                const auto name = spice::sct::sctScptSecondaryValueName(
+                    typed.encodingWord & 0x00ffffffu);
+                value = name.empty() ? std::to_string(typed.encodingWord & 0x00ffffffu)
+                    : std::string(name);
+                break;
+            }
+            case InlineValue:
+                break;
+            }
+            return {prefix + std::to_string(ordinal) + ": "
+                    + expressionKindName(typed.kind), std::move(value),
+                std::move(notes), {}, location};
+        } else if constexpr (std::is_same_v<T, spice::sct::SctScptBinaryOperation>) {
+            const auto symbol = spice::sct::sctScptOperatorSymbol(typed.encodingWord);
+            const auto value = symbol.empty()
+                ? operatorValue(typed.encodingWord).value_or(
+                    "Operator " + hexValue(typed.encodingWord))
+                : std::string(symbol);
+            return {prefix + std::to_string(ordinal) + ": "
+                    + (typed.kind == spice::sct::SctScptBinaryOperationKind::Comparison
+                        ? "Comparison" : "Arithmetic"), value,
+                expressionEncodingNotes(typed.encodingWord), {}, location};
+        } else if constexpr (std::is_same_v<T,
+                spice::sct::SctScptStackOverwritePreviousWithTopOperation>) {
+            return {prefix + std::to_string(ordinal) + ": Stack overwrite",
+                "previous = top", expressionEncodingNotes(typed.encodingWord), {}, location};
+        } else {
+            return {prefix + std::to_string(ordinal) + ": Inert operation",
+                "No stack effect", expressionEncodingNotes(typed.encodingWord), {}, location};
+        }
+    }, operation);
+}
+
+[[nodiscard]] SctPropertyItem derivedExpressionProperty(
+    const spice::sct::SctScptDerivedExpressionNode& node,
+    const spice::sct::SctTypedScptProgram& program,
     const spice::sct::SctExpressionSite& site) {
-    using enum spice::sct::SctCanonicalExpressionNodeKind;
-    std::string value = hexValue(node.encodingCode);
-    std::string notes;
-    switch (node.kind) {
-    case FloatLiteral:
-        notes = expressionEncodingNotes(node);
-        value = node.payloadWords.size() == 1u
-            ? numericValue(static_cast<double>(std::bit_cast<float>(node.payloadWords.front())),
-                std::numeric_limits<float>::max_digits10)
-            : "(invalid float payload)";
-        break;
-    case DecimalLiteral: {
-        const auto payload = node.encodingCode & 0x00ffffffu;
-        const auto whole = (payload & 0x00ffff00u) >> 8u;
-        const auto fraction = payload & 0xffu;
-        value = numericValue(static_cast<double>(whole)
-            + static_cast<double>(fraction) / 256.0,
-            std::numeric_limits<double>::max_digits10);
-        notes = expressionEncodingNotes(node);
-        break;
+    if (node.operationOrdinal >= program.operations.size()) {
+        return {"Derived operation", "(invalid ordinal)",
+            std::to_string(node.operationOrdinal), {}, SctInspectionLocation{site}};
     }
-    case IntVariable:
-    case NegatedIntVariable:
-    case NegatedIntVariableLow16Comparison:
-    case FloatVariable:
-    case BitVariable:
-    case ByteVariable:
-        value = std::to_string(node.encodingCode & 0x00ffffffu);
-        notes = expressionEncodingNotes(node);
-        break;
-    case CompareOperator:
-    case ArithmeticOperator:
-    case AssignmentOperator:
-        value = operatorValue(node.encodingCode).value_or(
-            "Operator " + hexValue(node.encodingCode));
-        notes = expressionEncodingNotes(node);
-        break;
-    case Stop:
-        value = "Stop";
-        notes = expressionEncodingNotes(node);
-        break;
-    case NoLoopValue:
-    case SecondaryValue:
-        if (!node.payloadWords.empty()) notes = "Payload " + hexList(node.payloadWords);
-        break;
-    }
-    SctPropertyItem item{ expressionKindName(node.kind), std::move(value),
-        std::move(notes), {}, SctInspectionLocation{ site } };
-    for (std::uint32_t childIndex = 0; childIndex < node.children.size(); ++childIndex) {
-        auto childSite = site;
-        childSite.childPath.push_back(childIndex);
-        item.children.push_back(expressionNodeProperty(node.children[childIndex], childSite));
-    }
+    auto item = expressionOperationProperty(program.operations[node.operationOrdinal],
+        site, node.operationOrdinal, "Result operation ");
+    for (const auto& child : node.children)
+        item.children.push_back(derivedExpressionProperty(child, program, site));
     return item;
 }
 
@@ -183,15 +207,29 @@ template <typename Range>
     SctPropertyItem item{ std::move(name),
         expression.termination == spice::sct::SctExpressionTermination::StopCode
             ? "stop-terminated" : "inline", {}, {} };
-    std::visit([&item, &site](const auto& root) {
-        using T = std::decay_t<decltype(root)>;
+    item.location = SctInspectionLocation{site};
+    std::visit([&item, &site](const auto& body) {
+        using T = std::decay_t<decltype(body)>;
         if constexpr (std::is_same_v<T, spice::sct::SctOpaqueExpression>) {
-            item.children.push_back({ "Opaque words", hexList(root.words),
+            item.children.push_back({ "Opaque words", hexList(body.words),
                 "Typed structure was not reliable.", {}, SctInspectionLocation{ site } });
         } else {
-            item.children.push_back(expressionNodeProperty(root, site));
+            SctPropertyItem operations{"Ordered operations",
+                std::to_string(body.operations.size()), "Authoritative SCPT program", {}};
+            for (std::uint32_t ordinal = 0; ordinal < body.operations.size(); ++ordinal)
+                operations.children.push_back(expressionOperationProperty(
+                    body.operations[ordinal], site, ordinal));
+            item.children.push_back(std::move(operations));
+            const auto analysis = spice::sct::analyzeSctScptProgram(body);
+            if (analysis.conventionalTree) {
+                SctPropertyItem result{"Conventional result", "Derived",
+                    "Read-only symbolic projection", {}};
+                result.children.push_back(derivedExpressionProperty(
+                    *analysis.conventionalTree, body, site));
+                item.children.push_back(std::move(result));
+            }
         }
-    }, expression.root);
+    }, expression.body);
     return item;
 }
 
@@ -223,7 +261,7 @@ template <typename Range>
         } else if constexpr (std::is_same_v<T, spice::sct::SctCanonicalExpression>) {
             role = "SCPT expression";
             children = expressionProperty(typed,
-                spice::sct::SctExpressionSite{ instruction, address, {} }).children;
+                spice::sct::SctExpressionSite{ instruction, address }).children;
             value = typed.termination == spice::sct::SctExpressionTermination::StopCode
                 ? "stop-terminated" : "inline";
         } else if constexpr (std::is_same_v<T, spice::sct::SctTerminatedWordSequenceValue>) {
@@ -321,9 +359,28 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
         using T = std::decay_t<decltype(typed)>;
         if constexpr (std::is_same_v<T, spice::sct::SctScriptSectionContent>) return "Script";
         else if constexpr (std::is_same_v<T, spice::sct::SctStringSectionContent>) return "Indexed string";
-        else if constexpr (std::is_same_v<T, spice::sct::SctLabelSectionContent>) return "Label";
+        else if constexpr (std::is_same_v<T, spice::sct::SctStringGroupMarkerSectionContent>)
+            return "String group marker";
         else return "Opaque";
     }, content);
+}
+
+[[nodiscard]] std::string stringGroupBasisName(
+    const spice::sct::SctIndexedStringGroupBasis basis) {
+    return basis == spice::sct::SctIndexedStringGroupBasis::ExplicitMarker
+        ? "explicit marker" : "unmarked contiguous run";
+}
+
+[[nodiscard]] std::string semanticConfidenceName(
+    const spice::sct::SctSemanticConfidence confidence) {
+    using enum spice::sct::SctSemanticConfidence;
+    switch (confidence) {
+    case Known: return "known";
+    case Partial: return "partial";
+    case Heuristic: return "heuristic";
+    case Unknown: return "unknown";
+    }
+    return "unknown";
 }
 
 [[nodiscard]] std::string opaqueAnchorName(const spice::sct::SctOpaqueAnchor& anchor) {
@@ -362,8 +419,13 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
     case SectionNamePadding: return "section name padding"; case SectionPayload: return "section payload";
     case Instruction: return "instruction"; case InstructionModifier: return "instruction modifier";
     case InstructionOpcode: return "instruction opcode"; case InstructionParameter: return "instruction parameter";
-    case Expression: return "expression"; case TextElement: return "text element";
-    case TextTerminator: return "text terminator"; case IndexedStringPreamble: return "indexed-string preamble";
+    case Expression: return "expression"; case ExpressionOperation: return "expression operation";
+    case ExpressionPayload: return "expression payload";
+    case ExpressionTerminator: return "expression terminator";
+    case TextElement: return "text element";
+    case TextTerminator: return "text terminator";
+    case IndexedStringGroupMarkerPreamble: return "indexed-string group marker preamble";
+    case IndexedStringPreamble: return "indexed-string preamble";
     case IndexedStringRecord: return "indexed-string record"; case FooterRegion: return "footer region";
     case FooterEntry: return "footer entry"; case DerivedPadding: return "derived padding";
     case OpaqueAttachment: return "opaque attachment";
@@ -391,15 +453,18 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
                     SctNavigationKind::OpaqueAttachment, id.value()}};
             }, typed);
         } else if constexpr (std::is_same_v<T, spice::sct::SctParameterSite>
-            || std::is_same_v<T, spice::sct::SctExpressionSite>) {
+            || std::is_same_v<T, spice::sct::SctExpressionSite>
+            || std::is_same_v<T, spice::sct::SctExpressionOperationSite>) {
             return SctInspectionLocation{typed};
-        } else {
+        } else if constexpr (std::is_same_v<T, spice::sct::SctTextSite>) {
             return std::visit([](const auto& id) -> SctInspectionLocation {
                 using Id = std::decay_t<decltype(id)>;
                 if constexpr (std::is_same_v<Id, spice::sct::SctStringId>)
                     return SctNavigationTarget{SctNavigationKind::String, id.value()};
                 else return SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()};
             }, typed.text);
+        } else {
+            return std::nullopt;
         }
     }, target);
 }
@@ -527,6 +592,57 @@ SctEntityPresentation SctPresentationService::describe(
                 result.properties.push_back({ "Instructions", std::to_string(script->instructions.size()), {}, {} });
             if (const auto* string = std::get_if<spice::sct::SctStringSectionContent>(&section->content))
                 result.properties.push_back({ "Preamble words", hexList(string->preambleWords), {}, {} });
+            if (const auto* marker = std::get_if<spice::sct::SctStringGroupMarkerSectionContent>(
+                    &section->content)) {
+                result.properties.push_back({"Preamble words",
+                    hexList(marker->preambleWords), "String-group marker evidence", {}});
+            }
+
+            const auto* currentGroup = snapshot.analysis->stringGroups.currentByMarker(section->id);
+            if (currentGroup == nullptr)
+                currentGroup = snapshot.analysis->stringGroups.currentContainingSection(section->id);
+            if (currentGroup != nullptr) {
+                SctPropertyItem group{"Current indexed-string group",
+                    std::to_string(currentGroup->ordinal),
+                    stringGroupBasisName(currentGroup->basis), {}};
+                group.children.push_back({"Member sections",
+                    std::to_string(currentGroup->memberSections.size()), {}, {}});
+                group.children.push_back({"Strings",
+                    std::to_string(currentGroup->strings.size()), {}, {}});
+                if (currentGroup->markerSection) {
+                    group.children.push_back({"Marker section",
+                        std::to_string(currentGroup->markerSection->value()), {}, {},
+                        SctInspectionLocation{SctNavigationTarget{SctNavigationKind::Section,
+                            currentGroup->markerSection->value()}}});
+                }
+                result.properties.push_back(std::move(group));
+            }
+
+            const auto* importedGroup = snapshot.analysis->stringGroups.importedByMarker(section->id);
+            if (importedGroup == nullptr)
+                importedGroup = snapshot.analysis->stringGroups.importedContainingSection(section->id);
+            if (importedGroup != nullptr) {
+                result.properties.push_back({"Imported group observation",
+                    std::to_string(importedGroup->ordinal),
+                    stringGroupBasisName(importedGroup->basis) + "; "
+                        + semanticConfidenceName(importedGroup->confidence) + " confidence",
+                    {}});
+            }
+            const auto ambiguityCount = std::ranges::count_if(
+                snapshot.analysis->stringGroups.importedAmbiguities(),
+                [sectionId = section->id](const auto& ambiguity) {
+                    return std::visit([sectionId](const auto id) {
+                        using Id = std::decay_t<decltype(id)>;
+                        if constexpr (std::is_same_v<Id, spice::sct::SctSectionId>)
+                            return id == sectionId;
+                        else return false;
+                    }, ambiguity.target);
+                });
+            if (ambiguityCount != 0) {
+                result.properties.push_back({"Imported group ambiguity",
+                    std::to_string(ambiguityCount),
+                    "Historical group membership is not singular.", {}});
+            }
             return result;
         }
     }
@@ -546,7 +662,7 @@ SctEntityPresentation SctPresentationService::describe(
             if (instruction->scheduledExpression.has_value())
                 result.properties.push_back(expressionProperty(*instruction->scheduledExpression,
                     spice::sct::SctExpressionSite{ instruction->id,
-                        spice::sct::SctScheduledExpressionSite{}, {} },
+                        spice::sct::SctScheduledExpressionSite{} },
                     "Scheduled expression"));
             SctPropertyItem fixed{ "Fixed parameters", std::to_string(instruction->fixedParameters.size()), {}, {} };
             for (const auto& parameter : instruction->fixedParameters)

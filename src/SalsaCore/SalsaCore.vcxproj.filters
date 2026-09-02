@@ -25,6 +25,8 @@
     <ClInclude Include="include\SalsaCore\Foundation\Hashing.h"><Filter>Foundation</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Foundation\Result.h"><Filter>Foundation</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\History\RevisionHistory.h"><Filter>History</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Persistence\LocalSalsaWorkspace.h"><Filter>Project</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Persistence\SctScriptPatch.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Project\AssetCatalogDiff.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Project\AssetLocator.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Project\GameProjectContext.h"><Filter>Project</Filter></ClInclude>
@@ -46,6 +48,8 @@
       <Filter>Application</Filter>
     </ClCompile>
     <ClCompile Include="src\Foundation\Hashing.cpp"><Filter>Foundation</Filter></ClCompile>
+    <ClCompile Include="src\Persistence\LocalSalsaWorkspace.cpp"><Filter>Project</Filter></ClCompile>
+    <ClCompile Include="src\Persistence\SctScriptPatch.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\AssetCatalogDiff.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\AssetLocator.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\LocalGameProject.cpp"><Filter>Project</Filter></ClCompile>

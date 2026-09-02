@@ -1,7 +1,7 @@
 #pragma once
 
 #include "SalsaCore/History/RevisionHistory.h"
-#include "SpiceSctStructurePrototype/SctStructuredControlFlow.h"
+#include "SpiceSCT/SctStructuredControlFlow.h"
 
 #include <compare>
 #include <cstdint>
@@ -34,8 +34,8 @@ enum class SctAuthoredArmRealization {
 struct SctAuthoredArm final {
     SctAuthoredArmId id;
     SctStructuredControllerKey controller;
-    spice_sct_prototype::SctStructuredArmKind kind =
-        spice_sct_prototype::SctStructuredArmKind::Then;
+    spice::sct::SctStructuredArmKind kind =
+        spice::sct::SctStructuredArmKind::Then;
     std::optional<std::int32_t> caseValue{};
     std::optional<spice::sct::SctInstructionId> expectedJoin{};
     std::vector<spice::sct::SctInstructionId> members{};
@@ -71,6 +71,8 @@ struct SctStructuredAuthoringApplication final {
 
 class SctStructuredAuthoringState final {
 public:
+    SctStructuredAuthoringState() = default;
+    explicit SctStructuredAuthoringState(std::span<const SctAuthoredArm> arms);
     [[nodiscard]] SctAuthoredArmId nextId() const noexcept;
     [[nodiscard]] std::span<const SctAuthoredArm> arms() const noexcept;
     [[nodiscard]] const SctAuthoredArm* find(SctAuthoredArmId id) const noexcept;
@@ -99,7 +101,7 @@ struct SctSemanticAuthoredArmProjection final {
 class SctSemanticEditorProjection final {
 public:
     [[nodiscard]] static SctSemanticEditorProjection build(
-        const spice_sct_prototype::SctStructuredControlFlowAnalysis& analysis,
+        const spice::sct::SctStructuredControlFlowAnalysis& analysis,
         const SctWorkingState& workingState,
         const SctStructuredAuthoringState& authoring,
         RevisionId workingRevision,

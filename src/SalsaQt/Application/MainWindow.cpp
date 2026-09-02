@@ -127,7 +127,8 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    if (!flushMessageEditor() || !confirmDiscardAll(tr("exit SALSA"))) {
+    if (!flushMessageEditor() || !confirmDiscardAll(
+            tr("exit SALSA"), PendingLifecycle::Exit)) {
         event->ignore();
         return;
     }
@@ -217,12 +218,19 @@ void MainWindow::buildUi() {
     openAction_ = fileMenu->addAction(tr("&Open Dataset..."));
     openAction_->setShortcut(QKeySequence::Open);
     recentMenu_ = fileMenu->addMenu(tr("Open &Recent"));
+    saveAction_ = fileMenu->addAction(tr("&Save Document"));
+    saveAction_->setShortcut(QKeySequence::Save);
     closeWorkspaceAction_ = fileMenu->addAction(tr("&Close Dataset"));
     fileMenu->addSeparator();
     auto* exitAction = fileMenu->addAction(tr("E&xit"));
     exitAction->setShortcut(QKeySequence::Quit);
 
     auto* projectMenu = menuBar()->addMenu(tr("&Project"));
+    associatePatchWorkspaceAction_ = projectMenu->addAction(
+        tr("Associate &Workspace..."));
+    disconnectPatchWorkspaceAction_ = projectMenu->addAction(
+        tr("Disconnect Workspace"));
+    projectMenu->addSeparator();
     refreshAction_ = projectMenu->addAction(tr("&Refresh Dataset"));
     refreshAction_->setShortcut(QKeySequence::Refresh);
     projectMenu->addSeparator();
@@ -361,12 +369,20 @@ void MainWindow::buildUi() {
     statusBar()->addPermanentWidget(cancelButton_);
 
     connect(openAction_, &QAction::triggered, this, &MainWindow::chooseDataset);
+    connect(saveAction_, &QAction::triggered, this, &MainWindow::saveActiveDocument);
+    connect(associatePatchWorkspaceAction_, &QAction::triggered,
+        this, &MainWindow::associatePatchWorkspace);
+    connect(disconnectPatchWorkspaceAction_, &QAction::triggered,
+        this, &MainWindow::disconnectPatchWorkspace);
     connect(closeWorkspaceAction_, &QAction::triggered, this, [this]() {
-        if (!flushMessageEditor() || !confirmDiscardAll(tr("close the dataset"))) return;
+        if (!flushMessageEditor() || !confirmDiscardAll(
+                tr("close the dataset"), PendingLifecycle::CloseDataset)) return;
         messageEditor_->clear();
         documentController_->closeAll();
+        documentController_->setWorkspace(nullptr);
+        patchWorkspace_.reset();
         controller_->closeWorkspace();
-        statusBar()->showMessage(tr("Workspace closed."), 5000);
+        statusBar()->showMessage(tr("Dataset closed."), 5000);
     });
     connect(refreshAction_, &QAction::triggered, this, [this]() {
         if (!flushMessageEditor()) return;
@@ -569,6 +585,7 @@ void MainWindow::connectWorkspace() {
             rebuildDocumentTabTitles();
             syncDiagnostics();
             syncSemanticNavigator();
+            syncActions();
         });
     connect(documentController_, &SctDocumentController::operationCompleted,
         this, [this](const QString&, bool success, bool cancelled, const QString& message) {
@@ -593,6 +610,27 @@ void MainWindow::connectWorkspace() {
                 syncDiagnostics();
             }
         });
+    connect(documentController_, &SctDocumentController::checkpointCompleted,
+        this, [this](const QString& identityKey, const bool success, const bool cancelled,
+            const QString& message) {
+            statusBar()->showMessage(message, 8000);
+            if (!success && !cancelled) {
+                diagnosticsDock_->show();
+                diagnosticsDock_->raise();
+            }
+            rebuildDocumentTabTitles();
+            syncDiagnostics();
+            syncActions();
+            const bool anySaving = std::ranges::any_of(
+                documentController_->openLocators(), [this](const auto& locator) {
+                    return documentController_->isSaving(locator);
+                });
+            if (!anySaving && !controller_->busy() && !documentController_->busy()) {
+                progressBar_->hide();
+                cancelButton_->hide();
+            }
+            continuePendingLifecycle(identityKey, success, cancelled);
+        });
 }
 
 void MainWindow::chooseDataset() {
@@ -611,6 +649,99 @@ void MainWindow::openDataset(const QString& rootPath) {
     if (!flushMessageEditor() || !confirmDiscardAll(tr("open another dataset"))) return;
     if (controller_->openDataset(rootPath)) {
         statusBar()->showMessage(tr("Inspecting dataset..."));
+    }
+}
+
+void MainWindow::associatePatchWorkspace() {
+    const auto* dataset = controller_->dataset();
+    if (dataset == nullptr || !documentController_->openLocators().empty()) return;
+    const auto datasetRoot = QString::fromStdWString(dataset->root.wstring());
+    const auto selected = QFileDialog::getExistingDirectory(
+        this, tr("Associate SALSA workspace"),
+        patchWorkspace_ ? QString::fromStdWString(
+            patchWorkspace_->descriptor().root.wstring()) : datasetRoot,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (selected.isEmpty()) return;
+
+    auto opened = core::LocalSalsaWorkspace::openOrCreate(
+        std::filesystem::path(selected.toStdWString()), dataset->root);
+    if (!opened) {
+        const auto message = opened.diagnostics().empty()
+            ? tr("The SALSA workspace could not be associated.")
+            : QString::fromStdString(opened.diagnostics().front().message);
+        QMessageBox::warning(this, tr("Workspace could not be associated"), message);
+        return;
+    }
+    patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
+        std::move(opened).takeValue());
+    documentController_->setWorkspace(patchWorkspace_);
+    rememberPatchWorkspaceAssociation(datasetRoot, selected);
+    statusBar()->showMessage(tr("SALSA workspace associated: %1")
+        .arg(QDir::toNativeSeparators(selected)), 8000);
+    syncActions();
+}
+
+void MainWindow::disconnectPatchWorkspace() {
+    if (!documentController_->openLocators().empty()) return;
+    documentController_->setWorkspace(nullptr);
+    patchWorkspace_.reset();
+    statusBar()->showMessage(tr("SALSA workspace disconnected."), 5000);
+    syncActions();
+}
+
+void MainWindow::restorePatchWorkspaceAssociation() {
+    documentController_->setWorkspace(nullptr);
+    patchWorkspace_.reset();
+    const auto* dataset = controller_->dataset();
+    if (dataset == nullptr) return;
+    const auto datasetRoot = normalizedRecentDatasetPath(
+        QString::fromStdWString(dataset->root.wstring()));
+    for (qsizetype index = 0; index + 1 < patchWorkspaceAssociations_.size(); index += 2) {
+        if (!sameDatasetPath(patchWorkspaceAssociations_[index], datasetRoot)) continue;
+        const auto workspaceRoot = patchWorkspaceAssociations_[index + 1];
+        auto opened = core::LocalSalsaWorkspace::openOrCreate(
+            std::filesystem::path(workspaceRoot.toStdWString()), dataset->root);
+        if (!opened) {
+            statusBar()->showMessage(tr(
+                "The associated SALSA workspace could not be reopened; saving is disabled."),
+                10000);
+            return;
+        }
+        patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
+            std::move(opened).takeValue());
+        documentController_->setWorkspace(patchWorkspace_);
+        return;
+    }
+}
+
+void MainWindow::rememberPatchWorkspaceAssociation(
+    const QString& datasetRoot, const QString& workspaceRoot) {
+    const auto normalizedDataset = normalizedRecentDatasetPath(datasetRoot);
+    const auto normalizedWorkspace = normalizedRecentDatasetPath(workspaceRoot);
+    for (qsizetype index = patchWorkspaceAssociations_.size() - 2; index >= 0; index -= 2) {
+        if (sameDatasetPath(patchWorkspaceAssociations_[index], normalizedDataset)) {
+            patchWorkspaceAssociations_.removeAt(index + 1);
+            patchWorkspaceAssociations_.removeAt(index);
+        }
+        if (index < 2) break;
+    }
+    patchWorkspaceAssociations_.prepend(normalizedWorkspace);
+    patchWorkspaceAssociations_.prepend(normalizedDataset);
+    QSettings{}.setValue(QStringLiteral("workspace/patchAssociations"),
+        patchWorkspaceAssociations_);
+}
+
+void MainWindow::saveActiveDocument() {
+    if (!flushMessageEditor()) return;
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    if (documentController_->saveDocument(widget->locator())) {
+        statusBar()->showMessage(tr("Saving SCT patch checkpoint..."));
+        progressBar_->setRange(0, 0);
+        progressBar_->show();
+        cancelButton_->show();
+        rebuildDocumentTabTitles();
+        syncActions();
     }
 }
 
@@ -691,11 +822,16 @@ void MainWindow::syncSemanticNavigator() {
 
 void MainWindow::syncActions() {
     const bool busy = controller_->busy() || documentController_->busy();
+    const bool hasDataset = controller_->hasWorkspace();
+    const bool hasOpenDocuments = !documentController_->openLocators().empty();
     openAction_->setEnabled(!busy);
     recentMenu_->setEnabled(!busy && !recentDatasets_.isEmpty());
-    closeWorkspaceAction_->setEnabled(controller_->hasWorkspace() || busy);
-    refreshAction_->setEnabled(controller_->hasWorkspace() && !busy);
-    projectTree_->setEnabled(controller_->hasWorkspace() && !busy);
+    closeWorkspaceAction_->setEnabled(hasDataset || busy);
+    associatePatchWorkspaceAction_->setEnabled(hasDataset && !busy && !hasOpenDocuments);
+    disconnectPatchWorkspaceAction_->setEnabled(
+        patchWorkspace_ != nullptr && !busy && !hasOpenDocuments);
+    refreshAction_->setEnabled(hasDataset && !busy);
+    projectTree_->setEnabled(hasDataset && !busy);
     messageEditor_->setEnabled(!busy);
     syncEditActions();
 }
@@ -710,6 +846,10 @@ void MainWindow::syncEditActions() {
         && !controller_->busy() && !documentController_->busy();
     const bool editable = available
         && documentController_->structurallyValid(widget->locator());
+    saveAction_->setEnabled(available && patchWorkspace_ != nullptr
+        && documentController_->isDirty(widget->locator())
+        && !documentController_->isSaving(widget->locator())
+        && !documentController_->patchConflict(widget->locator()));
     for (int i = 1; i < tabs_->count(); ++i) {
         if (auto* document = qobject_cast<SctDocumentWidget*>(tabs_->widget(i))) {
             document->setEditingEnabled(!controller_->busy() && !documentController_->busy()
@@ -954,34 +1094,136 @@ void MainWindow::redoActiveDocument() {
 }
 
 bool MainWindow::confirmDiscardDocument(
-    const core::AssetLocator& locator, const QString& action) {
+    const core::AssetLocator& locator, const QString& action,
+    const PendingLifecycle pending) {
     if (!documentController_->isDirty(locator)) return true;
     QMessageBox message(this);
     message.setIcon(QMessageBox::Warning);
-    message.setWindowTitle(tr("Discard document changes?"));
-    message.setText(tr("%1 has uncommitted in-memory changes.")
+    message.setWindowTitle(tr("Save document changes?"));
+    message.setText(tr("%1 has changes that are not in a patch checkpoint.")
         .arg(QString::fromStdWString(locator.path().wstring())));
-    message.setInformativeText(tr("Discard those changes and %1? This editor slice cannot save them yet.")
-        .arg(action));
-    message.setStandardButtons(QMessageBox::Discard | QMessageBox::Cancel);
+    message.setInformativeText(patchWorkspace_ && !documentController_->patchConflict(locator)
+        ? tr("Save a patch checkpoint, discard the changes, or cancel before you %1?").arg(action)
+        : tr("No writable SALSA workspace is available. Discard the changes or cancel before you %1?")
+            .arg(action));
+    auto buttons = QMessageBox::Discard | QMessageBox::Cancel;
+    if (patchWorkspace_ && !documentController_->patchConflict(locator))
+        buttons |= QMessageBox::Save;
+    message.setStandardButtons(buttons);
     message.setDefaultButton(QMessageBox::Cancel);
-    return message.exec() == QMessageBox::Discard;
+    const auto choice = message.exec();
+    if (choice == QMessageBox::Discard) return true;
+    if (choice != QMessageBox::Save) return false;
+    pendingLifecycle_ = pending;
+    pendingLifecycleDocument_ = pending == PendingLifecycle::CloseDocument
+        ? std::optional<core::AssetLocator>{locator} : std::nullopt;
+    pendingLifecycleSaves_ = {locator};
+    if (!documentController_->isSaving(locator)
+        && !documentController_->saveDocument(locator)) {
+        pendingLifecycle_ = PendingLifecycle::None;
+        pendingLifecycleDocument_.reset();
+        pendingLifecycleSaves_.clear();
+        statusBar()->showMessage(tr("The document checkpoint could not be started."), 8000);
+    }
+    return false;
 }
 
-bool MainWindow::confirmDiscardAll(const QString& action) {
+bool MainWindow::confirmDiscardAll(
+    const QString& action, const PendingLifecycle pending) {
     const auto dirty = documentController_->dirtyLocators();
     if (dirty.empty()) return true;
     QMessageBox message(this);
     message.setIcon(QMessageBox::Warning);
-    message.setWindowTitle(tr("Discard document changes?"));
+    message.setWindowTitle(tr("Save document changes?"));
     message.setText(dirty.size() == 1
-        ? tr("One open SCT document has uncommitted in-memory changes.")
-        : tr("%1 open SCT documents have uncommitted in-memory changes.").arg(dirty.size()));
-    message.setInformativeText(tr("Discard all of those changes and %1? This editor slice cannot save them yet.")
-        .arg(action));
-    message.setStandardButtons(QMessageBox::Discard | QMessageBox::Cancel);
+        ? tr("One open SCT document has changes outside its patch checkpoint.")
+        : tr("%1 open SCT documents have changes outside their patch checkpoints.")
+            .arg(dirty.size()));
+    const bool canSaveAll = patchWorkspace_ && std::ranges::none_of(
+        dirty, [this](const auto& locator) {
+            return documentController_->patchConflict(locator);
+        });
+    message.setInformativeText(canSaveAll
+        ? tr("Save patch checkpoints, discard all changes, or cancel before you %1?").arg(action)
+        : tr("Not every document has a writable, conflict-free SALSA workspace. Discard all changes or cancel before you %1?")
+            .arg(action));
+    auto buttons = QMessageBox::Discard | QMessageBox::Cancel;
+    if (canSaveAll) buttons |= QMessageBox::Save;
+    message.setStandardButtons(buttons);
     message.setDefaultButton(QMessageBox::Cancel);
-    return message.exec() == QMessageBox::Discard;
+    const auto choice = message.exec();
+    if (choice == QMessageBox::Discard) return true;
+    if (choice != QMessageBox::Save) return false;
+    pendingLifecycle_ = pending;
+    pendingLifecycleDocument_.reset();
+    pendingLifecycleSaves_.clear();
+    bool failedToStart = false;
+    for (const auto& locator : dirty) {
+        pendingLifecycleSaves_.push_back(locator);
+        if (!documentController_->isSaving(locator))
+            failedToStart = !documentController_->saveDocument(locator) || failedToStart;
+    }
+    if (failedToStart) {
+        pendingLifecycle_ = PendingLifecycle::None;
+        pendingLifecycleSaves_.clear();
+        statusBar()->showMessage(tr(
+            "One or more document checkpoints could not be started."), 8000);
+    } else {
+        progressBar_->setRange(0, 0);
+        progressBar_->show();
+        cancelButton_->show();
+    }
+    return false;
+}
+
+void MainWindow::continuePendingLifecycle(
+    const QString& identityKey, const bool success, const bool cancelled) {
+    if (pendingLifecycleSaves_.empty()) return;
+    if (!success || cancelled) {
+        pendingLifecycle_ = PendingLifecycle::None;
+        pendingLifecycleDocument_.reset();
+        pendingLifecycleSaves_.clear();
+        return;
+    }
+    std::erase_if(pendingLifecycleSaves_, [&identityKey](const auto& locator) {
+        return QString::fromStdString(locator.identityKey()) == identityKey;
+    });
+    if (!pendingLifecycleSaves_.empty()) return;
+
+    if (pendingLifecycleDocument_.has_value()
+        && documentController_->isDirty(*pendingLifecycleDocument_)) {
+        statusBar()->showMessage(tr(
+            "The document changed while its checkpoint was being saved; it remains open."),
+            8000);
+        pendingLifecycle_ = PendingLifecycle::None;
+        pendingLifecycleDocument_.reset();
+        return;
+    }
+    if (pendingLifecycle_ != PendingLifecycle::CloseDocument
+        && !documentController_->dirtyLocators().empty()) {
+        statusBar()->showMessage(tr(
+            "A document changed while checkpoints were being saved; the requested action was cancelled."),
+            8000);
+        pendingLifecycle_ = PendingLifecycle::None;
+        return;
+    }
+
+    const auto action = pendingLifecycle_;
+    const auto document = pendingLifecycleDocument_;
+    pendingLifecycle_ = PendingLifecycle::None;
+    pendingLifecycleDocument_.reset();
+    if (action == PendingLifecycle::CloseDocument && document.has_value()) {
+        documentController_->closeDocument(*document);
+    } else if (action == PendingLifecycle::CloseDataset) {
+        messageEditor_->clear();
+        documentController_->closeAll();
+        documentController_->setWorkspace(nullptr);
+        patchWorkspace_.reset();
+        controller_->closeWorkspace();
+        statusBar()->showMessage(tr("Dataset closed."), 5000);
+    } else if (action == PendingLifecycle::Exit) {
+        QTimer::singleShot(0, this, &QWidget::close);
+    }
 }
 
 void MainWindow::activateSelectedAsset() {
@@ -1107,7 +1349,7 @@ void MainWindow::syncDocument(
                 if (opcode) {
                     (void)documentController_->insertInstructionIntoStructuredArm(
                         widget->locator(), spice::sct::SctInstructionId(controller),
-                        static_cast<spice_sct_prototype::SctStructuredArmKind>(armKind),
+                        static_cast<spice::sct::SctStructuredArmKind>(armKind),
                         *opcode);
                 }
             });
@@ -1190,7 +1432,8 @@ void MainWindow::closeDocumentTab(const int index) {
     if (index <= 0 || index >= tabs_->count()) return;
     if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index))) {
         if (!flushMessageEditor()
-            || !confirmDiscardDocument(widget->locator(), tr("close the document"))) return;
+            || !confirmDiscardDocument(widget->locator(), tr("close the document"),
+                PendingLifecycle::CloseDocument)) return;
         documentController_->closeDocument(widget->locator());
     }
 }
@@ -1218,6 +1461,8 @@ void MainWindow::rebuildDocumentTabTitles() {
         }
         const auto tabIndex = tabs_->indexOf(const_cast<SctDocumentWidget*>(widget));
         if (documentController_->isDirty(widget->locator())) title += QLatin1Char('*');
+        if (documentController_->isSaving(widget->locator())) title += tr(" [Saving]");
+        if (documentController_->patchConflict(widget->locator())) title += tr(" [Patch conflict]");
         tabs_->setTabText(tabIndex, title);
         tabs_->setTabToolTip(tabIndex, path);
     }
@@ -1299,8 +1544,20 @@ void MainWindow::restoreApplicationSettings() {
             }
         }
     }
+    const auto storedAssociations = settings.value(
+        QStringLiteral("workspace/patchAssociations")).toStringList();
+    for (qsizetype index = 0; index + 1 < storedAssociations.size(); index += 2) {
+        const auto datasetRoot = normalizedRecentDatasetPath(storedAssociations[index]);
+        const auto workspaceRoot = normalizedRecentDatasetPath(storedAssociations[index + 1]);
+        if (!datasetRoot.isEmpty() && !workspaceRoot.isEmpty()) {
+            patchWorkspaceAssociations_.push_back(datasetRoot);
+            patchWorkspaceAssociations_.push_back(workspaceRoot);
+        }
+    }
     settings.setValue(QStringLiteral("workspace/recentDatasets"), recentDatasets_);
     settings.setValue(QStringLiteral("workspace/lastDataset"), lastDataset_);
+    settings.setValue(QStringLiteral("workspace/patchAssociations"),
+        patchWorkspaceAssociations_);
     rebuildRecentMenu();
 }
 
@@ -1310,6 +1567,8 @@ void MainWindow::saveApplicationSettings() const {
     settings.setValue(QStringLiteral("window/state"), saveState(SettingsStateVersion));
     settings.setValue(QStringLiteral("workspace/recentDatasets"), recentDatasets_);
     settings.setValue(QStringLiteral("workspace/lastDataset"), lastDataset_);
+    settings.setValue(QStringLiteral("workspace/patchAssociations"),
+        patchWorkspaceAssociations_);
 }
 
 void MainWindow::handleOperationCompleted(
@@ -1335,6 +1594,7 @@ void MainWindow::handleOperationCompleted(
     }
     if (success && operation == WorkspaceController::Operation::Opening) {
         documentController_->closeAll();
+        restorePatchWorkspaceAssociation();
     }
     if (success && operation == WorkspaceController::Operation::Refreshing) {
         if (const auto* catalog = controller_->catalog())

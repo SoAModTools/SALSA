@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SalsaCore/Project/LocalGameProject.h"
+#include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 
@@ -107,10 +108,12 @@ public:
     [[nodiscard]] bool insertInstructionIntoStructuredArm(
         const core::AssetLocator& locator,
         spice::sct::SctInstructionId controller,
-        spice_sct_prototype::SctStructuredArmKind arm,
+        spice::sct::SctStructuredArmKind arm,
         std::uint16_t opcode);
     [[nodiscard]] bool undo(const core::AssetLocator& locator);
     [[nodiscard]] bool redo(const core::AssetLocator& locator);
+    [[nodiscard]] bool saveDocument(const core::AssetLocator& locator);
+    void setWorkspace(std::shared_ptr<const core::LocalSalsaWorkspace> workspace);
     void synchronizeCatalog(const core::AssetCatalogSnapshot& catalog);
     void closeDocument(const core::AssetLocator& locator);
     void closeAll();
@@ -132,6 +135,9 @@ public:
     [[nodiscard]] SourceStatus sourceStatus(const core::AssetLocator& locator) const;
     [[nodiscard]] bool structurallyValid(const core::AssetLocator& locator) const;
     [[nodiscard]] bool isDirty(const core::AssetLocator& locator) const;
+    [[nodiscard]] bool isSaving(const core::AssetLocator& locator) const;
+    [[nodiscard]] bool patchConflict(const core::AssetLocator& locator) const;
+    [[nodiscard]] bool hasWorkspace() const noexcept;
     [[nodiscard]] bool canUndo(const core::AssetLocator& locator) const;
     [[nodiscard]] bool canRedo(const core::AssetLocator& locator) const;
     [[nodiscard]] std::optional<std::string> undoDescription(
@@ -151,6 +157,8 @@ signals:
     void operationCompleted(
         const QString& identityKey, bool success, bool cancelled, const QString& message);
     void editCompleted(const QString& identityKey, bool success, const QString& message);
+    void checkpointCompleted(
+        const QString& identityKey, bool success, bool cancelled, const QString& message);
     void selectionRequested(const QString& identityKey, int kind, qulonglong id);
 
 private:
@@ -164,6 +172,10 @@ private:
         std::uint64_t requestedMaterializationGeneration = 0;
         std::uint64_t runningMaterializationGeneration = 0;
         core::RevisionId requestedMaterializationRevision{};
+        std::unique_ptr<QFutureWatcher<core::SctCheckpointResult>> checkpointWatcher{};
+        std::stop_source checkpointStop{};
+        std::uint64_t checkpointGeneration = 0;
+        bool patchConflict = false;
         bool editBlocked = false;
     };
 
@@ -179,17 +191,23 @@ private:
     void startMaterialization(const std::string& identityKey, DocumentState& state);
     void finishMaterialization(const std::string& identityKey, std::uint64_t generation);
     void retireMaterialization(DocumentState& state);
+    void finishCheckpoint(const std::string& identityKey, std::uint64_t generation);
+    void retireCheckpoint(DocumentState& state);
 
-    QFutureWatcher<core::SctLoadResult> watcher_{};
+    QFutureWatcher<core::SctPatchedLoadResult> watcher_{};
     std::unordered_map<std::string, DocumentState> documents_{};
+    std::shared_ptr<const core::LocalSalsaWorkspace> workspace_{};
     std::optional<core::AssetLocator> runningLocator_{};
     std::stop_source stopSource_{};
     Operation operation_ = Operation::None;
     std::uint64_t generation_ = 0;
     std::uint64_t runningGeneration_ = 0;
     std::uint64_t nextMaterializationGeneration_ = 0;
+    std::uint64_t nextCheckpointGeneration_ = 0;
     std::vector<std::unique_ptr<QFutureWatcher<core::SctMaterializationResult>>>
         retiredMaterializations_{};
+    std::vector<std::unique_ptr<QFutureWatcher<core::SctCheckpointResult>>>
+        retiredCheckpoints_{};
     std::vector<core::Diagnostic> failureDiagnostics_{};
     std::vector<core::SctPipelineDiagnostic> failurePipelineDiagnostics_{};
     bool editTimingsEnabled_ = false;

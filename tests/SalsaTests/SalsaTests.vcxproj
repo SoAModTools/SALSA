@@ -41,7 +41,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\googletest\googletest\include;$(SalsaRepositoryRoot)third-party\googletest\googletest;$(SalsaRepositoryRoot)prototype\SpiceSctStructurePrototype\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\googletest\googletest\include;$(SalsaRepositoryRoot)third-party\googletest\googletest;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -61,7 +61,7 @@
     <ClCompile Include="test_sct_edit_session.cpp" />
     <ClCompile Include="test_sct_document_inspection.cpp" />
     <ClCompile Include="test_sct_message_authoring.cpp" />
-    <ClCompile Include="..\..\prototype\SpiceSctStructurePrototype\tests\test_sct_structured_control_flow.cpp" />
+    <ClCompile Include="test_sct_script_patch.cpp" />
     <ClCompile Include="test_sct_structured_authoring.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -76,9 +76,6 @@
     </ProjectReference>
     <ProjectReference Include="..\..\src\SalsaCore\SalsaCore.vcxproj">
       <Project>{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\..\prototype\SpiceSctStructurePrototype\SpiceSctStructurePrototype.vcxproj">
-      <Project>{3D1A0E20-2B51-4C7A-9EB7-6544E784A630}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

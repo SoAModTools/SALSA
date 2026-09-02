@@ -14,7 +14,8 @@ namespace salsa::core {
 using SctInspectionLocation = std::variant<
     SctNavigationTarget,
     spice::sct::SctParameterSite,
-    spice::sct::SctExpressionSite>;
+    spice::sct::SctExpressionSite,
+    spice::sct::SctExpressionOperationSite>;
 
 [[nodiscard]] inline std::optional<SctInspectionLocation>
 inspectionLocationForDiagnostic(
@@ -37,7 +38,8 @@ inspectionLocationForDiagnostic(
                     SctNavigationKind::OpaqueAttachment, id.value()};
             }, typed);
         } else if constexpr (std::is_same_v<T, spice::sct::SctParameterSite>
-            || std::is_same_v<T, spice::sct::SctExpressionSite>) {
+            || std::is_same_v<T, spice::sct::SctExpressionSite>
+            || std::is_same_v<T, spice::sct::SctExpressionOperationSite>) {
             return SctInspectionLocation{typed};
         } else if constexpr (std::is_same_v<T, spice::sct::SctTextSite>) {
             return std::visit([](const auto& id) -> SctInspectionLocation {
@@ -68,12 +70,6 @@ inspectionLocationForDiagnostic(
         + formatSctParameterAddress(std::get<spice::sct::SctParameterAddress>(owner));
 }
 
-[[nodiscard]] inline std::string appendSctExpressionPath(
-    std::string value, const std::vector<std::uint32_t>& childPath) {
-    for (const auto child : childPath) value += "/" + std::to_string(child);
-    return value;
-}
-
 [[nodiscard]] inline std::string formatSctDiagnosticLocation(
     const spice::sct::SctDiagnosticLocation& location) {
     return std::visit([](const auto& typed) -> std::string {
@@ -96,9 +92,12 @@ inspectionLocationForDiagnostic(
             return "instruction " + std::to_string(typed.instruction.value()) + ", "
                 + formatSctParameterAddress(typed.parameter);
         } else if constexpr (std::is_same_v<T, spice::sct::SctExpressionSite>) {
-            return appendSctExpressionPath(
-                "instruction " + std::to_string(typed.instruction.value()) + ", "
-                    + formatSctExpressionOwner(typed.owner), typed.childPath);
+            return "instruction " + std::to_string(typed.instruction.value()) + ", "
+                + formatSctExpressionOwner(typed.owner);
+        } else if constexpr (std::is_same_v<T, spice::sct::SctExpressionOperationSite>) {
+            return "instruction " + std::to_string(typed.expression.instruction.value()) + ", "
+                + formatSctExpressionOwner(typed.expression.owner) + ", operation "
+                + std::to_string(typed.operationOrdinal);
         } else if constexpr (std::is_same_v<T, spice::sct::SctTextSite>) {
             const auto identity = std::visit([](const auto& id) -> std::string {
                 using Id = std::decay_t<decltype(id)>;
@@ -114,13 +113,21 @@ inspectionLocationForDiagnostic(
         } else if constexpr (std::is_same_v<T, spice::sct::SctDraftParameterSite>) {
             return "draft opcode " + std::to_string(typed.opcode) + ", "
                 + formatSctParameterAddress(typed.parameter);
-        } else {
+        } else if constexpr (std::is_same_v<T, spice::sct::SctDraftExpressionSite>) {
             auto result = typed.opcode
                 ? "draft opcode " + std::to_string(*typed.opcode) + " "
                 : std::string("draft ");
             if (typed.owner) result += formatSctExpressionOwner(*typed.owner);
             else result += "expression";
-            return appendSctExpressionPath(std::move(result), typed.childPath);
+            return result;
+        } else {
+            auto result = typed.expression.opcode
+                ? "draft opcode " + std::to_string(*typed.expression.opcode) + " "
+                : std::string("draft ");
+            if (typed.expression.owner)
+                result += formatSctExpressionOwner(*typed.expression.owner);
+            else result += "expression";
+            return result + ", operation " + std::to_string(typed.operationOrdinal);
         }
     }, location);
 }
@@ -131,6 +138,9 @@ inspectionLocationForDiagnostic(
         using T = std::decay_t<decltype(typed)>;
         if constexpr (std::is_same_v<T, SctNavigationTarget>) {
             return typed;
+        } else if constexpr (std::is_same_v<T, spice::sct::SctExpressionOperationSite>) {
+            return {SctNavigationKind::Instruction,
+                typed.expression.instruction.value()};
         } else {
             return { SctNavigationKind::Instruction, typed.instruction.value() };
         }

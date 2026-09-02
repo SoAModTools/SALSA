@@ -19,8 +19,8 @@ public:
     struct EditContext final {
         std::optional<spice::sct::SctInstructionId> controller{};
         std::optional<core::SctAuthoredArmId> authoredArm{};
-        std::optional<spice_sct_prototype::SctStructuredRegionKind> regionKind{};
-        std::optional<spice_sct_prototype::SctStructuredArmKind> armKind{};
+        std::optional<spice::sct::SctStructuredRegionKind> regionKind{};
+        std::optional<spice::sct::SctStructuredArmKind> armKind{};
         bool verified = false;
         bool virtualArm = false;
         bool needsValue = false;
@@ -61,10 +61,16 @@ private:
     };
 
     void rebuild();
-    void appendItem(Node& parent,
-        const spice_sct_prototype::SctStructuredOutlineItem& item,
-        std::optional<spice::sct::SctInstructionId> controller = std::nullopt,
-        bool verifiedRegion = false);
+    void appendInstruction(Node& parent, spice::sct::SctInstructionId instruction,
+        std::optional<EditContext> context = std::nullopt);
+    void appendRegion(Node& parent, const spice::sct::SctSectionStructure& section,
+        const spice::sct::SctStructuredRegion& region);
+    void appendArm(Node& parent, const spice::sct::SctSectionStructure& section,
+        const spice::sct::SctStructuredRegion& region,
+        const spice::sct::SctStructuredArm& arm);
+    void appendHistoricalCandidate(Node& parent,
+        const spice::sct::SctHistoricalStructureCandidate& candidate);
+    void appendIssue(Node& parent, const spice::sct::SctStructureIssue& issue);
     void appendAuthoredArms();
     void indexNode(Node& node);
     [[nodiscard]] QModelIndex indexForNode(const Node* node, int column = 0) const;

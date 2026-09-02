@@ -145,15 +145,13 @@ void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
     }, left);
 }
 
-[[nodiscard]] const spice_sct_prototype::SctStructuredRegion* verifiedRegion(
+[[nodiscard]] const spice::sct::SctStructuredRegion* verifiedRegion(
     const SctDocumentSnapshot& snapshot,
     const spice::sct::SctInstructionId controller) {
-    if (!snapshot.structuredControlFlow) return nullptr;
-    for (const auto& section : snapshot.structuredControlFlow->sections()) {
+    if (!snapshot.analysis) return nullptr;
+    for (const auto& section : snapshot.analysis->structuredControlFlow.sections()) {
         const auto found = std::ranges::find_if(section.regions, [&](const auto& region) {
-            return region.id.headerInstruction == controller
-                && region.strength
-                    == spice_sct_prototype::SctStructureClaimStrength::Verified;
+            return region.id.headerInstruction == controller;
         });
         if (found != section.regions.end()) return &*found;
     }
@@ -161,7 +159,7 @@ void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
 }
 
 [[nodiscard]] bool hasCaseValue(
-    const spice_sct_prototype::SctStructuredRegion& region,
+    const spice::sct::SctStructuredRegion& region,
     const SctStructuredAuthoringState& authoring,
     const spice::sct::SctInstructionId controller,
     const std::int32_t value,
@@ -174,7 +172,7 @@ void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
     return std::ranges::any_of(authoring.arms(), [&](const auto& arm) {
         return arm.controller.instruction == controller
             && (!excluding || arm.id != *excluding)
-            && arm.kind == spice_sct_prototype::SctStructuredArmKind::SwitchCase
+            && arm.kind == spice::sct::SctStructuredArmKind::SwitchCase
             && arm.caseValue == value;
     });
 }
@@ -210,17 +208,27 @@ void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
 }  // namespace
 
 SctEditSession::SctEditSession(std::shared_ptr<const SctDocumentSnapshot> initialSnapshot)
-    : baselineSnapshot_(std::move(initialSnapshot)),
+    : SctEditSession(initialSnapshot, initialSnapshot, {}, {}) {}
+
+SctEditSession::SctEditSession(
+    std::shared_ptr<const SctDocumentSnapshot> baselineSnapshot,
+    std::shared_ptr<const SctDocumentSnapshot> restoredSnapshot,
+    const std::span<const SctAuthoredArm> authoredArms,
+    const std::span<const SctPatchedTextRepair> textRepairs)
+    : baselineSnapshot_(std::move(baselineSnapshot)),
       history_(std::make_shared<const RevisionDelta>()),
-      workingState_(baselineSnapshot_ != nullptr ? baselineSnapshot_->document : nullptr),
-      materializedDocument_(baselineSnapshot_ != nullptr ? baselineSnapshot_->document : nullptr),
-      currentSnapshot_(baselineSnapshot_) {
+      workingState_(restoredSnapshot != nullptr ? restoredSnapshot->document : nullptr,
+          textRepairs),
+      structuredAuthoring_(authoredArms),
+      materializedDocument_(restoredSnapshot != nullptr ? restoredSnapshot->document : nullptr),
+      currentSnapshot_(std::move(restoredSnapshot)) {
     assert(baselineSnapshot_ != nullptr);
     assert(baselineSnapshot_->document != nullptr);
-    structurallyValid_ = baselineSnapshot_->readiness
+    assert(currentSnapshot_ != nullptr);
+    structurallyValid_ = currentSnapshot_->readiness
         == spice::sct::SctDocumentReadiness::StructurallyValid;
     materializationCheckpoints_.push_back(
-        {history_.currentRevision().id, baselineSnapshot_});
+        {history_.currentRevision().id, currentSnapshot_});
     rebuildSemanticProjection();
 }
 
@@ -721,7 +729,7 @@ SctEditResult SctEditSession::addVirtualElse(
     const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
     const auto* region = verifiedRegion(*currentSnapshot_, controller);
     if (region == nullptr
-        || region->id.kind != spice_sct_prototype::SctStructuredRegionKind::If) {
+        || region->id.kind != spice::sct::SctStructuredRegionKind::If) {
         return failure({editError(locator, "ElseRequiresVerifiedIf",
             "An empty Else arm can be added only to a verified If without an Else.",
             SctNavigationTarget{SctNavigationKind::Instruction, controller.value()})});
@@ -732,7 +740,7 @@ SctEditResult SctEditSession::addVirtualElse(
     }
     if (std::ranges::any_of(structuredAuthoring_.arms(), [&](const auto& arm) {
             return arm.controller.instruction == controller
-                && arm.kind == spice_sct_prototype::SctStructuredArmKind::Else;
+                && arm.kind == spice::sct::SctStructuredArmKind::Else;
         })) {
         return failure({editError(locator, "ElseAlreadyExists",
             "This If already has an authored Else arm.")});
@@ -740,7 +748,7 @@ SctEditResult SctEditSession::addVirtualElse(
     const auto id = structuredAuthoring_.nextId();
     SctAuthoredArm arm{id,
         {region->id.section, controller},
-        spice_sct_prototype::SctStructuredArmKind::Else};
+        spice::sct::SctStructuredArmKind::Else};
     arm.expectedJoin = region->join->entryInstruction;
     return commit({}, {{SctSetAuthoredArmOperation{id, std::nullopt, arm}}},
         "Add empty Else",
@@ -754,7 +762,7 @@ SctEditResult SctEditSession::addVirtualCase(
     const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
     const auto* region = verifiedRegion(*currentSnapshot_, controller);
     if (region == nullptr
-        || region->id.kind != spice_sct_prototype::SctStructuredRegionKind::Switch) {
+        || region->id.kind != spice::sct::SctStructuredRegionKind::Switch) {
         return failure({editError(locator, "CaseRequiresVerifiedSwitch",
             "A case can be added only to a verified Switch.",
             SctNavigationTarget{SctNavigationKind::Instruction, controller.value()})});
@@ -766,7 +774,7 @@ SctEditResult SctEditSession::addVirtualCase(
     const auto id = structuredAuthoring_.nextId();
     SctAuthoredArm arm{id,
         {region->id.section, controller},
-        spice_sct_prototype::SctStructuredArmKind::SwitchCase};
+        spice::sct::SctStructuredArmKind::SwitchCase};
     arm.expectedJoin = region->join->entryInstruction;
     return commit({}, {{SctSetAuthoredArmOperation{id, std::nullopt, arm}}},
         "Add empty Switch case",
@@ -780,7 +788,7 @@ SctEditResult SctEditSession::setVirtualCaseValue(
     const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
     const auto* current = structuredAuthoring_.find(id);
     if (current == nullptr
-        || current->kind != spice_sct_prototype::SctStructuredArmKind::SwitchCase
+        || current->kind != spice::sct::SctStructuredArmKind::SwitchCase
         || current->realization != SctAuthoredArmRealization::Virtual) {
         return failure({editError(locator, "VirtualCaseNotFound",
             "Only an unrealized authored case can change its value.")});
@@ -810,7 +818,7 @@ SctEditResult SctEditSession::removeVirtualArm(const SctAuthoredArmId id) {
             "Only an empty unrealized Else or Case arm can be removed.")});
     }
     return commit({}, {{SctSetAuthoredArmOperation{id, *current, std::nullopt}}},
-        current->kind == spice_sct_prototype::SctStructuredArmKind::Else
+        current->kind == spice::sct::SctStructuredArmKind::Else
             ? "Remove empty Else" : "Remove empty Switch case", {});
 }
 
@@ -830,7 +838,7 @@ SctEditResult SctEditSession::insertInstructionIntoAuthoredArm(
         return failure({editError(locator, "OpcodeUnavailableForSemanticArm",
             "This opcode cannot be inserted as the first instruction of a semantic arm.")});
     }
-    if (current->kind == spice_sct_prototype::SctStructuredArmKind::SwitchCase
+    if (current->kind == spice::sct::SctStructuredArmKind::SwitchCase
         && !current->caseValue) {
         return failure({editError(locator, "SwitchCaseValueRequired",
             "Choose a unique signed case value before inserting the first instruction.")});
@@ -859,7 +867,7 @@ SctEditResult SctEditSession::insertInstructionIntoAuthoredArm(
     next.members.push_back(child->id);
     std::uint64_t nextId = child->id.value() + 1u;
 
-    if (current->kind == spice_sct_prototype::SctStructuredArmKind::Else) {
+    if (current->kind == spice::sct::SctStructuredArmKind::Else) {
         auto anchor = *beforeJoin;
         const auto* preceding = workingState_.instruction(anchor);
         bool hasExit = false;
@@ -890,7 +898,7 @@ SctEditResult SctEditSession::insertInstructionIntoAuthoredArm(
         document.operations.push_back(SctReplaceInstructionOperation{
             controller.id, std::move(controller)});
     } else if (current->kind
-            == spice_sct_prototype::SctStructuredArmKind::SwitchCase) {
+            == spice::sct::SctStructuredArmKind::SwitchCase) {
         document.operations.push_back(
             SctInsertInstructionAfterOperation{*beforeJoin, *child});
         spice::sct::SctDocumentInstruction exit{
@@ -921,7 +929,7 @@ SctEditResult SctEditSession::insertInstructionIntoAuthoredArm(
     const SctNavigationTarget inserted{SctNavigationKind::Instruction, child->id.value()};
     return commit(std::move(document),
         {{SctSetAuthoredArmOperation{id, *current, next}}},
-        current->kind == spice_sct_prototype::SctStructuredArmKind::Else
+        current->kind == spice::sct::SctStructuredArmKind::Else
             ? "Insert first Else instruction" : "Insert first Switch case instruction",
         SelectionHints{{SctNavigationTarget{SctNavigationKind::Instruction,
             current->controller.instruction.value()}}, inserted},
@@ -930,7 +938,7 @@ SctEditResult SctEditSession::insertInstructionIntoAuthoredArm(
 
 SctEditResult SctEditSession::insertInstructionIntoStructuredArm(
     const spice::sct::SctInstructionId controller,
-    const spice_sct_prototype::SctStructuredArmKind armKind,
+    const spice::sct::SctStructuredArmKind armKind,
     const std::uint16_t opcode) {
     const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
     const auto* region = verifiedRegion(*currentSnapshot_, controller);
@@ -946,7 +954,7 @@ SctEditResult SctEditSession::insertInstructionIntoStructuredArm(
             "The verified region no longer contains this arm.")});
     }
     std::vector<spice::sct::SctInstructionId> members;
-    const auto* section = currentSnapshot_->structuredControlFlow->findSection(
+    const auto* section = currentSnapshot_->analysis->structuredControlFlow.findSection(
         region->id.section);
     if (section == nullptr) {
         return failure({editError(locator, "StructuredSectionNotFound",
@@ -954,17 +962,17 @@ SctEditResult SctEditSession::insertInstructionIntoStructuredArm(
     }
     for (const auto blockId : arm->blocks) {
         const auto block = std::ranges::find(
-            section->blocks, blockId, &spice_sct_prototype::SctBasicBlock::id);
+            section->blocks, blockId, &spice::sct::SctStructuredBasicBlock::id);
         if (block != section->blocks.end())
             members.insert(members.end(), block->instructions.begin(), block->instructions.end());
     }
     std::vector<spice::sct::SctInstructionId> scaffolding;
     for (const auto& evidence : region->evidence) {
-        if ((evidence.kind == spice_sct_prototype::SctStructureEvidenceKind::PreTargetJump
+        if ((evidence.kind == spice::sct::SctStructureEvidenceKind::PreTargetJump
                 || evidence.kind
-                    == spice_sct_prototype::SctStructureEvidenceKind::BackwardTerminatorJump
+                    == spice::sct::SctStructureEvidenceKind::BackwardTerminatorJump
                 || evidence.kind
-                    == spice_sct_prototype::SctStructureEvidenceKind::CommonForwardExit)
+                    == spice::sct::SctStructureEvidenceKind::CommonForwardExit)
             && evidence.source) {
             scaffolding.push_back(*evidence.source);
         }
@@ -996,14 +1004,14 @@ SctEditResult SctEditSession::deleteOnlyInstructionFromAuthoredArm(
     }
     auto controller = *workingState_.instruction(current->controller.instruction);
     SctSemanticOperationBatch document;
-    if (current->kind == spice_sct_prototype::SctStructuredArmKind::Else) {
+    if (current->kind == spice::sct::SctStructuredArmKind::Else) {
         if (!current->expectedJoin
             || !setInstructionReference(controller, 1u, *current->expectedJoin)) {
             return failure({editError(locator, "IfFalseTargetUnavailable",
                 "The authored Else can no longer restore the verified If join.")});
         }
     } else if (current->kind
-            == spice_sct_prototype::SctStructuredArmKind::SwitchCase) {
+            == spice::sct::SctStructuredArmKind::SwitchCase) {
         const auto group = std::ranges::find_if(controller.repeatedParameterGroups,
             [&](const auto& candidate) {
                 return std::ranges::any_of(candidate.parameters, [&](const auto& parameter) {
@@ -1046,7 +1054,7 @@ SctEditResult SctEditSession::deleteOnlyInstructionFromAuthoredArm(
     next.realization = SctAuthoredArmRealization::Virtual;
     return commit(std::move(document),
         {{SctSetAuthoredArmOperation{id, *current, next}}},
-        current->kind == spice_sct_prototype::SctStructuredArmKind::Else
+        current->kind == spice::sct::SctStructuredArmKind::Else
             ? "Return Else to empty" : "Return Switch case to empty",
         SelectionHints{{SctNavigationTarget{SctNavigationKind::Instruction,
             instruction.value()}},
@@ -1239,6 +1247,28 @@ std::optional<SctMaterializationRequest> SctEditSession::materializationRequest(
     };
 }
 
+std::optional<SctCheckpointRequest> SctEditSession::checkpointRequest(
+    const std::uint64_t generation) const {
+    auto request = materializationRequest(generation);
+    if (!request.has_value()) return std::nullopt;
+    const auto historyState = history_.revision(history_.currentRevision().id);
+    if (!historyState.has_value()) return std::nullopt;
+    return SctCheckpointRequest{
+        history_.currentRevision().id,
+        historyState->state,
+        baselineSnapshot_,
+        std::move(*request),
+        workingState_.textRepairProvenances(),
+    };
+}
+
+bool SctEditSession::markPatchCheckpoint(const RevisionId revision,
+    std::shared_ptr<const void> historyStateToken) noexcept {
+    if (historyStateToken == nullptr) return false;
+    return history_.markCheckpoint(revision,
+        std::static_pointer_cast<const RevisionDelta>(std::move(historyStateToken)));
+}
+
 bool SctEditSession::installVerifiedMaterialization(
     const SctMaterializationResult& result) {
     if (!result.succeeded() || !isActiveRevision(result.targetRevision)) return false;
@@ -1248,7 +1278,6 @@ bool SctEditSession::installVerifiedMaterialization(
         result.analysis,
         spice::sct::SctDocumentReadiness::StructurallyValid,
         {},
-        result.structuredControlFlow,
     });
     auto validationMessages = validationDiagnostics(
         baselineSnapshot_->provenance->source().descriptor.locator, result.validation);
@@ -1469,12 +1498,12 @@ SctEditResult SctEditSession::commit(
 }
 
 void SctEditSession::rebuildSemanticProjection() {
-    if (!currentSnapshot_ || !currentSnapshot_->structuredControlFlow) {
+    if (!currentSnapshot_ || !currentSnapshot_->analysis) {
         semanticProjection_.reset();
         return;
     }
     semanticProjection_ = std::make_shared<const SctSemanticEditorProjection>(
-        SctSemanticEditorProjection::build(*currentSnapshot_->structuredControlFlow,
+        SctSemanticEditorProjection::build(currentSnapshot_->analysis->structuredControlFlow,
             workingState_, structuredAuthoring_, history_.currentRevision().id,
             verifiedRevision_));
 }

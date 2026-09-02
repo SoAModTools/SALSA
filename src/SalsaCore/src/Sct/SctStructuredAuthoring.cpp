@@ -7,6 +7,12 @@
 
 namespace salsa::core {
 
+SctStructuredAuthoringState::SctStructuredAuthoringState(
+    const std::span<const SctAuthoredArm> arms)
+    : arms_(arms.begin(), arms.end()) {
+    for (const auto& arm : arms_) nextId_ = std::max(nextId_, arm.id.value + 1u);
+}
+
 SctAuthoredArmId SctStructuredAuthoringState::nextId() const noexcept {
     return SctAuthoredArmId{nextId_};
 }
@@ -64,7 +70,7 @@ SctStructuredAuthoringApplication SctStructuredAuthoringState::apply(
 }
 
 SctSemanticEditorProjection SctSemanticEditorProjection::build(
-    const spice_sct_prototype::SctStructuredControlFlowAnalysis& analysis,
+    const spice::sct::SctStructuredControlFlowAnalysis& analysis,
     const SctWorkingState& workingState,
     const SctStructuredAuthoringState& authoring,
     const RevisionId workingRevision,
@@ -79,7 +85,7 @@ SctSemanticEditorProjection SctSemanticEditorProjection::build(
         }
         if (arm.realization == SctAuthoredArmRealization::Virtual) {
             projected.status = arm.kind
-                    == spice_sct_prototype::SctStructuredArmKind::SwitchCase
+                    == spice::sct::SctStructuredArmKind::SwitchCase
                 && !arm.caseValue.has_value()
                 ? SctSemanticArmStatus::NeedsValue
                 : SctSemanticArmStatus::Virtual;
@@ -92,7 +98,7 @@ SctSemanticEditorProjection SctSemanticEditorProjection::build(
                     if (region.id.headerInstruction != arm.controller.instruction) continue;
                     const auto foundArm = std::ranges::find_if(region.arms, [&](const auto& candidate) {
                         if (candidate.kind != arm.kind) return false;
-                        if (arm.kind != spice_sct_prototype::SctStructuredArmKind::SwitchCase)
+                        if (arm.kind != spice::sct::SctStructuredArmKind::SwitchCase)
                             return true;
                         return arm.caseValue && std::ranges::any_of(candidate.caseLabels,
                             [&](const auto& label) { return label.value == arm.caseValue; });

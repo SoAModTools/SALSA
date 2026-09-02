@@ -29,7 +29,8 @@ struct SctWorkingApplication final {
 class SctWorkingState final {
 public:
     explicit SctWorkingState(
-        std::shared_ptr<const spice::sct::SctDocument> checkpoint);
+        std::shared_ptr<const spice::sct::SctDocument> checkpoint,
+        std::span<const SctTextRepairRecord> repairs = {});
 
     [[nodiscard]] const spice::sct::SctDocumentInstruction* instruction(
         spice::sct::SctInstructionId id) const noexcept;
@@ -56,6 +57,7 @@ public:
         const SctTextTarget& target) const noexcept;
     [[nodiscard]] std::optional<SctTextRepairProvenance> textRepairProvenance(
         const SctTextTarget& target) const;
+    [[nodiscard]] std::vector<SctTextRepairRecord> textRepairProvenances() const;
     [[nodiscard]] const spice::sct::SctMessage* message(
         const SctMessageTarget& target) const noexcept;
     [[nodiscard]] const spice::sct::SctDocumentFooterEntry* footerEntry(

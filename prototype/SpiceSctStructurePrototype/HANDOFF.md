@@ -1,5 +1,11 @@
 # SpiceSCT structured-control-flow prototype
 
+Status: adopted and superseded. Frozen SpiceSCT SctDocument v3 commit
+`92cefc8a234d8fc9f99564efc5efac271344a6af` owns the maintained implementation as
+`spice::sct::SctStructuredControlFlowAnalysis` inside `SctDocumentAnalysis`. The text
+below is retained as the historical heuristic and ownership record; references to the
+prototype library describe the pre-adoption state.
+
 This project is a SALSA-hosted prototype intended for later review by SpiceSCT. It is
 Qt-free and depends only on public frozen-v2 SpiceSCT types. Its namespace deliberately
 identifies it as a SALSA prototype; adoption by SPICE should move and rename the API

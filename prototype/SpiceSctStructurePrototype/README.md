@@ -1,34 +1,26 @@
-# SpiceSCT structured-control-flow handoff package
+# Retired SpiceSCT structured-control-flow handoff record
 
-This directory is the complete preliminary handoff package for the portable
-structured-control-flow analysis prototyped in SALSA. It targets the frozen
-SpiceSCT v2 contract at commit `a1e9a1a79111efd013aa0ae50857f15d181d32da`.
+This directory preserves the design and heuristic handoff record for the portable
+structured-control-flow analysis prototyped in SALSA. SpiceSCT adopted and hardened
+the analysis in frozen SctDocument v3 at commit
+`92cefc8a234d8fc9f99564efc5efac271344a6af`. SALSA now consumes the canonical
+`spice::sct::SctStructuredControlFlowAnalysis` in `SctDocumentAnalysis`.
 
 ## Package contents
 
-- `HANDOFF.md` explains ownership, evidence policy, the legacy-heuristic mapping,
-  safety counterexamples, and the intended SpiceSCT adoption boundary.
-- `include/SpiceSctStructurePrototype/SctStructuredControlFlow.h` is the public,
-  value-owned analysis contract.
-- `src/SctStructuredControlFlow.cpp` contains the Qt-free implementation.
-- `tests/test_sct_structured_control_flow.cpp` contains the focused synthetic
-  characterization and counterexample suite.
-- `SpiceSctStructurePrototype.vcxproj` is the SALSA-hosted reference build project.
+- `HANDOFF.md` explains the original ownership and evidence policy, maps the legacy
+  heuristics to the adopted analysis, and records the editor-owned boundary.
+- This README records why no duplicate implementation remains in SALSA.
 
-The source and tests depend only on public SpiceSCT v2 APIs. The Visual Studio
-project contains SALSA-relative paths and is provided as integration guidance,
-not as the final project definition for SPICE.
+The prototype source, tests, and Visual Studio project were removed after adoption.
+Their maintained equivalents now belong to SpiceSCT. This directory must not be used
+as a second implementation or compatibility contract.
 
-## Recommended receiving workflow
+## Current integration rule
 
-1. Copy this directory to a SpiceSCT feature branch.
-2. Read `HANDOFF.md` before changing the API or evidence policy.
-3. Rename the prototype namespace and include path only after deciding its
-   experimental SpiceSCT location.
-4. Move the focused test source into a SpiceSCT-owned test target and retain the
-   characterization cases during refactoring.
-5. Run representative real-file corpus comparisons before treating the API as a
-   frozen SpiceSCT contract.
+SALSA consumes the frozen v3 aggregate directly and retains only its semantic-authoring
+overlay. Any correction to graph construction, region recognition, source evidence,
+or structure issues belongs in a future SpiceSCT version.
 
 Do not transfer SALSA's structured-authoring overlay with this package. Virtual
 authoring intent, lowering operations, history, postconditions, and UI behavior

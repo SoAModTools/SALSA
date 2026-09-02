@@ -61,33 +61,23 @@ SctMaterializationResult SctDocumentMaterializer::materialize(
         result.cancelled = true;
         return result;
     }
-    const auto structureStart = std::chrono::steady_clock::now();
-    result.structuredControlFlow = std::make_shared<
-        const spice_sct_prototype::SctStructuredControlFlowAnalysis>(
-        spice_sct_prototype::SctStructuredControlFlowAnalysis::build(
-            *document, *result.analysis));
-    result.timings.structureAnalysisMicroseconds = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - structureStart).count());
     for (const auto& expected : request.expectedStructuredArms) {
         if (expected.realization != SctAuthoredArmRealization::Physical) continue;
-        const auto* section = result.structuredControlFlow->findSection(
+        const auto* section = result.analysis->structuredControlFlow.findSection(
             expected.controller.section);
         const auto region = section == nullptr ? nullptr : [&]()
-            -> const spice_sct_prototype::SctStructuredRegion* {
+            -> const spice::sct::SctStructuredRegion* {
             const auto found = std::ranges::find_if(section->regions, [&](const auto& item) {
-                return item.id.headerInstruction == expected.controller.instruction
-                    && item.strength
-                        == spice_sct_prototype::SctStructureClaimStrength::Verified;
+                return item.id.headerInstruction == expected.controller.instruction;
             });
             return found == section->regions.end() ? nullptr : &*found;
         }();
         const auto arm = region == nullptr ? nullptr : [&]()
-            -> const spice_sct_prototype::SctStructuredArm* {
+            -> const spice::sct::SctStructuredArm* {
             const auto found = std::ranges::find_if(region->arms, [&](const auto& item) {
                 if (item.kind != expected.kind) return false;
                 if (expected.kind
-                    != spice_sct_prototype::SctStructuredArmKind::SwitchCase) return true;
+                    != spice::sct::SctStructuredArmKind::SwitchCase) return true;
                 return expected.caseValue && std::ranges::any_of(item.caseLabels,
                     [&](const auto& label) { return label.value == expected.caseValue; });
             });
@@ -98,7 +88,7 @@ SctMaterializationResult SctDocumentMaterializer::materialize(
             for (const auto member : expected.members) {
                 const bool inArm = std::ranges::any_of(arm->blocks, [&](const auto blockId) {
                     const auto block = std::ranges::find(
-                        section->blocks, blockId, &spice_sct_prototype::SctBasicBlock::id);
+                        section->blocks, blockId, &spice::sct::SctStructuredBasicBlock::id);
                     return block != section->blocks.end()
                         && std::ranges::find(block->instructions, member)
                             != block->instructions.end();

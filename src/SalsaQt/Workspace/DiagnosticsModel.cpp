@@ -46,6 +46,12 @@ namespace {
     case core::DiagnosticCode::PersistenceReadFailed: return QStringLiteral("PersistenceReadFailed");
     case core::DiagnosticCode::PersistenceWriteFailed: return QStringLiteral("PersistenceWriteFailed");
     case core::DiagnosticCode::PersistenceReplaceFailed: return QStringLiteral("PersistenceReplaceFailed");
+    case core::DiagnosticCode::InvalidSalsaWorkspace: return QStringLiteral("InvalidSalsaWorkspace");
+    case core::DiagnosticCode::UnsupportedSctPatchSchema: return QStringLiteral("UnsupportedSctPatchSchema");
+    case core::DiagnosticCode::InvalidSctPatch: return QStringLiteral("InvalidSctPatch");
+    case core::DiagnosticCode::SctPatchSourceMismatch: return QStringLiteral("SctPatchSourceMismatch");
+    case core::DiagnosticCode::SctPatchApplyFailed: return QStringLiteral("SctPatchApplyFailed");
+    case core::DiagnosticCode::SctPatchVerificationFailed: return QStringLiteral("SctPatchVerificationFailed");
     }
     return QStringLiteral("Unknown");
 }

@@ -17,7 +17,6 @@ struct SctMaterializationTimings final {
     std::uint64_t replayMicroseconds = 0;
     std::uint64_t validationMicroseconds = 0;
     std::uint64_t analysisMicroseconds = 0;
-    std::uint64_t structureAnalysisMicroseconds = 0;
 };
 
 struct SctMaterializationRequest final {
@@ -38,15 +37,13 @@ struct SctMaterializationResult final {
     std::shared_ptr<const spice::sct::SctDocument> document{};
     spice::sct::SctDocumentValidationResult validation{};
     std::shared_ptr<const spice::sct::SctDocumentAnalysis> analysis{};
-    std::shared_ptr<const spice_sct_prototype::SctStructuredControlFlowAnalysis>
-        structuredControlFlow{};
     std::vector<SctPipelineDiagnostic> diagnostics{};
     std::vector<SctOperationIssue> operationIssues{};
     bool cancelled = false;
     SctMaterializationTimings timings{};
 
     [[nodiscard]] bool succeeded() const noexcept {
-        return document != nullptr && analysis != nullptr && structuredControlFlow != nullptr
+        return document != nullptr && analysis != nullptr
             && operationIssues.empty()
             && validation.validDocument && !cancelled;
     }

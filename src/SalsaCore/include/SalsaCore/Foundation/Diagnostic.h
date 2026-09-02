@@ -39,6 +39,12 @@ enum class DiagnosticCode {
     PersistenceReadFailed,
     PersistenceWriteFailed,
     PersistenceReplaceFailed,
+    InvalidSalsaWorkspace,
+    UnsupportedSctPatchSchema,
+    InvalidSctPatch,
+    SctPatchSourceMismatch,
+    SctPatchApplyFailed,
+    SctPatchVerificationFailed,
 };
 
 struct Diagnostic {

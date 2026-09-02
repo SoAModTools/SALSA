@@ -206,6 +206,22 @@ public:
         checkpointState_ = current.state;
     }
 
+    [[nodiscard]] bool markCheckpoint(const RevisionId id) noexcept {
+        const auto found = std::ranges::find(entries_, id, &Entry::id);
+        if (found == entries_.end()) return false;
+        checkpointRevision_ = found->id;
+        checkpointState_ = found->state;
+        return true;
+    }
+
+    [[nodiscard]] bool markCheckpoint(
+        const RevisionId id, std::shared_ptr<const State> state) noexcept {
+        if (!id.valid() || state == nullptr) return false;
+        checkpointRevision_ = id;
+        checkpointState_ = std::move(state);
+        return true;
+    }
+
     [[nodiscard]] RevisionId checkpointRevision() const noexcept {
         return checkpointRevision_;
     }

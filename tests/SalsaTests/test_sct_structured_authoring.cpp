@@ -11,7 +11,6 @@
 
 namespace {
 using namespace salsa::core;
-using namespace salsa::spice_sct_prototype;
 using namespace spice::sct;
 
 Sha256Digest zeroDigest() {
@@ -23,6 +22,7 @@ std::shared_ptr<const SctDocumentProvenance> provenance() {
     EXPECT_TRUE(locator);
     auto inspection = std::make_shared<SctSourceInspection>(SctSourceInspection{
         SourceAssetSnapshot{{locator.value(), 0u, SourceRevision{zeroDigest()}}, {}},
+        DatasetFingerprint{zeroDigest()},
         std::make_shared<SctParseResult>(), {}, {}});
     auto result = std::make_shared<SctDocumentProvenance>();
     result->inspection = std::move(inspection);
@@ -45,9 +45,6 @@ std::shared_ptr<const SctDocumentSnapshot> snapshotFor(SctDocument document) {
     result->document = std::make_shared<const SctDocument>(std::move(document));
     result->analysis = std::make_shared<const SctDocumentAnalysis>(
         SctDocumentAnalysis::build(*result->document));
-    result->structuredControlFlow =
-        std::make_shared<const SctStructuredControlFlowAnalysis>(
-            SctStructuredControlFlowAnalysis::build(*result->document, *result->analysis));
     // These focused fixtures model already-admitted working documents. Their
     // deliberately small placeholder opcodes are not a parser-valid corpus.
     result->readiness = SctDocumentReadiness::StructurallyValid;
@@ -230,10 +227,10 @@ TEST(SctStructuredAuthoring, InstructionReplacementRequiresSameIdentityAndOpcode
 
 TEST(SctStructuredAuthoring, MaterializerRejectsAnUnmetAuthoredArmPostcondition) {
     const auto fixture = ifWithoutElse();
-    ASSERT_FALSE(fixture.snapshot->structuredControlFlow->sections().empty());
-    ASSERT_FALSE(fixture.snapshot->structuredControlFlow->sections().front().regions.empty());
+    ASSERT_FALSE(fixture.snapshot->analysis->structuredControlFlow.sections().empty());
+    ASSERT_FALSE(fixture.snapshot->analysis->structuredControlFlow.sections().front().regions.empty());
     const auto* region =
-        &fixture.snapshot->structuredControlFlow->sections().front().regions.front();
+        &fixture.snapshot->analysis->structuredControlFlow.sections().front().regions.front();
     ASSERT_TRUE(region->join.has_value());
     SctAuthoredArm expected{{1u},
         {region->id.section, fixture.controller}, SctStructuredArmKind::Else};

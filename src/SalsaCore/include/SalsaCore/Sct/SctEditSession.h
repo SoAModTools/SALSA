@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SalsaCore/History/RevisionHistory.h"
+#include "SalsaCore/Persistence/SctScriptPatch.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctDocumentMaterializer.h"
 #include "SalsaCore/Sct/SctMessageAuthoring.h"
@@ -70,6 +71,11 @@ struct SctInsertableOpcode final {
 class SctEditSession final {
 public:
     explicit SctEditSession(std::shared_ptr<const SctDocumentSnapshot> initialSnapshot);
+    SctEditSession(
+        std::shared_ptr<const SctDocumentSnapshot> baselineSnapshot,
+        std::shared_ptr<const SctDocumentSnapshot> restoredSnapshot,
+        std::span<const SctAuthoredArm> authoredArms,
+        std::span<const SctPatchedTextRepair> textRepairs);
 
     SctEditSession(const SctEditSession&) = delete;
     SctEditSession& operator=(const SctEditSession&) = delete;
@@ -121,7 +127,7 @@ public:
         SctAuthoredArmId arm, spice::sct::SctInstructionId instruction);
     [[nodiscard]] SctEditResult insertInstructionIntoStructuredArm(
         spice::sct::SctInstructionId controller,
-        spice_sct_prototype::SctStructuredArmKind arm,
+        spice::sct::SctStructuredArmKind arm,
         std::uint16_t opcode);
 
     [[nodiscard]] std::optional<SctEditResult> undo();
@@ -147,6 +153,10 @@ public:
         RevisionId revision,
         std::vector<SctPipelineDiagnostic> diagnostics);
     [[nodiscard]] bool isActiveRevision(RevisionId revision) const;
+    [[nodiscard]] std::optional<SctCheckpointRequest> checkpointRequest(
+        std::uint64_t generation) const;
+    [[nodiscard]] bool markPatchCheckpoint(
+        RevisionId revision, std::shared_ptr<const void> historyStateToken) noexcept;
 
     [[nodiscard]] const SctWorkingState& workingState() const noexcept;
     [[nodiscard]] const SctStructuredAuthoringState& structuredAuthoring() const noexcept;

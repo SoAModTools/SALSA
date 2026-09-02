@@ -101,7 +101,8 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
 }  // namespace
 
 SctWorkingState::SctWorkingState(
-    std::shared_ptr<const spice::sct::SctDocument> checkpoint)
+    std::shared_ptr<const spice::sct::SctDocument> checkpoint,
+    const std::span<const SctTextRepairRecord> repairs)
     : checkpoint_(std::move(checkpoint)) {
     if (!checkpoint_) return;
     nextSectionId_ = checkpoint_->nextSectionIdValue();
@@ -137,6 +138,8 @@ SctWorkingState::SctWorkingState(
             opaqueAttachments_[*instruction].push_back(attachment.id);
         }
     }
+    for (const auto& repair : repairs)
+        textRepairProvenance_[textIdentity(repair.target)] = repair.provenance;
 }
 
 const spice::sct::SctDocumentSection* SctWorkingState::section(
@@ -246,6 +249,23 @@ std::optional<SctTextRepairProvenance> SctWorkingState::textRepairProvenance(
     const auto found = textRepairProvenance_.find(textIdentity(target));
     return found == textRepairProvenance_.end()
         ? std::nullopt : std::optional{found->second};
+}
+
+std::vector<SctTextRepairRecord> SctWorkingState::textRepairProvenances() const {
+    std::vector<SctTextRepairRecord> result;
+    result.reserve(textRepairProvenance_.size());
+    for (const auto& [key, provenance] : textRepairProvenance_) {
+        if (key.size() < 3 || key[1] != ':') continue;
+        const auto raw = std::stoull(key.substr(2));
+        SctTextTarget target = key[0] == 'S'
+            ? SctTextTarget{spice::sct::SctStringId(raw)}
+            : SctTextTarget{spice::sct::SctFooterEntryId(raw)};
+        result.push_back({std::move(target), provenance});
+    }
+    std::ranges::sort(result, {}, [](const auto& value) {
+        return textIdentity(value.target);
+    });
+    return result;
 }
 
 const spice::sct::SctDocumentFooterEntry* SctWorkingState::footerEntry(

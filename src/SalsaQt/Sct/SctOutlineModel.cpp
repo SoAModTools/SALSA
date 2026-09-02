@@ -403,8 +403,8 @@ std::unique_ptr<SctOutlineModel::Node> SctOutlineModel::sectionNode(
         child->target = {core::SctNavigationKind::String, strings->string.id.value()};
         child->parent = node.get();
         node->children.push_back(std::move(child));
-    } else if (std::holds_alternative<spice::sct::SctLabelSectionContent>(section.content)) {
-        node->secondary = tr("Label");
+    } else if (std::holds_alternative<spice::sct::SctStringGroupMarkerSectionContent>(section.content)) {
+        node->secondary = tr("String group marker");
     } else {
         node->secondary = tr("Opaque");
     }

@@ -41,8 +41,14 @@ SctDocumentController::~SctDocumentController() {
             state.materializationStop.request_stop();
             state.materializationWatcher->waitForFinished();
         }
+        if (state.checkpointWatcher) {
+            state.checkpointStop.request_stop();
+            state.checkpointWatcher->waitForFinished();
+        }
     }
     for (auto& watcher : retiredMaterializations_)
+        if (watcher) watcher->waitForFinished();
+    for (auto& watcher : retiredCheckpoints_)
         if (watcher) watcher->waitForFinished();
 }
 
@@ -55,9 +61,11 @@ bool SctDocumentController::openDocument(
     }
     begin(Operation::Opening, locator);
     const auto token = stopSource_.get_token();
+    auto workspace = workspace_;
     watcher_.setFuture(QtConcurrent::run(
-        [project = std::move(project), locator, token]() {
-            return core::SctDocumentLoader::load(project, locator, token);
+        [project = std::move(project), locator, token, workspace = std::move(workspace)]() {
+            return core::SctPatchCheckpointService::load(
+                project, workspace.get(), locator, token);
         }));
     return true;
 }
@@ -67,9 +75,11 @@ bool SctDocumentController::reloadDocument(
     if (busy() || !contains(locator)) return false;
     begin(Operation::Reloading, locator);
     const auto token = stopSource_.get_token();
+    auto workspace = workspace_;
     watcher_.setFuture(QtConcurrent::run(
-        [project = std::move(project), locator, token]() {
-            return core::SctDocumentLoader::load(project, locator, token);
+        [project = std::move(project), locator, token, workspace = std::move(workspace)]() {
+            return core::SctPatchCheckpointService::load(
+                project, workspace.get(), locator, token);
         }));
     return true;
 }
@@ -85,8 +95,11 @@ bool SctDocumentController::selectTextConvention(
     begin(Operation::Reimporting, locator);
     const auto token = stopSource_.get_token();
     watcher_.setFuture(QtConcurrent::run([inspection = std::move(inspection), convention, token]() {
-        return core::SctDocumentLoader::materialize(
+        core::SctPatchedLoadResult result;
+        result.load = core::SctDocumentLoader::materialize(
             inspection, convention, core::SctTextSelectionOrigin::UserSelected, token);
+        result.baseline = result.load.document;
+        return result;
     }));
     return true;
 }
@@ -113,8 +126,10 @@ void SctDocumentController::closeDocument(const core::AssetLocator& locator) {
         stopSource_.request_stop();
         ++generation_;
     }
-    if (auto found = documents_.find(locator.identityKey()); found != documents_.end())
+    if (auto found = documents_.find(locator.identityKey()); found != documents_.end()) {
         retireMaterialization(found->second);
+        retireCheckpoint(found->second);
+    }
     if (documents_.erase(locator.identityKey()) != 0)
         emit documentClosed(identity(locator));
 }
@@ -129,6 +144,7 @@ void SctDocumentController::closeAll() {
     for (auto& [key, state] : documents_) {
         identities.push_back(QString::fromStdString(key));
         retireMaterialization(state);
+        retireCheckpoint(state);
     }
     documents_.clear();
     for (const auto& key : identities) emit documentClosed(key);
@@ -136,6 +152,8 @@ void SctDocumentController::closeAll() {
 
 void SctDocumentController::cancel() {
     if (busy()) stopSource_.request_stop();
+    for (auto& [key, state] : documents_)
+        if (state.checkpointWatcher) state.checkpointStop.request_stop();
 }
 
 bool SctDocumentController::busy() const noexcept { return operation_ != Operation::None; }
@@ -181,12 +199,26 @@ SctDocumentController::SourceStatus SctDocumentController::sourceStatus(
 
 bool SctDocumentController::structurallyValid(const core::AssetLocator& locator) const {
     const auto* state = findState(locator);
-    return state != nullptr && state->session->structurallyValid();
+    return state != nullptr && !state->editBlocked && state->session->structurallyValid();
 }
 
 bool SctDocumentController::isDirty(const core::AssetLocator& locator) const {
     const auto* state = findState(locator);
     return state != nullptr && state->session->isDirty();
+}
+
+bool SctDocumentController::isSaving(const core::AssetLocator& locator) const {
+    const auto* state = findState(locator);
+    return state != nullptr && state->checkpointWatcher != nullptr;
+}
+
+bool SctDocumentController::patchConflict(const core::AssetLocator& locator) const {
+    const auto* state = findState(locator);
+    return state != nullptr && state->patchConflict;
+}
+
+bool SctDocumentController::hasWorkspace() const noexcept {
+    return workspace_ != nullptr;
 }
 
 bool SctDocumentController::canUndo(const core::AssetLocator& locator) const {
@@ -419,7 +451,7 @@ bool SctDocumentController::insertInstructionIntoAuthoredArm(
 bool SctDocumentController::insertInstructionIntoStructuredArm(
     const core::AssetLocator& locator,
     const spice::sct::SctInstructionId controller,
-    const spice_sct_prototype::SctStructuredArmKind arm,
+    const spice::sct::SctStructuredArmKind arm,
     const std::uint16_t opcode) {
     auto* state = findState(locator);
     return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
@@ -448,6 +480,42 @@ bool SctDocumentController::redo(const core::AssetLocator& locator) {
     if (state == nullptr || busy() || state->editBlocked) return false;
     auto result = state->session->redo();
     return result.has_value() && applyEditResult(*state, std::move(*result), tr("Redo complete."));
+}
+
+bool SctDocumentController::saveDocument(const core::AssetLocator& locator) {
+    auto* state = findState(locator);
+    if (state == nullptr || workspace_ == nullptr || state->patchConflict
+        || state->checkpointWatcher != nullptr) return false;
+    const auto generation = ++nextCheckpointGeneration_;
+    auto request = state->session->checkpointRequest(generation);
+    if (!request.has_value()) return false;
+
+    state->checkpointStop = std::stop_source{};
+    const auto token = state->checkpointStop.get_token();
+    state->checkpointGeneration = generation;
+    state->checkpointWatcher =
+        std::make_unique<QFutureWatcher<core::SctCheckpointResult>>();
+    const auto identityKey = locator.identityKey();
+    connect(state->checkpointWatcher.get(), &QFutureWatcherBase::finished,
+        this, [this, identityKey, generation] {
+            finishCheckpoint(identityKey, generation);
+        });
+    auto workspace = workspace_;
+    state->checkpointWatcher->setFuture(QtConcurrent::run(
+        [request = std::move(*request), token, workspace = std::move(workspace)] {
+            return core::SctPatchCheckpointService::checkpoint(
+                request, *workspace, token);
+        }));
+    emit documentChanged(identity(locator), SctDocumentUpdate{
+        SctDocumentUpdateKind::SourceStatus,
+        state->session->currentSnapshot(), std::nullopt,
+        state->session->semanticProjection()});
+    return true;
+}
+
+void SctDocumentController::setWorkspace(
+    std::shared_ptr<const core::LocalSalsaWorkspace> workspace) {
+    workspace_ = std::move(workspace);
 }
 
 SctDocumentController::DocumentState* SctDocumentController::findState(
@@ -551,19 +619,19 @@ void SctDocumentController::finishMaterialization(
         std::size_t blocks = 0;
         std::size_t regions = 0;
         std::size_t issues = 0;
-        if (result.structuredControlFlow) {
-            for (const auto& section : result.structuredControlFlow->sections()) {
+        if (result.analysis) {
+            for (const auto& section : result.analysis->structuredControlFlow.sections()) {
                 blocks += section.blocks.size();
                 regions += section.regions.size();
                 issues += section.issues.size();
             }
         }
         qInfo().noquote() << QStringLiteral(
-            "SALSA structure analysis %1 generation %2: time=%3us sections=%4 blocks=%5 regions=%6 issues=%7")
+            "SALSA structure analysis %1 generation %2: aggregate-analysis=%3us sections=%4 blocks=%5 regions=%6 issues=%7")
             .arg(QString::fromStdString(identityKey)).arg(generation)
-            .arg(result.timings.structureAnalysisMicroseconds)
-            .arg(result.structuredControlFlow
-                ? result.structuredControlFlow->sections().size() : 0u)
+            .arg(result.timings.analysisMicroseconds)
+            .arg(result.analysis
+                ? result.analysis->structuredControlFlow.sections().size() : 0u)
             .arg(blocks).arg(regions).arg(issues);
     }
 
@@ -619,6 +687,46 @@ void SctDocumentController::retireMaterialization(DocumentState& state) {
     retiredMaterializations_.push_back(std::move(state.materializationWatcher));
 }
 
+void SctDocumentController::finishCheckpoint(
+    const std::string& identityKey, const std::uint64_t generation) {
+    const auto found = documents_.find(identityKey);
+    if (found == documents_.end()) return;
+    auto& state = found->second;
+    if (!state.checkpointWatcher || state.checkpointGeneration != generation) return;
+    auto* completedWatcher = state.checkpointWatcher.release();
+    auto result = completedWatcher->result();
+    completedWatcher->deleteLater();
+
+    failureDiagnostics_ = result.diagnostics;
+    if (result.saved) {
+        (void)state.session->markPatchCheckpoint(
+            result.revision, result.historyStateToken);
+        failureDiagnostics_.clear();
+    }
+    emit documentChanged(QString::fromStdString(identityKey), SctDocumentUpdate{
+        SctDocumentUpdateKind::SourceStatus,
+        state.session->currentSnapshot(), std::nullopt,
+        state.session->semanticProjection()});
+    const auto message = result.saved
+        ? (state.session->isDirty()
+            ? tr("SCT patch checkpoint saved; newer edits remain unsaved.")
+            : tr("SCT patch checkpoint saved."))
+        : result.cancelled
+            ? tr("SCT patch checkpoint cancelled.")
+            : result.diagnostics.empty()
+                ? tr("The SCT patch checkpoint could not be saved.")
+                : QString::fromStdString(result.diagnostics.front().message);
+    emit checkpointCompleted(QString::fromStdString(identityKey),
+        result.saved, result.cancelled, message);
+}
+
+void SctDocumentController::retireCheckpoint(DocumentState& state) {
+    if (!state.checkpointWatcher) return;
+    state.checkpointStop.request_stop();
+    state.checkpointWatcher->disconnect(this);
+    retiredCheckpoints_.push_back(std::move(state.checkpointWatcher));
+}
+
 void SctDocumentController::setEditTimingsEnabled(const bool enabled) noexcept {
     editTimingsEnabled_ = enabled;
 }
@@ -638,30 +746,50 @@ void SctDocumentController::onFinished() {
     if (!locator.has_value() || generation != generation_) return;
 
     const auto key = locator->identityKey();
-    if (result.cancelled) {
+    if (result.load.cancelled) {
         emit operationCompleted(QString::fromStdString(key), false, true, tr("SCT operation cancelled."));
         return;
     }
-    if (!result.succeeded()) {
-        failureDiagnostics_ = result.infrastructureDiagnostics;
-        if (result.inspection) failurePipelineDiagnostics_ = result.inspection->diagnostics;
-        emit operationCompleted(QString::fromStdString(key), false, false, firstError(result));
+    if (!result.load.succeeded()) {
+        failureDiagnostics_ = result.load.infrastructureDiagnostics;
+        if (result.load.inspection)
+            failurePipelineDiagnostics_ = result.load.inspection->diagnostics;
+        emit operationCompleted(QString::fromStdString(key), false, false, firstError(result.load));
         return;
     }
+    failureDiagnostics_ = result.load.infrastructureDiagnostics;
     auto found = documents_.find(key);
+    auto makeSession = [&]() {
+        if (result.patchApplied) {
+            return std::make_unique<core::SctEditSession>(result.baseline,
+                result.load.document, result.authoredArms, result.textRepairs);
+        }
+        return std::make_unique<core::SctEditSession>(result.load.document);
+    };
     if (found == documents_.end()) {
-        documents_.emplace(key, DocumentState{ *locator,
-            std::make_unique<core::SctEditSession>(std::move(result.document)), SourceStatus::Current });
+        DocumentState state{*locator, makeSession()};
+        state.status = SourceStatus::Current;
+        state.patchConflict = result.patchConflict;
+        state.editBlocked = result.patchConflict;
+        documents_.emplace(key, std::move(state));
     } else {
-        found->second.session = std::make_unique<core::SctEditSession>(std::move(result.document));
+        retireMaterialization(found->second);
+        retireCheckpoint(found->second);
+        found->second.session = makeSession();
         found->second.status = SourceStatus::Current;
+        found->second.patchConflict = result.patchConflict;
+        found->second.editBlocked = result.patchConflict;
     }
     emit documentChanged(QString::fromStdString(key),
         SctDocumentUpdate{SctDocumentUpdateKind::Replacement,
             documents_.at(key).session->currentSnapshot(), std::nullopt,
             documents_.at(key).session->semanticProjection()});
     emit focusRequested(QString::fromStdString(key));
-    const auto message = operation == Operation::Reimporting
+    const auto message = result.patchConflict
+        ? tr("The source baseline was opened read-only because its saved patch could not be applied.")
+        : result.patchApplied
+            ? tr("SCT document and saved patch loaded.")
+        : operation == Operation::Reimporting
         ? tr("Text convention applied without rereading the source asset.")
         : tr("SCT document loaded.");
     emit operationCompleted(QString::fromStdString(key), true, false, message);

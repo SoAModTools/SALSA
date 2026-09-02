@@ -13,7 +13,7 @@
 namespace salsa::qt {
 namespace {
 
-using namespace salsa::spice_sct_prototype;
+using namespace spice::sct;
 
 QString confidenceName(const spice::sct::SctSemanticConfidence confidence) {
     switch (confidence) {
@@ -36,15 +36,14 @@ QString regionName(const SctStructuredRegionKind kind) {
     return QObject::tr("Region");
 }
 
-QString armName(const SctStructuredOutlineItem& item) {
-    if (!item.arm) return QObject::tr("Body");
-    switch (*item.arm) {
+QString armName(const SctStructuredArm& arm) {
+    switch (arm.kind) {
     case SctStructuredArmKind::Then: return QObject::tr("Then");
     case SctStructuredArmKind::Else: return QObject::tr("Else");
     case SctStructuredArmKind::LoopBody: return QObject::tr("Body");
     case SctStructuredArmKind::SwitchCase: {
         QStringList labels;
-        for (const auto& label : item.caseLabels) {
+        for (const auto& label : arm.caseLabels) {
             labels.push_back(label.value
                 ? QString::number(*label.value)
                 : QObject::tr("entry %1").arg(label.repeatedGroupOrdinal));
@@ -59,23 +58,22 @@ QString armName(const SctStructuredOutlineItem& item) {
 QString issueName(const SctStructureIssueKind kind) {
     switch (kind) {
     case SctStructureIssueKind::UnresolvedControlFlow: return QObject::tr("Unresolved control-flow target");
-    case SctStructureIssueKind::CrossSectionControlFlow: return QObject::tr("Cross-section control flow");
+    case SctStructureIssueKind::CrossSectionNonCallControlFlow: return QObject::tr("Cross-section control flow");
     case SctStructureIssueKind::MissingControlFlow: return QObject::tr("Missing control-flow evidence");
-    case SctStructureIssueKind::InsufficientConfidence: return QObject::tr("Insufficient confidence");
     case SctStructureIssueKind::IrreducibleCycle: return QObject::tr("Irreducible cycle");
     case SctStructureIssueKind::MultipleEntryRegion: return QObject::tr("Multiple-entry region");
     case SctStructureIssueKind::AmbiguousJoin: return QObject::tr("Ambiguous join");
     case SctStructureIssueKind::OverlappingRegions: return QObject::tr("Overlapping region candidates");
     case SctStructureIssueKind::AmbiguousSwitchCases: return QObject::tr("Ambiguous switch cases");
     case SctStructureIssueKind::HistoricalEdgeConflict: return QObject::tr("Historical edge conflicts with current flow");
-    case SctStructureIssueKind::RejectedLegacyCandidate: return QObject::tr("Rejected legacy-pattern candidate");
+    case SctStructureIssueKind::RejectedStructuredCandidate: return QObject::tr("Rejected structured candidate");
     }
     return QObject::tr("Structure analysis issue");
 }
 
 QString evidenceName(const SctStructureEvidenceKind kind) {
     switch (kind) {
-    case SctStructureEvidenceKind::CanonicalControlFlow: return QObject::tr("canonical control flow");
+    case SctStructureEvidenceKind::CurrentControlFlow: return QObject::tr("current control flow");
     case SctStructureEvidenceKind::ConditionalFalseTarget: return QObject::tr("conditional false target");
     case SctStructureEvidenceKind::PreTargetJump: return QObject::tr("jump before false target");
     case SctStructureEvidenceKind::BackwardTerminatorJump: return QObject::tr("backward terminator jump");
@@ -83,6 +81,7 @@ QString evidenceName(const SctStructureEvidenceKind kind) {
     case SctStructureEvidenceKind::PhysicalCaseBoundary: return QObject::tr("physical case boundary");
     case SctStructureEvidenceKind::SharedCaseTarget: return QObject::tr("shared case target");
     case SctStructureEvidenceKind::CaseFallthrough: return QObject::tr("case fallthrough");
+    case SctStructureEvidenceKind::ImportedControlFlow: return QObject::tr("imported control flow");
     case SctStructureEvidenceKind::ImportedOpaqueControlFlowGap: return QObject::tr("imported opaque-gap edge");
     }
     return QObject::tr("evidence");
@@ -95,8 +94,8 @@ QString evidenceTooltip(const std::vector<SctStructureEvidence>& evidence) {
             + confidenceName(item.confidence);
         if (item.source) line += QObject::tr("; source %1").arg(item.source->value());
         if (item.target) line += QObject::tr("; target %1").arg(item.target->value());
-        if (item.opaqueAttachment)
-            line += QObject::tr("; opaque attachment %1").arg(item.opaqueAttachment->value());
+        if (!item.opaqueAttachments.empty())
+            line += QObject::tr("; %1 opaque attachment(s)").arg(item.opaqueAttachments.size());
         lines.push_back(std::move(line));
     }
     return lines.join(QLatin1Char('\n'));
@@ -201,12 +200,11 @@ void SctStructuredOutlineModel::rebuild() {
     targets_.clear();
     regionsByController_.clear();
     hiddenControlFlow_.clear();
-    if (!snapshot_ || !snapshot_->document || !snapshot_->analysis
-        || !snapshot_->structuredControlFlow) {
+    if (!snapshot_ || !snapshot_->document || !snapshot_->analysis) {
         endResetModel();
         return;
     }
-    for (const auto& section : snapshot_->structuredControlFlow->sections()) {
+    for (const auto& section : snapshot_->analysis->structuredControlFlow.sections()) {
         for (const auto& region : section.regions) {
             for (const auto& evidence : region.evidence) {
                 if ((evidence.kind == SctStructureEvidenceKind::PreTargetJump
@@ -227,7 +225,49 @@ void SctStructuredOutlineModel::rebuild() {
             : QString::fromUtf8(source->nameBytes.data(),
                 static_cast<qsizetype>(source->nameBytes.size()));
         root->secondary = tr("Script");
-        for (const auto& item : section.outline) appendItem(*root, item);
+        const auto belongsToTopLevelRegion = [&](const SctInstructionId instruction) {
+            return std::ranges::any_of(section.regions, [&](const auto& region) {
+                if (region.parent) return false;
+                return std::ranges::any_of(region.members, [&](const auto blockId) {
+                    const auto block = std::ranges::find(section.blocks, blockId,
+                        &SctStructuredBasicBlock::id);
+                    return block != section.blocks.end()
+                        && std::ranges::find(block->instructions, instruction)
+                            != block->instructions.end();
+                });
+            });
+        };
+        for (const auto& block : section.blocks) {
+            Node* blockParent = root.get();
+            std::unique_ptr<Node> blockNode;
+            if (showBasicBlocks_) {
+                blockNode = std::make_unique<Node>();
+                blockNode->parent = root.get();
+                blockNode->label = tr("Basic block at instruction %1")
+                    .arg(block.id.entryInstruction.value());
+                blockNode->secondary = tr("Derived");
+                blockParent = blockNode.get();
+            }
+            for (const auto instruction : block.instructions) {
+                const auto region = std::ranges::find_if(section.regions,
+                    [&](const auto& candidate) {
+                        return !candidate.parent
+                            && candidate.id.headerInstruction == instruction;
+                    });
+                if (region != section.regions.end()) {
+                    appendRegion(*blockParent, section, *region);
+                } else if (!belongsToTopLevelRegion(instruction)) {
+                    appendInstruction(*blockParent, instruction);
+                }
+            }
+            if (blockNode && !blockNode->children.empty())
+                root->children.push_back(std::move(blockNode));
+        }
+        for (const auto& candidate : section.historicalCandidates)
+            appendHistoricalCandidate(*root, candidate);
+        if (showRejectedEvidence_) {
+            for (const auto& issue : section.issues) appendIssue(*root, issue);
+        }
         roots_.push_back(std::move(root));
         indexNode(*roots_.back());
     }
@@ -235,99 +275,132 @@ void SctStructuredOutlineModel::rebuild() {
     endResetModel();
 }
 
-void SctStructuredOutlineModel::appendItem(Node& parent,
-    const SctStructuredOutlineItem& item,
-    std::optional<spice::sct::SctInstructionId> controller,
-    const bool verifiedRegion) {
-    if (item.kind == SctStructuredOutlineItemKind::BasicBlock && !showBasicBlocks_) {
-        for (const auto& child : item.children)
-            appendItem(parent, child, controller, verifiedRegion);
-        return;
-    }
-    if (item.kind == SctStructuredOutlineItemKind::Issue && !showRejectedEvidence_) return;
-    if (item.kind == SctStructuredOutlineItemKind::Instruction && item.instruction
-        && !showControlFlowInstructions_
-        && std::ranges::find(hiddenControlFlow_, *item.instruction)
+void SctStructuredOutlineModel::appendInstruction(Node& parent,
+    const SctInstructionId instruction, std::optional<EditContext> context) {
+    if (!showControlFlowInstructions_
+        && std::ranges::find(hiddenControlFlow_, instruction)
             != hiddenControlFlow_.end()) return;
-
-    if (item.kind == SctStructuredOutlineItemKind::Arm && item.arm
-        && (*item.arm == SctStructuredArmKind::Then
-            || *item.arm == SctStructuredArmKind::LoopBody)) {
-        if (item.children.empty()) {
-            auto empty = std::make_unique<Node>();
-            empty->parent = &parent;
-            empty->label = *item.arm == SctStructuredArmKind::Then
-                ? tr("Empty Then") : tr("Empty Body");
-            empty->secondary = tr("Semantic placeholder");
-            empty->suggested = !verifiedRegion;
-            empty->editContext = EditContext{controller, std::nullopt,
-                std::nullopt, item.arm, verifiedRegion, true, false, false};
-            parent.children.push_back(std::move(empty));
-        } else {
-            for (const auto& child : item.children)
-                appendItem(parent, child, controller, verifiedRegion);
-        }
-        return;
-    }
-
     auto node = std::make_unique<Node>();
     node->parent = &parent;
-    node->suggested = item.strength == SctStructureClaimStrength::EvidenceLimited;
-    node->tooltip = evidenceTooltip(item.evidence);
-    if (item.instruction) {
-        node->target = core::SctNavigationTarget{
-            core::SctNavigationKind::Instruction, item.instruction->value()};
+    node->target = core::SctNavigationTarget{
+        core::SctNavigationKind::Instruction, instruction.value()};
+    node->editContext = std::move(context);
+    const auto* value = snapshot_->analysis->entities.find(*snapshot_->document, instruction);
+    const auto* schema = value == nullptr ? nullptr
+        : spice::sct::findSctOpcodeSchema(value->opcode);
+    node->label = value == nullptr ? tr("Unavailable instruction")
+        : QStringLiteral("%1 (%2)")
+            .arg(schema == nullptr ? tr("Opcode")
+                : QString::fromUtf8(schema->semantic.mnemonic.data(),
+                    static_cast<qsizetype>(schema->semantic.mnemonic.size())))
+            .arg(value->opcode);
+    node->secondary = tr("Instruction %1").arg(instruction.value());
+    parent.children.push_back(std::move(node));
+}
+
+void SctStructuredOutlineModel::appendRegion(Node& parent,
+    const SctSectionStructure& section, const SctStructuredRegion& region) {
+    auto node = std::make_unique<Node>();
+    node->parent = &parent;
+    node->target = core::SctNavigationTarget{core::SctNavigationKind::Instruction,
+        region.id.headerInstruction.value()};
+    node->label = regionName(region.id.kind);
+    node->secondary = confidenceName(region.minimumEdgeConfidence);
+    node->tooltip = evidenceTooltip(region.evidence);
+    node->editContext = EditContext{region.id.headerInstruction, std::nullopt,
+        region.id.kind, std::nullopt, true, false, false, false};
+    regionsByController_[region.id.headerInstruction.value()] = node.get();
+    for (const auto& arm : region.arms) appendArm(*node, section, region, arm);
+    parent.children.push_back(std::move(node));
+}
+
+void SctStructuredOutlineModel::appendArm(Node& parent,
+    const SctSectionStructure& section, const SctStructuredRegion& region,
+    const SctStructuredArm& arm) {
+    const bool flattened = arm.kind == SctStructuredArmKind::Then
+        || arm.kind == SctStructuredArmKind::LoopBody;
+    std::unique_ptr<Node> armNode;
+    Node* destination = &parent;
+    const EditContext context{region.id.headerInstruction, std::nullopt,
+        std::nullopt, arm.kind, true, arm.blocks.empty(), false, false};
+    if (!flattened) {
+        armNode = std::make_unique<Node>();
+        armNode->parent = &parent;
+        armNode->label = armName(arm);
+        armNode->secondary = tr("Branch");
+        armNode->editContext = context;
+        destination = armNode.get();
     }
-    switch (item.kind) {
-    case SctStructuredOutlineItemKind::Instruction: {
-        const auto* value = item.instruction
-            ? snapshot_->analysis->entities.find(*snapshot_->document, *item.instruction)
-            : nullptr;
-        const auto* schema = value == nullptr ? nullptr
-            : spice::sct::findSctOpcodeSchema(value->opcode);
-        node->label = value == nullptr ? tr("Unavailable instruction")
-            : QStringLiteral("%1 (%2)")
-                .arg(schema == nullptr ? tr("Opcode")
-                    : QString::fromUtf8(schema->semantic.mnemonic.data(),
-                        static_cast<qsizetype>(schema->semantic.mnemonic.size())))
-                .arg(value->opcode);
-        node->secondary = item.instruction
-            ? tr("Instruction %1").arg(item.instruction->value()) : QString{};
-        break;
+    std::vector<SctInstructionId> emitted;
+    for (const auto blockId : arm.blocks) {
+        const auto block = std::ranges::find(section.blocks, blockId,
+            &SctStructuredBasicBlock::id);
+        if (block == section.blocks.end()) continue;
+        for (const auto instruction : block->instructions) {
+            if (instruction == region.id.headerInstruction
+                || std::ranges::find(emitted, instruction) != emitted.end()) continue;
+            const auto nested = std::ranges::find_if(section.regions,
+                [&](const auto& candidate) {
+                    return candidate.parent == region.id
+                        && candidate.id.headerInstruction == instruction;
+                });
+            if (nested != section.regions.end()) {
+                appendRegion(*destination, section, *nested);
+                for (const auto nestedBlockId : nested->members) {
+                    const auto nestedBlock = std::ranges::find(section.blocks,
+                        nestedBlockId, &SctStructuredBasicBlock::id);
+                    if (nestedBlock != section.blocks.end())
+                        emitted.insert(emitted.end(), nestedBlock->instructions.begin(),
+                            nestedBlock->instructions.end());
+                }
+                continue;
+            }
+            appendInstruction(*destination, instruction, context);
+            emitted.push_back(instruction);
+        }
     }
-    case SctStructuredOutlineItemKind::Region:
-        node->label = item.region ? regionName(item.region->kind) : tr("Region");
-        node->secondary = node->suggested
-            ? tr("Suggested · %1").arg(confidenceName(item.confidence))
-            : confidenceName(item.confidence);
-        controller = item.instruction;
-        node->editContext = EditContext{controller, std::nullopt,
-            item.region ? std::optional{item.region->kind} : std::nullopt,
-            std::nullopt, !node->suggested, false, false, false};
-        if (controller) regionsByController_[controller->value()] = node.get();
-        break;
-    case SctStructuredOutlineItemKind::Arm:
-        node->label = armName(item);
-        node->secondary = tr("Branch");
-        node->editContext = EditContext{controller, std::nullopt, std::nullopt,
-            item.arm, verifiedRegion, item.children.empty(), false, false};
-        break;
-    case SctStructuredOutlineItemKind::BasicBlock:
-        node->label = item.block
-            ? tr("Basic block at instruction %1").arg(item.block->entryInstruction.value())
-            : tr("Basic block");
-        node->secondary = tr("Derived");
-        break;
-    case SctStructuredOutlineItemKind::Issue:
-        node->label = item.issue ? issueName(*item.issue) : tr("Structure analysis issue");
-        node->secondary = tr("Not grouped");
-        node->suggested = true;
-        break;
+    if (destination->children.empty()) {
+        auto empty = std::make_unique<Node>();
+        empty->parent = destination;
+        empty->label = arm.kind == SctStructuredArmKind::Then
+            ? tr("Empty Then") : arm.kind == SctStructuredArmKind::LoopBody
+                ? tr("Empty Body") : tr("Empty arm");
+        empty->secondary = tr("Semantic placeholder");
+        empty->editContext = context;
+        destination->children.push_back(std::move(empty));
     }
-    const bool childVerified = item.kind == SctStructuredOutlineItemKind::Region
-        ? !node->suggested : verifiedRegion;
-    for (const auto& child : item.children)
-        appendItem(*node, child, controller, childVerified);
+    if (armNode) parent.children.push_back(std::move(armNode));
+}
+
+void SctStructuredOutlineModel::appendHistoricalCandidate(Node& parent,
+    const SctHistoricalStructureCandidate& candidate) {
+    auto node = std::make_unique<Node>();
+    node->parent = &parent;
+    node->suggested = true;
+    node->label = candidate.suggestedKind
+        ? tr("Suggested %1").arg(regionName(*candidate.suggestedKind))
+        : tr("Suggested control-flow region");
+    node->secondary = tr("Historical · %1")
+        .arg(confidenceName(candidate.evidenceConfidence));
+    node->tooltip = evidenceTooltip(candidate.evidence);
+    const auto target = candidate.suggestedController.value_or(candidate.sourceInstruction);
+    node->target = core::SctNavigationTarget{
+        core::SctNavigationKind::Instruction, target.value()};
+    for (const auto instruction : candidate.involvedInstructions)
+        appendInstruction(*node, instruction);
+    parent.children.push_back(std::move(node));
+}
+
+void SctStructuredOutlineModel::appendIssue(Node& parent,
+    const SctStructureIssue& issue) {
+    auto node = std::make_unique<Node>();
+    node->parent = &parent;
+    node->suggested = true;
+    node->label = issueName(issue.kind);
+    node->secondary = tr("Not grouped");
+    node->tooltip = evidenceTooltip(issue.evidence);
+    if (issue.instruction) node->target = core::SctNavigationTarget{
+        core::SctNavigationKind::Instruction, issue.instruction->value()};
     parent.children.push_back(std::move(node));
 }
 
@@ -390,6 +463,7 @@ void SctStructuredOutlineModel::appendAuthoredArms() {
             }
         }
         parent->children.push_back(std::move(node));
+        indexNode(*parent->children.back());
     }
 }
 

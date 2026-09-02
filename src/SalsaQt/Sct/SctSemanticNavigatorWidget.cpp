@@ -100,11 +100,15 @@ struct TreeState final {
     } else {
         result = parameterName(std::get<spice::sct::SctParameterAddress>(site.owner));
     }
-    result += site.childPath.empty()
-        ? SctSemanticNavigatorWidget::tr(" / root")
-        : SctSemanticNavigatorWidget::tr(" / expression");
-    for (const auto child : site.childPath) result += QStringLiteral("/%1").arg(child);
+    result += SctSemanticNavigatorWidget::tr(" / program");
     return result;
+}
+
+[[nodiscard]] QString expressionName(
+    const spice::sct::SctExpressionOperationSite& site) {
+    return expressionName(site.expression)
+        + SctSemanticNavigatorWidget::tr(" / operation %1")
+            .arg(site.operationOrdinal);
 }
 
 [[nodiscard]] QString parameterKey(const spice::sct::SctParameterAddress& parameter) {
@@ -124,7 +128,7 @@ struct TreeState final {
         } else if constexpr (std::is_same_v<T, spice::sct::SctParameterSite>) {
             return QStringLiteral("parameter:%1:%2")
                 .arg(typed.instruction.value()).arg(parameterKey(typed.parameter));
-        } else {
+        } else if constexpr (std::is_same_v<T, spice::sct::SctExpressionSite>) {
             QString key = QStringLiteral("expression:%1:")
                 .arg(typed.instruction.value());
             if (std::holds_alternative<spice::sct::SctScheduledExpressionSite>(typed.owner)) {
@@ -133,9 +137,10 @@ struct TreeState final {
                 key += QStringLiteral("parameter:")
                     + parameterKey(std::get<spice::sct::SctParameterAddress>(typed.owner));
             }
-            key += QStringLiteral(":path");
-            for (const auto child : typed.childPath) key += QStringLiteral(":%1").arg(child);
             return key;
+        } else {
+            return inspectionKey(core::SctInspectionLocation{typed.expression})
+                + QStringLiteral(":operation:%1").arg(typed.operationOrdinal);
         }
     }, location);
 }
@@ -1077,8 +1082,10 @@ void SctSemanticNavigatorWidget::buildVariables(
                 auto* item = new QTreeWidgetItem(group);
                 item->setText(0, expressionName(occurrence.source));
                 item->setText(1, QStringLiteral("%1 — %2")
-                    .arg(instructionName(document, index, occurrence.source.instruction))
-                    .arg(instructionContext(document, index, occurrence.source.instruction)));
+                    .arg(instructionName(document, index,
+                        occurrence.source.expression.instruction))
+                    .arg(instructionContext(document, index,
+                        occurrence.source.expression.instruction)));
                 const core::SctInspectionLocation location{ occurrence.source };
                 setKey(*item, QStringLiteral("variable:%1:%2:")
                     .arg(static_cast<int>(kind)).arg(variable) + inspectionKey(location));

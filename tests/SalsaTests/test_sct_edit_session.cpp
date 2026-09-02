@@ -715,15 +715,15 @@ TEST(SctEditSession, MaterializesAndInstallsTheNewestWorkingRevision) {
     const auto materialized = SctDocumentMaterializer::materialize(*request);
     ASSERT_TRUE(materialized.succeeded());
     ASSERT_NE(materialized.analysis, nullptr);
-    ASSERT_NE(materialized.structuredControlFlow, nullptr);
+    EXPECT_FALSE(materialized.analysis->structuredControlFlow.sections().empty());
     EXPECT_EQ(materialized.analysis->usage.opcodeUsages().size(), 4u);
     EXPECT_TRUE(materialized.analysis->importedSites.has_value());
     EXPECT_EQ(materialized.generation, 17u);
     EXPECT_TRUE(session.installVerifiedMaterialization(materialized));
     EXPECT_EQ(session.verifiedSnapshot()->document.get(), materialized.document.get());
     EXPECT_EQ(session.verifiedSnapshot()->analysis.get(), materialized.analysis.get());
-    EXPECT_EQ(session.verifiedSnapshot()->structuredControlFlow.get(),
-        materialized.structuredControlFlow.get());
+    EXPECT_EQ(&session.verifiedSnapshot()->analysis->structuredControlFlow,
+        &materialized.analysis->structuredControlFlow);
     EXPECT_EQ(script(*session.verifiedSnapshot()).instructions.size(), 4u);
 }
 

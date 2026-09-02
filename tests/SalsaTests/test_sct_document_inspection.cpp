@@ -155,7 +155,12 @@ void collectProperties(
     const SctPropertyItem& property,
     const std::string_view name,
     std::vector<const SctPropertyItem*>& matches) {
-    if (property.name == name) matches.push_back(&property);
+    if (property.name == name
+        || (property.name.size() > name.size()
+            && property.name.ends_with(name)
+            && property.name[property.name.size() - name.size() - 1u] == ' ')) {
+        matches.push_back(&property);
+    }
     for (const auto& child : property.children) collectProperties(child, name, matches);
 }
 
@@ -168,8 +173,22 @@ std::vector<const SctPropertyItem*> propertiesNamed(
     return matches;
 }
 
+std::vector<const SctPropertyItem*> orderedOperationPropertiesNamed(
+    const SctEntityPresentation& presentation,
+    const std::string_view name) {
+    std::vector<const SctPropertyItem*> matches;
+    const auto orderedGroups = propertiesNamed(presentation, "Ordered operations");
+    for (const auto* group : orderedGroups) {
+        for (const auto& child : group->children) {
+            if (child.name == name || child.name.ends_with(name))
+                matches.push_back(&child);
+        }
+    }
+    return matches;
+}
+
 SctEntityPresentation expressionPresentation(
-    const std::vector<SctCanonicalExpressionNode>& nodes) {
+    const std::vector<SctScptOperation>& operations) {
     const auto asset = locator();
     FakeProject project(asset, inspectableSctBytes(false));
     const auto loaded = SctDocumentLoader::load(project, asset);
@@ -177,10 +196,34 @@ SctEntityPresentation expressionPresentation(
     auto document = std::make_shared<SctDocument>(*loaded.document->document);
     auto& script = std::get<SctScriptSectionContent>(document->sections.front().content);
     SctDocumentInstruction instruction{document->allocateInstructionId(), 125};
-    for (std::uint32_t index = 0; index < nodes.size(); ++index) {
+    for (std::uint32_t index = 0; index < operations.size(); ++index) {
         instruction.fixedParameters.push_back({index,
-            SctCanonicalExpression{nodes[index], SctExpressionTermination::StopCode}});
+            SctCanonicalExpression{SctTypedScptProgram{{operations[index]}},
+                SctExpressionTermination::StopCode}});
     }
+    const auto instructionId = instruction.id;
+    script.instructions.insert(script.instructions.begin(), std::move(instruction));
+    auto snapshot = *loaded.document;
+    snapshot.document = std::move(document);
+    snapshot.analysis = std::make_shared<const SctDocumentAnalysis>(
+        SctDocumentAnalysis::build(*snapshot.document,
+            snapshot.provenance->importEvidence
+                ? &*snapshot.provenance->importEvidence : nullptr));
+    return SctPresentationService::describe(
+        snapshot, {SctNavigationKind::Instruction, instructionId.value()});
+}
+
+SctEntityPresentation expressionProgramPresentation(
+    std::vector<SctScptOperation> operations) {
+    const auto asset = locator();
+    FakeProject project(asset, inspectableSctBytes(false));
+    const auto loaded = SctDocumentLoader::load(project, asset);
+    EXPECT_TRUE(loaded.succeeded());
+    auto document = std::make_shared<SctDocument>(*loaded.document->document);
+    auto& script = std::get<SctScriptSectionContent>(document->sections.front().content);
+    SctDocumentInstruction instruction{document->allocateInstructionId(), 125};
+    instruction.fixedParameters.push_back({0u, SctCanonicalExpression{
+        SctTypedScptProgram{std::move(operations)}, SctExpressionTermination::StopCode}});
     const auto instructionId = instruction.id;
     script.instructions.insert(script.instructions.begin(), std::move(instruction));
     auto snapshot = *loaded.document;
@@ -205,12 +248,12 @@ TEST(SctDocumentLoader, LoadsNoTextDocumentWithoutInventingAConvention) {
     EXPECT_EQ(loaded.document->provenance->textSelectionOrigin, SctTextSelectionOrigin::None);
     ASSERT_TRUE(loaded.document->provenance->importEvidence.has_value());
     ASSERT_NE(loaded.document->analysis, nullptr);
-    ASSERT_NE(loaded.document->structuredControlFlow, nullptr);
+    EXPECT_FALSE(loaded.document->analysis->structuredControlFlow.sections().empty());
     EXPECT_TRUE(loaded.document->analysis->importedSites.has_value());
     ASSERT_EQ(loaded.document->document->sections.size(), 1u);
 }
 
-TEST(SctDocumentLoader, AutomaticConventionSelectionFollowsV2RecommendationStatus) {
+TEST(SctDocumentLoader, AutomaticConventionSelectionFollowsV3RecommendationStatus) {
     SctSourceTextAssessment assessment;
     assessment.records.push_back({});
     for (const auto status : {SctSourceTextRecommendationStatus::Ambiguous,
@@ -250,18 +293,19 @@ TEST(SctDocumentLoader, BoundImportEvidenceAndAnalysisOutliveTheLoadResult) {
     EXPECT_EQ(snapshot->analysis->entities.find(unrelated, instruction), nullptr);
 }
 
-TEST(SctDiagnostics, PreservesExactPrimaryAndRelatedV2Locations) {
+TEST(SctDiagnostics, PreservesExactPrimaryAndRelatedV3Locations) {
     const SctParameterSite primary{SctInstructionId{7}, {3u, 2u}};
     const SctExpressionSite related{SctInstructionId{7},
-        SctScheduledExpressionSite{}, {1u, 0u}};
+        SctScheduledExpressionSite{}};
     SctDocumentDiagnostic source;
     source.severity = SctDiagnosticSeverity::Warning;
     source.code = SctDiagnosticCode::ExpressionRuntimeStackDepth;
     source.message = "runtime stack evidence";
     source.primaryLocation = SctDiagnosticLocation{primary};
     source.relatedLocations = {SctDiagnosticLocation{related},
-        SctDiagnosticLocation{SctDraftExpressionSite{10u,
-            SctExpressionOwner{SctScheduledExpressionSite{}}, {2u}}}};
+        SctDiagnosticLocation{SctDraftExpressionOperationSite{
+            SctDraftExpressionSite{10u,
+                SctExpressionOwner{SctScheduledExpressionSite{}}}, 2u}}};
 
     const auto converted = convertSctDiagnostic(
         source, SctPipelineStage::Validation, locator());
@@ -277,7 +321,7 @@ TEST(SctDiagnostics, PreservesExactPrimaryAndRelatedV2Locations) {
     EXPECT_EQ(formatSctDiagnosticLocation(*converted.primaryLocation),
         "instruction 7, parameter 3 group 2");
     EXPECT_EQ(formatSctDiagnosticLocation(converted.relatedLocations.back()),
-        "draft opcode 10 scheduled expression/2");
+        "draft opcode 10 scheduled expression, operation 2");
 }
 
 TEST(SctDocumentLoader, AmbiguousTextStaysOpaqueUntilExplicitReimport) {
@@ -338,50 +382,109 @@ TEST(SctPresentation, ProjectsPhysicalOutlineAndInstructionDetails) {
 }
 
 TEST(SctPresentation, DisplaysSemanticExpressionValuesWithRawEncodingEvidence) {
-    SctCanonicalExpressionNode positiveFloat{SctCanonicalExpressionNodeKind::FloatLiteral,
-        0x04000000u, {std::bit_cast<std::uint32_t>(1.5f)}, {}};
-    SctCanonicalExpressionNode negativeFloat{SctCanonicalExpressionNodeKind::FloatLiteral,
-        0x04000000u, {std::bit_cast<std::uint32_t>(-12.25f)}, {}};
-    SctCanonicalExpressionNode decimal{SctCanonicalExpressionNodeKind::DecimalLiteral,
-        0x08000380u, {}, {}};
-    SctCanonicalExpressionNode variable{SctCanonicalExpressionNodeKind::BitVariable,
-        0x2000002au, {}, {}};
-    SctCanonicalExpressionNode negated{SctCanonicalExpressionNodeKind::NegatedIntVariable,
-        0x5000002bu, {}, {}};
-    SctCanonicalExpressionNode low16{
-        SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison,
-        0x5000002cu, {}, {}};
-    SctCanonicalExpressionNode add{SctCanonicalExpressionNodeKind::ArithmeticOperator,
-        0x0eu, {}, {decimal, variable}};
+    SctScptValueOperation positiveFloat{SctScptValueKind::FloatLiteral,
+        0x04000000u, {std::bit_cast<std::uint32_t>(1.5f)}};
+    SctScptValueOperation negativeFloat{SctScptValueKind::FloatLiteral,
+        0x04000000u, {std::bit_cast<std::uint32_t>(-12.25f)}};
+    SctScptValueOperation decimal{SctScptValueKind::DecimalLiteral,
+        0x08000380u, {}};
+    SctScptValueOperation variable{SctScptValueKind::BitVariable,
+        0x2000002au, {}};
+    SctScptValueOperation negated{SctScptValueKind::NegatedIntVariable,
+        0x5000002bu, {}};
+    SctScptValueOperation low16{SctScptValueKind::NegatedIntVariableLow16Comparison,
+        0x5000002cu, {}};
+    SctScptBinaryOperation add{SctScptBinaryOperationKind::Arithmetic, 0x0eu};
 
     const auto presentation = expressionPresentation(
         {positiveFloat, negativeFloat, decimal, variable, negated, low16, add});
-    const auto floats = propertiesNamed(presentation, "Float literal");
+    const auto floats = orderedOperationPropertiesNamed(presentation, "Float literal");
     ASSERT_EQ(floats.size(), 2u);
     EXPECT_EQ(floats[0]->value, "1.5");
     EXPECT_EQ(floats[1]->value, "-12.25");
     EXPECT_NE(floats[0]->notes.find("Encoding 0x04000000"), std::string::npos);
     EXPECT_NE(floats[0]->notes.find("payload 0x3FC00000"), std::string::npos);
 
-    const auto decimals = propertiesNamed(presentation, "Decimal literal");
-    ASSERT_GE(decimals.size(), 2u);
+    const auto decimals = orderedOperationPropertiesNamed(presentation, "Decimal literal");
+    ASSERT_EQ(decimals.size(), 1u);
     EXPECT_EQ(decimals.front()->value, "3.5");
     EXPECT_NE(decimals.front()->notes.find("0x08000380"), std::string::npos);
-    const auto variables = propertiesNamed(presentation, "Bit variable");
-    ASSERT_GE(variables.size(), 2u);
+    const auto variables = orderedOperationPropertiesNamed(presentation, "Bit variable");
+    ASSERT_EQ(variables.size(), 1u);
     EXPECT_EQ(variables.front()->value, "42");
     EXPECT_NE(variables.front()->notes.find("0x2000002A"), std::string::npos);
-    const auto negatedVariables = propertiesNamed(presentation, "Negated integer variable");
+    const auto negatedVariables = orderedOperationPropertiesNamed(
+        presentation, "Negated integer variable");
     ASSERT_EQ(negatedVariables.size(), 1u);
     EXPECT_EQ(negatedVariables.front()->value, "43");
-    const auto low16Variables = propertiesNamed(
+    const auto low16Variables = orderedOperationPropertiesNamed(
         presentation, "Negated integer variable (low-16 comparison)");
     ASSERT_EQ(low16Variables.size(), 1u);
     EXPECT_EQ(low16Variables.front()->value, "44");
-    const auto operators = propertiesNamed(presentation, "Arithmetic");
+    const auto operators = orderedOperationPropertiesNamed(presentation, "Arithmetic");
     ASSERT_EQ(operators.size(), 1u);
     EXPECT_EQ(operators.front()->value, "+");
     EXPECT_NE(operators.front()->notes.find("0x0000000E"), std::string::npos);
+}
+
+TEST(SctPresentation, SeparatesAuthoritativeScptProgramsFromDerivedResults) {
+    const auto conventional = expressionProgramPresentation({
+        SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000100u, {}},
+        SctScptValueOperation{SctScptValueKind::BitVariable, 0x20000007u, {}},
+        SctScptBinaryOperation{SctScptBinaryOperationKind::Arithmetic, 0x0eu},
+    });
+    EXPECT_EQ(propertiesNamed(conventional, "Ordered operations").size(), 1u);
+    EXPECT_EQ(propertiesNamed(conventional, "Conventional result").size(), 1u);
+
+    const auto nonstandard = expressionProgramPresentation({
+        SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000100u, {}},
+        SctScptValueOperation{SctScptValueKind::BitVariable, 0x20000007u, {}},
+        SctScptStackOverwritePreviousWithTopOperation{},
+        SctScptInertOperation{},
+    });
+    const auto ordered = propertiesNamed(nonstandard, "Ordered operations");
+    ASSERT_EQ(ordered.size(), 1u);
+    EXPECT_EQ(ordered.front()->value, "4");
+    EXPECT_EQ(orderedOperationPropertiesNamed(
+        nonstandard, "Stack overwrite").size(), 1u);
+    EXPECT_EQ(orderedOperationPropertiesNamed(
+        nonstandard, "Inert operation").size(), 1u);
+}
+
+TEST(SctPresentation, ShowsV3IndexedStringGroupMarkersAndCurrentGrouping) {
+    const auto asset = locator();
+    FakeProject project(asset, inspectableSctBytes(false));
+    const auto loaded = SctDocumentLoader::load(project, asset);
+    ASSERT_TRUE(loaded.succeeded());
+    auto document = std::make_shared<SctDocument>();
+    const auto marker = document->allocateSectionId();
+    const auto member = document->allocateSectionId();
+    const auto string = document->allocateStringId();
+    document->sections.push_back({marker, "GROUP",
+        SctStringGroupMarkerSectionContent{{9u, 0x1du}}});
+    document->sections.push_back({member, "MS0000001",
+        SctStringSectionContent{{string, SctPlainText{"hello"},
+            SctTextKind::PlainString}}});
+    auto snapshot = *loaded.document;
+    snapshot.document = std::move(document);
+    snapshot.analysis = std::make_shared<const SctDocumentAnalysis>(
+        SctDocumentAnalysis::build(*snapshot.document));
+
+    const auto outline = SctPresentationService::outline(snapshot);
+    const auto markerRow = std::ranges::find_if(outline, [marker](const auto& row) {
+        return row.target == SctNavigationTarget{
+            SctNavigationKind::Section, marker.value()};
+    });
+    ASSERT_NE(markerRow, outline.end());
+    EXPECT_EQ(markerRow->secondary, "String group marker");
+    const auto details = SctPresentationService::describe(snapshot, markerRow->target);
+    const auto preamble = propertiesNamed(details, "Preamble words");
+    ASSERT_EQ(preamble.size(), 1u);
+    EXPECT_NE(preamble.front()->value.find("0x0000001D"), std::string::npos);
+    const auto groups = propertiesNamed(details, "Current indexed-string group");
+    ASSERT_EQ(groups.size(), 1u);
+    EXPECT_EQ(groups.front()->notes, "explicit marker");
+    ASSERT_EQ(groups.front()->children.size(), 3u);
 }
 
 TEST(SctPresentation, AttachesExactParameterAndExpressionInspectionLocations) {
@@ -393,18 +496,19 @@ TEST(SctPresentation, AttachesExactParameterAndExpressionInspectionLocations) {
     auto& instruction = std::get<SctScriptSectionContent>(
         document->sections.front().content).instructions.front();
 
-    instruction.scheduledExpression = SctCanonicalExpression{
-        SctCanonicalExpressionNode{ SctCanonicalExpressionNodeKind::IntVariable,
-            0x10000011u, {}, {} }, SctExpressionTermination::InlineValue };
+    instruction.scheduledExpression = SctCanonicalExpression{SctTypedScptProgram{{
+        SctScptValueOperation{SctScptValueKind::DirectIntVariable,
+            0x10000011u, {}}}}, SctExpressionTermination::InlineValue};
     instruction.fixedParameters.push_back({ 20u, SctCanonicalExpression{
-        SctCanonicalExpressionNode{ SctCanonicalExpressionNodeKind::FloatVariable,
-            0x14000022u, {}, {} }, SctExpressionTermination::StopCode } });
+        SctTypedScptProgram{{SctScptValueOperation{SctScptValueKind::FloatVariable,
+            0x14000022u, {}}}}, SctExpressionTermination::StopCode } });
     instruction.repeatedParameterGroups.push_back({ {
         { 30u, SctCanonicalExpression{
-            SctCanonicalExpressionNode{ SctCanonicalExpressionNodeKind::ByteVariable,
-                0x24000033u, {}, {
-                    SctCanonicalExpressionNode{ SctCanonicalExpressionNodeKind::BitVariable,
-                        0x20000044u, {}, {} } } },
+            SctTypedScptProgram{{
+                SctScptValueOperation{SctScptValueKind::ByteVariable,
+                    0x24000033u, {}},
+                SctScptValueOperation{SctScptValueKind::BitVariable,
+                    0x20000044u, {}}}},
             SctExpressionTermination::InlineValue } },
         { 31u, SctCanonicalExpression{
             SctOpaqueExpression{ { 0xdeadbeefu } },
@@ -420,14 +524,17 @@ TEST(SctPresentation, AttachesExactParameterAndExpressionInspectionLocations) {
     const auto presentation = SctPresentationService::describe(snapshot,
         { SctNavigationKind::Instruction, instruction.id.value() });
 
-    const auto scheduled = propertiesNamed(presentation, "Integer variable");
+    const auto scheduled = orderedOperationPropertiesNamed(
+        presentation, "Integer variable");
     ASSERT_EQ(scheduled.size(), 1u);
     ASSERT_TRUE(scheduled.front()->location.has_value());
-    const auto* scheduledSite = std::get_if<SctExpressionSite>(&*scheduled.front()->location);
+    const auto* scheduledSite = std::get_if<SctExpressionOperationSite>(
+        &*scheduled.front()->location);
     ASSERT_NE(scheduledSite, nullptr);
-    EXPECT_EQ(scheduledSite->instruction, instruction.id);
-    EXPECT_TRUE(std::holds_alternative<SctScheduledExpressionSite>(scheduledSite->owner));
-    EXPECT_TRUE(scheduledSite->childPath.empty());
+    EXPECT_EQ(scheduledSite->expression.instruction, instruction.id);
+    EXPECT_TRUE(std::holds_alternative<SctScheduledExpressionSite>(
+        scheduledSite->expression.owner));
+    EXPECT_EQ(scheduledSite->operationOrdinal, 0u);
 
     const auto fixedParameters = propertiesNamed(presentation, "Parameter 20");
     ASSERT_EQ(fixedParameters.size(), 1u);
@@ -445,21 +552,25 @@ TEST(SctPresentation, AttachesExactParameterAndExpressionInspectionLocations) {
     ASSERT_NE(repeatedParameter, nullptr);
     EXPECT_EQ(repeatedParameter->parameter.repeatedGroupOrdinal, 0u);
 
-    const auto repeatedRoot = propertiesNamed(presentation, "Byte variable");
+    const auto repeatedRoot = orderedOperationPropertiesNamed(presentation, "Byte variable");
     ASSERT_EQ(repeatedRoot.size(), 1u);
-    const auto* repeatedRootSite = std::get_if<SctExpressionSite>(
+    const auto* repeatedRootSite = std::get_if<SctExpressionOperationSite>(
         &*repeatedRoot.front()->location);
     ASSERT_NE(repeatedRootSite, nullptr);
-    ASSERT_TRUE(std::holds_alternative<SctParameterAddress>(repeatedRootSite->owner));
-    EXPECT_EQ(std::get<SctParameterAddress>(repeatedRootSite->owner).schemaIndex, 30u);
-    EXPECT_EQ(std::get<SctParameterAddress>(repeatedRootSite->owner).repeatedGroupOrdinal, 0u);
-    EXPECT_TRUE(repeatedRootSite->childPath.empty());
+    ASSERT_TRUE(std::holds_alternative<SctParameterAddress>(
+        repeatedRootSite->expression.owner));
+    EXPECT_EQ(std::get<SctParameterAddress>(
+        repeatedRootSite->expression.owner).schemaIndex, 30u);
+    EXPECT_EQ(std::get<SctParameterAddress>(
+        repeatedRootSite->expression.owner).repeatedGroupOrdinal, 0u);
+    EXPECT_EQ(repeatedRootSite->operationOrdinal, 0u);
 
-    const auto nested = propertiesNamed(presentation, "Bit variable");
+    const auto nested = orderedOperationPropertiesNamed(presentation, "Bit variable");
     ASSERT_EQ(nested.size(), 1u);
-    const auto* nestedSite = std::get_if<SctExpressionSite>(&*nested.front()->location);
+    const auto* nestedSite = std::get_if<SctExpressionOperationSite>(
+        &*nested.front()->location);
     ASSERT_NE(nestedSite, nullptr);
-    EXPECT_EQ(nestedSite->childPath, std::vector<std::uint32_t>({ 0u }));
+    EXPECT_EQ(nestedSite->operationOrdinal, 1u);
 
     const auto opaque = propertiesNamed(presentation, "Opaque words");
     ASSERT_EQ(opaque.size(), 1u);
@@ -467,7 +578,6 @@ TEST(SctPresentation, AttachesExactParameterAndExpressionInspectionLocations) {
     ASSERT_NE(opaqueSite, nullptr);
     ASSERT_TRUE(std::holds_alternative<SctParameterAddress>(opaqueSite->owner));
     EXPECT_EQ(std::get<SctParameterAddress>(opaqueSite->owner).schemaIndex, 31u);
-    EXPECT_TRUE(opaqueSite->childPath.empty());
 }
 
 TEST(SctPresentation, ExposesOpaqueAttachmentInstructionAnchorsForNavigation) {
@@ -635,21 +745,21 @@ TEST(SctPresentation, ShowsDocumentAnchoredOpaqueSourceContext) {
 }
 
 TEST(SctPresentation, KeepsNonFiniteAndMalformedFloatEvidenceInspectable) {
-    SctCanonicalExpressionNode infinity{SctCanonicalExpressionNodeKind::FloatLiteral,
+    SctScptValueOperation infinity{SctScptValueKind::FloatLiteral,
         0x04000000u, {std::bit_cast<std::uint32_t>(
-            std::numeric_limits<float>::infinity())}, {}};
-    SctCanonicalExpressionNode negativeInfinity{SctCanonicalExpressionNodeKind::FloatLiteral,
+            std::numeric_limits<float>::infinity())}};
+    SctScptValueOperation negativeInfinity{SctScptValueKind::FloatLiteral,
         0x04000000u, {std::bit_cast<std::uint32_t>(
-            -std::numeric_limits<float>::infinity())}, {}};
-    SctCanonicalExpressionNode notANumber{SctCanonicalExpressionNodeKind::FloatLiteral,
+            -std::numeric_limits<float>::infinity())}};
+    SctScptValueOperation notANumber{SctScptValueKind::FloatLiteral,
         0x04000000u, {std::bit_cast<std::uint32_t>(
-            std::numeric_limits<float>::quiet_NaN())}, {}};
-    SctCanonicalExpressionNode malformed{SctCanonicalExpressionNodeKind::FloatLiteral,
-        0x04000000u, {}, {}};
+            std::numeric_limits<float>::quiet_NaN())}};
+    SctScptValueOperation malformed{SctScptValueKind::FloatLiteral,
+        0x04000000u, {}};
 
     const auto presentation = expressionPresentation(
         {infinity, negativeInfinity, notANumber, malformed});
-    const auto floats = propertiesNamed(presentation, "Float literal");
+    const auto floats = orderedOperationPropertiesNamed(presentation, "Float literal");
     ASSERT_EQ(floats.size(), 4u);
     EXPECT_EQ(floats[0]->value, "Infinity");
     EXPECT_EQ(floats[1]->value, "-Infinity");

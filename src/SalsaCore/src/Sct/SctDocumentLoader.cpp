@@ -54,6 +54,9 @@ namespace {
     case TextInvalid: return "TextInvalid";
     case HeaderUnavailable: return "HeaderUnavailable";
     case ExpressionRuntimeStackDepth: return "ExpressionRuntimeStackDepth";
+    case ExpressionLogicalStackUnderflow: return "ExpressionLogicalStackUnderflow";
+    case ExpressionUndefinedResult: return "ExpressionUndefinedResult";
+    case ExpressionResidualStackValues: return "ExpressionResidualStackValues";
     }
     return "UnknownSctDiagnostic";
 }
@@ -136,7 +139,8 @@ SctLoadResult SctDocumentLoader::load(
         parser.parse(bytes, locator.identityKey()));
 
     auto inspection = std::make_shared<SctSourceInspection>(SctSourceInspection{
-        std::move(source), std::move(parsed), {}, {} });
+        std::move(source), project.dataset().identity.fingerprint,
+        std::move(parsed), {}, {} });
     for (const auto& parserDiagnostic : inspection->parsed->diagnostics) {
         SctPipelineDiagnostic diagnostic;
         diagnostic.severity = inspection->parsed->parseOk
@@ -225,15 +229,10 @@ SctLoadResult SctDocumentLoader::materialize(
     auto analysis = std::make_shared<const spice::sct::SctDocumentAnalysis>(
         spice::sct::SctDocumentAnalysis::build(*document,
             evidence ? &*evidence : nullptr));
-    auto structuredControlFlow = std::make_shared<
-        const spice_sct_prototype::SctStructuredControlFlowAnalysis>(
-        spice_sct_prototype::SctStructuredControlFlowAnalysis::build(
-            *document, *analysis));
     auto snapshot = std::make_shared<SctDocumentSnapshot>(SctDocumentSnapshot{
         std::move(provenance), document, std::move(analysis),
         assessment.readiness,
         std::move(diagnostics),
-        std::move(structuredControlFlow),
     });
     result.document = std::move(snapshot);
     return result;
