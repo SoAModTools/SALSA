@@ -1,4 +1,5 @@
 #include "SalsaCore/Sct/SctEditSession.h"
+#include "SalsaCore/Sct/SctGlyphCatalog.h"
 #include "SpiceSCT/SctTextBuilder.h"
 
 #include "SpiceSCT/SctDocumentBuilder.h"
@@ -771,4 +772,135 @@ TEST(SctEditSession, VerificationRejectionRollsBackAndDiscardsTheRejectedLineage
     const auto replacement = session.insertInstructionAfter(anchor, 125);
     ASSERT_TRUE(replacement.committed);
     EXPECT_GT(replacement.revision.value, second.revision.value);
+}
+
+TEST(SctEditSession, CreatesRenamesMovesAndDeletesScriptSectionsAtomically) {
+    SctEditSession session(loadedSnapshot());
+    const auto original = session.workingState().sectionOrder().front();
+
+    const auto created = session.createScriptSection("NEW_BLOCK", original, true);
+    ASSERT_TRUE(created.committed);
+    ASSERT_EQ(created.changes.sections.size(), 1u);
+    const auto sectionId = created.changes.sections.front().section;
+    const auto* sectionValue = session.workingState().section(sectionId);
+    ASSERT_NE(sectionValue, nullptr);
+    const auto& instructions = std::get<SctScriptSectionContent>(sectionValue->content).instructions;
+    ASSERT_EQ(instructions.size(), 2u);
+    EXPECT_EQ(instructions.front().opcode, 9u);
+    EXPECT_EQ(instructions.back().opcode, 12u);
+
+    const auto renamed = session.renameSection(sectionId, "new_block");
+    ASSERT_TRUE(renamed.committed);
+    EXPECT_EQ(session.workingState().section(sectionId)->nameBytes, "new_block");
+
+    const auto moved = session.moveSection(sectionId, SctSectionMoveDirection::Up);
+    ASSERT_TRUE(moved.committed);
+    EXPECT_EQ(session.workingState().sectionOrder().front(), sectionId);
+
+    const auto removed = session.deleteSection(sectionId);
+    ASSERT_TRUE(removed.committed);
+    EXPECT_EQ(session.workingState().section(sectionId), nullptr);
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_NE(session.workingState().section(sectionId), nullptr);
+}
+
+TEST(SctEditSession, EnforcesNewSectionNameProfileAndExactDuplicatePolicy) {
+    SctEditSession session(loadedSnapshot());
+    EXPECT_TRUE(hasCode(session.createScriptSection("bad-name", std::nullopt, true),
+        "InvalidAuthoredSectionName"));
+    EXPECT_TRUE(hasCode(session.createScriptSection("SCRIPT", std::nullopt, true),
+        "DuplicateSectionName"));
+    const auto created = session.createScriptSection("script", std::nullopt, false);
+    ASSERT_TRUE(created.committed);
+    const auto sectionId = created.changes.sections.front().section;
+    const auto& instructions = std::get<SctScriptSectionContent>(
+        session.workingState().section(sectionId)->content).instructions;
+    ASSERT_EQ(instructions.size(), 1u);
+    EXPECT_EQ(instructions.front().opcode, 9u);
+}
+
+TEST(SctEditSession, CreatesEditsAndDeletesIndexedAndFooterText) {
+    SctEditSession session(loadedSnapshot());
+    const auto createdString = session.createIndexedString("MS_TEST", std::nullopt);
+    ASSERT_TRUE(createdString.committed);
+    ASSERT_TRUE(createdString.suggestedSelection.has_value());
+    const SctTextTarget stringTarget{SctStringId(createdString.suggestedSelection->id)};
+    ASSERT_NE(session.workingState().message(stringTarget), nullptr);
+
+    const auto createdFooter = session.createFooterText(
+        SctCreatedFooterTextKind::PlainText, std::nullopt);
+    ASSERT_TRUE(createdFooter.committed);
+    const SctTextTarget footerTarget{SctFooterEntryId(createdFooter.suggestedSelection->id)};
+    ASSERT_TRUE(session.replacePlainText(footerTarget, "Unicode Ω text").committed);
+    const auto* plain = std::get_if<SctPlainText>(session.workingState().textValue(footerTarget));
+    ASSERT_NE(plain, nullptr);
+    EXPECT_EQ(plain->utf8, "Unicode Ω text");
+
+    ASSERT_TRUE(session.deleteTextEntity(stringTarget).committed);
+    EXPECT_EQ(session.workingState().textValue(stringTarget), nullptr);
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_NE(session.workingState().textValue(stringTarget), nullptr);
+}
+
+TEST(SctEditSession, MaterializesCombinedSectionAndTextLifecycleJournal) {
+    SctEditSession session(loadedSnapshot());
+    ASSERT_TRUE(session.createScriptSection("SECOND", std::nullopt, true).committed);
+    ASSERT_TRUE(session.createIndexedString("MS_NEW", std::nullopt).committed);
+    ASSERT_TRUE(session.createFooterText(
+        SctCreatedFooterTextKind::PlainText, std::nullopt).committed);
+    const auto request = session.materializationRequest(41);
+    ASSERT_TRUE(request.has_value());
+    const auto materialized = SctDocumentMaterializer::materialize(*request);
+    ASSERT_TRUE(materialized.succeeded());
+    ASSERT_NE(materialized.document, nullptr);
+    EXPECT_EQ(materialized.document->sections.size(), 3u);
+    EXPECT_EQ(materialized.document->footerEntries.size(), 1u);
+    EXPECT_TRUE(session.installVerifiedMaterialization(materialized));
+}
+
+TEST(SctEditSession, ReplacesOpaqueTextWithOneSemanticRepairRevision) {
+    auto document = makeMessageDocument();
+    auto& value = document.footerEntries.front().value;
+    value = SctOpaqueText{{'H', 'i', 0}};
+    SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
+    const SctTextTarget target{session.workingState().footerEntryOrder().front()};
+    const auto before = session.currentRevision();
+    const auto repaired = session.replaceTextValue(
+        target, SctPlainText{"Hi"}, "Repair opaque text interpretation",
+        SctTextRepairProvenance{kSctWindows1252Byte7FEncoding,
+            SctKnownTextConvention::Windows1252Byte7F, "digest"});
+    ASSERT_TRUE(repaired.committed);
+    EXPECT_EQ(repaired.revision.value, before.value + 1u);
+    ASSERT_NE(std::get_if<SctPlainText>(session.workingState().textValue(target)), nullptr);
+    ASSERT_TRUE(session.workingState().textRepairProvenance(target).has_value());
+    EXPECT_EQ(session.workingState().textRepairProvenance(target)->sourceSha256, "digest");
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_NE(std::get_if<SctOpaqueText>(session.workingState().textValue(target)), nullptr);
+    EXPECT_FALSE(session.workingState().textRepairProvenance(target).has_value());
+    ASSERT_TRUE(session.redo().has_value());
+    EXPECT_TRUE(session.workingState().textRepairProvenance(target).has_value());
+}
+
+TEST(SctGlyphCatalog, PreservesLegacyMembershipAndSearchEvidence) {
+    const auto& catalog = SctGlyphCatalog::legacySupportedSet();
+    EXPECT_GT(catalog.entries().size(), 300u);
+    const auto euro = catalog.search("U+20AC", SctGlyphMembership::European);
+    ASSERT_EQ(euro.size(), 1u);
+    EXPECT_EQ(euro.front().utf8, "€");
+    EXPECT_FALSE(euro.front().provenance.empty());
+    const auto music = catalog.search("♪", SctGlyphMembership::UsJapanese);
+    ASSERT_EQ(music.size(), 1u);
+    EXPECT_EQ(music.front().category, "US/JP legacy set");
+}
+
+TEST(SctWorkingState, FailedSectionRelocationIsAtomic) {
+    auto document = std::make_shared<const SctDocument>(makeScriptDocument());
+    SctWorkingState state(document);
+    const auto before = std::vector<SctSectionId>(
+        state.sectionOrder().begin(), state.sectionOrder().end());
+    const auto applied = state.apply(SctSemanticOperationBatch{{
+        SctRelocateSectionAfterOperation{before.front(), SctSectionId(9999)}}});
+    EXPECT_FALSE(applied.succeeded());
+    EXPECT_EQ(std::vector<SctSectionId>(state.sectionOrder().begin(),
+        state.sectionOrder().end()), before);
 }

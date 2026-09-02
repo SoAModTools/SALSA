@@ -3,6 +3,7 @@
 #include "SalsaCore/Project/AssetLocator.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctMessageAuthoring.h"
+#include "SalsaCore/Sct/SctSemanticOperation.h"
 
 #include <QWidget>
 
@@ -12,13 +13,16 @@
 
 class QCheckBox;
 class QComboBox;
+class QDialog;
 class QLabel;
 class QPushButton;
 class QSpinBox;
 class QStackedWidget;
+class QTextEdit;
 class QTimer;
 class QToolButton;
 class QWidget;
+class QVBoxLayout;
 
 namespace salsa::qt {
 
@@ -34,10 +38,21 @@ public:
         const core::SctMessageTarget&,
         const core::SctMessageDraft&,
         core::SctMessageEditKind)>;
+    using PlainTextCommitHandler = std::function<bool(
+        const core::AssetLocator&, const core::SctTextTarget&, std::string)>;
+    using TextValueCommitHandler = std::function<bool(
+        const core::AssetLocator&, const core::SctTextTarget&,
+        spice::sct::SctTextValue, std::string,
+        std::optional<core::SctTextRepairProvenance>)>;
 
     explicit SctMessageEditorWidget(QWidget* parent = nullptr);
 
     void setCommitHandler(CommitHandler handler);
+    void setPlainTextCommitHandler(PlainTextCommitHandler handler);
+    void setTextValueCommitHandler(TextValueCommitHandler handler);
+    [[nodiscard]] bool bindText(core::AssetLocator locator,
+        core::SctTextTarget target, const spice::sct::SctTextValue& value,
+        spice::sct::SctTextKind kind, spice::sct::SctTextStorage storage);
     [[nodiscard]] bool bindMessage(
         core::AssetLocator locator,
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
@@ -45,6 +60,7 @@ public:
     [[nodiscard]] bool refresh(
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot);
     [[nodiscard]] bool refreshMessage(const spice::sct::SctMessage& message);
+    [[nodiscard]] bool refreshText(const spice::sct::SctTextValue& value);
     [[nodiscard]] bool flushPending();
     void clear();
     void focusEditor();
@@ -61,6 +77,7 @@ signals:
     void statusMessageRequested(const QString& message);
 
 private:
+    enum class Mode { None, Message, Plain, Opaque, Blocked };
     enum class Surface { Body, Header };
     enum class Burst { None, Typing, Deletion };
 
@@ -83,8 +100,14 @@ private:
     void chooseColor();
     void clearFormatting();
     void updateToolbarFromCursor();
+    void openGlyphPalette();
+    void loadPlainText(const spice::sct::SctPlainText& text);
+    void loadOpaqueText(const spice::sct::SctOpaqueText& text);
+    [[nodiscard]] bool flushPlainText();
 
     CommitHandler commitHandler_{};
+    PlainTextCommitHandler plainTextCommitHandler_{};
+    TextValueCommitHandler textValueCommitHandler_{};
     std::optional<core::AssetLocator> locator_{};
     std::optional<core::SctMessageTarget> target_{};
     std::optional<core::SctMessageDraft> committedDraft_{};
@@ -94,12 +117,20 @@ private:
     std::optional<core::SctMessageEditKind> pendingCommitKind_{};
     bool programmatic_ = false;
     bool committing_ = false;
+    Mode mode_ = Mode::None;
+    spice::sct::SctTextKind textKind_ = spice::sct::SctTextKind::SctString;
+    spice::sct::SctTextStorage textStorage_ = spice::sct::SctTextStorage::Footer;
+    std::string committedPlainText_{};
 
     QTimer* commitTimer_ = nullptr;
     QStackedWidget* pages_ = nullptr;
     QLabel* emptyLabel_ = nullptr;
     QLabel* blockedLabel_ = nullptr;
     QWidget* editorPage_ = nullptr;
+    QWidget* plainPage_ = nullptr;
+    QTextEdit* plainText_ = nullptr;
+    QWidget* opaquePage_ = nullptr;
+    QVBoxLayout* opaqueLayout_ = nullptr;
     QLabel* identityLabel_ = nullptr;
     QLabel* errorLabel_ = nullptr;
     QCheckBox* headerPresent_ = nullptr;
@@ -107,6 +138,8 @@ private:
     QToolButton* doubleScale_ = nullptr;
     QPushButton* color_ = nullptr;
     QPushButton* resetFormatting_ = nullptr;
+    QPushButton* glyphs_ = nullptr;
+    QDialog* glyphPalette_ = nullptr;
     SctMessageBodyEdit* body_ = nullptr;
     QComboBox* completion_ = nullptr;
     QSpinBox* automaticDelay_ = nullptr;

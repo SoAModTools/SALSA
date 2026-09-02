@@ -1,6 +1,7 @@
 #include "SalsaCore/Sct/SctEditSession.h"
 
 #include "SpiceSCT/SctDocumentIndex.h"
+#include "SpiceSCT/SctDocumentEntityFactory.h"
 #include "SpiceSCT/SctDocumentValidator.h"
 #include "SpiceSCT/SctInstructionFactory.h"
 #include "SpiceSCT/SctOpcodeMetadata.h"
@@ -9,6 +10,8 @@
 #include <cassert>
 #include <chrono>
 #include <ranges>
+#include <regex>
+#include <unordered_set>
 #include <type_traits>
 #include <utility>
 
@@ -95,14 +98,51 @@ using EditClock = std::chrono::steady_clock;
 }
 
 void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
+    target.sections.insert(target.sections.end(),
+        source.sections.begin(), source.sections.end());
     target.instructions.insert(target.instructions.end(),
         source.instructions.begin(), source.instructions.end());
+    target.footerEntries.insert(target.footerEntries.end(),
+        source.footerEntries.begin(), source.footerEntries.end());
+    target.textValues.insert(target.textValues.end(),
+        source.textValues.begin(), source.textValues.end());
     target.modified.insert(target.modified.end(),
         source.modified.begin(), source.modified.end());
     target.structuredAuthoring.insert(target.structuredAuthoring.end(),
         source.structuredAuthoring.begin(), source.structuredAuthoring.end());
     target.invalidations = target.invalidations | source.invalidations;
     target.documentChanged = target.documentChanged || source.documentChanged;
+}
+
+[[nodiscard]] bool validAuthoredSectionName(const std::string_view name) {
+    if (name.empty() || name.size() > 16u) return false;
+    return std::ranges::all_of(name, [](const char value) {
+        const auto character = static_cast<unsigned char>(value);
+        return (character >= 'A' && character <= 'Z')
+            || (character >= 'a' && character <= 'z')
+            || (character >= '0' && character <= '9') || character == '_';
+    });
+}
+
+[[nodiscard]] bool sameTextValue(
+    const spice::sct::SctTextValue& left, const spice::sct::SctTextValue& right) {
+    if (left.index() != right.index()) return false;
+    return std::visit([&](const auto& leftValue) {
+        using T = std::decay_t<decltype(leftValue)>;
+        const auto& rightValue = std::get<T>(right);
+        if constexpr (std::is_same_v<T, spice::sct::SctPlainText>)
+            return leftValue.utf8 == rightValue.utf8;
+        else if constexpr (std::is_same_v<T, spice::sct::SctOpaqueText>)
+            return leftValue.bytes == rightValue.bytes;
+        else if constexpr (std::is_same_v<T, spice::sct::SctEmptyIndexedText>)
+            return true;
+        else {
+            const auto leftProjection = SctMessageAuthoringProfile::project(leftValue);
+            const auto rightProjection = SctMessageAuthoringProfile::project(rightValue);
+            return leftProjection.supported() && rightProjection.supported()
+                && *leftProjection.draft == *rightProjection.draft;
+        }
+    }, left);
 }
 
 [[nodiscard]] const spice_sct_prototype::SctStructuredRegion* verifiedRegion(
@@ -387,11 +427,293 @@ SctEditResult SctEditSession::replaceMessage(
         return result;
     }
 
-    return commit(SctSemanticOperationBatch{{SctReplaceMessageOperation{
+    return commit(SctSemanticOperationBatch{{SctReplaceTextValueOperation{
             target, *materialized.message}}},
         {},
         messageEditDescription(editKind),
         SelectionHints{navigation, navigation}, elapsedMicroseconds(preflightStart));
+}
+
+SctEditResult SctEditSession::replacePlainText(
+    const SctTextTarget& target, std::string utf8) {
+    const auto navigation = navigationFor(target);
+    const auto* current = workingState_.textValue(target);
+    if (current == nullptr || !std::holds_alternative<spice::sct::SctPlainText>(*current)) {
+        return failure({editError(baselineSnapshot_->provenance->source().descriptor.locator,
+            "PlainTextTargetNotFound", "The selected text is not an editable plain string.", navigation)});
+    }
+    return replaceTextValue(target, spice::sct::SctPlainText{std::move(utf8)},
+        "Edit plain text");
+}
+
+SctEditResult SctEditSession::replaceTextValue(
+    const SctTextTarget& target, spice::sct::SctTextValue value,
+    std::string description,
+    std::optional<SctTextRepairProvenance> repairProvenance) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const auto navigation = navigationFor(target);
+    if (!structurallyValid_) return failure({editError(locator,
+        "DocumentNotStructurallyValid", "Text editing is unavailable until the document is structurally valid.", navigation)});
+    const auto* current = workingState_.textValue(target);
+    if (current == nullptr) return failure({editError(locator, "TextTargetNotFound",
+        "The selected text entity no longer exists.", navigation)});
+    if (sameTextValue(*current, value)) {
+        SctEditResult result;
+        result.revision = history_.currentRevision().id;
+        result.snapshot = currentSnapshot_;
+        result.suggestedSelection = navigation;
+        return result;
+    }
+    const bool recordsRepair = repairProvenance.has_value();
+    return commit(SctSemanticOperationBatch{{SctReplaceTextValueOperation{
+            target, std::move(value), recordsRepair, std::move(repairProvenance)}}}, {}, std::move(description),
+        SelectionHints{navigation, navigation});
+}
+
+SctEditResult SctEditSession::createScriptSection(
+    std::string name, const std::optional<spice::sct::SctSectionId> after,
+    const bool includeReturn) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!validAuthoredSectionName(name)) return failure({editError(locator,
+        "InvalidAuthoredSectionName", "Section names must match [A-Za-z0-9_]{1,16}.")});
+    if (std::ranges::any_of(workingState_.sectionOrder(), [&](const auto id) {
+            const auto* value = workingState_.section(id);
+            return value != nullptr && value->nameBytes == name;
+        })) return failure({editError(locator, "DuplicateSectionName",
+            "A section with that exact name already exists.")});
+    if (after && workingState_.section(*after) == nullptr)
+        return failure({editError(locator, "SectionAnchorNotFound", "The selected section no longer exists.")});
+
+    spice::sct::SctDocument context;
+    auto created = spice::sct::SctDocumentEntityFactory::createScriptSection(context, name);
+    if (!created.section) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : created.diagnostics)
+            diagnostics.push_back(convertSctDiagnostic(diagnostic, SctPipelineStage::Edit, locator));
+        return failure(std::move(diagnostics));
+    }
+    auto section = std::move(*created.section);
+    section.id = spice::sct::SctSectionId(workingState_.nextSectionIdValue());
+    auto* script = std::get_if<spice::sct::SctScriptSectionContent>(&section.content);
+    auto label = makeInstruction(9u, workingState_.nextInstructionIdValue());
+    if (!label) return failure({editError(locator, "SectionLabelCreationFailed",
+        "The mandatory section label instruction could not be constructed.")});
+    script->instructions.push_back(*label);
+    if (includeReturn) {
+        auto terminal = makeInstruction(12u, workingState_.nextInstructionIdValue() + 1u);
+        if (!terminal) return failure({editError(locator, "SectionReturnCreationFailed",
+            "The optional terminal Return instruction could not be constructed.")});
+        script->instructions.push_back(*terminal);
+    }
+    auto insertionAnchor = after;
+    if (!insertionAnchor && !workingState_.sectionOrder().empty())
+        insertionAnchor = workingState_.sectionOrder().back();
+    const auto id = section.id;
+    const SctNavigationTarget target{SctNavigationKind::Section, id.value()};
+    return commit(SctSemanticOperationBatch{{SctInsertSectionAfterOperation{
+            insertionAnchor, std::move(section)}}}, {}, "Create script section " + name,
+        SelectionHints{after ? std::optional<SctNavigationTarget>{SctNavigationTarget{
+            SctNavigationKind::Section, after->value()}} : std::nullopt, target});
+}
+
+SctEditResult SctEditSession::createIndexedString(
+    std::string name, const std::optional<spice::sct::SctSectionId> after) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!validAuthoredSectionName(name)) return failure({editError(locator,
+        "InvalidAuthoredSectionName", "Section names must match [A-Za-z0-9_]{1,16}.")});
+    if (std::ranges::any_of(workingState_.sectionOrder(), [&](const auto id) {
+            const auto* value = workingState_.section(id);
+            return value != nullptr && value->nameBytes == name;
+        })) return failure({editError(locator, "DuplicateSectionName",
+            "A section with that exact name already exists.")});
+    SctMessageDraft draft;
+    const auto message = SctMessageAuthoringProfile::materialize(draft);
+    if (!message.message) return failure({editError(locator, "DefaultMessageCreationFailed",
+        "The default SCT message could not be constructed.")});
+    spice::sct::SctDocument context;
+    auto created = spice::sct::SctDocumentEntityFactory::createIndexedStringSection(
+        context, name, *message.message);
+    if (!created.section) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : created.diagnostics)
+            diagnostics.push_back(convertSctDiagnostic(diagnostic, SctPipelineStage::Edit, locator));
+        return failure(std::move(diagnostics));
+    }
+    auto section = std::move(*created.section);
+    section.id = spice::sct::SctSectionId(workingState_.nextSectionIdValue());
+    auto& strings = std::get<spice::sct::SctStringSectionContent>(section.content);
+    strings.string.id = spice::sct::SctStringId(workingState_.nextStringIdValue());
+    const auto id = strings.string.id;
+    auto insertionAnchor = after;
+    if (!insertionAnchor && !workingState_.sectionOrder().empty())
+        insertionAnchor = workingState_.sectionOrder().back();
+    return commit(SctSemanticOperationBatch{{SctInsertSectionAfterOperation{insertionAnchor, std::move(section)}}},
+        {}, "Create indexed string " + name,
+        SelectionHints{{}, SctNavigationTarget{SctNavigationKind::String, id.value()}});
+}
+
+SctEditResult SctEditSession::renameSection(
+    const spice::sct::SctSectionId sectionId, std::string name) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const auto* section = workingState_.section(sectionId);
+    if (section == nullptr) return failure({editError(locator, "SectionNotFound", "The section no longer exists.")});
+    if (!validAuthoredSectionName(name)) return failure({editError(locator,
+        "InvalidAuthoredSectionName", "Section names must match [A-Za-z0-9_]{1,16}.")});
+    if (section->nameBytes == name) {
+        SctEditResult result;
+        result.revision = history_.currentRevision().id;
+        result.snapshot = currentSnapshot_;
+        result.suggestedSelection = SctNavigationTarget{
+            SctNavigationKind::Section, sectionId.value()};
+        return result;
+    }
+    if (std::ranges::any_of(workingState_.sectionOrder(), [&](const auto id) {
+            const auto* value = workingState_.section(id);
+            return id != sectionId && value != nullptr && value->nameBytes == name;
+        })) return failure({editError(locator, "DuplicateSectionName", "A section with that exact name already exists.")});
+    const SctNavigationTarget target{SctNavigationKind::Section, sectionId.value()};
+    return commit(SctSemanticOperationBatch{{SctRenameSectionOperation{sectionId, std::move(name)}}},
+        {}, "Rename section", SelectionHints{target, target});
+}
+
+SctEditResult SctEditSession::deleteSection(const spice::sct::SctSectionId sectionId) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const auto* section = workingState_.section(sectionId);
+    if (section == nullptr) return failure({editError(locator, "SectionNotFound", "The section no longer exists.")});
+    if (!std::holds_alternative<spice::sct::SctScriptSectionContent>(section->content))
+        return failure({editError(locator, "SectionLifecycleKindUnsupported",
+            "This command deletes script sections only. Use Delete Text for indexed strings.")});
+    std::unordered_set<std::uint64_t> internal;
+    for (const auto id : workingState_.instructionOrder(sectionId)) internal.insert(id.value());
+    std::vector<SctPipelineDiagnostic> blockers;
+    for (const auto id : workingState_.instructionOrder(sectionId)) {
+        for (const auto source : workingState_.inboundReferenceSources(
+                spice::sct::SctDocumentReferenceTarget{id})) {
+            if (!internal.contains(source.value())) blockers.push_back(editError(locator,
+                "SectionHasExternalReference", "The section cannot be deleted while an instruction outside it references one of its instructions.",
+                SctNavigationTarget{SctNavigationKind::Instruction, source.value()}));
+        }
+        for (const auto attachment : workingState_.opaqueAttachments(spice::sct::SctOpaqueAnchor{id}))
+            blockers.push_back(editError(locator, "SectionInstructionHasOpaqueAttachment",
+                "The section cannot be deleted while opaque source data is anchored to an instruction.",
+                SctNavigationTarget{SctNavigationKind::OpaqueAttachment, attachment.value()}));
+    }
+    for (const auto attachment : workingState_.opaqueAttachments(spice::sct::SctOpaqueAnchor{sectionId}))
+        blockers.push_back(editError(locator, "SectionHasOpaqueAttachment",
+            "The section cannot be deleted while opaque source data is anchored to it.",
+            SctNavigationTarget{SctNavigationKind::OpaqueAttachment, attachment.value()}));
+    if (!blockers.empty()) return failure(std::move(blockers));
+    SctStructuredAuthoringOperationBatch authored;
+    for (const auto& arm : structuredAuthoring_.arms()) {
+        if (arm.controller.section == sectionId)
+            authored.operations.push_back({arm.id, arm, std::nullopt});
+    }
+    const auto placement = workingState_.sectionPlacement(sectionId);
+    const SctNavigationTarget removed{SctNavigationKind::Section, sectionId.value()};
+    std::optional<SctNavigationTarget> next;
+    const auto order = workingState_.sectionOrder();
+    const auto position = std::ranges::find(order, sectionId);
+    if (position != order.end() && std::next(position) != order.end())
+        next = SctNavigationTarget{SctNavigationKind::Section, std::next(position)->value()};
+    else if (placement && placement->after)
+        next = SctNavigationTarget{SctNavigationKind::Section, placement->after->value()};
+    return commit(SctSemanticOperationBatch{{SctDeleteSectionOperation{sectionId}}},
+        std::move(authored), "Delete script section " + section->nameBytes,
+        SelectionHints{removed, next});
+}
+
+SctEditResult SctEditSession::moveSection(
+    const spice::sct::SctSectionId sectionId, const SctSectionMoveDirection direction) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const auto* section = workingState_.section(sectionId);
+    if (section == nullptr) return failure({editError(locator, "SectionNotFound", "The section no longer exists.")});
+    if (!std::holds_alternative<spice::sct::SctScriptSectionContent>(section->content))
+        return failure({editError(locator, "SectionLifecycleKindUnsupported", "Only script sections can be moved with this command.")});
+    const auto order = workingState_.sectionOrder();
+    const auto position = std::ranges::find(order, sectionId);
+    if (position == order.end()) return failure({editError(locator, "SectionNotFound", "The section no longer exists.")});
+    std::optional<spice::sct::SctSectionId> anchor;
+    if (direction == SctSectionMoveDirection::Up) {
+        if (position == order.begin()) return failure({editError(locator, "SectionMoveAtBoundary", "The section is already first.")});
+        const auto previous = std::prev(position);
+        if (previous != order.begin()) anchor = *std::prev(previous);
+    } else {
+        if (std::next(position) == order.end()) return failure({editError(locator, "SectionMoveAtBoundary", "The section is already last.")});
+        anchor = *std::next(position);
+    }
+    const SctNavigationTarget target{SctNavigationKind::Section, sectionId.value()};
+    return commit(SctSemanticOperationBatch{{SctRelocateSectionAfterOperation{sectionId, anchor}}},
+        {}, direction == SctSectionMoveDirection::Up ? "Move section up" : "Move section down",
+        SelectionHints{target, target});
+}
+
+SctEditResult SctEditSession::createFooterText(
+    const SctCreatedFooterTextKind kind,
+    const std::optional<spice::sct::SctFooterEntryId> after) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    spice::sct::SctTextKind textKind = spice::sct::SctTextKind::PlainString;
+    spice::sct::SctTextValue value = spice::sct::SctPlainText{};
+    if (kind == SctCreatedFooterTextKind::Message) {
+        textKind = spice::sct::SctTextKind::SctString;
+        const auto created = SctMessageAuthoringProfile::materialize(SctMessageDraft{});
+        if (!created.message) return failure({editError(locator, "DefaultMessageCreationFailed", "The default SCT message could not be constructed.")});
+        value = *created.message;
+    }
+    spice::sct::SctDocument context;
+    auto created = spice::sct::SctDocumentEntityFactory::createFooterEntry(context, textKind, value);
+    if (!created.entry) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : created.diagnostics)
+            diagnostics.push_back(convertSctDiagnostic(diagnostic, SctPipelineStage::Edit, locator));
+        return failure(std::move(diagnostics));
+    }
+    auto entry = std::move(*created.entry);
+    entry.id = spice::sct::SctFooterEntryId(workingState_.nextFooterEntryIdValue());
+    const auto id = entry.id;
+    auto insertionAnchor = after;
+    if (!insertionAnchor && !workingState_.footerEntryOrder().empty())
+        insertionAnchor = workingState_.footerEntryOrder().back();
+    return commit(SctSemanticOperationBatch{{SctInsertFooterEntryAfterOperation{insertionAnchor, std::move(entry)}}},
+        {}, kind == SctCreatedFooterTextKind::Message ? "Create footer message" : "Create footer text",
+        SelectionHints{{}, SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()}});
+}
+
+SctEditResult SctEditSession::deleteTextEntity(const SctTextTarget& target) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const auto navigation = navigationFor(target);
+    if (workingState_.textValue(target) == nullptr)
+        return failure({editError(locator, "TextTargetNotFound", "The text entity no longer exists.", navigation)});
+    const auto references = std::visit([&](const auto id) {
+        return workingState_.inboundReferenceSources(spice::sct::SctDocumentReferenceTarget{id});
+    }, target);
+    if (!references.empty()) return failure({editError(locator, "TextHasIncomingReference",
+        "The text entity cannot be deleted while an instruction references it.",
+        SctNavigationTarget{SctNavigationKind::Instruction, references.front().value()})});
+    const auto attachments = std::visit([&](const auto id) {
+        return workingState_.opaqueAttachments(spice::sct::SctOpaqueAnchor{id});
+    }, target);
+    if (!attachments.empty()) return failure({editError(locator, "TextHasOpaqueAttachment",
+        "The text entity cannot be deleted while opaque source data is anchored to it.",
+        SctNavigationTarget{SctNavigationKind::OpaqueAttachment, attachments.front().value()})});
+    return std::visit([&](const auto id) -> SctEditResult {
+        using Id = std::decay_t<decltype(id)>;
+        if constexpr (std::is_same_v<Id, spice::sct::SctStringId>) {
+            for (const auto sectionId : workingState_.sectionOrder()) {
+                const auto* section = workingState_.section(sectionId);
+                const auto* content = section == nullptr ? nullptr
+                    : std::get_if<spice::sct::SctStringSectionContent>(&section->content);
+                if (content != nullptr && content->string.id == id)
+                    return commit(SctSemanticOperationBatch{{SctDeleteSectionOperation{sectionId}}},
+                        {}, "Delete indexed string", SelectionHints{navigation,
+                            SctNavigationTarget{SctNavigationKind::Document, 0}});
+            }
+            return failure({editError(locator, "TextSectionNotFound", "The indexed string section no longer exists.", navigation)});
+        } else {
+            return commit(SctSemanticOperationBatch{{SctDeleteFooterEntryOperation{id}}},
+                {}, "Delete footer text", SelectionHints{navigation,
+                    SctNavigationTarget{SctNavigationKind::Document, 0}});
+        }
+    }, target);
 }
 
 SctEditResult SctEditSession::addVirtualElse(

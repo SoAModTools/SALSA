@@ -77,6 +77,8 @@ void SctOutlineModel::resetFrom(
 }
 
 bool SctOutlineModel::apply(const core::SctEditChangeSet& changes) {
+    for (const auto& change : changes.sections)
+        if (!applyOne(change)) return false;
     std::vector<core::SctInstructionStructuralChange> applied;
     applied.reserve(changes.instructions.size());
     for (const auto& change : changes.instructions) {
@@ -94,7 +96,117 @@ bool SctOutlineModel::apply(const core::SctEditChangeSet& changes) {
         }
         return false;
     }
+    for (const auto& change : changes.footerEntries)
+        if (!applyOne(change)) return false;
     return true;
+}
+
+bool SctOutlineModel::applyOne(const core::SctSectionStructuralChange& change) {
+    const core::SctNavigationTarget target{core::SctNavigationKind::Section,
+        change.section.value()};
+    if (!change.before && change.after && change.afterValue) {
+        if (nodeFor(target) != nullptr) return false;
+        const auto row = sectionInsertionRow(*change.after);
+        if (row < 0) return false;
+        beginInsertRows({}, row, row);
+        auto node = sectionNode(*change.afterValue);
+        auto* raw = node.get();
+        roots_.insert(roots_.begin() + row, std::move(node));
+        indexNode(*raw);
+        if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(
+                &change.afterValue->content)) {
+            for (const auto& instruction : script->instructions)
+                instructionValues_[instruction.id.value()] = instruction;
+        }
+        endInsertRows();
+        refreshSectionLabels();
+        return true;
+    }
+    if (change.before && !change.after && change.beforeValue) {
+        auto* node = nodeFor(target);
+        if (node == nullptr || node->parent != nullptr) return false;
+        const auto row = rowOf(node);
+        if (row < 0) return false;
+        std::vector<core::SctNavigationTarget> descendants;
+        const auto collect = [&](const auto& self, const Node& current) -> void {
+            descendants.push_back(current.target);
+            for (const auto& child : current.children) self(self, *child);
+        };
+        collect(collect, *node);
+        beginRemoveRows({}, row, row);
+        for (const auto descendant : descendants) {
+            nodes_.erase(key(descendant).toStdString());
+            if (descendant.kind == core::SctNavigationKind::Instruction)
+                instructionValues_.erase(descendant.id);
+        }
+        roots_.erase(roots_.begin() + row);
+        endRemoveRows();
+        refreshSectionLabels();
+        return true;
+    }
+    if (change.before && change.after) {
+        auto* node = nodeFor(target);
+        if (node == nullptr || node->parent != nullptr) return false;
+        const auto sourceRow = rowOf(node);
+        const auto finalRow = sectionInsertionRow(*change.after);
+        if (sourceRow < 0 || finalRow < 0) return false;
+        if (sourceRow == finalRow || sourceRow + 1 == finalRow) return true;
+        if (!beginMoveRows({}, sourceRow, sourceRow, {}, finalRow)) return false;
+        auto moved = std::move(roots_[static_cast<std::size_t>(sourceRow)]);
+        roots_.erase(roots_.begin() + sourceRow);
+        auto adjusted = finalRow;
+        if (sourceRow < finalRow) --adjusted;
+        roots_.insert(roots_.begin() + adjusted, std::move(moved));
+        endMoveRows();
+        refreshSectionLabels();
+        return true;
+    }
+    if (change.beforeName && change.afterName) {
+        auto* node = nodeFor(target);
+        if (node == nullptr) return false;
+        const auto row = rowOf(node);
+        const auto prefix = node->label.left(node->label.indexOf(QStringLiteral("] ")) + 2);
+        node->label = prefix + QString::fromStdString(*change.afterName);
+        emit dataChanged(indexForNode(node), indexForNode(node, 1));
+        return true;
+    }
+    return false;
+}
+
+bool SctOutlineModel::applyOne(const core::SctFooterEntryStructuralChange& change) {
+    auto* footer = nodeFor({core::SctNavigationKind::FooterGroup, 0});
+    if (footer == nullptr) return false;
+    const core::SctNavigationTarget target{core::SctNavigationKind::FooterEntry,
+        change.entry.value()};
+    if (!change.before && change.after && change.afterValue) {
+        int row = 0;
+        if (change.after->after) {
+            auto* anchor = nodeFor({core::SctNavigationKind::FooterEntry,
+                change.after->after->value()});
+            if (anchor == nullptr || anchor->parent != footer) return false;
+            row = rowOf(anchor) + 1;
+        }
+        beginInsertRows(indexForNode(footer), row, row);
+        auto node = footerEntryNode(*change.afterValue, footer);
+        auto* raw = node.get();
+        footer->children.insert(footer->children.begin() + row, std::move(node));
+        nodes_[key(target).toStdString()] = raw;
+        endInsertRows();
+        refreshFooterLabels();
+        return true;
+    }
+    if (change.before && !change.after) {
+        auto* node = nodeFor(target);
+        if (node == nullptr || node->parent != footer) return false;
+        const auto row = rowOf(node);
+        beginRemoveRows(indexForNode(footer), row, row);
+        nodes_.erase(key(target).toStdString());
+        footer->children.erase(footer->children.begin() + row);
+        endRemoveRows();
+        refreshFooterLabels();
+        return true;
+    }
+    return false;
 }
 
 bool SctOutlineModel::applyOne(
@@ -262,6 +374,74 @@ int SctOutlineModel::insertionRow(
         placement.after->value()});
     if (anchor == nullptr || anchor->parent != &section) return -1;
     return rowOf(anchor) + 1;
+}
+
+int SctOutlineModel::sectionInsertionRow(
+    const core::SctSectionPlacement& placement) const {
+    if (!placement.after) return roots_.empty() ? 0 : 1;
+    const auto* anchor = nodeFor({core::SctNavigationKind::Section,
+        placement.after->value()});
+    return anchor == nullptr || anchor->parent != nullptr ? -1 : rowOf(anchor) + 1;
+}
+
+std::unique_ptr<SctOutlineModel::Node> SctOutlineModel::sectionNode(
+    const spice::sct::SctDocumentSection& section, Node* parent) {
+    auto node = std::make_unique<Node>();
+    node->label = QStringLiteral("[0] ") + QString::fromStdString(section.nameBytes);
+    node->target = {core::SctNavigationKind::Section, section.id.value()};
+    node->parent = parent;
+    if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(&section.content)) {
+        node->secondary = tr("Script");
+        for (const auto& instruction : script->instructions)
+            node->children.push_back(instructionNode(instruction, node.get()));
+    } else if (const auto* strings = std::get_if<spice::sct::SctStringSectionContent>(&section.content)) {
+        node->secondary = tr("Indexed string");
+        auto child = std::make_unique<Node>();
+        child->label = tr("Indexed string");
+        child->secondary = strings->string.kind == spice::sct::SctTextKind::SctString
+            ? tr("SCT message") : tr("Plain string");
+        child->target = {core::SctNavigationKind::String, strings->string.id.value()};
+        child->parent = node.get();
+        node->children.push_back(std::move(child));
+    } else if (std::holds_alternative<spice::sct::SctLabelSectionContent>(section.content)) {
+        node->secondary = tr("Label");
+    } else {
+        node->secondary = tr("Opaque");
+    }
+    return node;
+}
+
+std::unique_ptr<SctOutlineModel::Node> SctOutlineModel::footerEntryNode(
+    const spice::sct::SctDocumentFooterEntry& entry, Node* parent) {
+    auto node = std::make_unique<Node>();
+    node->label = QStringLiteral("[0] ") + (entry.kind == spice::sct::SctTextKind::SctString
+        ? tr("SCT message") : tr("Plain string"));
+    node->target = {core::SctNavigationKind::FooterEntry, entry.id.value()};
+    node->parent = parent;
+    return node;
+}
+
+void SctOutlineModel::refreshSectionLabels() {
+    int ordinal = 0;
+    for (auto& node : roots_) {
+        if (node->target.kind != core::SctNavigationKind::Section) continue;
+        const auto suffix = node->label.mid(node->label.indexOf(QStringLiteral("] ")) + 2);
+        node->label = QStringLiteral("[%1] %2").arg(ordinal++).arg(suffix);
+        emit dataChanged(indexForNode(node.get()), indexForNode(node.get(), 1));
+    }
+}
+
+void SctOutlineModel::refreshFooterLabels() {
+    auto* footer = nodeFor({core::SctNavigationKind::FooterGroup, 0});
+    if (footer == nullptr) return;
+    footer->secondary = tr("%1 entries").arg(footer->children.size());
+    emit dataChanged(indexForNode(footer), indexForNode(footer, 1));
+    for (std::size_t i = 0; i < footer->children.size(); ++i) {
+        auto* node = footer->children[i].get();
+        const auto suffix = node->label.mid(node->label.indexOf(QStringLiteral("] ")) + 2);
+        node->label = QStringLiteral("[%1] %2").arg(i).arg(suffix);
+        emit dataChanged(indexForNode(node), indexForNode(node, 1));
+    }
 }
 
 }  // namespace salsa::qt

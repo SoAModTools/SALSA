@@ -63,6 +63,7 @@
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentMaterializer.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctEditSession.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctInspectionLocation.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctGlyphCatalog.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctMessageAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctSemanticOperation.h" />
@@ -81,6 +82,7 @@
     <ClCompile Include="src\Sct\SctDocumentLoader.cpp" />
     <ClCompile Include="src\Sct\SctDocumentMaterializer.cpp" />
     <ClCompile Include="src\Sct\SctEditSession.cpp" />
+    <ClCompile Include="src\Sct\SctGlyphCatalog.cpp" />
     <ClCompile Include="src\Sct\SctMessageAuthoring.cpp" />
     <ClCompile Include="src\Sct\SctPresentation.cpp" />
     <ClCompile Include="src\Sct\SctSemanticOperation.cpp" />

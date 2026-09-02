@@ -20,6 +20,47 @@ struct SctInstructionPlacement final {
     auto operator<=>(const SctInstructionPlacement&) const = default;
 };
 
+struct SctSectionPlacement final {
+    std::optional<spice::sct::SctSectionId> after{};
+    auto operator<=>(const SctSectionPlacement&) const = default;
+};
+
+struct SctFooterEntryPlacement final {
+    std::optional<spice::sct::SctFooterEntryId> after{};
+    auto operator<=>(const SctFooterEntryPlacement&) const = default;
+};
+
+struct SctSectionStructuralChange final {
+    spice::sct::SctSectionId section;
+    std::optional<SctSectionPlacement> before{};
+    std::optional<SctSectionPlacement> after{};
+    std::optional<std::string> beforeName{};
+    std::optional<std::string> afterName{};
+    std::optional<spice::sct::SctDocumentSection> beforeValue{};
+    std::optional<spice::sct::SctDocumentSection> afterValue{};
+};
+
+struct SctFooterEntryStructuralChange final {
+    spice::sct::SctFooterEntryId entry;
+    std::optional<SctFooterEntryPlacement> before{};
+    std::optional<SctFooterEntryPlacement> after{};
+    std::optional<spice::sct::SctDocumentFooterEntry> beforeValue{};
+    std::optional<spice::sct::SctDocumentFooterEntry> afterValue{};
+};
+
+struct SctTextValueChange final {
+    SctTextTarget target;
+    spice::sct::SctTextValue beforeValue;
+    spice::sct::SctTextValue afterValue;
+};
+
+struct SctTextRepairProvenance final {
+    spice::sct::SctTextEncoding encoding{};
+    std::optional<spice::sct::SctKnownTextConvention> knownConvention{};
+    std::string sourceSha256{};
+    auto operator<=>(const SctTextRepairProvenance&) const = default;
+};
+
 struct SctInstructionStructuralChange final {
     spice::sct::SctInstructionId instruction;
     std::optional<SctInstructionPlacement> before{};
@@ -49,11 +90,33 @@ enum class SctDerivedAnalysisInvalidation : std::uint32_t {
 }
 
 struct SctEditChangeSet final {
+    std::vector<SctSectionStructuralChange> sections{};
     std::vector<SctInstructionStructuralChange> instructions{};
+    std::vector<SctFooterEntryStructuralChange> footerEntries{};
+    std::vector<SctTextValueChange> textValues{};
     std::vector<SctNavigationTarget> modified{};
     std::vector<SctStructuredAuthoringChange> structuredAuthoring{};
     SctDerivedAnalysisInvalidation invalidations = SctDerivedAnalysisInvalidation::None;
     bool documentChanged = false;
+};
+
+struct SctInsertSectionAfterOperation final {
+    std::optional<spice::sct::SctSectionId> anchor{};
+    spice::sct::SctDocumentSection section;
+};
+
+struct SctDeleteSectionOperation final {
+    spice::sct::SctSectionId section;
+};
+
+struct SctRelocateSectionAfterOperation final {
+    spice::sct::SctSectionId section;
+    std::optional<spice::sct::SctSectionId> anchor{};
+};
+
+struct SctRenameSectionOperation final {
+    spice::sct::SctSectionId section;
+    std::string nameBytes;
 };
 
 struct SctInsertInstructionAfterOperation final {
@@ -70,9 +133,25 @@ struct SctRelocateInstructionAfterOperation final {
     spice::sct::SctInstructionId anchor;
 };
 
-struct SctReplaceMessageOperation final {
-    SctMessageTarget target;
-    spice::sct::SctMessage message;
+struct SctReplaceTextValueOperation final {
+    SctTextTarget target;
+    spice::sct::SctTextValue value;
+    bool updatesRepairProvenance = false;
+    std::optional<SctTextRepairProvenance> repairProvenance{};
+};
+
+// Source-compatible name for existing message-only callers. New code should
+// use SctReplaceTextValueOperation because the same primitive now owns every
+// semantic SCT text variant.
+using SctReplaceMessageOperation = SctReplaceTextValueOperation;
+
+struct SctInsertFooterEntryAfterOperation final {
+    std::optional<spice::sct::SctFooterEntryId> anchor{};
+    spice::sct::SctDocumentFooterEntry entry;
+};
+
+struct SctDeleteFooterEntryOperation final {
+    spice::sct::SctFooterEntryId entry;
 };
 
 struct SctReplaceInstructionOperation final {
@@ -81,11 +160,17 @@ struct SctReplaceInstructionOperation final {
 };
 
 using SctPrimitiveOperation = std::variant<
+    SctInsertSectionAfterOperation,
+    SctDeleteSectionOperation,
+    SctRelocateSectionAfterOperation,
+    SctRenameSectionOperation,
     SctInsertInstructionAfterOperation,
     SctDeleteInstructionOperation,
     SctRelocateInstructionAfterOperation,
     SctReplaceInstructionOperation,
-    SctReplaceMessageOperation>;
+    SctReplaceTextValueOperation,
+    SctInsertFooterEntryAfterOperation,
+    SctDeleteFooterEntryOperation>;
 
 struct SctSemanticOperationBatch final {
     std::vector<SctPrimitiveOperation> operations{};

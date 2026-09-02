@@ -114,9 +114,11 @@ public:
         const SctMessageDraft& draft);
 };
 
-using SctMessageTarget = std::variant<
+using SctTextTarget = std::variant<
     spice::sct::SctStringId,
     spice::sct::SctFooterEntryId>;
+
+using SctMessageTarget = SctTextTarget;
 
 enum class SctMessageEditKind {
     Typing,

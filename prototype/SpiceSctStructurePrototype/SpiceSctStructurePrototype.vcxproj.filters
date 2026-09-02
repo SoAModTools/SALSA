@@ -8,5 +8,9 @@
     <ClInclude Include="include\SpiceSctStructurePrototype\SctStructuredControlFlow.h"><Filter>Header Files</Filter></ClInclude>
     <ClCompile Include="src\SctStructuredControlFlow.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
-  <ItemGroup><None Include="HANDOFF.md" /></ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" />
+    <None Include="HANDOFF.md" />
+    <None Include="tests\test_sct_structured_control_flow.cpp" />
+  </ItemGroup>
 </Project>

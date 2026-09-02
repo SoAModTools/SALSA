@@ -60,8 +60,17 @@ private:
         const spice::sct::SctDocumentInstruction& instruction, Node* parent);
     [[nodiscard]] bool applyOne(
         const core::SctInstructionStructuralChange& change);
+    [[nodiscard]] bool applyOne(const core::SctSectionStructuralChange& change);
+    [[nodiscard]] bool applyOne(const core::SctFooterEntryStructuralChange& change);
     [[nodiscard]] int insertionRow(
         Node& section, const core::SctInstructionPlacement& placement) const;
+    [[nodiscard]] int sectionInsertionRow(const core::SctSectionPlacement& placement) const;
+    [[nodiscard]] static std::unique_ptr<Node> sectionNode(
+        const spice::sct::SctDocumentSection& section, Node* parent = nullptr);
+    [[nodiscard]] static std::unique_ptr<Node> footerEntryNode(
+        const spice::sct::SctDocumentFooterEntry& entry, Node* parent);
+    void refreshSectionLabels();
+    void refreshFooterLabels();
 
     std::vector<std::unique_ptr<Node>> roots_{};
     std::unordered_map<std::string, Node*> nodes_{};

@@ -24,7 +24,7 @@ struct PrimitiveApplication final {
     return {SctNavigationKind::Instruction, id.value()};
 }
 
-[[nodiscard]] SctNavigationTarget messageTarget(const SctMessageTarget& target) {
+[[nodiscard]] SctNavigationTarget textTarget(const SctTextTarget& target) {
     return std::visit([](const auto id) {
         using T = std::decay_t<decltype(id)>;
         if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
@@ -68,9 +68,18 @@ struct PrimitiveApplication final {
 }
 
 void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
+    target.sections.insert(target.sections.end(),
+        std::make_move_iterator(source.sections.begin()),
+        std::make_move_iterator(source.sections.end()));
     target.instructions.insert(target.instructions.end(),
         std::make_move_iterator(source.instructions.begin()),
         std::make_move_iterator(source.instructions.end()));
+    target.footerEntries.insert(target.footerEntries.end(),
+        std::make_move_iterator(source.footerEntries.begin()),
+        std::make_move_iterator(source.footerEntries.end()));
+    target.textValues.insert(target.textValues.end(),
+        std::make_move_iterator(source.textValues.begin()),
+        std::make_move_iterator(source.textValues.end()));
     target.modified.insert(target.modified.end(),
         std::make_move_iterator(source.modified.begin()),
         std::make_move_iterator(source.modified.end()));
@@ -79,6 +88,154 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
         std::make_move_iterator(source.structuredAuthoring.end()));
     target.invalidations = target.invalidations | source.invalidations;
     target.documentChanged = target.documentChanged || source.documentChanged;
+}
+
+[[nodiscard]] SctEditChangeSet instructionChangeSet(
+    SctInstructionStructuralChange change, std::vector<SctNavigationTarget> modified = {}) {
+    SctEditChangeSet result;
+    result.instructions.push_back(std::move(change));
+    result.modified = std::move(modified);
+    result.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+    result.documentChanged = true;
+    return result;
+}
+
+[[nodiscard]] PrimitiveApplication applyInsertSection(
+    spice::sct::SctDocument& document,
+    const SctInsertSectionAfterOperation& operation) {
+    const SctNavigationTarget target{SctNavigationKind::Section, operation.section.id.value()};
+    if (findSection(document, operation.section.id) != nullptr)
+        return {.issue = issue("SectionAlreadyExists", "The inserted section ID already exists.", target)};
+    auto destination = document.sections.begin();
+    if (operation.anchor) {
+        const auto anchor = std::ranges::find(document.sections, *operation.anchor,
+            &spice::sct::SctDocumentSection::id);
+        if (anchor == document.sections.end())
+            return {.issue = issue("SectionAnchorNotFound", "The section insertion anchor does not exist.")};
+        destination = std::next(anchor);
+    }
+    while (document.nextSectionIdValue() <= operation.section.id.value())
+        (void)document.allocateSectionId();
+    if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(&operation.section.content)) {
+        for (const auto& instruction : script->instructions)
+            while (document.nextInstructionIdValue() <= instruction.id.value())
+                (void)document.allocateInstructionId();
+    } else if (const auto* string = std::get_if<spice::sct::SctStringSectionContent>(&operation.section.content)) {
+        while (document.nextStringIdValue() <= string->string.id.value())
+            (void)document.allocateStringId();
+    }
+    document.sections.insert(destination, operation.section);
+    SctSectionStructuralChange change;
+    change.section = operation.section.id;
+    change.after = SctSectionPlacement{operation.anchor};
+    change.afterName = operation.section.nameBytes;
+    change.afterValue = operation.section;
+    auto reverse = change;
+    reverse.before = reverse.after;
+    reverse.after.reset();
+    reverse.beforeName = reverse.afterName;
+    reverse.afterName.reset();
+    reverse.beforeValue = reverse.afterValue;
+    reverse.afterValue.reset();
+    SctEditChangeSet forward, backward;
+    forward.sections.push_back(std::move(change));
+    backward.sections.push_back(std::move(reverse));
+    forward.invalidations = backward.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+    forward.documentChanged = backward.documentChanged = true;
+    return {SctDeleteSectionOperation{operation.section.id}, std::move(forward), std::move(backward)};
+}
+
+[[nodiscard]] PrimitiveApplication applyDeleteSection(
+    spice::sct::SctDocument& document, const SctDeleteSectionOperation& operation) {
+    const auto found = std::ranges::find(document.sections, operation.section,
+        &spice::sct::SctDocumentSection::id);
+    if (found == document.sections.end())
+        return {.issue = issue("SectionNotFound", "The deleted section does not exist.",
+            SctNavigationTarget{SctNavigationKind::Section, operation.section.value()})};
+    const auto ordinal = static_cast<std::size_t>(std::distance(document.sections.begin(), found));
+    std::optional<spice::sct::SctSectionId> anchor;
+    if (ordinal != 0u) anchor = document.sections[ordinal - 1u].id;
+    auto removed = *found;
+    document.sections.erase(found);
+    SctSectionStructuralChange change;
+    change.section = operation.section;
+    change.before = SctSectionPlacement{anchor};
+    change.beforeName = removed.nameBytes;
+    change.beforeValue = removed;
+    auto reverse = change;
+    reverse.after = reverse.before;
+    reverse.before.reset();
+    reverse.afterName = reverse.beforeName;
+    reverse.beforeName.reset();
+    reverse.afterValue = reverse.beforeValue;
+    reverse.beforeValue.reset();
+    SctEditChangeSet forward, backward;
+    forward.sections.push_back(std::move(change));
+    backward.sections.push_back(std::move(reverse));
+    forward.invalidations = backward.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+    forward.documentChanged = backward.documentChanged = true;
+    return {SctInsertSectionAfterOperation{anchor, std::move(removed)},
+        std::move(forward), std::move(backward)};
+}
+
+[[nodiscard]] PrimitiveApplication applyRelocateSection(
+    spice::sct::SctDocument& document, const SctRelocateSectionAfterOperation& operation) {
+    if (operation.anchor && *operation.anchor == operation.section)
+        return {.issue = issue("SectionMoveSelfAnchor", "A section cannot be positioned relative to itself.")};
+    const auto found = std::ranges::find(document.sections, operation.section,
+        &spice::sct::SctDocumentSection::id);
+    if (found == document.sections.end()) return {.issue = issue("SectionNotFound", "The moved section does not exist.")};
+    const auto ordinal = static_cast<std::size_t>(std::distance(document.sections.begin(), found));
+    std::optional<spice::sct::SctSectionId> oldAnchor;
+    if (ordinal != 0u) oldAnchor = document.sections[ordinal - 1u].id;
+    if (oldAnchor == operation.anchor) return {.issue = issue("SectionMoveNoChange", "The section is already at that position.")};
+    if (operation.anchor && std::ranges::find(document.sections, *operation.anchor,
+            &spice::sct::SctDocumentSection::id) == document.sections.end())
+        return {.issue = issue("SectionAnchorNotFound", "The section destination anchor does not exist.")};
+    auto moved = *found;
+    document.sections.erase(found);
+    auto destination = document.sections.begin();
+    if (operation.anchor) {
+        const auto anchor = std::ranges::find(document.sections, *operation.anchor,
+            &spice::sct::SctDocumentSection::id);
+        if (anchor == document.sections.end()) return {.issue = issue("SectionAnchorNotFound", "The section destination anchor does not exist.")};
+        destination = std::next(anchor);
+    }
+    document.sections.insert(destination, std::move(moved));
+    SctSectionStructuralChange change;
+    change.section = operation.section;
+    change.before = SctSectionPlacement{oldAnchor};
+    change.after = SctSectionPlacement{operation.anchor};
+    auto reverse = change;
+    std::swap(reverse.before, reverse.after);
+    SctEditChangeSet forward, backward;
+    forward.sections.push_back(std::move(change));
+    backward.sections.push_back(std::move(reverse));
+    forward.invalidations = backward.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+    forward.documentChanged = backward.documentChanged = true;
+    return {SctRelocateSectionAfterOperation{operation.section, oldAnchor}, std::move(forward), std::move(backward)};
+}
+
+[[nodiscard]] PrimitiveApplication applyRenameSection(
+    spice::sct::SctDocument& document, const SctRenameSectionOperation& operation) {
+    auto* section = findSection(document, operation.section);
+    if (section == nullptr) return {.issue = issue("SectionNotFound", "The renamed section does not exist.")};
+    auto previous = section->nameBytes;
+    section->nameBytes = operation.nameBytes;
+    SctSectionStructuralChange change;
+    change.section = operation.section;
+    change.before = change.after = SctSectionPlacement{};
+    change.beforeName = previous;
+    change.afterName = operation.nameBytes;
+    auto reverse = change;
+    std::swap(reverse.beforeName, reverse.afterName);
+    SctEditChangeSet forward, backward;
+    forward.sections.push_back(std::move(change));
+    backward.sections.push_back(std::move(reverse));
+    forward.modified.push_back({SctNavigationKind::Section, operation.section.value()});
+    backward.modified = forward.modified;
+    forward.documentChanged = backward.documentChanged = true;
+    return {SctRenameSectionOperation{operation.section, std::move(previous)}, std::move(forward), std::move(backward)};
 }
 
 [[nodiscard]] PrimitiveApplication applyInsert(
@@ -126,8 +283,8 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     reverse.afterSemantics = {};
     return {
         SctDeleteInstructionOperation{operation.instruction.id},
-        SctEditChangeSet{{std::move(change)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
-        SctEditChangeSet{{std::move(reverse)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
+        instructionChangeSet(std::move(change)),
+        instructionChangeSet(std::move(reverse)),
         std::nullopt,
     };
 }
@@ -170,8 +327,8 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     reverse.beforeSemantics = {};
     return {
         SctInsertInstructionAfterOperation{anchor, removed},
-        SctEditChangeSet{{std::move(change)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
-        SctEditChangeSet{{std::move(reverse)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
+        instructionChangeSet(std::move(change)),
+        instructionChangeSet(std::move(reverse)),
         std::nullopt,
     };
 }
@@ -235,8 +392,8 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     std::swap(reverse.before, reverse.after);
     return {
         SctRelocateInstructionAfterOperation{operation.instruction, oldAnchor},
-        SctEditChangeSet{{std::move(change)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
-        SctEditChangeSet{{std::move(reverse)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
+        instructionChangeSet(std::move(change)),
+        instructionChangeSet(std::move(reverse)),
         std::nullopt,
     };
 }
@@ -286,45 +443,97 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     std::swap(reverse.beforeSemantics, reverse.afterSemantics);
     return {
         SctReplaceInstructionOperation{operation.instruction, std::move(previous)},
-        SctEditChangeSet{{std::move(change)}, {target}, {},
-            SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
-        SctEditChangeSet{{std::move(reverse)}, {target}, {},
-            SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
+        instructionChangeSet(std::move(change), {target}),
+        instructionChangeSet(std::move(reverse), {target}),
         std::nullopt,
     };
 }
 
-[[nodiscard]] PrimitiveApplication applyReplaceMessage(
+[[nodiscard]] PrimitiveApplication applyReplaceText(
     spice::sct::SctDocument& document,
-    const SctReplaceMessageOperation& operation) {
-    const auto target = messageTarget(operation.target);
+    const SctReplaceTextValueOperation& operation) {
+    const auto target = textTarget(operation.target);
     spice::sct::SctTextValue* value = std::visit([&](const auto id)
         -> spice::sct::SctTextValue* {
         using T = std::decay_t<decltype(id)>;
         if constexpr (std::is_same_v<T, spice::sct::SctStringId>) {
             auto* string = findString(document, id);
-            return string != nullptr && string->kind == spice::sct::SctTextKind::SctString
-                ? &string->value : nullptr;
+            return string != nullptr ? &string->value : nullptr;
         } else {
             auto* entry = findFooterEntry(document, id);
-            return entry != nullptr && entry->kind == spice::sct::SctTextKind::SctString
-                ? &entry->value : nullptr;
+            return entry != nullptr ? &entry->value : nullptr;
         }
     }, operation.target);
-    auto* existing = value == nullptr ? nullptr
-        : std::get_if<spice::sct::SctMessage>(value);
-    if (existing == nullptr) {
-        return {.issue = issue("MessageTargetNotFound",
-            "The replaced message does not exist or is not semantic SCT text.", target)};
-    }
-    auto previous = *existing;
-    *value = operation.message;
+    if (value == nullptr) return {.issue = issue("TextTargetNotFound",
+        "The replaced text entity does not exist.", target)};
+    auto previous = *value;
+    *value = operation.value;
+    SctTextValueChange change{operation.target, previous, operation.value};
+    SctTextValueChange reverse{operation.target, operation.value, previous};
+    SctEditChangeSet forward, backward;
+    forward.textValues.push_back(std::move(change));
+    backward.textValues.push_back(std::move(reverse));
+    forward.modified.push_back(target);
+    backward.modified.push_back(target);
+    forward.documentChanged = backward.documentChanged = true;
     return {
-        SctReplaceMessageOperation{operation.target, std::move(previous)},
-        SctEditChangeSet{{}, {target}, {}, SctDerivedAnalysisInvalidation::None, true},
-        SctEditChangeSet{{}, {target}, {}, SctDerivedAnalysisInvalidation::None, true},
-        std::nullopt,
+        SctReplaceTextValueOperation{operation.target, std::move(previous)},
+        std::move(forward), std::move(backward), std::nullopt,
     };
+}
+
+[[nodiscard]] PrimitiveApplication applyInsertFooter(
+    spice::sct::SctDocument& document,
+    const SctInsertFooterEntryAfterOperation& operation) {
+    const auto target = SctNavigationTarget{SctNavigationKind::FooterEntry, operation.entry.id.value()};
+    if (findFooterEntry(document, operation.entry.id) != nullptr)
+        return {.issue = issue("FooterEntryAlreadyExists", "The footer entry ID already exists.", target)};
+    auto destination = document.footerEntries.begin();
+    if (operation.anchor) {
+        const auto anchor = std::ranges::find(document.footerEntries, *operation.anchor,
+            &spice::sct::SctDocumentFooterEntry::id);
+        if (anchor == document.footerEntries.end()) return {.issue = issue("FooterEntryAnchorNotFound", "The footer insertion anchor does not exist.")};
+        destination = std::next(anchor);
+    }
+    while (document.nextFooterEntryIdValue() <= operation.entry.id.value())
+        (void)document.allocateFooterEntryId();
+    document.footerEntries.insert(destination, operation.entry);
+    SctFooterEntryStructuralChange change;
+    change.entry = operation.entry.id;
+    change.after = SctFooterEntryPlacement{operation.anchor};
+    change.afterValue = operation.entry;
+    auto reverse = change;
+    reverse.before = reverse.after; reverse.after.reset();
+    reverse.beforeValue = reverse.afterValue; reverse.afterValue.reset();
+    SctEditChangeSet forward, backward;
+    forward.footerEntries.push_back(std::move(change));
+    backward.footerEntries.push_back(std::move(reverse));
+    forward.documentChanged = backward.documentChanged = true;
+    return {SctDeleteFooterEntryOperation{operation.entry.id}, std::move(forward), std::move(backward)};
+}
+
+[[nodiscard]] PrimitiveApplication applyDeleteFooter(
+    spice::sct::SctDocument& document, const SctDeleteFooterEntryOperation& operation) {
+    const auto found = std::ranges::find(document.footerEntries, operation.entry,
+        &spice::sct::SctDocumentFooterEntry::id);
+    if (found == document.footerEntries.end()) return {.issue = issue("FooterEntryNotFound", "The deleted footer entry does not exist.")};
+    const auto ordinal = static_cast<std::size_t>(std::distance(document.footerEntries.begin(), found));
+    std::optional<spice::sct::SctFooterEntryId> anchor;
+    if (ordinal != 0u) anchor = document.footerEntries[ordinal - 1u].id;
+    auto removed = *found;
+    document.footerEntries.erase(found);
+    SctFooterEntryStructuralChange change;
+    change.entry = operation.entry;
+    change.before = SctFooterEntryPlacement{anchor};
+    change.beforeValue = removed;
+    auto reverse = change;
+    reverse.after = reverse.before; reverse.before.reset();
+    reverse.afterValue = reverse.beforeValue; reverse.beforeValue.reset();
+    SctEditChangeSet forward, backward;
+    forward.footerEntries.push_back(std::move(change));
+    backward.footerEntries.push_back(std::move(reverse));
+    forward.documentChanged = backward.documentChanged = true;
+    return {SctInsertFooterEntryAfterOperation{anchor, std::move(removed)}, std::move(forward), std::move(backward)};
 }
 
 [[nodiscard]] PrimitiveApplication applyPrimitive(
@@ -332,7 +541,15 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     const SctPrimitiveOperation& operation) {
     return std::visit([&](const auto& typed) {
         using T = std::decay_t<decltype(typed)>;
-        if constexpr (std::is_same_v<T, SctInsertInstructionAfterOperation>)
+        if constexpr (std::is_same_v<T, SctInsertSectionAfterOperation>)
+            return applyInsertSection(document, typed);
+        else if constexpr (std::is_same_v<T, SctDeleteSectionOperation>)
+            return applyDeleteSection(document, typed);
+        else if constexpr (std::is_same_v<T, SctRelocateSectionAfterOperation>)
+            return applyRelocateSection(document, typed);
+        else if constexpr (std::is_same_v<T, SctRenameSectionOperation>)
+            return applyRenameSection(document, typed);
+        else if constexpr (std::is_same_v<T, SctInsertInstructionAfterOperation>)
             return applyInsert(document, typed);
         else if constexpr (std::is_same_v<T, SctDeleteInstructionOperation>)
             return applyDelete(document, typed);
@@ -340,8 +557,12 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
             return applyRelocate(document, typed);
         else if constexpr (std::is_same_v<T, SctReplaceInstructionOperation>)
             return applyReplaceInstruction(document, typed);
+        else if constexpr (std::is_same_v<T, SctReplaceTextValueOperation>)
+            return applyReplaceText(document, typed);
+        else if constexpr (std::is_same_v<T, SctInsertFooterEntryAfterOperation>)
+            return applyInsertFooter(document, typed);
         else
-            return applyReplaceMessage(document, typed);
+            return applyDeleteFooter(document, typed);
     }, operation);
 }
 

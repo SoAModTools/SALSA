@@ -11,6 +11,7 @@
 
 #include <QAction>
 #include <QCloseEvent>
+#include <QCheckBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QDialog>
@@ -30,6 +31,7 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTableView>
@@ -72,19 +74,21 @@ constexpr qsizetype MaximumRecentDatasets = 10;
     if (update.kind != SctDocumentUpdateKind::RevisionTransition
         || !update.transition.has_value()) return false;
     const auto& changes = update.transition->changes;
-    if (!changes.instructions.empty() || changes.modified.empty()) return false;
+    if (!changes.sections.empty() || !changes.instructions.empty()
+        || !changes.footerEntries.empty() || changes.textValues.empty()) return false;
     return std::ranges::all_of(changes.modified, [](const auto target) {
         return target.kind == core::SctNavigationKind::String
             || target.kind == core::SctNavigationKind::FooterEntry;
     });
 }
 
-[[nodiscard]] bool isIncrementalInstructionTransition(
+[[nodiscard]] bool isIncrementalStructuralTransition(
     const SctDocumentUpdate& update) {
     if (update.kind != SctDocumentUpdateKind::RevisionTransition
         || !update.transition.has_value()) return false;
     const auto& changes = update.transition->changes;
-    return !changes.instructions.empty() && changes.modified.empty();
+    return !changes.sections.empty() || !changes.instructions.empty()
+        || !changes.footerEntries.empty();
 }
 
 [[nodiscard]] bool affectsMessageTarget(
@@ -188,7 +192,20 @@ void MainWindow::buildUi() {
             const core::SctMessageEditKind kind) {
             return documentController_->replaceMessage(locator, target, draft, kind);
         });
-    messageEditorDock_ = new QDockWidget(tr("SctMessage Editor"), this);
+    messageEditor_->setPlainTextCommitHandler(
+        [this](const core::AssetLocator& locator, const core::SctTextTarget& target,
+            std::string utf8) {
+            return documentController_->replacePlainText(locator, target, std::move(utf8));
+        });
+    messageEditor_->setTextValueCommitHandler(
+        [this](const core::AssetLocator& locator, const core::SctTextTarget& target,
+            spice::sct::SctTextValue value, std::string description,
+            std::optional<core::SctTextRepairProvenance> repairProvenance) {
+            return documentController_->replaceTextValue(
+                locator, target, std::move(value), std::move(description),
+                std::move(repairProvenance));
+        });
+    messageEditorDock_ = new QDockWidget(tr("SCT Text Editor"), this);
     messageEditorDock_->setObjectName(QStringLiteral("SctMessageEditorDock"));
     messageEditorDock_->setWidget(messageEditor_);
     addDockWidget(Qt::RightDockWidgetArea, messageEditorDock_);
@@ -208,6 +225,17 @@ void MainWindow::buildUi() {
     auto* projectMenu = menuBar()->addMenu(tr("&Project"));
     refreshAction_ = projectMenu->addAction(tr("&Refresh Dataset"));
     refreshAction_->setShortcut(QKeySequence::Refresh);
+    projectMenu->addSeparator();
+    createScriptSectionAction_ = projectMenu->addAction(tr("New Script Section..."));
+    createIndexedStringAction_ = projectMenu->addAction(tr("New Indexed String..."));
+    renameSectionAction_ = projectMenu->addAction(tr("Rename Section..."));
+    deleteSectionAction_ = projectMenu->addAction(tr("Delete Script Section"));
+    moveSectionUpAction_ = projectMenu->addAction(tr("Move Section Up"));
+    moveSectionDownAction_ = projectMenu->addAction(tr("Move Section Down"));
+    projectMenu->addSeparator();
+    createFooterMessageAction_ = projectMenu->addAction(tr("New Footer Message"));
+    createFooterPlainTextAction_ = projectMenu->addAction(tr("New Footer Plain Text"));
+    deleteTextAction_ = projectMenu->addAction(tr("Delete Text Entity"));
 
     auto* editMenu = menuBar()->addMenu(tr("&Edit"));
     undoAction_ = editMenu->addAction(tr("&Undo"));
@@ -215,7 +243,7 @@ void MainWindow::buildUi() {
     redoAction_ = editMenu->addAction(tr("&Redo"));
     redoAction_->setShortcut(QKeySequence::Redo);
     editMenu->addSeparator();
-    editMessageAction_ = editMenu->addAction(tr("Edit &Message"));
+    editMessageAction_ = editMenu->addAction(tr("Edit &Text"));
     editMenu->addSeparator();
     insertInstructionAction_ = editMenu->addAction(tr("&Insert Instruction..."));
     insertInstructionAction_->setShortcut(QKeySequence(Qt::Key_Insert));
@@ -354,6 +382,27 @@ void MainWindow::buildUi() {
     connect(undoAction_, &QAction::triggered, this, &MainWindow::undoActiveDocument);
     connect(redoAction_, &QAction::triggered, this, &MainWindow::redoActiveDocument);
     connect(editMessageAction_, &QAction::triggered, this, &MainWindow::editSelectedMessage);
+    connect(createScriptSectionAction_, &QAction::triggered,
+        this, &MainWindow::createScriptSection);
+    connect(createIndexedStringAction_, &QAction::triggered,
+        this, &MainWindow::createIndexedString);
+    connect(renameSectionAction_, &QAction::triggered,
+        this, &MainWindow::renameSelectedSection);
+    connect(deleteSectionAction_, &QAction::triggered,
+        this, &MainWindow::deleteSelectedSection);
+    connect(moveSectionUpAction_, &QAction::triggered, this, [this]() {
+        moveSelectedSection(core::SctSectionMoveDirection::Up);
+    });
+    connect(moveSectionDownAction_, &QAction::triggered, this, [this]() {
+        moveSelectedSection(core::SctSectionMoveDirection::Down);
+    });
+    connect(createFooterMessageAction_, &QAction::triggered, this, [this]() {
+        createFooterText(core::SctCreatedFooterTextKind::Message);
+    });
+    connect(createFooterPlainTextAction_, &QAction::triggered, this, [this]() {
+        createFooterText(core::SctCreatedFooterTextKind::PlainText);
+    });
+    connect(deleteTextAction_, &QAction::triggered, this, &MainWindow::deleteSelectedText);
     connect(insertInstructionAction_, &QAction::triggered, this, &MainWindow::insertInstruction);
     connect(deleteInstructionAction_, &QAction::triggered, this, &MainWindow::deleteInstruction);
     connect(moveInstructionUpAction_, &QAction::triggered, this, [this]() {
@@ -679,6 +728,16 @@ void MainWindow::syncEditActions() {
     redoAction_->setText(redoDescription.has_value()
         ? tr("Redo %1").arg(QString::fromStdString(*redoDescription)) : tr("Redo"));
     editMessageAction_->setEnabled(editable && widget->canEditSelectedMessage());
+    createScriptSectionAction_->setEnabled(editable);
+    createIndexedStringAction_->setEnabled(editable);
+    const bool sectionSelected = editable && widget->selectedSection().has_value();
+    renameSectionAction_->setEnabled(sectionSelected);
+    deleteSectionAction_->setEnabled(sectionSelected);
+    moveSectionUpAction_->setEnabled(sectionSelected);
+    moveSectionDownAction_->setEnabled(sectionSelected);
+    createFooterMessageAction_->setEnabled(editable);
+    createFooterPlainTextAction_->setEnabled(editable);
+    deleteTextAction_->setEnabled(editable && widget->selectedTextTarget().has_value());
     insertInstructionAction_->setEnabled(editable && widget->insertionContext().has_value());
     deleteInstructionAction_->setEnabled(editable && widget->canDeleteSelected());
     moveInstructionUpAction_->setEnabled(editable
@@ -756,16 +815,122 @@ void MainWindow::moveInstruction(const core::SctInstructionMoveDirection directi
         (void)documentController_->moveInstruction(widget->locator(), *instruction, direction);
 }
 
+void MainWindow::createScriptSection() {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("New Script Section"));
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(tr("Name ([A-Za-z0-9_], 1-16 characters):"), &dialog));
+    auto* name = new QLineEdit(&dialog);
+    name->setMaxLength(16);
+    layout->addWidget(name);
+    auto* includeReturn = new QCheckBox(tr("End with Return (12)"), &dialog);
+    includeReturn->setChecked(true);
+    layout->addWidget(includeReturn);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+    layout->addWidget(buttons);
+    connect(name, &QLineEdit::textChanged, &dialog, [buttons](const QString& value) {
+        static const QRegularExpression pattern(QStringLiteral("^[A-Za-z0-9_]{1,16}$"));
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(pattern.match(value).hasMatch());
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    (void)documentController_->createScriptSection(widget->locator(),
+        name->text().toStdString(), widget->selectedSection(), includeReturn->isChecked());
+}
+
+void MainWindow::createIndexedString() {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    bool accepted = false;
+    const auto name = QInputDialog::getText(this, tr("New Indexed String"),
+        tr("Section name ([A-Za-z0-9_], 1-16 characters):"),
+        QLineEdit::Normal, {}, &accepted);
+    if (!accepted) return;
+    (void)documentController_->createIndexedString(widget->locator(),
+        name.toStdString(), widget->selectedSection());
+}
+
+void MainWindow::renameSelectedSection() {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    const auto section = widget->selectedSection();
+    if (!section) return;
+    bool accepted = false;
+    const auto name = QInputDialog::getText(this, tr("Rename Section"),
+        tr("New name ([A-Za-z0-9_], 1-16 characters):"),
+        QLineEdit::Normal, {}, &accepted);
+    if (accepted) (void)documentController_->renameSection(
+        widget->locator(), *section, name.toStdString());
+}
+
+void MainWindow::deleteSelectedSection() {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    const auto section = widget->selectedSection();
+    if (!section) return;
+    if (QMessageBox::question(this, tr("Delete Script Section"),
+            tr("Delete the selected script section and all instructions it owns?"))
+        != QMessageBox::Yes) return;
+    (void)documentController_->deleteSection(widget->locator(), *section);
+}
+
+void MainWindow::moveSelectedSection(const core::SctSectionMoveDirection direction) {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    if (const auto section = widget->selectedSection())
+        (void)documentController_->moveSection(widget->locator(), *section, direction);
+}
+
+void MainWindow::createFooterText(const core::SctCreatedFooterTextKind kind) {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    std::optional<spice::sct::SctFooterEntryId> after;
+    if (const auto target = widget->selectedTextTarget()) {
+        if (const auto* footer = std::get_if<spice::sct::SctFooterEntryId>(&*target))
+            after = *footer;
+    }
+    (void)documentController_->createFooterText(widget->locator(), kind, after);
+}
+
+void MainWindow::deleteSelectedText() {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    const auto target = widget->selectedTextTarget();
+    if (!target) return;
+    if (QMessageBox::question(this, tr("Delete Text Entity"),
+            tr("Delete the selected text entity?")) != QMessageBox::Yes) return;
+    (void)documentController_->deleteTextEntity(widget->locator(), *target);
+}
+
 void MainWindow::editSelectedMessage() {
     auto* widget = activeDocumentWidget();
     if (widget == nullptr || !widget->canEditSelectedMessage()) return;
-    const auto target = widget->selectedMessageTarget();
+    const auto target = widget->selectedTextTarget();
     const auto snapshot = documentController_->snapshot(widget->locator());
-    if (!target.has_value() || snapshot == nullptr) return;
+    const auto value = target ? documentController_->workingText(widget->locator(), *target)
+        : std::nullopt;
+    if (!target.has_value() || snapshot == nullptr || !value) return;
     if (!messageEditor_->isBoundTo(widget->locator(), *target)
-        && !messageEditor_->bindMessage(widget->locator(), snapshot, *target)) {
-        statusBar()->showMessage(tr("The selected message could not be opened for editing."), 8000);
-        return;
+        ) {
+        spice::sct::SctTextKind kind = std::holds_alternative<spice::sct::SctMessage>(*value)
+            ? spice::sct::SctTextKind::SctString : spice::sct::SctTextKind::PlainString;
+        spice::sct::SctTextStorage storage = std::holds_alternative<spice::sct::SctStringId>(*target)
+            ? spice::sct::SctTextStorage::IndexedSection : spice::sct::SctTextStorage::Footer;
+        if (snapshot->analysis && snapshot->document) {
+            std::visit([&](const auto id) {
+                if (const auto* entity = snapshot->analysis->entities.find(*snapshot->document, id))
+                    kind = entity->kind;
+            }, *target);
+        }
+        if (!messageEditor_->bindText(widget->locator(), *target, *value, kind, storage)) {
+            statusBar()->showMessage(tr("The selected text could not be opened for editing."), 8000);
+            return;
+        }
     }
     messageEditorDock_->show();
     messageEditorDock_->raise();
@@ -882,6 +1047,24 @@ void MainWindow::syncDocument(
             });
         connect(widget, &SctDocumentWidget::editMessageRequested,
             this, [this](const QString&) { editSelectedMessage(); });
+        connect(widget, &SctDocumentWidget::createScriptSectionRequested,
+            this, [this](const QString&) { createScriptSection(); });
+        connect(widget, &SctDocumentWidget::createIndexedStringRequested,
+            this, [this](const QString&) { createIndexedString(); });
+        connect(widget, &SctDocumentWidget::renameSectionRequested,
+            this, [this](const QString&) { renameSelectedSection(); });
+        connect(widget, &SctDocumentWidget::deleteSectionRequested,
+            this, [this](const QString&) { deleteSelectedSection(); });
+        connect(widget, &SctDocumentWidget::moveSectionRequested,
+            this, [this](const QString&, const int direction) {
+                moveSelectedSection(static_cast<core::SctSectionMoveDirection>(direction));
+            });
+        connect(widget, &SctDocumentWidget::createFooterTextRequested,
+            this, [this](const QString&, const int kind) {
+                createFooterText(static_cast<core::SctCreatedFooterTextKind>(kind));
+            });
+        connect(widget, &SctDocumentWidget::deleteTextRequested,
+            this, [this](const QString&) { deleteSelectedText(); });
         connect(widget, &SctDocumentWidget::addElseRequested,
             this, [this, widget](const QString&, const qulonglong controller) {
                 (void)documentController_->addVirtualElse(widget->locator(),
@@ -941,7 +1124,7 @@ void MainWindow::syncDocument(
     const auto sourceStatus = static_cast<int>(documentController_->sourceStatus(*found));
     const bool textOnly = !createdWidget && isTextOnlyTransition(update);
     const bool instructionDelta = !createdWidget
-        && isIncrementalInstructionTransition(update);
+        && isIncrementalStructuralTransition(update);
     const bool authoringOnly = !createdWidget && update.transition
         && !update.transition->changes.structuredAuthoring.empty()
         && !update.transition->changes.documentChanged;
@@ -969,9 +1152,9 @@ void MainWindow::syncDocument(
         && *messageEditor_->boundLocator() == *found
         && messageEditor_->boundTarget().has_value()
         && affectsMessageTarget(update, *messageEditor_->boundTarget())) {
-        if (const auto message = documentController_->workingMessage(
-                widget->locator(), *messageEditor_->boundTarget()); message.has_value()) {
-            (void)messageEditor_->refreshMessage(*message);
+        if (const auto text = documentController_->workingText(
+                widget->locator(), *messageEditor_->boundTarget()); text.has_value()) {
+            (void)messageEditor_->refreshText(*text);
         }
     }
     rebuildDocumentTabTitles();

@@ -153,6 +153,14 @@ std::optional<spice::sct::SctMessage> SctDocumentController::workingMessage(
     return message == nullptr ? std::nullopt : std::optional{*message};
 }
 
+std::optional<spice::sct::SctTextValue> SctDocumentController::workingText(
+    const core::AssetLocator& locator, const core::SctTextTarget& target) const {
+    const auto* state = findState(locator);
+    if (state == nullptr) return std::nullopt;
+    const auto* value = state->session->workingState().textValue(target);
+    return value == nullptr ? std::nullopt : std::optional{*value};
+}
+
 std::shared_ptr<const core::SctDocumentSnapshot> SctDocumentController::snapshot(
     const core::AssetLocator& locator) const {
     const auto* state = findState(locator);
@@ -283,6 +291,89 @@ bool SctDocumentController::replaceMessage(
     auto result = state->session->replaceMessage(target, draft, kind);
     if (!result.committed && result.diagnostics.empty()) return true;
     return applyEditResult(*state, std::move(result), tr("Message edited."));
+}
+
+bool SctDocumentController::replacePlainText(
+    const core::AssetLocator& locator, const core::SctTextTarget& target,
+    std::string utf8) {
+    auto* state = findState(locator);
+    if (state == nullptr || busy() || state->editBlocked) return false;
+    auto result = state->session->replacePlainText(target, std::move(utf8));
+    if (!result.committed && result.diagnostics.empty()) return true;
+    return applyEditResult(*state, std::move(result), tr("Plain text edited."));
+}
+
+bool SctDocumentController::replaceTextValue(
+    const core::AssetLocator& locator, const core::SctTextTarget& target,
+    spice::sct::SctTextValue value, std::string description,
+    std::optional<core::SctTextRepairProvenance> repairProvenance) {
+    auto* state = findState(locator);
+    if (state == nullptr || busy() || state->editBlocked) return false;
+    auto result = state->session->replaceTextValue(
+        target, std::move(value), std::move(description), std::move(repairProvenance));
+    if (!result.committed && result.diagnostics.empty()) return true;
+    return applyEditResult(*state, std::move(result), tr("Text repaired."));
+}
+
+bool SctDocumentController::createScriptSection(
+    const core::AssetLocator& locator, std::string name,
+    const std::optional<spice::sct::SctSectionId> after,
+    const bool includeReturn) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->createScriptSection(std::move(name), after, includeReturn),
+        tr("Script section created."));
+}
+
+bool SctDocumentController::createIndexedString(
+    const core::AssetLocator& locator, std::string name,
+    const std::optional<spice::sct::SctSectionId> after) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->createIndexedString(std::move(name), after),
+        tr("Indexed string created."));
+}
+
+bool SctDocumentController::renameSection(
+    const core::AssetLocator& locator, const spice::sct::SctSectionId section,
+    std::string name) {
+    auto* state = findState(locator);
+    if (state == nullptr || busy() || state->editBlocked) return false;
+    auto result = state->session->renameSection(section, std::move(name));
+    if (!result.committed && result.diagnostics.empty()) return true;
+    return applyEditResult(*state, std::move(result), tr("Section renamed."));
+}
+
+bool SctDocumentController::deleteSection(
+    const core::AssetLocator& locator, const spice::sct::SctSectionId section) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->deleteSection(section), tr("Section deleted."));
+}
+
+bool SctDocumentController::moveSection(
+    const core::AssetLocator& locator, const spice::sct::SctSectionId section,
+    const core::SctSectionMoveDirection direction) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->moveSection(section, direction),
+        direction == core::SctSectionMoveDirection::Up
+            ? tr("Section moved up.") : tr("Section moved down."));
+}
+
+bool SctDocumentController::createFooterText(
+    const core::AssetLocator& locator, const core::SctCreatedFooterTextKind kind,
+    const std::optional<spice::sct::SctFooterEntryId> after) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->createFooterText(kind, after), tr("Footer text created."));
+}
+
+bool SctDocumentController::deleteTextEntity(
+    const core::AssetLocator& locator, const core::SctTextTarget& target) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->deleteTextEntity(target), tr("Text entity deleted."));
 }
 
 bool SctDocumentController::addVirtualElse(

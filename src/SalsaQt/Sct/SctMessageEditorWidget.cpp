@@ -1,6 +1,9 @@
 #include "Sct/SctMessageEditorWidget.h"
 
+#include "SalsaCore/Sct/SctGlyphCatalog.h"
+#include "SalsaCore/Foundation/Hashing.h"
 #include "SpiceSCT/SctDocumentIndex.h"
+#include "SpiceSCT/SctTextCodec.h"
 
 #include <QApplication>
 #include <QAction>
@@ -9,6 +12,8 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QFont>
 #include <QHBoxLayout>
@@ -17,11 +22,13 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -96,6 +103,27 @@ constexpr int SemanticControlDelayMs = 250;
 
 [[nodiscard]] bool isImmediateIntent(const int intent) {
     return intent == IntentPaste || intent == IntentReplacement || intent == IntentCut;
+}
+
+[[nodiscard]] QString textPreview(const spice::sct::SctTextValue& value) {
+    return std::visit([](const auto& text) -> QString {
+        using T = std::decay_t<decltype(text)>;
+        if constexpr (std::is_same_v<T, spice::sct::SctPlainText>)
+            return QString::fromUtf8(text.utf8.data(), static_cast<qsizetype>(text.utf8.size()));
+        else if constexpr (std::is_same_v<T, spice::sct::SctMessage>) {
+            QString result;
+            if (text.headerUtf8) result += QObject::tr("Header: %1\n").arg(
+                QString::fromUtf8(text.headerUtf8->data(), static_cast<qsizetype>(text.headerUtf8->size())));
+            for (const auto& element : text.body.elements) {
+                if (const auto* chunk = std::get_if<spice::sct::SctTextChunk>(&element))
+                    result += QString::fromUtf8(chunk->utf8.data(), static_cast<qsizetype>(chunk->utf8.size()));
+                else result += QObject::tr(" [command] ");
+            }
+            return result;
+        } else if constexpr (std::is_same_v<T, spice::sct::SctOpaqueText>)
+            return QObject::tr("%1 opaque bytes").arg(text.bytes.size());
+        else return QObject::tr("Empty indexed text");
+    }, value);
 }
 
 }  // namespace
@@ -283,6 +311,14 @@ void SctMessageEditorWidget::setCommitHandler(CommitHandler handler) {
     commitHandler_ = std::move(handler);
 }
 
+void SctMessageEditorWidget::setPlainTextCommitHandler(PlainTextCommitHandler handler) {
+    plainTextCommitHandler_ = std::move(handler);
+}
+
+void SctMessageEditorWidget::setTextValueCommitHandler(TextValueCommitHandler handler) {
+    textValueCommitHandler_ = std::move(handler);
+}
+
 void SctMessageEditorWidget::buildUi() {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(6, 6, 6, 6);
@@ -332,9 +368,11 @@ void SctMessageEditorWidget::buildUi() {
     doubleScale_->setCheckable(true);
     color_ = new QPushButton(tr("Text color..."), editorPage_);
     resetFormatting_ = new QPushButton(tr("Clear formatting"), editorPage_);
+    glyphs_ = new QPushButton(tr("Glyphs..."), editorPage_);
     toolbar->addWidget(doubleScale_);
     toolbar->addWidget(color_);
     toolbar->addWidget(resetFormatting_);
+    toolbar->addWidget(glyphs_);
     toolbar->addStretch(1);
     editorLayout->addLayout(toolbar);
 
@@ -397,10 +435,34 @@ void SctMessageEditorWidget::buildUi() {
     scroll->setWidget(editorPage_);
     pages_->addWidget(scroll);
 
+    plainPage_ = new QWidget(pages_);
+    auto* plainLayout = new QVBoxLayout(plainPage_);
+    auto* plainHelp = new QLabel(tr(
+        "Plain footer text is edited as exact Unicode. Formatting commands are not available."),
+        plainPage_);
+    plainHelp->setWordWrap(true);
+    auto* plainGlyphs = new QPushButton(tr("Glyphs..."), plainPage_);
+    plainText_ = new QTextEdit(plainPage_);
+    plainText_->setAcceptRichText(false);
+    plainText_->setUndoRedoEnabled(false);
+    plainLayout->addWidget(plainHelp);
+    plainLayout->addWidget(plainGlyphs, 0, Qt::AlignLeft);
+    plainLayout->addWidget(plainText_, 1);
+    pages_->addWidget(plainPage_);
+
+    opaquePage_ = new QWidget(pages_);
+    opaqueLayout_ = new QVBoxLayout(opaquePage_);
+    pages_->addWidget(opaquePage_);
+
     commitTimer_ = new QTimer(this);
     commitTimer_->setSingleShot(true);
     commitTimer_->setInterval(TextBurstDelayMs);
     connect(commitTimer_, &QTimer::timeout, this, [this]() { (void)flushPending(); });
+    connect(plainText_, &QTextEdit::textChanged, this, [this]() {
+        if (!programmatic_ && mode_ == Mode::Plain) commitTimer_->start(TextBurstDelayMs);
+    });
+    connect(plainGlyphs, &QPushButton::clicked,
+        this, &SctMessageEditorWidget::openGlyphPalette);
 
     body_->beforeMutation = [this](const int intent) { beforeMutation(Surface::Body, intent); };
     body_->afterMutation = [this](const int intent) { afterMutation(Surface::Body, intent); };
@@ -418,6 +480,8 @@ void SctMessageEditorWidget::buildUi() {
     connect(color_, &QPushButton::clicked, this, &SctMessageEditorWidget::chooseColor);
     connect(resetFormatting_, &QPushButton::clicked,
         this, &SctMessageEditorWidget::clearFormatting);
+    connect(glyphs_, &QPushButton::clicked,
+        this, &SctMessageEditorWidget::openGlyphPalette);
     connect(body_, &QTextEdit::currentCharFormatChanged,
         this, [this](const QTextCharFormat&) { updateToolbarFromCursor(); });
     connect(completion_, &QComboBox::currentIndexChanged, this, [this]() {
@@ -448,6 +512,24 @@ void SctMessageEditorWidget::buildUi() {
     connect(closeDuration_, &QSpinBox::valueChanged, this, optionsChanged);
 }
 
+bool SctMessageEditorWidget::bindText(
+    core::AssetLocator locator, core::SctTextTarget target,
+    const spice::sct::SctTextValue& value, const spice::sct::SctTextKind kind,
+    const spice::sct::SctTextStorage storage) {
+    if (!flushPending()) return false;
+    locator_ = std::move(locator);
+    target_ = std::move(target);
+    textKind_ = kind;
+    textStorage_ = storage;
+    committedDraft_.reset();
+    identityLabel_->setText(tr("%1 — %2 %3")
+        .arg(QString::fromStdWString(locator_->path().wstring()))
+        .arg(std::holds_alternative<spice::sct::SctStringId>(*target_)
+            ? tr("indexed string") : tr("footer text"))
+        .arg(std::visit([](const auto id) { return QString::number(id.value()); }, *target_)));
+    return refreshText(value);
+}
+
 bool SctMessageEditorWidget::bindMessage(
     core::AssetLocator locator,
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
@@ -476,6 +558,7 @@ bool SctMessageEditorWidget::bindMessage(
         return true;
     }
     loadDraft(*projection.draft, false);
+    mode_ = Mode::Message;
     pages_->setCurrentIndex(2);
     return true;
 }
@@ -500,7 +583,27 @@ bool SctMessageEditorWidget::refreshMessage(
         return true;
     }
     loadDraft(*projection.draft, true);
+    mode_ = Mode::Message;
     pages_->setCurrentIndex(2);
+    return true;
+}
+
+bool SctMessageEditorWidget::refreshText(const spice::sct::SctTextValue& value) {
+    if (!hasBinding() || committing_) return false;
+    if (const auto* message = std::get_if<spice::sct::SctMessage>(&value))
+        return refreshMessage(*message);
+    if (const auto* plain = std::get_if<spice::sct::SctPlainText>(&value)) {
+        loadPlainText(*plain);
+        return true;
+    }
+    if (const auto* opaque = std::get_if<spice::sct::SctOpaqueText>(&value)) {
+        loadOpaqueText(*opaque);
+        return true;
+    }
+    blockedLabel_->setText(tr(
+        "This indexed text record is empty. Delete it or replace it through a future repair workflow."));
+    mode_ = Mode::Blocked;
+    pages_->setCurrentWidget(blockedLabel_);
     return true;
 }
 
@@ -518,6 +621,7 @@ const spice::sct::SctMessage* SctMessageEditorWidget::findBoundMessage(
 }
 
 void SctMessageEditorWidget::showEmpty() {
+    mode_ = Mode::None;
     pages_->setCurrentWidget(emptyLabel_);
 }
 
@@ -528,7 +632,85 @@ void SctMessageEditorWidget::showBlocked(
         text += QStringLiteral("• ") + QString::fromStdString(issue.message) + QLatin1Char('\n');
     }
     blockedLabel_->setText(text.trimmed());
+    mode_ = Mode::Blocked;
     pages_->setCurrentWidget(blockedLabel_);
+}
+
+void SctMessageEditorWidget::loadPlainText(const spice::sct::SctPlainText& text) {
+    programmatic_ = true;
+    committedPlainText_ = text.utf8;
+    plainText_->setPlainText(QString::fromUtf8(
+        text.utf8.data(), static_cast<qsizetype>(text.utf8.size())));
+    programmatic_ = false;
+    mode_ = Mode::Plain;
+    pages_->setCurrentWidget(plainPage_);
+}
+
+void SctMessageEditorWidget::loadOpaqueText(const spice::sct::SctOpaqueText& text) {
+    while (auto* item = opaqueLayout_->takeAt(0)) {
+        if (auto* widget = item->widget()) widget->deleteLater();
+        delete item;
+    }
+    auto* heading = new QLabel(tr(
+        "Opaque text can be repaired by selecting a complete known interpretation. "
+        "This records only how these source bytes were interpreted; it does not choose an export encoding."),
+        opaquePage_);
+    heading->setWordWrap(true);
+    opaqueLayout_->addWidget(heading);
+    const auto inspection = spice::sct::SctTextInspectionService::inspectKnownConventions(
+        text, textKind_, textStorage_);
+    std::vector<std::byte> digestBytes(text.bytes.size());
+    std::ranges::transform(text.bytes, digestBytes.begin(), [](const std::uint8_t value) {
+        return static_cast<std::byte>(value);
+    });
+    const auto digest = core::sha256(digestBytes);
+    const auto sourceDigest = digest ? digest.value().toHex() : std::string{};
+    for (const auto& interpretation : inspection.interpretations) {
+        auto* panel = new QWidget(opaquePage_);
+        auto* layout = new QVBoxLayout(panel);
+        const auto* descriptor = interpretation.knownConvention
+            ? spice::sct::findSctKnownTextConvention(*interpretation.knownConvention) : nullptr;
+        auto* name = new QLabel(descriptor == nullptr ? tr("Custom interpretation")
+            : QString::fromUtf8(descriptor->stableName.data(),
+                static_cast<qsizetype>(descriptor->stableName.size())), panel);
+        auto font = name->font();
+        font.setBold(true);
+        name->setFont(font);
+        layout->addWidget(name);
+        auto* preview = new QTextEdit(panel);
+        preview->setReadOnly(true);
+        preview->setMaximumHeight(130);
+        preview->setPlainText(interpretation.semanticValue
+            ? textPreview(*interpretation.semanticValue)
+            : tr("No complete semantic value could be decoded."));
+        layout->addWidget(preview);
+        for (const auto& issue : interpretation.issues) {
+            auto* issueLabel = new QLabel(QStringLiteral("• ")
+                + QString::fromStdString(issue.message), panel);
+            issueLabel->setWordWrap(true);
+            layout->addWidget(issueLabel);
+        }
+        auto* use = new QPushButton(tr("Use This Interpretation"), panel);
+        use->setEnabled(interpretation.complete && interpretation.semanticValue.has_value());
+        if (interpretation.semanticValue) {
+            const auto semanticValue = *interpretation.semanticValue;
+            const core::SctTextRepairProvenance provenance{
+                interpretation.encoding, interpretation.knownConvention, sourceDigest};
+            connect(use, &QPushButton::clicked, this, [this, semanticValue, provenance]() {
+                if (!locator_ || !target_ || !textValueCommitHandler_) return;
+                committing_ = true;
+                const auto success = textValueCommitHandler_(*locator_, *target_,
+                    semanticValue, "Repair opaque text interpretation", provenance);
+                committing_ = false;
+                if (success) (void)refreshText(semanticValue);
+            });
+        }
+        layout->addWidget(use);
+        opaqueLayout_->addWidget(panel);
+    }
+    opaqueLayout_->addStretch(1);
+    mode_ = Mode::Opaque;
+    pages_->setCurrentWidget(opaquePage_);
 }
 
 void SctMessageEditorWidget::loadDraft(
@@ -651,6 +833,8 @@ bool SctMessageEditorWidget::commitDraft(
 }
 
 bool SctMessageEditorWidget::flushPending() {
+    if (mode_ == Mode::Plain) return flushPlainText();
+    if (mode_ != Mode::Message) return true;
     if (!pendingCommitKind_.has_value()) {
         if (!failedCommitKind_.has_value()) return true;
         return commitDraft(draftFromWidgets(), *failedCommitKind_);
@@ -686,6 +870,20 @@ bool SctMessageEditorWidget::flushPending() {
         return false;
     }
     return true;
+}
+
+bool SctMessageEditorWidget::flushPlainText() {
+    commitTimer_->stop();
+    if (!locator_ || !target_ || !plainTextCommitHandler_) return true;
+    const auto value = plainText_->toPlainText().toUtf8().toStdString();
+    if (value == committedPlainText_) return true;
+    committing_ = true;
+    const auto success = plainTextCommitHandler_(*locator_, *target_, value);
+    committing_ = false;
+    if (success) committedPlainText_ = value;
+    else emit statusMessageRequested(tr(
+        "The plain-text edit could not be committed. Review Diagnostics for details."));
+    return success;
 }
 
 void SctMessageEditorWidget::beforeMutation(const Surface surface, const int intent) {
@@ -789,6 +987,115 @@ void SctMessageEditorWidget::updateToolbarFromCursor() {
     doubleScale_->setChecked(styleFromFormat(body_->currentCharFormat()).doubleScale);
 }
 
+void SctMessageEditorWidget::openGlyphPalette() {
+    if (glyphPalette_ != nullptr) {
+        glyphPalette_->show();
+        glyphPalette_->raise();
+        glyphPalette_->activateWindow();
+        return;
+    }
+    auto* dialog = new QDialog(this);
+    glyphPalette_ = dialog;
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(tr("SCT Glyph Palette"));
+    dialog->resize(620, 520);
+    dialog->setProperty("insertHeader", mode_ == Mode::Message && header_->hasFocus());
+    auto* layout = new QVBoxLayout(dialog);
+    auto* help = new QLabel(tr(
+        "These glyphs come from legacy SALSA authoring sets. Availability is evidence, not an export guarantee."),
+        dialog);
+    help->setWordWrap(true);
+    layout->addWidget(help);
+    auto* controls = new QHBoxLayout;
+    auto* search = new QLineEdit(dialog);
+    search->setPlaceholderText(tr("Search glyph, U+ code, category, or provenance"));
+    auto* membership = new QComboBox(dialog);
+    membership->addItem(tr("All legacy sets"), 0);
+    membership->addItem(tr("European"), static_cast<int>(core::SctGlyphMembership::European));
+    membership->addItem(tr("US / Japanese"), static_cast<int>(core::SctGlyphMembership::UsJapanese));
+    controls->addWidget(search, 1);
+    controls->addWidget(membership);
+    layout->addLayout(controls);
+    auto* list = new QListWidget(dialog);
+    layout->addWidget(list, 1);
+    auto* favorite = new QPushButton(tr("Toggle Favorite"), dialog);
+    auto* close = new QPushButton(tr("Close"), dialog);
+    auto* buttons = new QHBoxLayout;
+    buttons->addWidget(favorite);
+    buttons->addStretch(1);
+    buttons->addWidget(close);
+    layout->addLayout(buttons);
+
+    std::function<void()> rebuild = [search, membership, list]() {
+        QSettings settings(QStringLiteral("jahorta"), QStringLiteral("SALSA"));
+        const auto favorites = settings.value(QStringLiteral("TextEditor/GlyphFavorites"))
+            .toStringList();
+        const auto recent = settings.value(QStringLiteral("TextEditor/GlyphRecents"))
+            .toStringList();
+        const auto requested = static_cast<core::SctGlyphMembership>(
+            membership->currentData().toInt());
+        const auto results = core::SctGlyphCatalog::legacySupportedSet().search(
+            search->text().toStdString(), requested);
+        list->clear();
+        for (const auto& entry : results) {
+            const auto glyph = QString::fromUtf8(entry.utf8.data(),
+                static_cast<qsizetype>(entry.utf8.size()));
+            const auto prefix = favorites.contains(glyph) ? QStringLiteral("★ ")
+                : recent.contains(glyph) ? QStringLiteral("↺ ") : QString{};
+            auto* item = new QListWidgetItem(prefix + glyph + QStringLiteral("   ")
+                + QString::fromStdString(entry.displayName) + QStringLiteral("   ")
+                + QString::fromStdString(entry.category), list);
+            item->setData(Qt::UserRole, glyph);
+            item->setToolTip(QString::fromStdString(entry.provenance + "\n" + entry.confidence));
+        }
+    };
+    rebuild();
+    connect(search, &QLineEdit::textChanged, dialog, [rebuild](const QString&) { rebuild(); });
+    connect(membership, &QComboBox::currentIndexChanged, dialog, [rebuild]() { rebuild(); });
+    connect(favorite, &QPushButton::clicked, dialog, [list, rebuild]() {
+        const auto* item = list->currentItem();
+        if (item == nullptr) return;
+        const auto glyph = item->data(Qt::UserRole).toString();
+        QSettings settings(QStringLiteral("jahorta"), QStringLiteral("SALSA"));
+        auto favorites = settings.value(QStringLiteral("TextEditor/GlyphFavorites")).toStringList();
+        if (favorites.contains(glyph)) favorites.removeAll(glyph);
+        else favorites.prepend(glyph);
+        settings.setValue(QStringLiteral("TextEditor/GlyphFavorites"), favorites);
+        rebuild();
+    });
+    const auto insert = [this, dialog, list](QListWidgetItem* item) {
+        if (item == nullptr) return;
+        const auto glyph = item->data(Qt::UserRole).toString();
+        if (mode_ == Mode::Plain) {
+            auto cursor = plainText_->textCursor();
+            cursor.insertText(glyph);
+            plainText_->setTextCursor(cursor);
+        } else if (mode_ == Mode::Message) {
+            if (dialog->property("insertHeader").toBool()) {
+                beforeMutation(Surface::Header, IntentTyping);
+                header_->insert(glyph);
+                afterMutation(Surface::Header, IntentTyping);
+            } else {
+                beforeMutation(Surface::Body, IntentTyping);
+                auto cursor = body_->textCursor();
+                cursor.insertText(glyph);
+                body_->setTextCursor(cursor);
+                afterMutation(Surface::Body, IntentTyping);
+            }
+        }
+        QSettings settings(QStringLiteral("jahorta"), QStringLiteral("SALSA"));
+        auto recent = settings.value(QStringLiteral("TextEditor/GlyphRecents")).toStringList();
+        recent.removeAll(glyph);
+        recent.prepend(glyph);
+        while (recent.size() > 30) recent.removeLast();
+        settings.setValue(QStringLiteral("TextEditor/GlyphRecents"), recent);
+    };
+    connect(list, &QListWidget::itemDoubleClicked, dialog, insert);
+    connect(close, &QPushButton::clicked, dialog, &QDialog::close);
+    connect(dialog, &QObject::destroyed, this, [this]() { glyphPalette_ = nullptr; });
+    dialog->show();
+}
+
 void SctMessageEditorWidget::clear() {
     commitTimer_->stop();
     pendingBurst_ = Burst::None;
@@ -796,15 +1103,19 @@ void SctMessageEditorWidget::clear() {
     locator_.reset();
     target_.reset();
     committedDraft_.reset();
+    committedPlainText_.clear();
     failedCommitKind_.reset();
     errorLabel_->hide();
+    if (glyphPalette_) glyphPalette_->close();
     showEmpty();
 }
 
 void SctMessageEditorWidget::focusEditor() {
-    if (pages_->currentIndex() == 2) {
+    if (mode_ == Mode::Message) {
         if (headerPresent_->isChecked()) header_->setFocus();
         else body_->setFocus();
+    } else if (mode_ == Mode::Plain) {
+        plainText_->setFocus();
     } else {
         blockedLabel_->setFocus();
     }

@@ -374,7 +374,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
                 selectTarget(core::navigationTargetForOpaqueAnchor(attachment->anchor));
                 return;
             }
-            if (editingEnabled_ && selectedMessageTarget().has_value())
+            if (editingEnabled_ && selectedTextTarget().has_value())
                 emit editMessageRequested(QString::fromStdString(locator_.identityKey()));
         });
     connect(applyConventionButton_, &QPushButton::clicked, this, [this]() {
@@ -386,8 +386,28 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     });
     connect(outline_, &QTreeView::customContextMenuRequested, this, [this](const QPoint& position) {
         QMenu menu(this);
-        auto* editMessage = menu.addAction(tr("Edit Message"));
+        auto* editMessage = menu.addAction(tr("Edit Text"));
         editMessage->setEnabled(canEditSelectedMessage());
+        auto* createScript = menu.addAction(tr("New Script Section..."));
+        auto* createString = menu.addAction(tr("New Indexed String..."));
+        auto* renameSection = menu.addAction(tr("Rename Section..."));
+        auto* deleteSection = menu.addAction(tr("Delete Script Section"));
+        auto* moveSectionUp = menu.addAction(tr("Move Section Up"));
+        auto* moveSectionDown = menu.addAction(tr("Move Section Down"));
+        auto* createFooterMessage = menu.addAction(tr("New Footer Message"));
+        auto* createFooterPlain = menu.addAction(tr("New Footer Plain Text"));
+        auto* deleteText = menu.addAction(tr("Delete Text Entity"));
+        const bool hasSection = selectedSection().has_value();
+        const bool hasText = selectedTextTarget().has_value();
+        createScript->setEnabled(editingEnabled_);
+        createString->setEnabled(editingEnabled_);
+        renameSection->setEnabled(editingEnabled_ && hasSection);
+        deleteSection->setEnabled(editingEnabled_ && hasSection);
+        moveSectionUp->setEnabled(editingEnabled_ && hasSection);
+        moveSectionDown->setEnabled(editingEnabled_ && hasSection);
+        createFooterMessage->setEnabled(editingEnabled_);
+        createFooterPlain->setEnabled(editingEnabled_);
+        deleteText->setEnabled(editingEnabled_ && hasText);
         menu.addSeparator();
         auto* insert = menu.addAction(tr("Insert Instruction..."));
         auto* remove = menu.addAction(tr("Delete Instruction"));
@@ -402,6 +422,37 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             && canMoveSelected(core::SctInstructionMoveDirection::Down));
         connect(editMessage, &QAction::triggered, this, [this]() {
             emit editMessageRequested(QString::fromStdString(locator_.identityKey()));
+        });
+        connect(createScript, &QAction::triggered, this, [this]() {
+            emit createScriptSectionRequested(QString::fromStdString(locator_.identityKey()));
+        });
+        connect(createString, &QAction::triggered, this, [this]() {
+            emit createIndexedStringRequested(QString::fromStdString(locator_.identityKey()));
+        });
+        connect(renameSection, &QAction::triggered, this, [this]() {
+            emit renameSectionRequested(QString::fromStdString(locator_.identityKey()));
+        });
+        connect(deleteSection, &QAction::triggered, this, [this]() {
+            emit deleteSectionRequested(QString::fromStdString(locator_.identityKey()));
+        });
+        connect(moveSectionUp, &QAction::triggered, this, [this]() {
+            emit moveSectionRequested(QString::fromStdString(locator_.identityKey()),
+                static_cast<int>(core::SctSectionMoveDirection::Up));
+        });
+        connect(moveSectionDown, &QAction::triggered, this, [this]() {
+            emit moveSectionRequested(QString::fromStdString(locator_.identityKey()),
+                static_cast<int>(core::SctSectionMoveDirection::Down));
+        });
+        connect(createFooterMessage, &QAction::triggered, this, [this]() {
+            emit createFooterTextRequested(QString::fromStdString(locator_.identityKey()),
+                static_cast<int>(core::SctCreatedFooterTextKind::Message));
+        });
+        connect(createFooterPlain, &QAction::triggered, this, [this]() {
+            emit createFooterTextRequested(QString::fromStdString(locator_.identityKey()),
+                static_cast<int>(core::SctCreatedFooterTextKind::PlainText));
+        });
+        connect(deleteText, &QAction::triggered, this, [this]() {
+            emit deleteTextRequested(QString::fromStdString(locator_.identityKey()));
         });
         connect(insert, &QAction::triggered, this, [this]() {
             emit insertInstructionRequested(QString::fromStdString(locator_.identityKey()));
@@ -505,7 +556,8 @@ bool SctDocumentWidget::applyInstructionChanges(
     const int sourceStatus,
     const core::SctEditChangeSet& changes) {
     Q_UNUSED(snapshot);
-    if (changes.instructions.empty() || !changes.modified.empty()) return false;
+    if (changes.sections.empty() && changes.instructions.empty()
+        && changes.footerEntries.empty()) return false;
     const auto retained = currentTarget_;
     updateSourceBanner(sourceStatus);
     if (!outlineModel_->apply(changes)) {
@@ -649,8 +701,23 @@ std::optional<core::SctMessageTarget> SctDocumentWidget::selectedMessageTarget()
     return std::nullopt;
 }
 
+std::optional<core::SctTextTarget> SctDocumentWidget::selectedTextTarget() const {
+    if (!currentTarget_) return std::nullopt;
+    if (currentTarget_->kind == core::SctNavigationKind::String)
+        return core::SctTextTarget{spice::sct::SctStringId(currentTarget_->id)};
+    if (currentTarget_->kind == core::SctNavigationKind::FooterEntry)
+        return core::SctTextTarget{spice::sct::SctFooterEntryId(currentTarget_->id)};
+    return std::nullopt;
+}
+
+std::optional<spice::sct::SctSectionId> SctDocumentWidget::selectedSection() const {
+    if (!currentTarget_ || currentTarget_->kind != core::SctNavigationKind::Section)
+        return std::nullopt;
+    return spice::sct::SctSectionId(currentTarget_->id);
+}
+
 bool SctDocumentWidget::canEditSelectedMessage() const {
-    return editingEnabled_ && selectedMessageTarget().has_value();
+    return editingEnabled_ && selectedTextTarget().has_value();
 }
 
 bool SctDocumentWidget::canMoveSelected(const core::SctInstructionMoveDirection direction) const {

@@ -64,6 +64,28 @@ public:
         const core::SctMessageTarget& target,
         const core::SctMessageDraft& draft,
         core::SctMessageEditKind kind);
+    [[nodiscard]] bool replacePlainText(const core::AssetLocator& locator,
+        const core::SctTextTarget& target, std::string utf8);
+    [[nodiscard]] bool replaceTextValue(const core::AssetLocator& locator,
+        const core::SctTextTarget& target, spice::sct::SctTextValue value,
+        std::string description,
+        std::optional<core::SctTextRepairProvenance> repairProvenance = std::nullopt);
+    [[nodiscard]] bool createScriptSection(const core::AssetLocator& locator,
+        std::string name, std::optional<spice::sct::SctSectionId> after,
+        bool includeReturn);
+    [[nodiscard]] bool createIndexedString(const core::AssetLocator& locator,
+        std::string name, std::optional<spice::sct::SctSectionId> after);
+    [[nodiscard]] bool renameSection(const core::AssetLocator& locator,
+        spice::sct::SctSectionId section, std::string name);
+    [[nodiscard]] bool deleteSection(const core::AssetLocator& locator,
+        spice::sct::SctSectionId section);
+    [[nodiscard]] bool moveSection(const core::AssetLocator& locator,
+        spice::sct::SctSectionId section, core::SctSectionMoveDirection direction);
+    [[nodiscard]] bool createFooterText(const core::AssetLocator& locator,
+        core::SctCreatedFooterTextKind kind,
+        std::optional<spice::sct::SctFooterEntryId> after);
+    [[nodiscard]] bool deleteTextEntity(const core::AssetLocator& locator,
+        const core::SctTextTarget& target);
     [[nodiscard]] bool addVirtualElse(
         const core::AssetLocator& locator,
         spice::sct::SctInstructionId controller);
@@ -105,6 +127,8 @@ public:
     [[nodiscard]] std::optional<spice::sct::SctMessage> workingMessage(
         const core::AssetLocator& locator,
         const core::SctMessageTarget& target) const;
+    [[nodiscard]] std::optional<spice::sct::SctTextValue> workingText(
+        const core::AssetLocator& locator, const core::SctTextTarget& target) const;
     [[nodiscard]] SourceStatus sourceStatus(const core::AssetLocator& locator) const;
     [[nodiscard]] bool structurallyValid(const core::AssetLocator& locator) const;
     [[nodiscard]] bool isDirty(const core::AssetLocator& locator) const;

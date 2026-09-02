@@ -58,7 +58,9 @@
     <ClCompile Include="src\SctStructuredControlFlow.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="README.md" />
     <None Include="HANDOFF.md" />
+    <None Include="tests\test_sct_structured_control_flow.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\third-party\SPICE\SpiceSCT\SpiceSCT.vcxproj">

@@ -67,6 +67,8 @@ public:
     [[nodiscard]] std::optional<InstructionInsertionContext> insertionContext() const;
     [[nodiscard]] std::optional<spice::sct::SctInstructionId> selectedInstruction() const;
     [[nodiscard]] std::optional<core::SctMessageTarget> selectedMessageTarget() const;
+    [[nodiscard]] std::optional<core::SctTextTarget> selectedTextTarget() const;
+    [[nodiscard]] std::optional<spice::sct::SctSectionId> selectedSection() const;
     [[nodiscard]] bool canEditSelectedMessage() const;
     [[nodiscard]] bool canDeleteSelected() const;
     [[nodiscard]] bool canMoveSelected(core::SctInstructionMoveDirection direction) const;
@@ -80,6 +82,13 @@ signals:
     void deleteInstructionRequested(const QString& identityKey);
     void moveInstructionRequested(const QString& identityKey, int direction);
     void editMessageRequested(const QString& identityKey);
+    void createScriptSectionRequested(const QString& identityKey);
+    void createIndexedStringRequested(const QString& identityKey);
+    void renameSectionRequested(const QString& identityKey);
+    void deleteSectionRequested(const QString& identityKey);
+    void moveSectionRequested(const QString& identityKey, int direction);
+    void createFooterTextRequested(const QString& identityKey, int kind);
+    void deleteTextRequested(const QString& identityKey);
     void addElseRequested(const QString& identityKey, qulonglong controller);
     void addCaseRequested(const QString& identityKey, qulonglong controller);
     void setCaseValueRequested(const QString& identityKey, qulonglong arm);

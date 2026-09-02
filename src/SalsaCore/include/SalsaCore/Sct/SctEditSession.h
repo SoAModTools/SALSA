@@ -22,6 +22,8 @@
 namespace salsa::core {
 
 enum class SctInstructionMoveDirection { Up, Down };
+enum class SctSectionMoveDirection { Up, Down };
+enum class SctCreatedFooterTextKind { Message, PlainText };
 
 enum class SctRevisionTransitionKind {
     Commit,
@@ -86,6 +88,26 @@ public:
         const SctMessageTarget& target,
         const SctMessageDraft& draft,
         SctMessageEditKind editKind);
+    [[nodiscard]] SctEditResult replacePlainText(
+        const SctTextTarget& target, std::string utf8);
+    [[nodiscard]] SctEditResult replaceTextValue(
+        const SctTextTarget& target, spice::sct::SctTextValue value,
+        std::string description = "Repair text interpretation",
+        std::optional<SctTextRepairProvenance> repairProvenance = std::nullopt);
+    [[nodiscard]] SctEditResult createScriptSection(
+        std::string name, std::optional<spice::sct::SctSectionId> after,
+        bool includeReturn = true);
+    [[nodiscard]] SctEditResult createIndexedString(
+        std::string name, std::optional<spice::sct::SctSectionId> after);
+    [[nodiscard]] SctEditResult renameSection(
+        spice::sct::SctSectionId section, std::string name);
+    [[nodiscard]] SctEditResult deleteSection(spice::sct::SctSectionId section);
+    [[nodiscard]] SctEditResult moveSection(
+        spice::sct::SctSectionId section, SctSectionMoveDirection direction);
+    [[nodiscard]] SctEditResult createFooterText(
+        SctCreatedFooterTextKind kind,
+        std::optional<spice::sct::SctFooterEntryId> after);
+    [[nodiscard]] SctEditResult deleteTextEntity(const SctTextTarget& target);
     [[nodiscard]] SctEditResult addVirtualElse(
         spice::sct::SctInstructionId controller);
     [[nodiscard]] SctEditResult addVirtualCase(
