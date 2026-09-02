@@ -276,3 +276,30 @@ TEST(SctSemanticUsageIndex, OwnsResultsAndBestEffortPreservesInvalidPhysicalClai
     EXPECT_EQ(bestEffort.opcodeUsages()[1],
         (SctOpcodeUsage{ 5, SctInstructionId{} }));
 }
+
+TEST(SctSemanticUsageIndex, InstructionContributionMatchesCompleteIndexRecords) {
+    SctDocument document;
+    const auto section = document.allocateSectionId();
+    const auto source = document.allocateInstructionId();
+    const auto target = document.allocateInstructionId();
+    SctDocumentInstruction semantic{source, 3};
+    semantic.fixedParameters.push_back({0, SctInstructionReference{target}});
+    semantic.fixedParameters.push_back({1,
+        variable(SctExpressionVariableKind::Integer, 14)});
+    document.sections.push_back({section, "SEMANTIC", SctScriptSectionContent{{
+        semantic, SctDocumentInstruction{target, 12},
+    }}});
+    const auto& instruction = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions.front();
+    const auto contribution = SctSemanticUsageIndex::contributionFor(instruction);
+    const auto complete = SctSemanticUsageIndex::build(document);
+
+    ASSERT_EQ(contribution.opcodes.size(), 1u);
+    EXPECT_EQ(contribution.opcodes.front().instruction, instruction.id);
+    EXPECT_EQ(contribution.references,
+        complete.outboundReferences(instruction.id));
+    EXPECT_EQ(contribution.variables.size(),
+        std::ranges::count_if(complete.variableUsages(), [&](const auto& usage) {
+            return usage.source.instruction == instruction.id;
+        }));
+}

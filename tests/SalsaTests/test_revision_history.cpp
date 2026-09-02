@@ -224,5 +224,23 @@ TEST(RevisionHistoryTest, RevisionAndNavigationTargetQueriesDoNotMoveHistory) {
     EXPECT_EQ(history.currentRevision().id, second.revision);
 }
 
+TEST(RevisionHistoryTest, ExceptionalRecoverySelectsAncestorAndDiscardsDescendants) {
+    RevisionHistory<int> history(std::make_shared<const int>(0));
+    const auto second = history.commit(std::make_shared<const int>(1), "one");
+    const auto third = history.commit(std::make_shared<const int>(2), "two");
+    ASSERT_TRUE(second.created);
+    ASSERT_TRUE(third.created);
+
+    const auto recovered = history.selectAncestorAndDiscardDescendants(second.revision);
+    ASSERT_TRUE(recovered.has_value());
+    EXPECT_EQ(recovered->id, second.revision);
+    EXPECT_EQ(*recovered->state, 1);
+    EXPECT_FALSE(history.canRedo());
+    EXPECT_FALSE(history.revision(third.revision).has_value());
+
+    const auto replacement = history.commit(std::make_shared<const int>(3), "three");
+    EXPECT_GT(replacement.revision.value, third.revision.value);
+}
+
 }  // namespace
 }  // namespace salsa::core

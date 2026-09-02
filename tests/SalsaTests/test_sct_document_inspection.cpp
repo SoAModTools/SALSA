@@ -136,8 +136,8 @@ TEST(SctDocumentLoader, LoadsNoTextDocumentWithoutInventingAConvention) {
     ASSERT_TRUE(loaded.succeeded());
     ASSERT_NE(loaded.inspection, nullptr);
     EXPECT_TRUE(loaded.inspection->textAssessment.records.empty());
-    EXPECT_FALSE(loaded.document->textConvention.has_value());
-    EXPECT_EQ(loaded.document->textSelectionOrigin, SctTextSelectionOrigin::None);
+    EXPECT_FALSE(loaded.document->provenance->textConvention.has_value());
+    EXPECT_EQ(loaded.document->provenance->textSelectionOrigin, SctTextSelectionOrigin::None);
     ASSERT_EQ(loaded.document->document->sections.size(), 1u);
 }
 
@@ -147,14 +147,16 @@ TEST(SctDocumentLoader, AmbiguousTextStaysOpaqueUntilExplicitReimport) {
     const auto loaded = SctDocumentLoader::load(project, asset);
     ASSERT_TRUE(loaded.succeeded());
     ASSERT_FALSE(loaded.inspection->textAssessment.records.empty());
-    EXPECT_FALSE(loaded.document->textConvention.has_value());
+    EXPECT_FALSE(loaded.document->provenance->textConvention.has_value());
     const auto* parsedAddress = loaded.inspection->parsed.get();
     const auto reimported = SctDocumentLoader::materialize(loaded.inspection,
         SctKnownTextConvention::ShiftJisByte7F, SctTextSelectionOrigin::UserSelected);
     ASSERT_TRUE(reimported.succeeded());
     EXPECT_EQ(reimported.inspection->parsed.get(), parsedAddress);
-    EXPECT_EQ(reimported.document->textConvention, SctKnownTextConvention::ShiftJisByte7F);
-    EXPECT_EQ(reimported.document->textSelectionOrigin, SctTextSelectionOrigin::UserSelected);
+    EXPECT_EQ(reimported.document->provenance->textConvention,
+        SctKnownTextConvention::ShiftJisByte7F);
+    EXPECT_EQ(reimported.document->provenance->textSelectionOrigin,
+        SctTextSelectionOrigin::UserSelected);
     ASSERT_EQ(reimported.document->document->sections.size(), 2u);
     const auto& string = std::get<SctStringSectionContent>(
         reimported.document->document->sections.back().content).string;

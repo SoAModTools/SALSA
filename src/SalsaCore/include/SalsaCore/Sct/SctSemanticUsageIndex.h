@@ -83,10 +83,22 @@ struct SctOpaqueExpressionUsage final {
     auto operator<=>(const SctOpaqueExpressionUsage&) const = default;
 };
 
+struct SctInstructionSemanticContribution final {
+    std::vector<SctOpcodeUsage> opcodes{};
+    std::vector<SctReferenceUsage> references{};
+    std::vector<SctVariableUsage> variables{};
+    std::vector<SctUnresolvedReferenceUsage> unresolvedReferences{};
+    std::vector<SctOpaqueParameterUsage> opaqueParameters{};
+    std::vector<SctOpaqueExpressionUsage> opaqueExpressions{};
+    auto operator<=>(const SctInstructionSemanticContribution&) const = default;
+};
+
 class SctSemanticUsageIndex final {
 public:
     [[nodiscard]] static SctSemanticUsageIndex build(
         const spice::sct::SctDocument& document);
+    [[nodiscard]] static SctInstructionSemanticContribution contributionFor(
+        const spice::sct::SctDocumentInstruction& instruction);
 
     [[nodiscard]] std::span<const SctOpcodeUsage> opcodeUsages() const noexcept;
     [[nodiscard]] std::span<const SctReferenceUsage> referenceUsages() const noexcept;

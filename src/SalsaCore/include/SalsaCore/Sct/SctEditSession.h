@@ -2,8 +2,10 @@
 
 #include "SalsaCore/History/RevisionHistory.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
+#include "SalsaCore/Sct/SctDocumentMaterializer.h"
 #include "SalsaCore/Sct/SctMessageAuthoring.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
+#include "SalsaCore/Sct/SctWorkingState.h"
 
 #include "SpiceSCT/SctDocument.h"
 #include "SpiceSCT/SctDocumentValidator.h"
@@ -24,14 +26,25 @@ enum class SctRevisionTransitionKind {
     Commit,
     Undo,
     Redo,
+    VerificationRollback,
 };
 
-struct SctRevisionTransition final {
+enum class SctRevisionVerification {
+    Pending,
+    Verified,
+    Rejected,
+};
+
+struct SctWorkingTransition final {
     SctRevisionTransitionKind kind = SctRevisionTransitionKind::Commit;
     RevisionId from{};
     RevisionId to{};
     SctEditChangeSet changes{};
+    std::optional<SctNavigationTarget> suggestedSelection{};
+    SctRevisionVerification verification = SctRevisionVerification::Pending;
 };
+
+using SctRevisionTransition = SctWorkingTransition;
 
 struct SctEditResult final {
     bool committed = false;
@@ -41,6 +54,8 @@ struct SctEditResult final {
     std::optional<SctRevisionTransition> transition{};
     std::optional<SctNavigationTarget> suggestedSelection{};
     std::vector<SctPipelineDiagnostic> diagnostics{};
+    std::uint64_t preflightMicroseconds = 0;
+    std::uint64_t journalMicroseconds = 0;
 };
 
 struct SctInsertableOpcode final {
@@ -75,6 +90,8 @@ public:
     [[nodiscard]] std::optional<SctEditResult> redo();
 
     [[nodiscard]] std::shared_ptr<const SctDocumentSnapshot> currentSnapshot() const noexcept;
+    [[nodiscard]] std::shared_ptr<const SctDocumentSnapshot> verifiedSnapshot() const noexcept;
+    [[nodiscard]] RevisionId workingRevision() const;
     [[nodiscard]] RevisionId currentRevision() const;
     [[nodiscard]] bool structurallyValid() const noexcept;
     [[nodiscard]] bool canUndo() const noexcept;
@@ -84,6 +101,16 @@ public:
     [[nodiscard]] std::optional<std::string_view> redoDescription() const noexcept;
     [[nodiscard]] std::optional<std::shared_ptr<const spice::sct::SctDocument>>
         materializeRevision(RevisionId revision) const;
+    [[nodiscard]] std::optional<SctMaterializationRequest> materializationRequest(
+        std::uint64_t generation) const;
+    [[nodiscard]] bool installVerifiedMaterialization(
+        const SctMaterializationResult& result);
+    [[nodiscard]] std::optional<SctEditResult> rejectToVerifiedRevision(
+        RevisionId revision,
+        std::vector<SctPipelineDiagnostic> diagnostics);
+    [[nodiscard]] bool isActiveRevision(RevisionId revision) const;
+
+    [[nodiscard]] const SctWorkingState& workingState() const noexcept;
 
     [[nodiscard]] static const std::vector<SctInsertableOpcode>& insertableOpcodes();
 
@@ -111,20 +138,22 @@ private:
     [[nodiscard]] SctEditResult commit(
         SctSemanticOperationBatch operation,
         std::string description,
-        SelectionHints selections);
+        SelectionHints selections,
+        std::uint64_t preflightMicroseconds = 0);
     void rebuildSnapshot(
         std::shared_ptr<const spice::sct::SctDocument> document,
         const spice::sct::SctDocumentValidationResult& validation);
     void pruneMaterializationCheckpoints();
-    void maybeAddMaterializationCheckpoint();
 
     std::shared_ptr<const SctDocumentSnapshot> baselineSnapshot_;
     RevisionHistory<RevisionDelta> history_;
+    SctWorkingState workingState_;
     std::shared_ptr<const spice::sct::SctDocument> materializedDocument_;
     std::shared_ptr<const SctDocumentSnapshot> currentSnapshot_;
     bool structurallyValid_ = false;
     std::vector<MaterializationCheckpoint> materializationCheckpoints_{};
-    std::size_t commitsSinceMaterializationCheckpoint_ = 0;
+    RevisionId verifiedRevision_{1};
+    std::vector<RevisionDelta> rejectedTail_{};
 };
 
 }  // namespace salsa::core

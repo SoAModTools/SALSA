@@ -3,6 +3,7 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctPresentation.h"
+#include "Sct/SctOutlineModel.h"
 #include "SpiceSCT/SctDocumentIndex.h"
 
 #include <QWidget>
@@ -17,6 +18,7 @@ class QComboBox;
 class QLabel;
 class QPushButton;
 class QTextEdit;
+class QTreeView;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -36,6 +38,10 @@ public:
     [[nodiscard]] const core::AssetLocator& locator() const noexcept;
     void setSnapshot(
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
+        int sourceStatus);
+    void installVerifiedSnapshot(
+        std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
+        std::shared_ptr<const spice::sct::SctDocumentIndex> index,
         int sourceStatus);
     void applyTextOnlySnapshot(
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
@@ -71,23 +77,16 @@ signals:
 
 private:
     void rebuildOutline();
-    void reconcileOutline(const std::vector<core::SctOutlineItem>& outline);
-    void reconcileOutlineChildren(
-        QTreeWidgetItem* parent,
-        const std::vector<core::SctOutlineItem>& desired);
-    void updateOutlineItem(
-        QTreeWidgetItem& item,
-        const core::SctOutlineItem& desired);
     void showTarget(core::SctNavigationTarget target);
     void updateSourceBanner(int sourceStatus);
-    QTreeWidgetItem* addOutlineItem(QTreeWidgetItem* parent, const core::SctOutlineItem& item);
     QTreeWidgetItem* addPropertyItem(
         QTreeWidgetItem* parent,
         const core::SctPropertyItem& property);
 
     core::AssetLocator locator_;
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot_{};
-    std::optional<spice::sct::SctDocumentIndex> index_{};
+    std::shared_ptr<const spice::sct::SctDocumentIndex> index_{};
+    bool outlineReconciliationPending_ = false;
     std::optional<core::SctNavigationTarget> currentTarget_{};
     bool editingEnabled_ = false;
     QLabel* sourceBanner_ = nullptr;
@@ -95,7 +94,8 @@ private:
     QComboBox* conventionCombo_ = nullptr;
     QPushButton* applyConventionButton_ = nullptr;
     QPushButton* reloadButton_ = nullptr;
-    QTreeWidget* outline_ = nullptr;
+    QTreeView* outline_ = nullptr;
+    SctOutlineModel* outlineModel_ = nullptr;
     QLabel* title_ = nullptr;
     QLabel* subtitle_ = nullptr;
     QTreeWidget* properties_ = nullptr;

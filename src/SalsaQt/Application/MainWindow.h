@@ -44,6 +44,7 @@ private:
     void syncWorkspace();
     void syncSelection();
     void syncDiagnostics();
+    void queueDiagnosticsSync();
     void syncActions();
     void activateSelectedAsset();
     void syncDocument(const QString& identityKey, const SctDocumentUpdate& update);
@@ -105,6 +106,7 @@ private:
     QStringList recentDatasets_{};
     QString lastDataset_{};
     bool restoringDataset_ = false;
+    bool diagnosticsSyncPending_ = false;
     bool restoringTabAfterCommitFailure_ = false;
 };
 

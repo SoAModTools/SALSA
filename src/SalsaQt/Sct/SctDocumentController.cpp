@@ -1,6 +1,8 @@
 #include "Sct/SctDocumentController.h"
 
 #include <QtConcurrent/QtConcurrentRun>
+#include <QElapsedTimer>
+#include <QDebug>
 
 #include <algorithm>
 #include <cassert>
@@ -34,6 +36,14 @@ SctDocumentController::~SctDocumentController() {
         stopSource_.request_stop();
         watcher_.waitForFinished();
     }
+    for (auto& [key, state] : documents_) {
+        if (state.materializationWatcher) {
+            state.materializationStop.request_stop();
+            state.materializationWatcher->waitForFinished();
+        }
+    }
+    for (auto& watcher : retiredMaterializations_)
+        if (watcher) watcher->waitForFinished();
 }
 
 bool SctDocumentController::openDocument(
@@ -70,8 +80,8 @@ bool SctDocumentController::selectTextConvention(
     if (busy()) return false;
     const auto found = documents_.find(locator.identityKey());
     if (found == documents_.end() || !found->second.session
-        || !found->second.session->currentSnapshot()->inspection) return false;
-    auto inspection = found->second.session->currentSnapshot()->inspection;
+        || !found->second.session->currentSnapshot()->provenance->inspection) return false;
+    auto inspection = found->second.session->currentSnapshot()->provenance->inspection;
     begin(Operation::Reimporting, locator);
     const auto token = stopSource_.get_token();
     watcher_.setFuture(QtConcurrent::run([inspection = std::move(inspection), convention, token]() {
@@ -87,7 +97,7 @@ void SctDocumentController::synchronizeCatalog(const core::AssetCatalogSnapshot&
             return asset.locator == state.locator;
         });
         const auto next = found == catalog.assets.end() ? SourceStatus::Missing
-            : found->revision == state.session->currentSnapshot()->source.descriptor.revision
+            : found->revision == state.session->currentSnapshot()->provenance->source().descriptor.revision
                 ? SourceStatus::Current : SourceStatus::Changed;
         if (next != state.status) {
             state.status = next;
@@ -103,6 +113,8 @@ void SctDocumentController::closeDocument(const core::AssetLocator& locator) {
         stopSource_.request_stop();
         ++generation_;
     }
+    if (auto found = documents_.find(locator.identityKey()); found != documents_.end())
+        retireMaterialization(found->second);
     if (documents_.erase(locator.identityKey()) != 0)
         emit documentClosed(identity(locator));
 }
@@ -114,7 +126,10 @@ void SctDocumentController::closeAll() {
     }
     std::vector<QString> identities;
     identities.reserve(documents_.size());
-    for (const auto& [key, state] : documents_) identities.push_back(QString::fromStdString(key));
+    for (auto& [key, state] : documents_) {
+        identities.push_back(QString::fromStdString(key));
+        retireMaterialization(state);
+    }
     documents_.clear();
     for (const auto& key : identities) emit documentClosed(key);
 }
@@ -127,6 +142,15 @@ bool SctDocumentController::busy() const noexcept { return operation_ != Operati
 
 bool SctDocumentController::contains(const core::AssetLocator& locator) const {
     return documents_.contains(locator.identityKey());
+}
+
+std::optional<spice::sct::SctMessage> SctDocumentController::workingMessage(
+    const core::AssetLocator& locator,
+    const core::SctMessageTarget& target) const {
+    const auto* state = findState(locator);
+    if (state == nullptr) return std::nullopt;
+    const auto* message = state->session->workingState().message(target);
+    return message == nullptr ? std::nullopt : std::optional{*message};
 }
 
 std::shared_ptr<const core::SctDocumentSnapshot> SctDocumentController::snapshot(
@@ -218,7 +242,7 @@ bool SctDocumentController::insertInstructionAfter(
     const spice::sct::SctInstructionId anchorInstruction,
     const std::uint16_t opcode) {
     auto* state = findState(locator);
-    return state != nullptr && !busy() && applyEditResult(*state,
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
         state->session->insertInstructionAfter(anchorInstruction, opcode),
         tr("Instruction inserted."));
 }
@@ -227,7 +251,7 @@ bool SctDocumentController::deleteInstruction(
     const core::AssetLocator& locator,
     const spice::sct::SctInstructionId instruction) {
     auto* state = findState(locator);
-    return state != nullptr && !busy() && applyEditResult(*state,
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
         state->session->deleteInstruction(instruction),
         tr("Instruction deleted."));
 }
@@ -237,7 +261,7 @@ bool SctDocumentController::moveInstruction(
     const spice::sct::SctInstructionId instruction,
     const core::SctInstructionMoveDirection direction) {
     auto* state = findState(locator);
-    return state != nullptr && !busy() && applyEditResult(*state,
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
         state->session->moveInstruction(instruction, direction),
         direction == core::SctInstructionMoveDirection::Up
             ? tr("Instruction moved up.") : tr("Instruction moved down."));
@@ -249,7 +273,7 @@ bool SctDocumentController::replaceMessage(
     const core::SctMessageDraft& draft,
     const core::SctMessageEditKind kind) {
     auto* state = findState(locator);
-    if (state == nullptr || busy()) return false;
+    if (state == nullptr || busy() || state->editBlocked) return false;
     auto result = state->session->replaceMessage(target, draft, kind);
     if (!result.committed && result.diagnostics.empty()) return true;
     return applyEditResult(*state, std::move(result), tr("Message edited."));
@@ -257,14 +281,14 @@ bool SctDocumentController::replaceMessage(
 
 bool SctDocumentController::undo(const core::AssetLocator& locator) {
     auto* state = findState(locator);
-    if (state == nullptr || busy()) return false;
+    if (state == nullptr || busy() || state->editBlocked) return false;
     auto result = state->session->undo();
     return result.has_value() && applyEditResult(*state, std::move(*result), tr("Undo complete."));
 }
 
 bool SctDocumentController::redo(const core::AssetLocator& locator) {
     auto* state = findState(locator);
-    if (state == nullptr || busy()) return false;
+    if (state == nullptr || busy() || state->editBlocked) return false;
     auto result = state->session->redo();
     return result.has_value() && applyEditResult(*state, std::move(*result), tr("Redo complete."));
 }
@@ -297,16 +321,125 @@ bool SctDocumentController::applyEditResult(
     }
     failurePipelineDiagnostics_.clear();
     assert(result.transition.has_value());
+    QElapsedTimer notificationTimer;
+    notificationTimer.start();
     emit documentChanged(key, SctDocumentUpdate{
         SctDocumentUpdateKind::RevisionTransition,
         result.snapshot,
         result.transition});
+    if (qEnvironmentVariableIsSet("SALSA_EDIT_TIMINGS")) {
+        qInfo().noquote() << QStringLiteral(
+            "SALSA edit timing %1: preflight=%2us journal=%3us model-notification=%4us")
+            .arg(key).arg(result.preflightMicroseconds)
+            .arg(result.journalMicroseconds)
+            .arg(notificationTimer.nsecsElapsed() / 1000);
+    }
     if (result.suggestedSelection.has_value()) {
         emit selectionRequested(key, static_cast<int>(result.suggestedSelection->kind),
             static_cast<qulonglong>(result.suggestedSelection->id));
     }
     emit editCompleted(key, true, std::move(successMessage));
+    requestMaterialization(state);
     return true;
+}
+
+void SctDocumentController::requestMaterialization(DocumentState& state) {
+    state.requestedMaterializationGeneration = ++nextMaterializationGeneration_;
+    state.requestedMaterializationRevision = state.session->workingRevision();
+    if (!state.materializationWatcher)
+        startMaterialization(state.locator.identityKey(), state);
+}
+
+void SctDocumentController::startMaterialization(
+    const std::string& identityKey, DocumentState& state) {
+    const auto request = state.session->materializationRequest(
+        state.requestedMaterializationGeneration);
+    if (!request.has_value()) return;
+    state.materializationStop = std::stop_source{};
+    const auto token = state.materializationStop.get_token();
+    const auto generation = request->generation;
+    state.runningMaterializationGeneration = generation;
+    state.materializationWatcher =
+        std::make_unique<QFutureWatcher<core::SctMaterializationResult>>();
+    connect(state.materializationWatcher.get(), &QFutureWatcherBase::finished,
+        this, [this, identityKey, generation] {
+            finishMaterialization(identityKey, generation);
+        });
+    state.materializationWatcher->setFuture(QtConcurrent::run(
+        [request = *request, token] {
+            return core::SctDocumentMaterializer::materialize(request, token);
+        }));
+}
+
+void SctDocumentController::finishMaterialization(
+    const std::string& identityKey, const std::uint64_t generation) {
+    const auto found = documents_.find(identityKey);
+    if (found == documents_.end()) return;
+    auto& state = found->second;
+    if (!state.materializationWatcher
+        || state.runningMaterializationGeneration != generation) return;
+    auto* completedWatcher = state.materializationWatcher.release();
+    auto result = completedWatcher->result();
+    completedWatcher->deleteLater();
+    if (qEnvironmentVariableIsSet("SALSA_EDIT_TIMINGS")) {
+        qInfo().noquote() << QStringLiteral(
+            "SALSA materialization timing %1 generation %2: replay=%3us validation=%4us semantic=%5us index=%6us")
+            .arg(QString::fromStdString(identityKey)).arg(generation)
+            .arg(result.timings.replayMicroseconds)
+            .arg(result.timings.validationMicroseconds)
+            .arg(result.timings.semanticAuditMicroseconds)
+            .arg(result.timings.documentIndexMicroseconds);
+    }
+
+    const bool currentTarget = result.targetRevision == state.session->workingRevision();
+    if (!result.cancelled && result.succeeded()) {
+        if (state.session->installVerifiedMaterialization(result) && currentTarget) {
+            emit documentChanged(QString::fromStdString(identityKey), SctDocumentUpdate{
+                SctDocumentUpdateKind::VerifiedMaterialization,
+                state.session->verifiedSnapshot(), std::nullopt,
+                result.documentIndex});
+        }
+    } else if (!result.cancelled && currentTarget) {
+        state.editBlocked = true;
+        failurePipelineDiagnostics_ = result.diagnostics;
+        if (failurePipelineDiagnostics_.empty()) {
+            core::SctPipelineDiagnostic diagnostic;
+            diagnostic.severity = core::DiagnosticSeverity::Error;
+            diagnostic.stage = core::SctPipelineStage::Validation;
+            diagnostic.code = "BackgroundVerificationFailed";
+            diagnostic.message = result.operationIssues.empty()
+                ? tr("Background SCT verification rejected the edit.").toStdString()
+                : result.operationIssues.front().message;
+            diagnostic.locator = state.locator;
+            failurePipelineDiagnostics_.push_back(std::move(diagnostic));
+        }
+        auto rollback = state.session->rejectToVerifiedRevision(
+            result.baseRevision, failurePipelineDiagnostics_);
+        if (rollback.has_value() && rollback->transition.has_value()) {
+            emit documentChanged(QString::fromStdString(identityKey), SctDocumentUpdate{
+                SctDocumentUpdateKind::RevisionTransition,
+                rollback->snapshot, rollback->transition});
+            state.requestedMaterializationRevision = rollback->revision;
+            state.editBlocked = false;
+            emit editCompleted(QString::fromStdString(identityKey), false,
+                tr("Background verification rejected the edit and restored the last verified revision."));
+        } else {
+            emit editCompleted(QString::fromStdString(identityKey), false,
+                tr("Background verification rejected the current revision; editing is paused."));
+        }
+    }
+
+    if (state.requestedMaterializationGeneration != generation
+        || state.requestedMaterializationRevision != result.targetRevision) {
+        startMaterialization(identityKey, state);
+    }
+}
+
+void SctDocumentController::retireMaterialization(DocumentState& state) {
+    if (!state.materializationWatcher) return;
+    state.materializationStop.request_stop();
+    state.materializationWatcher->disconnect(this);
+    retiredMaterializations_.push_back(std::move(state.materializationWatcher));
 }
 
 void SctDocumentController::onFinished() {

@@ -7,12 +7,21 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <ranges>
 #include <type_traits>
 #include <utility>
 
 namespace salsa::core {
 namespace {
+
+using EditClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t elapsedMicroseconds(const EditClock::time_point start) {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            EditClock::now() - start).count());
+}
 
 [[nodiscard]] DiagnosticSeverity severityOf(const spice::sct::SctDiagnosticSeverity severity) {
     switch (severity) {
@@ -174,18 +183,25 @@ namespace {
     return result;
 }
 
+void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
+    target.instructions.insert(target.instructions.end(),
+        source.instructions.begin(), source.instructions.end());
+    target.modified.insert(target.modified.end(),
+        source.modified.begin(), source.modified.end());
+}
+
 }  // namespace
 
 SctEditSession::SctEditSession(std::shared_ptr<const SctDocumentSnapshot> initialSnapshot)
     : baselineSnapshot_(std::move(initialSnapshot)),
       history_(std::make_shared<const RevisionDelta>()),
+      workingState_(baselineSnapshot_ != nullptr ? baselineSnapshot_->document : nullptr),
       materializedDocument_(baselineSnapshot_ != nullptr ? baselineSnapshot_->document : nullptr),
       currentSnapshot_(baselineSnapshot_) {
     assert(baselineSnapshot_ != nullptr);
     assert(baselineSnapshot_->document != nullptr);
-    const auto validation = spice::sct::SctDocumentValidator::validateDocument(
-        *materializedDocument_);
-    rebuildSnapshot(materializedDocument_, validation);
+    structurallyValid_ = baselineSnapshot_->readiness
+        == spice::sct::SctDocumentReadiness::StructurallyValid;
     materializationCheckpoints_.push_back(
         {history_.currentRevision().id, materializedDocument_});
 }
@@ -193,7 +209,8 @@ SctEditSession::SctEditSession(std::shared_ptr<const SctDocumentSnapshot> initia
 SctEditResult SctEditSession::insertInstructionAfter(
     const spice::sct::SctInstructionId anchorInstruction,
     const std::uint16_t opcode) {
-    const auto& locator = baselineSnapshot_->source.descriptor.locator;
+    const auto preflightStart = EditClock::now();
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
     if (!structurallyValid_) {
         return failure({ editError(locator, "DocumentNotStructurallyValid",
             "Instruction editing is unavailable until the document is structurally valid.") });
@@ -209,20 +226,11 @@ SctEditResult SctEditSession::insertInstructionAfter(
             "The opcode cannot be inserted until its required parameters can be authored.") });
     }
 
-    const auto index = spice::sct::SctDocumentIndex::build(*materializedDocument_);
-    const auto location = index.instructionLocation(anchorInstruction);
-    const auto* anchor = index.find(anchorInstruction);
-    if (!location.has_value() || anchor == nullptr) {
+    const auto placement = workingState_.placement(anchorInstruction);
+    const auto* anchor = workingState_.instruction(anchorInstruction);
+    if (!placement.has_value() || anchor == nullptr) {
         return failure({ editError(locator, "InstructionNotFound",
             "The insertion anchor no longer exists.",
-            SctNavigationTarget{ SctNavigationKind::Instruction, anchorInstruction.value() }) });
-    }
-    const auto* currentSection = index.find(location->sectionId);
-    const auto* currentScript = currentSection == nullptr ? nullptr
-        : std::get_if<spice::sct::SctScriptSectionContent>(&currentSection->content);
-    if (currentScript == nullptr || location->instructionOrdinal >= currentScript->instructions.size()) {
-        return failure({ editError(locator, "SectionIsNotScript",
-            "Instructions can only be inserted relative to an instruction in a script section.",
             SctNavigationTarget{ SctNavigationKind::Instruction, anchorInstruction.value() }) });
     }
     if (anchor->opcode == 12u) {
@@ -230,8 +238,7 @@ SctEditResult SctEditSession::insertInstructionAfter(
             "An instruction cannot be inserted after Return.",
             SctNavigationTarget{ SctNavigationKind::Instruction, anchorInstruction.value() }) });
     }
-    const auto ordinal = location->instructionOrdinal + 1u;
-    if (opcode == 12u && ordinal != currentScript->instructions.size()) {
+    if (opcode == 12u && workingState_.instructionAfter(anchorInstruction).has_value()) {
         return failure({ editError(locator, "ReturnMustTerminateSection",
             "Return can only be inserted as the final instruction in a section.",
             SctNavigationTarget{ SctNavigationKind::Instruction, anchorInstruction.value() }) });
@@ -247,10 +254,6 @@ SctEditResult SctEditSession::insertInstructionAfter(
         return failure(std::move(diagnostics));
     }
     spice::sct::SctDocument factoryContext;
-    while (factoryContext.nextInstructionIdValue()
-        < materializedDocument_->nextInstructionIdValue()) {
-        (void)factoryContext.allocateInstructionId();
-    }
     const auto materialized = spice::sct::SctInstructionFactory::materialize(
         factoryContext, *draft.draft);
     if (!materialized.instruction.has_value()) {
@@ -259,103 +262,94 @@ SctEditResult SctEditSession::insertInstructionAfter(
             diagnostics.push_back(convertDiagnostic(locator, SctPipelineStage::Edit, diagnostic));
         return failure(std::move(diagnostics));
     }
-    const auto insertedId = materialized.instruction->id;
+    auto instruction = *materialized.instruction;
+    instruction.id = spice::sct::SctInstructionId(
+        workingState_.nextInstructionIdValue());
+    const auto insertedId = instruction.id;
     const SctNavigationTarget inserted{ SctNavigationKind::Instruction, insertedId.value() };
     return commit(SctSemanticOperationBatch{{SctInsertInstructionAfterOperation{
-            anchorInstruction, *materialized.instruction}}},
+            anchorInstruction, std::move(instruction)}}},
         "Insert " + opcodeName(opcode),
         SelectionHints{ SctNavigationTarget{ SctNavigationKind::Instruction,
-            anchorInstruction.value() }, inserted });
+            anchorInstruction.value() }, inserted },
+        elapsedMicroseconds(preflightStart));
 }
 
 SctEditResult SctEditSession::deleteInstruction(
     const spice::sct::SctInstructionId instruction) {
-    const auto& locator = baselineSnapshot_->source.descriptor.locator;
+    const auto preflightStart = EditClock::now();
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
     if (!structurallyValid_) {
         return failure({ editError(locator, "DocumentNotStructurallyValid",
             "Instruction editing is unavailable until the document is structurally valid.") });
     }
-    const auto index = spice::sct::SctDocumentIndex::build(*materializedDocument_);
-    const auto location = index.instructionLocation(instruction);
-    const auto* existing = index.find(instruction);
-    if (!location.has_value() || existing == nullptr) {
+    const auto placement = workingState_.placement(instruction);
+    const auto* existing = workingState_.instruction(instruction);
+    if (!placement.has_value() || existing == nullptr) {
         return failure({ editError(locator, "InstructionNotFound",
             "The instruction no longer exists.",
             SctNavigationTarget{ SctNavigationKind::Instruction, instruction.value() }) });
     }
-    if (existing->opcode == 9u && location->instructionOrdinal == 0u) {
+    if (existing->opcode == 9u && !placement->after.has_value()) {
         return failure({ editError(locator, "ProtectedSectionLabel",
             "The initial LabelOrStringPrefix instruction belongs to the section and cannot be deleted.",
             SctNavigationTarget{ SctNavigationKind::Instruction, instruction.value() }) });
     }
 
     std::vector<SctPipelineDiagnostic> blockers;
-    for (const auto& reference : index.inboundReferences(
-            spice::sct::SctDocumentReferenceTarget{ instruction })) {
-        auto diagnostic = editError(locator, "InstructionHasIncomingReference",
+    if (workingState_.incomingReferenceCount(instruction) != 0u) {
+        blockers.push_back(editError(locator, "InstructionHasIncomingReference",
             "The instruction cannot be deleted while another instruction references it.",
-            SctNavigationTarget{ SctNavigationKind::Instruction, reference.sourceInstruction.value() });
-        diagnostic.schemaIndex = reference.parameter.schemaIndex;
-        diagnostic.repeatedGroupOrdinal = reference.parameter.repeatedGroupOrdinal;
-        blockers.push_back(std::move(diagnostic));
+            SctNavigationTarget{ SctNavigationKind::Instruction, instruction.value() }));
     }
-    const auto attachments = index.attachmentsFor(spice::sct::SctOpaqueAnchor{ instruction });
-    for (const auto* attachment : attachments) {
+    for (const auto attachment : workingState_.opaqueAttachments(instruction)) {
         blockers.push_back(editError(locator, "InstructionHasOpaqueAttachment",
             "The instruction cannot be deleted while opaque source data is anchored to it.",
-            SctNavigationTarget{ SctNavigationKind::OpaqueAttachment, attachment->id.value() }));
+            SctNavigationTarget{ SctNavigationKind::OpaqueAttachment, attachment.value() }));
     }
     if (!blockers.empty()) return failure(std::move(blockers));
 
-    const auto* currentSection = index.find(location->sectionId);
-    const auto* currentScript = currentSection == nullptr ? nullptr
-        : std::get_if<spice::sct::SctScriptSectionContent>(&currentSection->content);
-    assert(currentScript != nullptr);
-    SctNavigationTarget fallback{ SctNavigationKind::Section, location->sectionId.value() };
-    if (location->instructionOrdinal + 1u < currentScript->instructions.size()) {
-        fallback = {SctNavigationKind::Instruction,
-            currentScript->instructions[location->instructionOrdinal + 1u].id.value()};
-    } else if (location->instructionOrdinal > 0u) {
-        fallback = {SctNavigationKind::Instruction,
-            currentScript->instructions[location->instructionOrdinal - 1u].id.value()};
-    }
+    SctNavigationTarget fallback{ SctNavigationKind::Section, placement->section.value() };
+    if (const auto after = workingState_.instructionAfter(instruction); after.has_value())
+        fallback = {SctNavigationKind::Instruction, after->value()};
+    else if (placement->after.has_value())
+        fallback = {SctNavigationKind::Instruction, placement->after->value()};
     const SctNavigationTarget removed{ SctNavigationKind::Instruction, instruction.value() };
     return commit(SctSemanticOperationBatch{{SctDeleteInstructionOperation{instruction}}},
         "Delete " + opcodeName(existing->opcode),
-        SelectionHints{ removed, fallback });
+        SelectionHints{ removed, fallback }, elapsedMicroseconds(preflightStart));
 }
 
 SctEditResult SctEditSession::moveInstruction(
     const spice::sct::SctInstructionId instruction,
     const SctInstructionMoveDirection direction) {
-    const auto& locator = baselineSnapshot_->source.descriptor.locator;
+    const auto preflightStart = EditClock::now();
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
     if (!structurallyValid_) {
         return failure({ editError(locator, "DocumentNotStructurallyValid",
             "Instruction editing is unavailable until the document is structurally valid.") });
     }
-    const auto index = spice::sct::SctDocumentIndex::build(*materializedDocument_);
-    const auto location = index.instructionLocation(instruction);
-    const auto* existing = index.find(instruction);
-    if (!location.has_value() || existing == nullptr) {
+    const auto placement = workingState_.placement(instruction);
+    const auto* existing = workingState_.instruction(instruction);
+    if (!placement.has_value() || existing == nullptr) {
         return failure({ editError(locator, "InstructionNotFound",
             "The instruction no longer exists.",
             SctNavigationTarget{ SctNavigationKind::Instruction, instruction.value() }) });
     }
 
-    const auto* section = index.find(location->sectionId);
-    const auto* script = section == nullptr ? nullptr
-        : std::get_if<spice::sct::SctScriptSectionContent>(&section->content);
-    assert(script != nullptr);
-    const auto ordinal = location->instructionOrdinal;
+    const auto previous = workingState_.instructionBefore(instruction);
+    const auto next = workingState_.instructionAfter(instruction);
     const bool atBoundary = direction == SctInstructionMoveDirection::Up
-        ? ordinal == 0 : ordinal + 1 >= script->instructions.size();
+        ? !previous.has_value() : !next.has_value();
     if (atBoundary) {
         return failure({ editError(locator, "InstructionMoveAtBoundary",
             "The instruction is already at that section boundary.",
             SctNavigationTarget{ SctNavigationKind::Instruction, instruction.value() }) });
     }
-    const auto other = direction == SctInstructionMoveDirection::Up ? ordinal - 1 : ordinal + 1;
-    const auto otherOpcode = script->instructions[other].opcode;
+    const auto otherId = direction == SctInstructionMoveDirection::Up ? *previous : *next;
+    const auto* otherInstruction = workingState_.instruction(otherId);
+    assert(otherInstruction != nullptr);
+    const auto otherOpcode = otherInstruction->opcode;
     if (existing->opcode == 9u || otherOpcode == 9u) {
         return failure({ editError(locator, "InstructionMoveAcrossLabel",
             "The section label cannot be moved or crossed.",
@@ -367,48 +361,36 @@ SctEditResult SctEditSession::moveInstruction(
             SctNavigationTarget{ SctNavigationKind::Instruction, instruction.value() }) });
     }
     const auto destinationAnchor = direction == SctInstructionMoveDirection::Up
-        ? script->instructions[ordinal - 2u].id
-        : script->instructions[ordinal + 1u].id;
+        ? workingState_.instructionBefore(*previous)
+        : next;
+    if (!destinationAnchor.has_value()) {
+        return failure({ editError(locator, "InstructionMoveAcrossLabel",
+            "The section label cannot be moved or crossed.",
+            SctNavigationTarget{ SctNavigationKind::Instruction, instruction.value() }) });
+    }
     const SctNavigationTarget moved{ SctNavigationKind::Instruction, instruction.value() };
     return commit(SctSemanticOperationBatch{{SctRelocateInstructionAfterOperation{
-            instruction, destinationAnchor}}},
+            instruction, *destinationAnchor}}},
         "Move " + opcodeName(existing->opcode) + (direction == SctInstructionMoveDirection::Up ? " up" : " down"),
-        SelectionHints{ moved, moved });
+        SelectionHints{ moved, moved }, elapsedMicroseconds(preflightStart));
 }
 
 SctEditResult SctEditSession::replaceMessage(
     const SctMessageTarget& target,
     const SctMessageDraft& draft,
     const SctMessageEditKind editKind) {
-    const auto& locator = baselineSnapshot_->source.descriptor.locator;
+    const auto preflightStart = EditClock::now();
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
     const auto navigation = navigationFor(target);
     if (!structurallyValid_) {
         return failure({editError(locator, "DocumentNotStructurallyValid",
             "Message editing is unavailable until the document is structurally valid.", navigation)});
     }
 
-    const auto index = spice::sct::SctDocumentIndex::build(*materializedDocument_);
-    const spice::sct::SctTextValue* currentValue = std::visit([&](const auto id)
-        -> const spice::sct::SctTextValue* {
-        using T = std::decay_t<decltype(id)>;
-        if constexpr (std::is_same_v<T, spice::sct::SctStringId>) {
-            const auto* string = index.find(id);
-            return string != nullptr && string->kind == spice::sct::SctTextKind::SctString
-                ? &string->value : nullptr;
-        } else {
-            const auto* entry = index.find(id);
-            return entry != nullptr && entry->kind == spice::sct::SctTextKind::SctString
-                ? &entry->value : nullptr;
-        }
-    }, target);
-    if (currentValue == nullptr) {
+    const auto* currentMessage = workingState_.message(target);
+    if (currentMessage == nullptr) {
         return failure({editError(locator, "MessageTargetNotFound",
             "The selected SCT message no longer exists or is not an SCT-message entity.", navigation)});
-    }
-    const auto* currentMessage = std::get_if<spice::sct::SctMessage>(currentValue);
-    if (currentMessage == nullptr) {
-        return failure({editError(locator, "MessageTargetNotSemantic",
-            "The selected text is not an editable semantic SCT message.", navigation)});
     }
     const auto currentProjection = SctMessageAuthoringProfile::project(*currentMessage);
     if (!currentProjection.supported())
@@ -428,33 +410,25 @@ SctEditResult SctEditSession::replaceMessage(
     return commit(SctSemanticOperationBatch{{SctReplaceMessageOperation{
             target, *materialized.message}}},
         messageEditDescription(editKind),
-        SelectionHints{navigation, navigation});
+        SelectionHints{navigation, navigation}, elapsedMicroseconds(preflightStart));
 }
 
 std::optional<SctEditResult> SctEditSession::undo() {
+    const auto journalStart = EditClock::now();
     if (!history_.canUndo()) return std::nullopt;
     const auto source = history_.currentRevision();
-    const auto application = SctSemanticOperationService::apply(
-        *materializedDocument_, source.state->inverse);
+    const auto application = workingState_.apply(source.state->inverse);
     if (!application.succeeded()) {
         std::vector<SctPipelineDiagnostic> diagnostics;
         for (const auto& problem : application.issues) {
             diagnostics.push_back(editError(
-                baselineSnapshot_->source.descriptor.locator,
+                baselineSnapshot_->provenance->source().descriptor.locator,
                 problem.code, problem.message, problem.target));
         }
         return failure(std::move(diagnostics));
     }
-    const auto validation = spice::sct::SctDocumentValidator::validateDocument(
-        *application.document);
-    auto diagnostics = validationDiagnostics(
-        baselineSnapshot_->source.descriptor.locator, validation);
-    if (!validation.validDocument) return failure(std::move(diagnostics));
-
     const auto navigation = history_.undo();
     assert(navigation.has_value());
-    materializedDocument_ = application.document;
-    rebuildSnapshot(materializedDocument_, validation);
     SctEditResult result;
     result.committed = true;
     result.revision = navigation->to;
@@ -463,34 +437,26 @@ std::optional<SctEditResult> SctEditSession::undo() {
     result.transition = SctRevisionTransition{SctRevisionTransitionKind::Undo,
         navigation->from, navigation->to, result.changes};
     result.suggestedSelection = source.state->selections.undoSelection;
-    result.diagnostics = std::move(diagnostics);
+    result.journalMicroseconds = elapsedMicroseconds(journalStart);
     return result;
 }
 
 std::optional<SctEditResult> SctEditSession::redo() {
+    const auto journalStart = EditClock::now();
     const auto target = history_.redoTarget();
     if (!target.has_value()) return std::nullopt;
-    const auto application = SctSemanticOperationService::apply(
-        *materializedDocument_, target->state->forward);
+    const auto application = workingState_.apply(target->state->forward);
     if (!application.succeeded()) {
         std::vector<SctPipelineDiagnostic> diagnostics;
         for (const auto& problem : application.issues) {
             diagnostics.push_back(editError(
-                baselineSnapshot_->source.descriptor.locator,
+                baselineSnapshot_->provenance->source().descriptor.locator,
                 problem.code, problem.message, problem.target));
         }
         return failure(std::move(diagnostics));
     }
-    const auto validation = spice::sct::SctDocumentValidator::validateDocument(
-        *application.document);
-    auto diagnostics = validationDiagnostics(
-        baselineSnapshot_->source.descriptor.locator, validation);
-    if (!validation.validDocument) return failure(std::move(diagnostics));
-
     const auto navigation = history_.redo();
     assert(navigation.has_value());
-    materializedDocument_ = application.document;
-    rebuildSnapshot(materializedDocument_, validation);
     SctEditResult result;
     result.committed = true;
     result.revision = navigation->to;
@@ -499,12 +465,20 @@ std::optional<SctEditResult> SctEditSession::redo() {
     result.transition = SctRevisionTransition{SctRevisionTransitionKind::Redo,
         navigation->from, navigation->to, result.changes};
     result.suggestedSelection = target->state->selections.redoSelection;
-    result.diagnostics = std::move(diagnostics);
+    result.journalMicroseconds = elapsedMicroseconds(journalStart);
     return result;
 }
 
 std::shared_ptr<const SctDocumentSnapshot> SctEditSession::currentSnapshot() const noexcept {
     return currentSnapshot_;
+}
+
+std::shared_ptr<const SctDocumentSnapshot> SctEditSession::verifiedSnapshot() const noexcept {
+    return currentSnapshot_;
+}
+
+RevisionId SctEditSession::workingRevision() const {
+    return history_.currentRevision().id;
 }
 
 RevisionId SctEditSession::currentRevision() const {
@@ -557,6 +531,107 @@ SctEditSession::materializeRevision(const RevisionId target) const {
     return document;
 }
 
+std::optional<SctMaterializationRequest> SctEditSession::materializationRequest(
+    const std::uint64_t generation) const {
+    const auto target = history_.currentRevision().id;
+    std::vector<SctSemanticOperationBatch> reversedTail;
+    auto cursor = target;
+    const MaterializationCheckpoint* checkpoint = nullptr;
+    while (cursor.valid()) {
+        const auto foundCheckpoint = std::ranges::find(
+            materializationCheckpoints_, cursor, &MaterializationCheckpoint::revision);
+        if (foundCheckpoint != materializationCheckpoints_.end()) {
+            checkpoint = &*foundCheckpoint;
+            break;
+        }
+        const auto revision = history_.revision(cursor);
+        if (!revision.has_value() || !revision->state->parent.valid()) return std::nullopt;
+        reversedTail.push_back(revision->state->forward);
+        cursor = revision->state->parent;
+    }
+    if (checkpoint == nullptr) return std::nullopt;
+    std::ranges::reverse(reversedTail);
+    return SctMaterializationRequest{
+        generation,
+        checkpoint->revision,
+        target,
+        checkpoint->document,
+        std::move(reversedTail),
+    };
+}
+
+bool SctEditSession::installVerifiedMaterialization(
+    const SctMaterializationResult& result) {
+    if (!result.succeeded() || !isActiveRevision(result.targetRevision)) return false;
+    materializationCheckpoints_.push_back({result.targetRevision, result.document});
+    if (result.targetRevision == history_.currentRevision().id) {
+        verifiedRevision_ = result.targetRevision;
+        materializedDocument_ = result.document;
+        rebuildSnapshot(result.document, result.validation);
+    }
+    pruneMaterializationCheckpoints();
+    return true;
+}
+
+std::optional<SctEditResult> SctEditSession::rejectToVerifiedRevision(
+    const RevisionId revision,
+    std::vector<SctPipelineDiagnostic> diagnostics) {
+    if (!isActiveRevision(revision)) return std::nullopt;
+    const auto from = history_.currentRevision().id;
+    SctEditChangeSet rollbackChanges;
+    rejectedTail_.clear();
+    auto cursor = from;
+    while (cursor != revision) {
+        const auto entry = history_.revision(cursor);
+        if (!entry.has_value()) return std::nullopt;
+        const auto application = workingState_.apply(entry->state->inverse);
+        if (!application.succeeded()) return std::nullopt;
+        appendChanges(rollbackChanges, entry->state->reverseChanges);
+        rejectedTail_.push_back(*entry->state);
+        cursor = entry->state->parent;
+    }
+    if (!history_.selectAncestorAndDiscardDescendants(revision).has_value())
+        return std::nullopt;
+
+    const auto checkpoint = std::ranges::find(
+        materializationCheckpoints_, revision, &MaterializationCheckpoint::revision);
+    if (checkpoint == materializationCheckpoints_.end()) return std::nullopt;
+    materializedDocument_ = checkpoint->document;
+    verifiedRevision_ = revision;
+    const auto validation = spice::sct::SctDocumentValidator::validateDocument(
+        *materializedDocument_);
+    rebuildSnapshot(materializedDocument_, validation);
+    pruneMaterializationCheckpoints();
+
+    SctEditResult result;
+    result.committed = true;
+    result.revision = revision;
+    result.snapshot = currentSnapshot_;
+    result.changes = rollbackChanges;
+    result.transition = SctRevisionTransition{
+        SctRevisionTransitionKind::VerificationRollback,
+        from, revision, rollbackChanges, std::nullopt,
+        SctRevisionVerification::Rejected};
+    result.diagnostics = std::move(diagnostics);
+    return result;
+}
+
+bool SctEditSession::isActiveRevision(const RevisionId revision) const {
+    if (!revision.valid()) return false;
+    auto cursor = history_.currentRevision().id;
+    while (cursor.valid()) {
+        if (cursor == revision) return true;
+        const auto found = history_.revision(cursor);
+        if (!found.has_value()) return false;
+        cursor = found->state->parent;
+    }
+    return false;
+}
+
+const SctWorkingState& SctEditSession::workingState() const noexcept {
+    return workingState_;
+}
+
 const std::vector<SctInsertableOpcode>& SctEditSession::insertableOpcodes() {
     static const auto choices = [] {
         std::vector<SctInsertableOpcode> result;
@@ -591,23 +666,19 @@ SctEditResult SctEditSession::failure(
 SctEditResult SctEditSession::commit(
     SctSemanticOperationBatch operation,
     std::string description,
-    SelectionHints selections) {
-    auto application = SctSemanticOperationService::apply(
-        *materializedDocument_, operation);
+    SelectionHints selections,
+    const std::uint64_t preflightMicroseconds) {
+    const auto journalStart = EditClock::now();
+    auto application = workingState_.apply(operation);
     if (!application.succeeded()) {
         std::vector<SctPipelineDiagnostic> diagnostics;
         for (const auto& problem : application.issues) {
             diagnostics.push_back(editError(
-                baselineSnapshot_->source.descriptor.locator,
+                baselineSnapshot_->provenance->source().descriptor.locator,
                 problem.code, problem.message, problem.target));
         }
         return failure(std::move(diagnostics));
     }
-
-    const auto validation = spice::sct::SctDocumentValidator::validateDocument(
-        *application.document);
-    auto diagnostics = validationDiagnostics(baselineSnapshot_->source.descriptor.locator, validation);
-    if (!validation.validDocument) return failure(std::move(diagnostics));
 
     const auto parent = history_.currentRevision().id;
     auto delta = std::make_shared<RevisionDelta>();
@@ -619,11 +690,7 @@ SctEditResult SctEditSession::commit(
     delta->selections = selections;
     const auto committed = history_.commit(std::move(delta), std::move(description));
     assert(committed.created);
-    materializedDocument_ = std::move(application.document);
-    rebuildSnapshot(materializedDocument_, validation);
     pruneMaterializationCheckpoints();
-    ++commitsSinceMaterializationCheckpoint_;
-    maybeAddMaterializationCheckpoint();
 
     SctEditResult result;
     result.committed = true;
@@ -633,7 +700,8 @@ SctEditResult SctEditSession::commit(
     result.transition = SctRevisionTransition{SctRevisionTransitionKind::Commit,
         parent, committed.revision, result.changes};
     result.suggestedSelection = selections.redoSelection;
-    result.diagnostics = std::move(diagnostics);
+    result.preflightMicroseconds = preflightMicroseconds;
+    result.journalMicroseconds = elapsedMicroseconds(journalStart);
     return result;
 }
 
@@ -642,22 +710,18 @@ void SctEditSession::rebuildSnapshot(
     const spice::sct::SctDocumentValidationResult& validation) {
     structurallyValid_ = validation.validDocument;
     std::vector<SctPipelineDiagnostic> diagnostics;
-    for (const auto& diagnostic : baselineSnapshot_->diagnostics) {
+    for (const auto& diagnostic : baselineSnapshot_->provenance->baselineDiagnostics) {
         if (diagnostic.stage != SctPipelineStage::Validation)
             diagnostics.push_back(diagnostic);
     }
     auto currentValidation = validationDiagnostics(
-        baselineSnapshot_->source.descriptor.locator, validation);
+        baselineSnapshot_->provenance->source().descriptor.locator, validation);
     diagnostics.insert(diagnostics.end(),
         std::make_move_iterator(currentValidation.begin()),
         std::make_move_iterator(currentValidation.end()));
     currentSnapshot_ = std::make_shared<SctDocumentSnapshot>(SctDocumentSnapshot{
-        baselineSnapshot_->source,
-        baselineSnapshot_->inspection,
-        baselineSnapshot_->textConvention,
-        baselineSnapshot_->textSelectionOrigin,
+        baselineSnapshot_->provenance,
         std::move(document),
-        baselineSnapshot_->importReceipt,
         validation.validDocument ? spice::sct::SctDocumentReadiness::StructurallyValid
                                  : spice::sct::SctDocumentReadiness::Inspectable,
         std::move(diagnostics),
@@ -668,14 +732,6 @@ void SctEditSession::pruneMaterializationCheckpoints() {
     std::erase_if(materializationCheckpoints_, [this](const auto& checkpoint) {
         return !history_.revision(checkpoint.revision).has_value();
     });
-}
-
-void SctEditSession::maybeAddMaterializationCheckpoint() {
-    constexpr std::size_t MaterializationCheckpointInterval = 32;
-    if (commitsSinceMaterializationCheckpoint_ < MaterializationCheckpointInterval) return;
-    materializationCheckpoints_.push_back(
-        {history_.currentRevision().id, materializedDocument_});
-    commitsSinceMaterializationCheckpoint_ = 0;
 }
 
 }  // namespace salsa::core

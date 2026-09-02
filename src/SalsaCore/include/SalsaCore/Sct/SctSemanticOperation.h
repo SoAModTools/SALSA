@@ -2,6 +2,7 @@
 
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctMessageAuthoring.h"
+#include "SalsaCore/Sct/SctSemanticUsageIndex.h"
 
 #include "SpiceSCT/SctDocument.h"
 
@@ -13,10 +14,24 @@
 
 namespace salsa::core {
 
+struct SctInstructionPlacement final {
+    spice::sct::SctSectionId section;
+    std::optional<spice::sct::SctInstructionId> after{};
+    auto operator<=>(const SctInstructionPlacement&) const = default;
+};
+
+struct SctInstructionStructuralChange final {
+    spice::sct::SctInstructionId instruction;
+    std::optional<SctInstructionPlacement> before{};
+    std::optional<SctInstructionPlacement> after{};
+    std::optional<spice::sct::SctDocumentInstruction> beforeValue{};
+    std::optional<spice::sct::SctDocumentInstruction> afterValue{};
+    SctInstructionSemanticContribution beforeSemantics{};
+    SctInstructionSemanticContribution afterSemantics{};
+};
+
 struct SctEditChangeSet final {
-    std::vector<SctNavigationTarget> created{};
-    std::vector<SctNavigationTarget> removed{};
-    std::vector<SctNavigationTarget> moved{};
+    std::vector<SctInstructionStructuralChange> instructions{};
     std::vector<SctNavigationTarget> modified{};
 };
 
@@ -67,10 +82,22 @@ struct SctOperationApplication final {
     }
 };
 
+struct SctOperationReplay final {
+    SctSemanticOperationBatch inverse{};
+    SctEditChangeSet forwardChanges{};
+    SctEditChangeSet reverseChanges{};
+    std::vector<SctOperationIssue> issues{};
+
+    [[nodiscard]] bool succeeded() const noexcept { return issues.empty(); }
+};
+
 class SctSemanticOperationService final {
 public:
     [[nodiscard]] static SctOperationApplication apply(
         const spice::sct::SctDocument& document,
+        const SctSemanticOperationBatch& batch);
+    [[nodiscard]] static SctOperationReplay applyInPlace(
+        spice::sct::SctDocument& document,
         const SctSemanticOperationBatch& batch);
 };
 

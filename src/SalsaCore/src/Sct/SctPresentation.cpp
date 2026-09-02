@@ -371,7 +371,7 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
 std::vector<SctOutlineItem> SctPresentationService::outline(
     const SctDocumentSnapshot& snapshot) {
     std::vector<SctOutlineItem> result;
-    result.push_back({ "Document", snapshot.source.descriptor.locator.path().generic_string(),
+    result.push_back({ "Document", snapshot.provenance->source().descriptor.locator.path().generic_string(),
         { SctNavigationKind::Document, 0 }, {} });
     for (std::size_t sectionIndex = 0; sectionIndex < snapshot.document->sections.size(); ++sectionIndex) {
         const auto& section = snapshot.document->sections[sectionIndex];
@@ -425,14 +425,14 @@ SctEntityPresentation SctPresentationService::describe(
     const SctNavigationTarget target,
     const spice::sct::SctDocumentIndex& index) {
     if (target.kind == SctNavigationKind::Document) {
-        return { "SCT document", snapshot.source.descriptor.locator.path().generic_string(), {
-            { "Source size", std::to_string(snapshot.source.descriptor.byteSize) + " bytes", {}, {} },
-            { "Source revision", snapshot.source.descriptor.revision.digest.toHex(), {}, {} },
-            { "Source byte order", std::to_string(static_cast<int>(snapshot.importReceipt.source.byteOrder)), {}, {} },
-            { "Source wrapper", std::to_string(static_cast<int>(snapshot.importReceipt.source.wrapper)), {}, {} },
+        return { "SCT document", snapshot.provenance->source().descriptor.locator.path().generic_string(), {
+            { "Source size", std::to_string(snapshot.provenance->source().descriptor.byteSize) + " bytes", {}, {} },
+            { "Source revision", snapshot.provenance->source().descriptor.revision.digest.toHex(), {}, {} },
+            { "Source byte order", std::to_string(static_cast<int>(snapshot.provenance->importReceipt->source.byteOrder)), {}, {} },
+            { "Source wrapper", std::to_string(static_cast<int>(snapshot.provenance->importReceipt->source.wrapper)), {}, {} },
             { "Readiness", readinessName(snapshot.readiness), {}, {} },
-            { "Text convention", snapshot.textConvention.has_value()
-                ? std::string(sctTextConventionName(*snapshot.textConvention)) : "Unselected / opaque", {}, {} },
+            { "Text convention", snapshot.provenance->textConvention.has_value()
+                ? std::string(sctTextConventionName(*snapshot.provenance->textConvention)) : "Unselected / opaque", {}, {} },
             { "Sections", std::to_string(snapshot.document->sections.size()), {}, {} },
             { "Footer entries", std::to_string(snapshot.document->footerEntries.size()), {}, {} },
             { "Opaque attachments", std::to_string(snapshot.document->opaqueAttachments.size()), {}, {} },

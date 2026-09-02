@@ -21,12 +21,14 @@ enum class SctDocumentUpdateKind {
     Replacement,
     SourceStatus,
     RevisionTransition,
+    VerifiedMaterialization,
 };
 
 struct SctDocumentUpdate final {
     SctDocumentUpdateKind kind = SctDocumentUpdateKind::Replacement;
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot{};
     std::optional<core::SctRevisionTransition> transition{};
+    std::shared_ptr<const spice::sct::SctDocumentIndex> documentIndex{};
 };
 
 class SctDocumentController final : public QObject {
@@ -73,6 +75,9 @@ public:
     [[nodiscard]] bool contains(const core::AssetLocator& locator) const;
     [[nodiscard]] std::shared_ptr<const core::SctDocumentSnapshot> snapshot(
         const core::AssetLocator& locator) const;
+    [[nodiscard]] std::optional<spice::sct::SctMessage> workingMessage(
+        const core::AssetLocator& locator,
+        const core::SctMessageTarget& target) const;
     [[nodiscard]] SourceStatus sourceStatus(const core::AssetLocator& locator) const;
     [[nodiscard]] bool structurallyValid(const core::AssetLocator& locator) const;
     [[nodiscard]] bool isDirty(const core::AssetLocator& locator) const;
@@ -103,6 +108,12 @@ private:
         core::AssetLocator locator;
         std::unique_ptr<core::SctEditSession> session;
         SourceStatus status = SourceStatus::Current;
+        std::unique_ptr<QFutureWatcher<core::SctMaterializationResult>> materializationWatcher{};
+        std::stop_source materializationStop{};
+        std::uint64_t requestedMaterializationGeneration = 0;
+        std::uint64_t runningMaterializationGeneration = 0;
+        core::RevisionId requestedMaterializationRevision{};
+        bool editBlocked = false;
     };
 
     void begin(Operation operation, const core::AssetLocator& locator);
@@ -113,6 +124,10 @@ private:
         DocumentState& state,
         core::SctEditResult result,
         QString successMessage);
+    void requestMaterialization(DocumentState& state);
+    void startMaterialization(const std::string& identityKey, DocumentState& state);
+    void finishMaterialization(const std::string& identityKey, std::uint64_t generation);
+    void retireMaterialization(DocumentState& state);
 
     QFutureWatcher<core::SctLoadResult> watcher_{};
     std::unordered_map<std::string, DocumentState> documents_{};
@@ -121,6 +136,9 @@ private:
     Operation operation_ = Operation::None;
     std::uint64_t generation_ = 0;
     std::uint64_t runningGeneration_ = 0;
+    std::uint64_t nextMaterializationGeneration_ = 0;
+    std::vector<std::unique_ptr<QFutureWatcher<core::SctMaterializationResult>>>
+        retiredMaterializations_{};
     std::vector<core::Diagnostic> failureDiagnostics_{};
     std::vector<core::SctPipelineDiagnostic> failurePipelineDiagnostics_{};
 };

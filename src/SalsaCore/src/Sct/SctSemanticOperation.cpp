@@ -68,15 +68,9 @@ struct PrimitiveApplication final {
 }
 
 void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
-    target.created.insert(target.created.end(),
-        std::make_move_iterator(source.created.begin()),
-        std::make_move_iterator(source.created.end()));
-    target.removed.insert(target.removed.end(),
-        std::make_move_iterator(source.removed.begin()),
-        std::make_move_iterator(source.removed.end()));
-    target.moved.insert(target.moved.end(),
-        std::make_move_iterator(source.moved.begin()),
-        std::make_move_iterator(source.moved.end()));
+    target.instructions.insert(target.instructions.end(),
+        std::make_move_iterator(source.instructions.begin()),
+        std::make_move_iterator(source.instructions.end()));
     target.modified.insert(target.modified.end(),
         std::make_move_iterator(source.modified.begin()),
         std::make_move_iterator(source.modified.end()));
@@ -112,10 +106,23 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
         script->instructions.begin()
             + static_cast<std::ptrdiff_t>(location->instructionOrdinal + 1u),
         operation.instruction);
+    const auto semantics = SctSemanticUsageIndex::contributionFor(operation.instruction);
+    SctInstructionStructuralChange change;
+    change.instruction = operation.instruction.id;
+    change.after = SctInstructionPlacement{location->sectionId, operation.anchor};
+    change.afterValue = operation.instruction;
+    change.afterSemantics = semantics;
+    auto reverse = change;
+    reverse.before = change.after;
+    reverse.after.reset();
+    reverse.beforeValue = change.afterValue;
+    reverse.afterValue.reset();
+    reverse.beforeSemantics = change.afterSemantics;
+    reverse.afterSemantics = {};
     return {
         SctDeleteInstructionOperation{operation.instruction.id},
-        SctEditChangeSet{{target}, {}, {}, {}},
-        SctEditChangeSet{{}, {target}, {}, {}},
+        SctEditChangeSet{{std::move(change)}, {}},
+        SctEditChangeSet{{std::move(reverse)}, {}},
         std::nullopt,
     };
 }
@@ -141,12 +148,25 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     }
     const auto removed = script->instructions[location->instructionOrdinal];
     const auto anchor = script->instructions[location->instructionOrdinal - 1u].id;
+    const auto semantics = SctSemanticUsageIndex::contributionFor(removed);
     script->instructions.erase(script->instructions.begin()
         + static_cast<std::ptrdiff_t>(location->instructionOrdinal));
+    SctInstructionStructuralChange change;
+    change.instruction = operation.instruction;
+    change.before = SctInstructionPlacement{location->sectionId, anchor};
+    change.beforeValue = removed;
+    change.beforeSemantics = semantics;
+    auto reverse = change;
+    reverse.after = change.before;
+    reverse.before.reset();
+    reverse.afterValue = change.beforeValue;
+    reverse.beforeValue.reset();
+    reverse.afterSemantics = change.beforeSemantics;
+    reverse.beforeSemantics = {};
     return {
         SctInsertInstructionAfterOperation{anchor, removed},
-        SctEditChangeSet{{}, {target}, {}, {}},
-        SctEditChangeSet{{target}, {}, {}, {}},
+        SctEditChangeSet{{std::move(change)}, {}},
+        SctEditChangeSet{{std::move(reverse)}, {}},
         std::nullopt,
     };
 }
@@ -193,10 +213,25 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
             "The instruction destination anchor could not be resolved.", target)};
     }
     script->instructions.insert(std::next(destination), std::move(moved));
+    const auto movedPosition = std::ranges::find(
+        script->instructions, operation.instruction,
+        &spice::sct::SctDocumentInstruction::id);
+    const auto* movedValue = std::addressof(*movedPosition);
+    const auto semantics = SctSemanticUsageIndex::contributionFor(*movedValue);
+    SctInstructionStructuralChange change;
+    change.instruction = operation.instruction;
+    change.before = SctInstructionPlacement{sourceLocation->sectionId, oldAnchor};
+    change.after = SctInstructionPlacement{sourceLocation->sectionId, operation.anchor};
+    change.beforeValue = *movedValue;
+    change.afterValue = *movedValue;
+    change.beforeSemantics = semantics;
+    change.afterSemantics = semantics;
+    auto reverse = change;
+    std::swap(reverse.before, reverse.after);
     return {
         SctRelocateInstructionAfterOperation{operation.instruction, oldAnchor},
-        SctEditChangeSet{{}, {}, {target}, {}},
-        SctEditChangeSet{{}, {}, {target}, {}},
+        SctEditChangeSet{{std::move(change)}, {}},
+        SctEditChangeSet{{std::move(reverse)}, {}},
         std::nullopt,
     };
 }
@@ -228,8 +263,8 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     *value = operation.message;
     return {
         SctReplaceMessageOperation{operation.target, std::move(previous)},
-        SctEditChangeSet{{}, {}, {}, {target}},
-        SctEditChangeSet{{}, {}, {}, {target}},
+        SctEditChangeSet{{}, {target}},
+        SctEditChangeSet{{}, {target}},
         std::nullopt,
     };
 }
@@ -280,6 +315,38 @@ SctOperationApplication SctSemanticOperationService::apply(
     for (auto changes = reverseChanges.rbegin(); changes != reverseChanges.rend(); ++changes)
         appendChanges(result.reverseChanges, std::move(*changes));
     result.document = std::move(candidate);
+    return result;
+}
+
+SctOperationReplay SctSemanticOperationService::applyInPlace(
+    spice::sct::SctDocument& document,
+    const SctSemanticOperationBatch& batch) {
+    SctOperationReplay result;
+    if (batch.operations.empty()) {
+        result.issues.push_back(issue(
+            "EmptyOperationBatch", "A semantic operation batch cannot be empty."));
+        return result;
+    }
+    std::vector<SctPrimitiveOperation> appliedInverses;
+    std::vector<SctEditChangeSet> reverseChanges;
+    for (const auto& operation : batch.operations) {
+        auto applied = applyPrimitive(document, operation);
+        if (applied.issue.has_value()) {
+            for (auto inverse = appliedInverses.rbegin();
+                inverse != appliedInverses.rend(); ++inverse) {
+                (void)applyPrimitive(document, *inverse);
+            }
+            result.issues.push_back(std::move(*applied.issue));
+            return result;
+        }
+        appliedInverses.push_back(*applied.inverse);
+        result.inverse.operations.insert(result.inverse.operations.begin(),
+            std::move(*applied.inverse));
+        appendChanges(result.forwardChanges, std::move(applied.forwardChanges));
+        reverseChanges.push_back(std::move(applied.reverseChanges));
+    }
+    for (auto changes = reverseChanges.rbegin(); changes != reverseChanges.rend(); ++changes)
+        appendChanges(result.reverseChanges, std::move(*changes));
     return result;
 }
 

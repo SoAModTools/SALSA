@@ -58,6 +58,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Sct\SctDocumentController.cpp" />
     <ClCompile Include="Sct\SctDocumentWidget.cpp" />
+    <ClCompile Include="Sct\SctOutlineModel.cpp" />
     <ClCompile Include="Sct\SctMessageEditorWidget.cpp" />
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp" />
     <ClCompile Include="Workspace\DiagnosticsModel.cpp" />
@@ -67,6 +68,7 @@
     <QtMoc Include="Workspace\WorkspaceController.h" />
     <QtMoc Include="Sct\SctDocumentController.h" />
     <QtMoc Include="Sct\SctDocumentWidget.h" />
+    <QtMoc Include="Sct\SctOutlineModel.h" />
     <QtMoc Include="Sct\SctMessageEditorWidget.h" />
     <QtMoc Include="Sct\SctSemanticNavigatorWidget.h" />
   </ItemGroup>

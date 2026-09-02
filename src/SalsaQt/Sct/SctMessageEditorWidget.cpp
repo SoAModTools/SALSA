@@ -488,7 +488,13 @@ bool SctMessageEditorWidget::refresh(
         clear();
         return false;
     }
-    const auto projection = core::SctMessageAuthoringProfile::project(*message);
+    return refreshMessage(*message);
+}
+
+bool SctMessageEditorWidget::refreshMessage(
+    const spice::sct::SctMessage& message) {
+    if (!hasBinding() || committing_) return true;
+    const auto projection = core::SctMessageAuthoringProfile::project(message);
     if (!projection.supported()) {
         showBlocked(projection.issues);
         return true;

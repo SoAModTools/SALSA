@@ -22,11 +22,13 @@
     <ClCompile Include="Workspace\WorkspaceModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Sct\SctDocumentController.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctDocumentWidget.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="Sct\SctOutlineModel.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctMessageEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <QtMoc Include="Workspace\WorkspaceController.h"><Filter>Workspace</Filter></QtMoc>
     <QtMoc Include="Sct\SctDocumentController.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctDocumentWidget.h"><Filter>SCT</Filter></QtMoc>
+    <QtMoc Include="Sct\SctOutlineModel.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctMessageEditorWidget.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctSemanticNavigatorWidget.h"><Filter>SCT</Filter></QtMoc>
   </ItemGroup>

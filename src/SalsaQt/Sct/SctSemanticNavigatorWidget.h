@@ -11,6 +11,9 @@
 #include <QWidget>
 
 #include <array>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
 class QLabel;
 class QTabWidget;
 class QTreeWidget;
@@ -27,6 +30,9 @@ public:
     explicit SctSemanticNavigatorWidget(QWidget* parent = nullptr);
 
     void setDocument(
+        const core::AssetLocator& locator,
+        const core::SctDocumentSnapshot& snapshot);
+    void installVerifiedDocument(
         const core::AssetLocator& locator,
         const core::SctDocumentSnapshot& snapshot);
     [[nodiscard]] bool applyInstructionChanges(
@@ -70,7 +76,31 @@ private:
         QTreeWidget& variables,
         QTreeWidget& incomplete,
         const spice::sct::SctDocument& document);
+    void resetIncrementalState(
+        const spice::sct::SctDocument& document,
+        const spice::sct::SctDocumentIndex& index);
+    void removeContribution(
+        const core::SctInstructionStructuralChange& change);
+    void addContribution(
+        const core::SctInstructionStructuralChange& change);
+    void applyInstructionOrder(
+        const core::SctInstructionStructuralChange& change);
+    void reorderInstructionOccurrences(spice::sct::SctInstructionId instruction);
+    [[nodiscard]] bool physicallyBefore(
+        spice::sct::SctInstructionId left,
+        spice::sct::SctInstructionId right) const;
+    [[nodiscard]] QString incrementalInstructionName(
+        spice::sct::SctInstructionId instruction) const;
+    [[nodiscard]] QString incrementalInstructionContext(
+        spice::sct::SctInstructionId instruction) const;
     static void reconcileTree(QTreeWidget& current, QTreeWidget& desired);
+
+    struct InstructionPresentation final {
+        std::uint16_t opcode = 0;
+        std::uint64_t section = 0;
+        QString name{};
+        QString context{};
+    };
 
     QString identityKey_{};
     QLabel* emptyLabel_ = nullptr;
@@ -79,6 +109,10 @@ private:
     QTreeWidget* references_ = nullptr;
     QTreeWidget* variables_ = nullptr;
     QTreeWidget* incomplete_ = nullptr;
+    std::vector<std::uint64_t> sectionOrder_{};
+    std::unordered_map<std::uint64_t, std::vector<std::uint64_t>> instructionOrder_{};
+    std::unordered_map<std::uint64_t, InstructionPresentation> instructionPresentation_{};
+    bool reconciliationPending_ = false;
 };
 
 }  // namespace salsa::qt

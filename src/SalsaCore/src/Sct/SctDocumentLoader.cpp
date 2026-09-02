@@ -216,25 +216,33 @@ SctLoadResult SctDocumentLoader::materialize(
         return result;
     }
 
-    auto snapshot = std::make_shared<SctDocumentSnapshot>(SctDocumentSnapshot{
-        inspection->source,
-        inspection,
-        convention,
-        origin,
-        std::make_shared<const spice::sct::SctDocument>(
-            std::move(*assessment.import.document)),
-        std::move(assessment.import.receipt),
-        assessment.readiness,
-        inspection->diagnostics,
-    });
+    auto diagnostics = inspection->diagnostics;
     for (const auto& diagnostic : assessment.import.diagnostics) {
-        snapshot->diagnostics.push_back(convertDocumentDiagnostic(
+        diagnostics.push_back(convertDocumentDiagnostic(
             locator, SctPipelineStage::Import, diagnostic));
     }
     for (const auto& diagnostic : assessment.documentValidation.diagnostics) {
-        snapshot->diagnostics.push_back(convertDocumentDiagnostic(
+        diagnostics.push_back(convertDocumentDiagnostic(
             locator, SctPipelineStage::Validation, diagnostic));
     }
+    std::vector<SctPipelineDiagnostic> baselineDiagnostics;
+    for (const auto& diagnostic : diagnostics) {
+        if (diagnostic.stage != SctPipelineStage::Validation)
+            baselineDiagnostics.push_back(diagnostic);
+    }
+    auto receipt = std::make_shared<const spice::sct::SctDocumentImportReceipt>(
+        std::move(assessment.import.receipt));
+    auto provenance = std::make_shared<const SctDocumentProvenance>(SctDocumentProvenance{
+        inspection, convention, origin, std::move(receipt),
+        std::move(baselineDiagnostics),
+    });
+    auto snapshot = std::make_shared<SctDocumentSnapshot>(SctDocumentSnapshot{
+        std::move(provenance),
+        std::make_shared<const spice::sct::SctDocument>(
+            std::move(*assessment.import.document)),
+        assessment.readiness,
+        std::move(diagnostics),
+    });
     result.document = std::move(snapshot);
     return result;
 }

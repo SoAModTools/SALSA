@@ -15,6 +15,7 @@
 #include <QDockWidget>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -69,8 +70,7 @@ constexpr qsizetype MaximumRecentDatasets = 10;
     if (update.kind != SctDocumentUpdateKind::RevisionTransition
         || !update.transition.has_value()) return false;
     const auto& changes = update.transition->changes;
-    if (!changes.created.empty() || !changes.removed.empty()
-        || !changes.moved.empty() || changes.modified.empty()) return false;
+    if (!changes.instructions.empty() || changes.modified.empty()) return false;
     return std::ranges::all_of(changes.modified, [](const auto target) {
         return target.kind == core::SctNavigationKind::String
             || target.kind == core::SctNavigationKind::FooterEntry;
@@ -82,15 +82,7 @@ constexpr qsizetype MaximumRecentDatasets = 10;
     if (update.kind != SctDocumentUpdateKind::RevisionTransition
         || !update.transition.has_value()) return false;
     const auto& changes = update.transition->changes;
-    const bool hasStructuralChange = !changes.created.empty()
-        || !changes.removed.empty() || !changes.moved.empty();
-    const auto isInstruction = [](const auto target) {
-        return target.kind == core::SctNavigationKind::Instruction;
-    };
-    return hasStructuralChange && changes.modified.empty()
-        && std::ranges::all_of(changes.created, isInstruction)
-        && std::ranges::all_of(changes.removed, isInstruction)
-        && std::ranges::all_of(changes.moved, isInstruction);
+    return !changes.instructions.empty() && changes.modified.empty();
 }
 
 [[nodiscard]] bool affectsMessageTarget(
@@ -538,6 +530,22 @@ void MainWindow::syncDiagnostics() {
     diagnosticsModel_->setCombinedDiagnostics(workspaceDiagnostics, documentDiagnostics);
 }
 
+void MainWindow::queueDiagnosticsSync() {
+    if (diagnosticsSyncPending_) return;
+    diagnosticsSyncPending_ = true;
+    QTimer::singleShot(0, this, [this] {
+        diagnosticsSyncPending_ = false;
+        QElapsedTimer timer;
+        timer.start();
+        syncDiagnostics();
+        if (qEnvironmentVariableIsSet("SALSA_EDIT_TIMINGS")) {
+            qInfo().noquote() << QStringLiteral(
+                "SALSA edit timing: diagnostics-delivery=%1us")
+                .arg(timer.nsecsElapsed() / 1000);
+        }
+    });
+}
+
 void MainWindow::syncSemanticNavigator() {
     auto* widget = activeDocumentWidget();
     if (widget == nullptr) {
@@ -799,14 +807,16 @@ void MainWindow::syncDocument(
     const bool instructionDelta = !createdWidget
         && isIncrementalInstructionTransition(update);
     bool incrementalInstructionApplied = false;
-    if (createdWidget || update.kind == SctDocumentUpdateKind::Replacement
+    if (update.kind == SctDocumentUpdateKind::VerifiedMaterialization) {
+        widget->installVerifiedSnapshot(snapshot, update.documentIndex, sourceStatus);
+    } else if (createdWidget || update.kind == SctDocumentUpdateKind::Replacement
         || (update.kind == SctDocumentUpdateKind::RevisionTransition
             && !textOnly && !instructionDelta)) {
         widget->setSnapshot(snapshot, sourceStatus);
     } else if (instructionDelta) {
         incrementalInstructionApplied = widget->applyInstructionChanges(
             snapshot, sourceStatus, update.transition->changes);
-        if (!incrementalInstructionApplied) widget->setSnapshot(snapshot, sourceStatus);
+        if (!incrementalInstructionApplied) widget->setSourceStatus(sourceStatus);
     } else if (textOnly) {
         widget->applyTextOnlySnapshot(snapshot, sourceStatus, update.transition->changes);
     } else {
@@ -816,16 +826,23 @@ void MainWindow::syncDocument(
         && *messageEditor_->boundLocator() == *found
         && messageEditor_->boundTarget().has_value()
         && affectsMessageTarget(update, *messageEditor_->boundTarget())) {
-        (void)messageEditor_->refresh(snapshot);
+        if (const auto message = documentController_->workingMessage(
+                widget->locator(), *messageEditor_->boundTarget()); message.has_value()) {
+            (void)messageEditor_->refreshMessage(*message);
+        }
     }
     rebuildDocumentTabTitles();
-    syncDiagnostics();
+    queueDiagnosticsSync();
     if (widget == activeDocumentWidget()
         && (createdWidget || update.kind == SctDocumentUpdateKind::Replacement
+            || update.kind == SctDocumentUpdateKind::VerifiedMaterialization
             || (update.kind == SctDocumentUpdateKind::RevisionTransition && !textOnly))) {
-        if (!incrementalInstructionApplied
-            || !semanticNavigator_->applyInstructionChanges(
-                widget->locator(), *snapshot, update.transition->changes)) {
+        if (update.kind == SctDocumentUpdateKind::VerifiedMaterialization) {
+            semanticNavigator_->installVerifiedDocument(widget->locator(), *snapshot);
+        } else if (instructionDelta) {
+            (void)semanticNavigator_->applyInstructionChanges(
+                widget->locator(), *snapshot, update.transition->changes);
+        } else if (!incrementalInstructionApplied) {
             syncSemanticNavigator();
         }
     }

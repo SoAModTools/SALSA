@@ -200,21 +200,23 @@ TEST(SctEditSession, OffersOnlyFactoryCompletePlatformAgnosticOpcodes) {
 
 TEST(SctEditSession, InsertUndoRedoAndBranchingPreserveAtomicHistory) {
     SctEditSession session(loadedSnapshot());
+    const auto section = session.currentSnapshot()->document->sections.front().id;
     const auto original = script(*session.currentSnapshot()).instructions.front().id;
 
     const auto inserted = session.insertInstructionAfter(original, 125);
     ASSERT_TRUE(inserted.committed);
-    ASSERT_EQ(inserted.changes.created.size(), 1u);
-    const auto insertedId = SctInstructionId{inserted.changes.created.front().id};
+    ASSERT_EQ(inserted.changes.instructions.size(), 1u);
+    const auto insertedId = inserted.changes.instructions.front().instruction;
     EXPECT_NE(insertedId, original);
-    EXPECT_EQ(script(*inserted.snapshot).instructions.size(), 3u);
+    ASSERT_EQ(session.workingState().instructionOrder(section).size(), 3u);
+    EXPECT_EQ(session.workingState().instructionOrder(section)[1], insertedId);
     EXPECT_FALSE(session.undoDescription()->empty());
     ASSERT_TRUE(inserted.suggestedSelection.has_value());
     EXPECT_EQ(inserted.suggestedSelection->id, insertedId.value());
 
     const auto undone = session.undo();
     ASSERT_TRUE(undone.has_value());
-    EXPECT_EQ(script(*undone->snapshot).instructions.size(), 2u);
+    EXPECT_EQ(session.workingState().instructionOrder(section).size(), 2u);
     EXPECT_FALSE(session.isDirty());
     EXPECT_TRUE(session.canRedo());
     EXPECT_FALSE(session.redoDescription()->empty());
@@ -224,7 +226,7 @@ TEST(SctEditSession, InsertUndoRedoAndBranchingPreserveAtomicHistory) {
 
     const auto redone = session.redo();
     ASSERT_TRUE(redone.has_value());
-    EXPECT_EQ(script(*redone->snapshot).instructions[1].id, insertedId);
+    EXPECT_EQ(session.workingState().instructionOrder(section)[1], insertedId);
     EXPECT_TRUE(session.isDirty());
 
     ASSERT_TRUE(session.undo().has_value());
@@ -232,8 +234,8 @@ TEST(SctEditSession, InsertUndoRedoAndBranchingPreserveAtomicHistory) {
     ASSERT_TRUE(replacement.committed);
     EXPECT_FALSE(session.canRedo());
     EXPECT_GT(replacement.revision.value, inserted.revision.value);
-    ASSERT_EQ(replacement.changes.created.size(), 1u);
-    EXPECT_GT(replacement.changes.created.front().id, insertedId.value());
+    ASSERT_EQ(replacement.changes.instructions.size(), 1u);
+    EXPECT_GT(replacement.changes.instructions.front().instruction.value(), insertedId.value());
 }
 
 TEST(SctEditSession, DeletesUnreferencedInstructionsWithDeterministicSelectionAndUndo) {
@@ -248,15 +250,16 @@ TEST(SctEditSession, DeletesUnreferencedInstructionsWithDeterministicSelectionAn
     ASSERT_TRUE(deleted.committed);
     ASSERT_TRUE(deleted.suggestedSelection.has_value());
     EXPECT_EQ(deleted.suggestedSelection->id, last.value());
-    ASSERT_EQ(script(*deleted.snapshot).instructions.size(), 4u);
-    EXPECT_EQ(script(*deleted.snapshot).instructions[1].id, first);
-    EXPECT_EQ(script(*deleted.snapshot).instructions[2].id, last);
+    const auto section = baseline->document->sections.front().id;
+    ASSERT_EQ(session.workingState().instructionOrder(section).size(), 4u);
+    EXPECT_EQ(session.workingState().instructionOrder(section)[1], first);
+    EXPECT_EQ(session.workingState().instructionOrder(section)[2], last);
 
     const auto undone = session.undo();
     ASSERT_TRUE(undone.has_value());
     ASSERT_TRUE(undone->suggestedSelection.has_value());
     EXPECT_EQ(undone->suggestedSelection->id, middle.value());
-    EXPECT_EQ(script(*undone->snapshot).instructions.size(), 5u);
+    EXPECT_EQ(session.workingState().instructionOrder(section).size(), 5u);
 }
 
 TEST(SctEditSession, RejectsDeletionWithTypedReferencesOrOpaqueAttachments) {
@@ -299,12 +302,13 @@ TEST(SctEditSession, MovesOnlyWithinASectionAndPreservesInstructionIdentity) {
 
     const auto moved = session.moveInstruction(original[2].id, SctInstructionMoveDirection::Up);
     ASSERT_TRUE(moved.committed);
-    const auto& reordered = script(*moved.snapshot).instructions;
+    const auto section = baseline->document->sections.front().id;
+    const auto reordered = session.workingState().instructionOrder(section);
     ASSERT_EQ(reordered.size(), 5u);
-    EXPECT_EQ(reordered[1].id, original[2].id);
-    EXPECT_EQ(reordered[2].id, original[1].id);
-    ASSERT_EQ(moved.changes.moved.size(), 1u);
-    EXPECT_EQ(moved.changes.moved.front().id, original[2].id.value());
+    EXPECT_EQ(reordered[1], original[2].id);
+    EXPECT_EQ(reordered[2], original[1].id);
+    ASSERT_EQ(moved.changes.instructions.size(), 1u);
+    EXPECT_EQ(moved.changes.instructions.front().instruction, original[2].id);
 
     const auto boundary = session.moveInstruction(original[2].id, SctInstructionMoveDirection::Up);
     EXPECT_FALSE(boundary.committed);
@@ -361,20 +365,24 @@ TEST(SctEditSession, AllowsAnOptionalTerminalReturnToBeAddedAndRemoved) {
 
     const auto inserted = session.insertInstructionAfter(body, 12);
     ASSERT_TRUE(inserted.committed);
-    const auto& insertedInstructions = script(*inserted.snapshot).instructions;
-    ASSERT_EQ(insertedInstructions.back().opcode, 12u);
-    const auto terminalReturn = insertedInstructions.back().id;
+    const auto section = withoutReturn->document->sections.front().id;
+    const auto insertedInstructions = session.workingState().instructionOrder(section);
+    const auto terminalReturn = insertedInstructions.back();
+    ASSERT_EQ(session.workingState().instruction(terminalReturn)->opcode, 12u);
 
     const auto removed = session.deleteInstruction(terminalReturn);
     ASSERT_TRUE(removed.committed);
-    EXPECT_EQ(script(*removed.snapshot).instructions.size(), 2u);
+    EXPECT_EQ(session.workingState().instructionOrder(section).size(), 2u);
 
     ASSERT_TRUE(session.undo().has_value());
-    EXPECT_EQ(script(*session.currentSnapshot()).instructions.back().opcode, 12u);
+    EXPECT_EQ(session.workingState().instruction(
+        session.workingState().instructionOrder(section).back())->opcode, 12u);
     ASSERT_TRUE(session.undo().has_value());
-    EXPECT_EQ(script(*session.currentSnapshot()).instructions.back().opcode, 125u);
+    EXPECT_EQ(session.workingState().instruction(
+        session.workingState().instructionOrder(section).back())->opcode, 125u);
     ASSERT_TRUE(session.redo().has_value());
-    EXPECT_EQ(script(*session.currentSnapshot()).instructions.back().opcode, 12u);
+    EXPECT_EQ(session.workingState().instruction(
+        session.workingState().instructionOrder(section).back())->opcode, 12u);
 }
 
 TEST(SctEditSession, InvalidDocumentsStayReadOnlyAndFailedEditsDoNotConsumeHistory) {
@@ -406,13 +414,17 @@ TEST(SctEditSession, EditedSnapshotsRetainSourceAndInterpretationProvenance) {
     const auto edited = session.insertInstructionAfter(anchor, 125);
     ASSERT_TRUE(edited.committed);
 
-    EXPECT_EQ(edited.snapshot->source.descriptor.locator,
-        baseline->source.descriptor.locator);
-    EXPECT_EQ(edited.snapshot->source.descriptor.revision,
-        baseline->source.descriptor.revision);
-    EXPECT_EQ(edited.snapshot->inspection.get(), baseline->inspection.get());
-    EXPECT_EQ(edited.snapshot->textConvention, baseline->textConvention);
-    EXPECT_EQ(edited.snapshot->textSelectionOrigin, baseline->textSelectionOrigin);
+    EXPECT_EQ(edited.snapshot->provenance.get(), baseline->provenance.get());
+    EXPECT_EQ(edited.snapshot->provenance->source().descriptor.locator,
+        baseline->provenance->source().descriptor.locator);
+    EXPECT_EQ(edited.snapshot->provenance->source().descriptor.revision,
+        baseline->provenance->source().descriptor.revision);
+    EXPECT_EQ(edited.snapshot->provenance->inspection.get(),
+        baseline->provenance->inspection.get());
+    EXPECT_EQ(edited.snapshot->provenance->textConvention,
+        baseline->provenance->textConvention);
+    EXPECT_EQ(edited.snapshot->provenance->textSelectionOrigin,
+        baseline->provenance->textSelectionOrigin);
     EXPECT_EQ(edited.snapshot->readiness, SctDocumentReadiness::StructurallyValid);
     EXPECT_TRUE(std::ranges::none_of(edited.snapshot->diagnostics, [](const auto& diagnostic) {
         return diagnostic.stage == SctPipelineStage::Edit;
@@ -467,11 +479,10 @@ TEST(SctEditSession, ReplacesIndexedAndFooterMessagesAsAtomicRevisions) {
     ASSERT_TRUE(session.undo().has_value());
     EXPECT_FALSE(session.isDirty());
     ASSERT_TRUE(session.redo().has_value());
-    const auto currentIndex = SctDocumentIndex::build(*session.currentSnapshot()->document);
-    const auto* changed = currentIndex.find(indexed.id);
+    const auto* changed = session.workingState().message(SctMessageTarget{indexed.id});
     ASSERT_NE(changed, nullptr);
     const auto changedProjection = SctMessageAuthoringProfile::project(
-        std::get<SctMessage>(changed->value));
+        *changed);
     ASSERT_TRUE(changedProjection.supported());
     EXPECT_EQ(*changedProjection.draft, indexedDraft);
 }
@@ -514,8 +525,9 @@ TEST(SctSemanticOperation, AppliesBatchesAtomicallyAndReturnsAReplayableInverse)
 
     const auto applied = SctSemanticOperationService::apply(document, batch);
     ASSERT_TRUE(applied.succeeded());
-    ASSERT_EQ(applied.forwardChanges.created.size(), 1u);
-    ASSERT_EQ(applied.forwardChanges.removed.size(), 1u);
+    ASSERT_EQ(applied.forwardChanges.instructions.size(), 2u);
+    EXPECT_FALSE(applied.forwardChanges.instructions[0].before.has_value());
+    EXPECT_FALSE(applied.forwardChanges.instructions[1].after.has_value());
     ASSERT_EQ(applied.inverse.operations.size(), 2u);
     const auto& edited = std::get<SctScriptSectionContent>(
         applied.document->sections.front().content).instructions;
@@ -565,9 +577,12 @@ TEST(SctSemanticOperation, RelocatesAndReplacesMessagesWithExactInverseChanges) 
     }};
     const auto applied = SctSemanticOperationService::apply(document, batch);
     ASSERT_TRUE(applied.succeeded());
-    ASSERT_EQ(applied.forwardChanges.moved.size(), 1u);
+    ASSERT_EQ(applied.forwardChanges.instructions.size(), 1u);
     ASSERT_EQ(applied.forwardChanges.modified.size(), 1u);
-    EXPECT_EQ(applied.reverseChanges.moved, applied.forwardChanges.moved);
+    EXPECT_EQ(applied.reverseChanges.instructions.front().before,
+        applied.forwardChanges.instructions.front().after);
+    EXPECT_EQ(applied.reverseChanges.instructions.front().after,
+        applied.forwardChanges.instructions.front().before);
     EXPECT_EQ(applied.reverseChanges.modified, applied.forwardChanges.modified);
 
     const auto restored = SctSemanticOperationService::apply(
@@ -589,7 +604,7 @@ TEST(SctEditSession, UndoRedoExposeForwardAndReverseRevisionTransitions) {
     EXPECT_EQ(inserted.transition->kind, SctRevisionTransitionKind::Commit);
     EXPECT_EQ(inserted.transition->from.value, 1u);
     EXPECT_EQ(inserted.transition->to, inserted.revision);
-    ASSERT_EQ(inserted.transition->changes.created.size(), 1u);
+    ASSERT_EQ(inserted.transition->changes.instructions.size(), 1u);
 
     const auto undone = session.undo();
     ASSERT_TRUE(undone.has_value());
@@ -597,14 +612,18 @@ TEST(SctEditSession, UndoRedoExposeForwardAndReverseRevisionTransitions) {
     EXPECT_EQ(undone->transition->kind, SctRevisionTransitionKind::Undo);
     EXPECT_EQ(undone->transition->from, inserted.revision);
     EXPECT_EQ(undone->transition->to.value, 1u);
-    ASSERT_EQ(undone->changes.removed.size(), 1u);
-    EXPECT_EQ(undone->changes.removed.front(), inserted.changes.created.front());
+    ASSERT_EQ(undone->changes.instructions.size(), 1u);
+    EXPECT_FALSE(undone->changes.instructions.front().after.has_value());
+    EXPECT_EQ(undone->changes.instructions.front().instruction,
+        inserted.changes.instructions.front().instruction);
 
     const auto redone = session.redo();
     ASSERT_TRUE(redone.has_value());
     ASSERT_TRUE(redone->transition.has_value());
     EXPECT_EQ(redone->transition->kind, SctRevisionTransitionKind::Redo);
-    EXPECT_EQ(redone->changes.created, inserted.changes.created);
+    ASSERT_EQ(redone->changes.instructions.size(), 1u);
+    EXPECT_EQ(redone->changes.instructions.front().instruction,
+        inserted.changes.instructions.front().instruction);
 }
 
 TEST(SctEditSession, MaterializesLongJournalsAndPrunesDiscardedCheckpointBranches) {
@@ -612,15 +631,12 @@ TEST(SctEditSession, MaterializesLongJournalsAndPrunesDiscardedCheckpointBranche
     SctEditSession session(baseline);
     const auto anchor = script(*baseline).instructions.front().id;
     std::vector<RevisionId> revisions{session.currentRevision()};
-    std::weak_ptr<const SctDocument> checkpointDocument;
 
     for (int edit = 0; edit < 40; ++edit) {
         auto result = session.insertInstructionAfter(anchor, 125);
         ASSERT_TRUE(result.committed);
         revisions.push_back(result.revision);
-        if (edit == 31) checkpointDocument = result.snapshot->document;
     }
-    EXPECT_FALSE(checkpointDocument.expired());
     const auto materialized = session.materializeRevision(revisions[20]);
     ASSERT_TRUE(materialized.has_value());
     EXPECT_EQ(std::get<SctScriptSectionContent>(
@@ -633,17 +649,105 @@ TEST(SctEditSession, MaterializesLongJournalsAndPrunesDiscardedCheckpointBranche
     EXPECT_GT(branched.revision.value, discardedRevision.value);
     EXPECT_FALSE(session.canRedo());
     EXPECT_FALSE(session.materializeRevision(discardedRevision).has_value());
-    EXPECT_TRUE(checkpointDocument.expired());
 }
 
-TEST(SctEditSession, ReleasesNonCheckpointMaterializations) {
+TEST(SctEditSession, KeepsVerifiedSnapshotStableWhileWorkingRevisionsAdvance) {
     SctEditSession session(loadedSnapshot());
     const auto anchor = script(*session.currentSnapshot()).instructions.front().id;
+    const auto verified = session.verifiedSnapshot();
     auto first = session.insertInstructionAfter(anchor, 125);
     ASSERT_TRUE(first.committed);
-    std::weak_ptr<const SctDocument> firstDocument = first.snapshot->document;
-    first.snapshot.reset();
     const auto second = session.insertInstructionAfter(anchor, 125);
     ASSERT_TRUE(second.committed);
-    EXPECT_TRUE(firstDocument.expired());
+    EXPECT_EQ(session.verifiedSnapshot().get(), verified.get());
+    EXPECT_EQ(session.workingRevision(), second.revision);
+    EXPECT_GT(session.workingState().instructionOrder(
+        verified->document->sections.front().id).size(),
+        script(*verified).instructions.size());
+}
+
+TEST(SctWorkingState, AppliesBatchesAtomicallyWithoutReusingAllocatedIds) {
+    auto document = std::make_shared<const SctDocument>(makeScriptDocument({125}, false));
+    SctWorkingState state(document);
+    const auto section = document->sections.front().id;
+    const auto anchor = std::get<SctScriptSectionContent>(
+        document->sections.front().content).instructions.back().id;
+    const auto nextId = state.nextInstructionIdValue();
+    SctDocumentInstruction inserted{SctInstructionId{nextId}, 125};
+    const auto rejected = state.apply(SctSemanticOperationBatch{{
+        SctInsertInstructionAfterOperation{anchor, inserted},
+        SctDeleteInstructionOperation{SctInstructionId{999999}},
+    }});
+    EXPECT_FALSE(rejected.succeeded());
+    EXPECT_EQ(state.instructionOrder(section).size(), 2u);
+    EXPECT_EQ(state.instruction(inserted.id), nullptr);
+    EXPECT_GT(state.nextInstructionIdValue(), nextId);
+}
+
+TEST(SctEditSession, MaterializesAndInstallsTheNewestWorkingRevision) {
+    auto baseline = snapshotWith(loadedSnapshot(), makeScriptDocument({125}, false));
+    SctEditSession session(baseline);
+    const auto section = baseline->document->sections.front().id;
+    const auto anchor = script(*baseline).instructions.back().id;
+    const auto first = session.insertInstructionAfter(anchor, 125);
+    ASSERT_TRUE(first.committed);
+    const auto second = session.insertInstructionAfter(anchor, 125);
+    ASSERT_TRUE(second.committed);
+    ASSERT_EQ(session.workingState().instructionOrder(section).size(), 4u);
+
+    const auto request = session.materializationRequest(17);
+    ASSERT_TRUE(request.has_value());
+    EXPECT_EQ(request->targetRevision, second.revision);
+    EXPECT_EQ(request->journalTail.size(), 2u);
+    const auto materialized = SctDocumentMaterializer::materialize(*request);
+    ASSERT_TRUE(materialized.succeeded());
+    EXPECT_EQ(materialized.generation, 17u);
+    EXPECT_TRUE(session.installVerifiedMaterialization(materialized));
+    EXPECT_EQ(session.verifiedSnapshot()->document.get(), materialized.document.get());
+    EXPECT_EQ(script(*session.verifiedSnapshot()).instructions.size(), 4u);
+}
+
+TEST(SctDocumentMaterializer, HonorsCancellationBeforeReplay) {
+    auto document = std::make_shared<const SctDocument>(makeScriptDocument({125}, false));
+    SctMaterializationRequest request;
+    request.generation = 3;
+    request.baseRevision = RevisionId{1};
+    request.targetRevision = RevisionId{2};
+    request.baseDocument = document;
+    std::stop_source stop;
+    stop.request_stop();
+    const auto result = SctDocumentMaterializer::materialize(request, stop.get_token());
+    EXPECT_TRUE(result.cancelled);
+    EXPECT_FALSE(result.succeeded());
+}
+
+TEST(SctEditSession, VerificationRejectionRollsBackAndDiscardsTheRejectedLineage) {
+    auto baseline = snapshotWith(loadedSnapshot(), makeScriptDocument({125}, false));
+    SctEditSession session(baseline);
+    const auto section = baseline->document->sections.front().id;
+    const auto anchor = script(*baseline).instructions.back().id;
+    const auto first = session.insertInstructionAfter(anchor, 125);
+    ASSERT_TRUE(first.committed);
+    const auto second = session.insertInstructionAfter(anchor, 125);
+    ASSERT_TRUE(second.committed);
+
+    SctPipelineDiagnostic rejection;
+    rejection.severity = DiagnosticSeverity::Error;
+    rejection.stage = SctPipelineStage::Validation;
+    rejection.code = "TestRejection";
+    rejection.message = "Synthetic background rejection.";
+    const auto rollback = session.rejectToVerifiedRevision(
+        RevisionId{1}, {rejection});
+    ASSERT_TRUE(rollback.has_value());
+    ASSERT_TRUE(rollback->transition.has_value());
+    EXPECT_EQ(rollback->transition->kind,
+        SctRevisionTransitionKind::VerificationRollback);
+    EXPECT_EQ(session.workingRevision().value, 1u);
+    EXPECT_EQ(session.workingState().instructionOrder(section).size(), 2u);
+    EXPECT_FALSE(session.canRedo());
+    EXPECT_FALSE(session.materializeRevision(second.revision).has_value());
+
+    const auto replacement = session.insertInstructionAfter(anchor, 125);
+    ASSERT_TRUE(replacement.committed);
+    EXPECT_GT(replacement.revision.value, second.revision.value);
 }

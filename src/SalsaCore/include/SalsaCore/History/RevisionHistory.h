@@ -159,6 +159,27 @@ public:
         return RevisionSnapshot<State>{ target.id, target.state };
     }
 
+    // Exceptional recovery operation. The target must be an ancestor on the
+    // active lineage. Revision identifiers remain monotonic and are never
+    // reused after the discarded descendants are removed.
+    [[nodiscard]] std::optional<RevisionSnapshot<State>>
+        selectAncestorAndDiscardDescendants(const RevisionId id) {
+        const auto found = std::ranges::find(entries_, id, &Entry::id);
+        if (found == entries_.end()) return std::nullopt;
+        const auto index = static_cast<std::size_t>(std::distance(entries_.begin(), found));
+        if (index > currentIndex_) return std::nullopt;
+        auto cursor = currentIndex_;
+        while (cursor > index) {
+            if (entries_[cursor].parent != entries_[cursor - 1].id) return std::nullopt;
+            --cursor;
+        }
+        currentIndex_ = index;
+        entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(index + 1),
+            entries_.end());
+        return RevisionSnapshot<State>{entries_[currentIndex_].id,
+            entries_[currentIndex_].state};
+    }
+
     [[nodiscard]] bool canUndo() const noexcept {
         return currentIndex_ > 0;
     }

@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <ranges>
 #include <tuple>
@@ -286,6 +287,24 @@ void setKey(QTreeWidgetItem& item, const QString& key) {
     item.setData(0, StableKeyRole, key);
 }
 
+[[nodiscard]] std::optional<spice::sct::SctInstructionId> sourceInstructionFor(
+    const QTreeWidgetItem& item) {
+    const auto key = item.data(0, StableKeyRole).toString();
+    if (key.startsWith(QStringLiteral("reference:target:"))) return std::nullopt;
+    auto location = item.data(0, FallbackNavigationRole);
+    if (!location.isValid()) {
+        for (int column = 0; column < item.columnCount(); ++column) {
+            location = item.data(column, NavigationRole);
+            if (location.isValid()) break;
+        }
+    }
+    if (!location.isValid()) return std::nullopt;
+    const auto target = core::owningNavigationTarget(
+        location.value<core::SctInspectionLocation>());
+    return target.kind == core::SctNavigationKind::Instruction
+        ? std::optional{spice::sct::SctInstructionId(target.id)} : std::nullopt;
+}
+
 }  // namespace
 
 SctSemanticNavigatorWidget::SctSemanticNavigatorWidget(QWidget* parent)
@@ -332,6 +351,8 @@ void SctSemanticNavigatorWidget::setDocument(
     identityKey_ = nextIdentity;
     for (auto* tree : { opcodes_, references_, variables_, incomplete_ }) tree->clear();
     populateTrees(*opcodes_, *references_, *variables_, *incomplete_, *snapshot.document);
+    resetIncrementalState(*snapshot.document,
+        spice::sct::SctDocumentIndex::build(*snapshot.document));
     for (auto* tree : { opcodes_, references_, variables_, incomplete_ }) tree->collapseAll();
     if (sameDocument) {
         restoreState(*opcodes_, states[0]);
@@ -341,6 +362,15 @@ void SctSemanticNavigatorWidget::setDocument(
     }
     emptyLabel_->hide();
     tabs_->show();
+    reconciliationPending_ = false;
+}
+
+void SctSemanticNavigatorWidget::installVerifiedDocument(
+    const core::AssetLocator& locator,
+    const core::SctDocumentSnapshot& snapshot) {
+    const auto nextIdentity = QString::fromStdString(locator.identityKey());
+    if (identityKey_ != nextIdentity || reconciliationPending_)
+        setDocument(locator, snapshot);
 }
 
 bool SctSemanticNavigatorWidget::applyInstructionChanges(
@@ -348,37 +378,433 @@ bool SctSemanticNavigatorWidget::applyInstructionChanges(
     const core::SctDocumentSnapshot& snapshot,
     const core::SctEditChangeSet& changes) {
     const auto nextIdentity = QString::fromStdString(locator.identityKey());
-    const auto isInstruction = [](const core::SctNavigationTarget target) {
-        return target.kind == core::SctNavigationKind::Instruction;
-    };
-    const bool hasStructuralChange = !changes.created.empty()
-        || !changes.removed.empty() || !changes.moved.empty();
-    if (snapshot.document == nullptr || identityKey_ != nextIdentity
-        || !hasStructuralChange || !changes.modified.empty()
-        || !std::ranges::all_of(changes.created, isInstruction)
-        || !std::ranges::all_of(changes.removed, isInstruction)
-        || !std::ranges::all_of(changes.moved, isInstruction)) return false;
+    Q_UNUSED(snapshot);
+    if (identityKey_ != nextIdentity || changes.instructions.empty()
+        || !changes.modified.empty()) {
+        reconciliationPending_ = true;
+        return false;
+    }
 
-    QTreeWidget desiredOpcodes;
-    QTreeWidget desiredReferences;
-    QTreeWidget desiredVariables;
-    QTreeWidget desiredIncomplete;
-    desiredOpcodes.setColumnCount(opcodes_->columnCount());
-    desiredReferences.setColumnCount(references_->columnCount());
-    desiredVariables.setColumnCount(variables_->columnCount());
-    desiredIncomplete.setColumnCount(incomplete_->columnCount());
-    populateTrees(desiredOpcodes, desiredReferences, desiredVariables,
-        desiredIncomplete, *snapshot.document);
-
-    reconcileTree(*opcodes_, desiredOpcodes);
-    reconcileTree(*references_, desiredReferences);
-    reconcileTree(*variables_, desiredVariables);
-    reconcileTree(*incomplete_, desiredIncomplete);
+    for (const auto& change : changes.instructions) {
+        if (change.beforeValue.has_value() && !change.afterValue.has_value()) {
+            removeContribution(change);
+            applyInstructionOrder(change);
+        } else if (!change.beforeValue.has_value() && change.afterValue.has_value()) {
+            applyInstructionOrder(change);
+            addContribution(change);
+        } else if (change.before.has_value() && change.after.has_value()) {
+            applyInstructionOrder(change);
+            reorderInstructionOccurrences(change.instruction);
+        } else {
+            reconciliationPending_ = true;
+            return false;
+        }
+    }
     return true;
+}
+
+void SctSemanticNavigatorWidget::resetIncrementalState(
+    const spice::sct::SctDocument& document,
+    const spice::sct::SctDocumentIndex& index) {
+    sectionOrder_.clear();
+    instructionOrder_.clear();
+    instructionPresentation_.clear();
+    for (std::size_t ordinal = 0; ordinal < document.sections.size(); ++ordinal) {
+        const auto& section = document.sections[ordinal];
+        const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(
+            &section.content);
+        if (script == nullptr) continue;
+        const auto sectionId = section.id.value();
+        sectionOrder_.push_back(sectionId);
+        auto& order = instructionOrder_[sectionId];
+        order.reserve(script->instructions.size());
+        for (const auto& instruction : script->instructions) {
+            order.push_back(instruction.id.value());
+            instructionPresentation_[instruction.id.value()] = InstructionPresentation{
+                instruction.opcode,
+                sectionId,
+                instructionName(index, instruction.id),
+                instructionContext(index, instruction.id),
+            };
+        }
+    }
+}
+
+void SctSemanticNavigatorWidget::applyInstructionOrder(
+    const core::SctInstructionStructuralChange& change) {
+    if (change.before.has_value()) {
+        auto found = instructionOrder_.find(change.before->section.value());
+        if (found != instructionOrder_.end()) {
+            std::erase(found->second, change.instruction.value());
+        }
+    }
+    if (change.after.has_value()) {
+        auto& order = instructionOrder_[change.after->section.value()];
+        auto insertion = order.begin();
+        if (change.after->after.has_value()) {
+            const auto anchor = std::ranges::find(
+                order, change.after->after->value());
+            insertion = anchor == order.end() ? order.end() : std::next(anchor);
+        }
+        order.insert(insertion, change.instruction.value());
+        if (change.afterValue.has_value()) {
+            const auto sectionId = change.after->section.value();
+            QString context = tr("Section %1").arg(sectionId);
+            const auto sameSection = std::ranges::find_if(
+                instructionPresentation_, [sectionId](const auto& entry) {
+                    return entry.second.section == sectionId;
+                });
+            if (sameSection != instructionPresentation_.end())
+                context = sameSection->second.context;
+            instructionPresentation_[change.instruction.value()] = InstructionPresentation{
+                change.afterValue->opcode,
+                sectionId,
+                QStringLiteral("%1 — %2")
+                    .arg(opcodeName(change.afterValue->opcode))
+                    .arg(tr("Instruction %1").arg(change.instruction.value())),
+                std::move(context),
+            };
+        } else if (auto found = instructionPresentation_.find(
+                change.instruction.value()); found != instructionPresentation_.end()) {
+            found->second.section = change.after->section.value();
+        }
+    } else {
+        instructionPresentation_.erase(change.instruction.value());
+    }
+}
+
+bool SctSemanticNavigatorWidget::physicallyBefore(
+    const spice::sct::SctInstructionId left,
+    const spice::sct::SctInstructionId right) const {
+    const auto leftInfo = instructionPresentation_.find(left.value());
+    const auto rightInfo = instructionPresentation_.find(right.value());
+    if (leftInfo == instructionPresentation_.end()
+        || rightInfo == instructionPresentation_.end()) return left.value() < right.value();
+    if (leftInfo->second.section != rightInfo->second.section) {
+        const auto leftSection = std::ranges::find(sectionOrder_, leftInfo->second.section);
+        const auto rightSection = std::ranges::find(sectionOrder_, rightInfo->second.section);
+        return leftSection < rightSection;
+    }
+    const auto order = instructionOrder_.find(leftInfo->second.section);
+    if (order == instructionOrder_.end()) return left.value() < right.value();
+    return std::ranges::find(order->second, left.value())
+        < std::ranges::find(order->second, right.value());
+}
+
+QString SctSemanticNavigatorWidget::incrementalInstructionName(
+    const spice::sct::SctInstructionId instruction) const {
+    const auto found = instructionPresentation_.find(instruction.value());
+    return found == instructionPresentation_.end()
+        ? tr("Instruction %1").arg(instruction.value()) : found->second.name;
+}
+
+QString SctSemanticNavigatorWidget::incrementalInstructionContext(
+    const spice::sct::SctInstructionId instruction) const {
+    const auto found = instructionPresentation_.find(instruction.value());
+    return found == instructionPresentation_.end()
+        ? tr("Pending verification") : found->second.context;
+}
+
+void SctSemanticNavigatorWidget::removeContribution(
+    const core::SctInstructionStructuralChange& change) {
+    const auto removeChild = [](QTreeWidgetItem& parent, const QString& key) {
+        if (auto* item = findKey(&parent, key); item != nullptr && item->parent() != nullptr) {
+            auto* owner = item->parent();
+            delete owner->takeChild(owner->indexOfChild(item));
+            return owner;
+        }
+        return static_cast<QTreeWidgetItem*>(nullptr);
+    };
+    const auto removeEmptyGroup = [](QTreeWidgetItem* group) {
+        if (group == nullptr || group->childCount() != 0 || group->parent() == nullptr) return;
+        auto* parent = group->parent();
+        delete parent->takeChild(parent->indexOfChild(group));
+    };
+    const auto removeEmptyTopLevelGroup = [](QTreeWidget& tree, QTreeWidgetItem* group) {
+        if (group == nullptr || group->childCount() != 0 || group->parent() != nullptr) return;
+        delete tree.takeTopLevelItem(tree.indexOfTopLevelItem(group));
+    };
+
+    const auto instructionLocation = core::SctInspectionLocation{
+        core::SctNavigationTarget{core::SctNavigationKind::Instruction,
+            change.instruction.value()}};
+    for (const auto& usage : change.beforeSemantics.opcodes) {
+        const auto key = QStringLiteral("opcode:%1:").arg(usage.opcode)
+            + inspectionKey(instructionLocation);
+        auto* occurrence = findKey(*opcodes_, key);
+        auto* group = occurrence == nullptr ? nullptr : occurrence->parent();
+        if (group != nullptr) {
+            delete group->takeChild(group->indexOfChild(occurrence));
+            group->setText(1, tr("%1 occurrence(s)").arg(group->childCount()));
+            removeEmptyTopLevelGroup(*opcodes_, group);
+        }
+    }
+    for (const auto& usage : change.beforeSemantics.references) {
+        const auto targetId = std::visit(
+            [](const auto id) { return id.value(); }, usage.target);
+        const auto sourceLocation = core::SctInspectionLocation{usage.source};
+        const auto inboundKey = QStringLiteral("reference:in:%1:%2:")
+            .arg(usage.target.index()).arg(targetId) + inspectionKey(sourceLocation);
+        if (auto* group = removeChild(*findKey(*references_,
+                QStringLiteral("references:inbound")), inboundKey)) {
+            group->setText(1, tr("%1 inbound occurrence(s)").arg(group->childCount()));
+            removeEmptyGroup(group);
+        }
+        const auto outboundKey = QStringLiteral("reference:out:")
+            + inspectionKey(sourceLocation);
+        if (auto* group = removeChild(*findKey(*references_,
+                QStringLiteral("references:outbound")), outboundKey)) {
+            group->setText(1, tr("%1 outbound occurrence(s)").arg(group->childCount()));
+            removeEmptyGroup(group);
+        }
+    }
+    for (const auto& usage : change.beforeSemantics.variables) {
+        const auto location = core::SctInspectionLocation{usage.source};
+        const auto groupKey = QStringLiteral("variable:%1:%2")
+            .arg(static_cast<int>(usage.variable.kind)).arg(usage.variable.index);
+        auto* group = findKey(*variables_, groupKey);
+        if (group == nullptr) continue;
+        const auto occurrenceKey = groupKey + QLatin1Char(':') + inspectionKey(location);
+        if (auto* item = findKey(group, occurrenceKey))
+            delete group->takeChild(group->indexOfChild(item));
+        group->setText(1, tr("%1 occurrence(s)").arg(group->childCount()));
+        if (group->childCount() == 0 && group->parent() != nullptr) {
+            auto* kind = group->parent();
+            delete kind->takeChild(kind->indexOfChild(group));
+            kind->setText(1, tr("%1 variable(s)").arg(kind->childCount()));
+        }
+    }
+    const auto removeIncomplete = [&](const QString& rootKey, const QString& itemKey) {
+        auto* root = findKey(*incomplete_, rootKey);
+        if (root == nullptr) return;
+        if (auto* item = findKey(root, itemKey))
+            delete root->takeChild(root->indexOfChild(item));
+        root->setText(2, tr("%1 occurrence(s)").arg(root->childCount()));
+    };
+    for (const auto& usage : change.beforeSemantics.unresolvedReferences)
+        removeIncomplete(QStringLiteral("incomplete:unresolved"),
+            QStringLiteral("unresolved:")
+                + inspectionKey(core::SctInspectionLocation{usage.source}));
+    for (const auto& usage : change.beforeSemantics.opaqueParameters)
+        removeIncomplete(QStringLiteral("incomplete:opaque-parameters"),
+            QStringLiteral("opaque-parameter:")
+                + inspectionKey(core::SctInspectionLocation{usage.source}));
+    for (const auto& usage : change.beforeSemantics.opaqueExpressions)
+        removeIncomplete(QStringLiteral("incomplete:opaque-expressions"),
+            QStringLiteral("opaque-expression:")
+                + inspectionKey(core::SctInspectionLocation{usage.source}));
+}
+
+void SctSemanticNavigatorWidget::addContribution(
+    const core::SctInstructionStructuralChange& change) {
+    const auto insertPhysical = [this](QTreeWidgetItem& parent,
+                                    QTreeWidgetItem* item,
+                                    const spice::sct::SctInstructionId instruction) {
+        int row = 0;
+        while (row < parent.childCount()) {
+            const auto other = sourceInstructionFor(*parent.child(row));
+            if (other.has_value() && physicallyBefore(instruction, *other)) break;
+            ++row;
+        }
+        parent.insertChild(row, item);
+    };
+    const auto instructionLocation = core::SctInspectionLocation{
+        core::SctNavigationTarget{core::SctNavigationKind::Instruction,
+            change.instruction.value()}};
+    for (const auto& usage : change.afterSemantics.opcodes) {
+        const auto groupKey = QStringLiteral("opcode:%1").arg(usage.opcode);
+        auto* group = findKey(*opcodes_, groupKey);
+        if (group == nullptr) {
+            group = new QTreeWidgetItem;
+            group->setText(0, opcodeName(usage.opcode));
+            setKey(*group, groupKey);
+            int row = 0;
+            while (row < opcodes_->topLevelItemCount()
+                && opcodes_->topLevelItem(row)->text(0) < group->text(0)) ++row;
+            opcodes_->insertTopLevelItem(row, group);
+        }
+        auto* item = new QTreeWidgetItem;
+        item->setText(0, incrementalInstructionName(change.instruction));
+        item->setText(1, incrementalInstructionContext(change.instruction));
+        setKey(*item, groupKey + QLatin1Char(':') + inspectionKey(instructionLocation));
+        registerNavigation(item, -1, instructionLocation);
+        insertPhysical(*group, item, change.instruction);
+        group->setText(1, tr("%1 occurrence(s)").arg(group->childCount()));
+    }
+
+    auto* inboundRoot = findKey(*references_, QStringLiteral("references:inbound"));
+    auto* outboundRoot = findKey(*references_, QStringLiteral("references:outbound"));
+    for (const auto& usage : change.afterSemantics.references) {
+        const auto targetId = std::visit(
+            [](const auto id) { return id.value(); }, usage.target);
+        const auto sourceLocation = core::SctInspectionLocation{usage.source};
+        const auto targetKey = QStringLiteral("reference:target:%1:%2")
+            .arg(usage.target.index()).arg(targetId);
+        auto* inboundGroup = findKey(inboundRoot, targetKey);
+        if (inboundGroup == nullptr) {
+            inboundGroup = new QTreeWidgetItem;
+            inboundGroup->setText(0, referenceTargetName(usage.target));
+            setKey(*inboundGroup, targetKey);
+            registerNavigation(inboundGroup, 0,
+                core::SctInspectionLocation{referenceTarget(usage.target)});
+            inboundRoot->addChild(inboundGroup);
+        }
+        auto* inboundItem = new QTreeWidgetItem;
+        inboundItem->setText(0, parameterName(usage.source.parameter));
+        inboundItem->setText(1, incrementalInstructionName(change.instruction));
+        inboundItem->setText(2, referenceTargetName(usage.target));
+        setKey(*inboundItem, QStringLiteral("reference:in:%1:%2:")
+            .arg(usage.target.index()).arg(targetId) + inspectionKey(sourceLocation));
+        registerNavigation(inboundItem, 0, sourceLocation);
+        registerNavigation(inboundItem, 1, sourceLocation);
+        registerNavigation(inboundItem, 2,
+            core::SctInspectionLocation{referenceTarget(usage.target)});
+        insertPhysical(*inboundGroup, inboundItem, change.instruction);
+        inboundGroup->setText(1,
+            tr("%1 inbound occurrence(s)").arg(inboundGroup->childCount()));
+
+        const auto sourceKey = QStringLiteral("reference:source:%1")
+            .arg(change.instruction.value());
+        auto* outboundGroup = findKey(outboundRoot, sourceKey);
+        if (outboundGroup == nullptr) {
+            outboundGroup = new QTreeWidgetItem;
+            outboundGroup->setText(0, incrementalInstructionName(change.instruction));
+            setKey(*outboundGroup, sourceKey);
+            registerNavigation(outboundGroup, 0, instructionLocation);
+            insertPhysical(*outboundRoot, outboundGroup, change.instruction);
+        }
+        auto* outboundItem = new QTreeWidgetItem;
+        outboundItem->setText(0, parameterName(usage.source.parameter));
+        outboundItem->setText(1, incrementalInstructionContext(change.instruction));
+        outboundItem->setText(2, referenceTargetName(usage.target));
+        setKey(*outboundItem, QStringLiteral("reference:out:")
+            + inspectionKey(sourceLocation));
+        registerNavigation(outboundItem, 0, sourceLocation);
+        registerNavigation(outboundItem, 1, sourceLocation);
+        registerNavigation(outboundItem, 2,
+            core::SctInspectionLocation{referenceTarget(usage.target)});
+        outboundGroup->addChild(outboundItem);
+        outboundGroup->setText(1,
+            tr("%1 outbound occurrence(s)").arg(outboundGroup->childCount()));
+    }
+
+    for (const auto& usage : change.afterSemantics.variables) {
+        const auto kindKey = QStringLiteral("variable-kind:%1")
+            .arg(static_cast<int>(usage.variable.kind));
+        auto* kind = findKey(*variables_, kindKey);
+        if (kind == nullptr) continue;
+        const auto groupKey = QStringLiteral("variable:%1:%2")
+            .arg(static_cast<int>(usage.variable.kind)).arg(usage.variable.index);
+        auto* group = findKey(kind, groupKey);
+        if (group == nullptr) {
+            group = new QTreeWidgetItem;
+            group->setText(0, tr("%1 %2")
+                .arg(variableKindName(usage.variable.kind)).arg(usage.variable.index));
+            setKey(*group, groupKey);
+            int row = 0;
+            while (row < kind->childCount()
+                && kind->child(row)->text(0) < group->text(0)) ++row;
+            kind->insertChild(row, group);
+            kind->setText(1, tr("%1 variable(s)").arg(kind->childCount()));
+        }
+        auto* item = new QTreeWidgetItem;
+        item->setText(0, expressionName(usage.source));
+        item->setText(1, QStringLiteral("%1 — %2")
+            .arg(incrementalInstructionName(change.instruction))
+            .arg(incrementalInstructionContext(change.instruction)));
+        const auto location = core::SctInspectionLocation{usage.source};
+        setKey(*item, groupKey + QLatin1Char(':') + inspectionKey(location));
+        registerNavigation(item, -1, location);
+        insertPhysical(*group, item, change.instruction);
+        group->setText(1, tr("%1 occurrence(s)").arg(group->childCount()));
+    }
+
+    const auto addIncomplete = [this, &insertPhysical, &change](
+                                   const QString& rootKey,
+                                   const QString& itemKey,
+                                   QString title,
+                                   QString locationText,
+                                   QString size,
+                                   core::SctInspectionLocation location) {
+        auto* root = findKey(*incomplete_, rootKey);
+        if (root == nullptr) return;
+        auto* item = new QTreeWidgetItem;
+        item->setText(0, std::move(title));
+        item->setText(1, std::move(locationText));
+        item->setText(2, std::move(size));
+        setKey(*item, itemKey);
+        registerNavigation(item, 0, location);
+        registerNavigation(item, 1, location);
+        insertPhysical(*root, item, change.instruction);
+        root->setText(2, tr("%1 occurrence(s)").arg(root->childCount()));
+    };
+    for (const auto& usage : change.afterSemantics.unresolvedReferences) {
+        const auto location = core::SctInspectionLocation{usage.source};
+        addIncomplete(QStringLiteral("incomplete:unresolved"),
+            QStringLiteral("unresolved:") + inspectionKey(location),
+            expectedTargetName(usage.expectedTarget),
+            QStringLiteral("%1 — %2")
+                .arg(incrementalInstructionName(change.instruction))
+                .arg(parameterName(usage.source.parameter)),
+            tr("%1 word(s)").arg(usage.encodedWordCount), location);
+    }
+    for (const auto& usage : change.afterSemantics.opaqueParameters) {
+        const auto location = core::SctInspectionLocation{usage.source};
+        addIncomplete(QStringLiteral("incomplete:opaque-parameters"),
+            QStringLiteral("opaque-parameter:") + inspectionKey(location),
+            tr("Opaque parameter"),
+            QStringLiteral("%1 — %2")
+                .arg(incrementalInstructionName(change.instruction))
+                .arg(parameterName(usage.source.parameter)),
+            tr("%1 word(s)").arg(usage.wordCount), location);
+    }
+    for (const auto& usage : change.afterSemantics.opaqueExpressions) {
+        const auto location = core::SctInspectionLocation{usage.source};
+        addIncomplete(QStringLiteral("incomplete:opaque-expressions"),
+            QStringLiteral("opaque-expression:") + inspectionKey(location),
+            tr("Opaque expression"),
+            QStringLiteral("%1 — %2")
+                .arg(incrementalInstructionName(change.instruction))
+                .arg(expressionName(usage.source)),
+            tr("%1 word(s)").arg(usage.wordCount), location);
+    }
+}
+
+void SctSemanticNavigatorWidget::reorderInstructionOccurrences(
+    const spice::sct::SctInstructionId instruction) {
+    const auto reorderTree = [this, instruction](QTreeWidget& tree) {
+        std::vector<QTreeWidgetItem*> occurrences;
+        std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* item) {
+            if (sourceInstructionFor(*item) == instruction) {
+                occurrences.push_back(item);
+                return;
+            }
+            for (int row = 0; row < item->childCount(); ++row)
+                collect(item->child(row));
+        };
+        for (int row = 0; row < tree.topLevelItemCount(); ++row)
+            collect(tree.topLevelItem(row));
+        for (auto* item : occurrences) {
+            auto* parent = item->parent();
+            if (parent == nullptr) continue;
+            const auto oldRow = parent->indexOfChild(item);
+            auto* retained = parent->takeChild(oldRow);
+            int row = 0;
+            while (row < parent->childCount()) {
+                const auto other = sourceInstructionFor(*parent->child(row));
+                if (other.has_value() && physicallyBefore(instruction, *other)) break;
+                ++row;
+            }
+            parent->insertChild(row, retained);
+        }
+    };
+    for (auto* tree : {opcodes_, references_, variables_, incomplete_})
+        reorderTree(*tree);
 }
 
 void SctSemanticNavigatorWidget::clear() {
     identityKey_.clear();
+    reconciliationPending_ = false;
     for (auto* tree : { opcodes_, references_, variables_, incomplete_ }) tree->clear();
     tabs_->hide();
     emptyLabel_->show();

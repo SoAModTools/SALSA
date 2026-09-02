@@ -44,6 +44,7 @@ public:
         core::SctMessageTarget target);
     [[nodiscard]] bool refresh(
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot);
+    [[nodiscard]] bool refreshMessage(const spice::sct::SctMessage& message);
     [[nodiscard]] bool flushPending();
     void clear();
     void focusEditor();

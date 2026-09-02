@@ -62,13 +62,21 @@ struct SctSourceInspection final {
     std::vector<SctPipelineDiagnostic> diagnostics;
 };
 
-struct SctDocumentSnapshot final {
-    SourceAssetSnapshot source;
+struct SctDocumentProvenance final {
     std::shared_ptr<const SctSourceInspection> inspection;
     std::optional<spice::sct::SctKnownTextConvention> textConvention;
     SctTextSelectionOrigin textSelectionOrigin = SctTextSelectionOrigin::None;
+    std::shared_ptr<const spice::sct::SctDocumentImportReceipt> importReceipt;
+    std::vector<SctPipelineDiagnostic> baselineDiagnostics;
+
+    [[nodiscard]] const SourceAssetSnapshot& source() const noexcept {
+        return inspection->source;
+    }
+};
+
+struct SctDocumentSnapshot final {
+    std::shared_ptr<const SctDocumentProvenance> provenance;
     std::shared_ptr<const spice::sct::SctDocument> document;
-    spice::sct::SctDocumentImportReceipt importReceipt;
     spice::sct::SctDocumentReadiness readiness = spice::sct::SctDocumentReadiness::Unavailable;
     std::vector<SctPipelineDiagnostic> diagnostics;
 };

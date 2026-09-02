@@ -50,6 +50,34 @@ SctSemanticUsageIndex SctSemanticUsageIndex::build(
     return result;
 }
 
+SctInstructionSemanticContribution SctSemanticUsageIndex::contributionFor(
+    const spice::sct::SctDocumentInstruction& instruction) {
+    SctSemanticUsageIndex index;
+    index.opcodeUsages_.push_back({instruction.opcode, instruction.id});
+    if (instruction.scheduledExpression.has_value()) {
+        index.recordExpression(instruction.id, SctScheduledExpressionSite{},
+            *instruction.scheduledExpression);
+    }
+    for (const auto& parameter : instruction.fixedParameters)
+        index.recordParameter(instruction.id, parameter, std::nullopt);
+    for (std::size_t group = 0;
+        group < instruction.repeatedParameterGroups.size(); ++group) {
+        for (const auto& parameter
+            : instruction.repeatedParameterGroups[group].parameters) {
+            index.recordParameter(instruction.id, parameter,
+                static_cast<std::uint32_t>(group));
+        }
+    }
+    return {
+        std::move(index.opcodeUsages_),
+        std::move(index.referenceUsages_),
+        std::move(index.variableUsages_),
+        std::move(index.unresolvedReferences_),
+        std::move(index.opaqueParameters_),
+        std::move(index.opaqueExpressions_),
+    };
+}
+
 std::span<const SctOpcodeUsage> SctSemanticUsageIndex::opcodeUsages() const noexcept {
     return opcodeUsages_;
 }
