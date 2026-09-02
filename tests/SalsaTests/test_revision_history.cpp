@@ -205,5 +205,24 @@ TEST(RevisionHistoryTest, SupportsMoveOnlyStateAndMovingTheHistory) {
     EXPECT_EQ(*history.currentRevision().state->value, 1);
 }
 
+TEST(RevisionHistoryTest, RevisionAndNavigationTargetQueriesDoNotMoveHistory) {
+    RevisionHistory<int> history(std::make_shared<const int>(1));
+    const auto second = history.commit(std::make_shared<const int>(2), "second");
+    const auto third = history.commit(std::make_shared<const int>(3), "third");
+
+    ASSERT_TRUE(history.revision(second.revision).has_value());
+    EXPECT_EQ(*history.revision(second.revision)->state, 2);
+    EXPECT_FALSE(history.revision(RevisionId{999}).has_value());
+    ASSERT_TRUE(history.undoTarget().has_value());
+    EXPECT_EQ(history.undoTarget()->id, second.revision);
+    EXPECT_FALSE(history.redoTarget().has_value());
+    EXPECT_EQ(history.currentRevision().id, third.revision);
+
+    ASSERT_TRUE(history.undo().has_value());
+    ASSERT_TRUE(history.redoTarget().has_value());
+    EXPECT_EQ(history.redoTarget()->id, third.revision);
+    EXPECT_EQ(history.currentRevision().id, second.revision);
+}
+
 }  // namespace
 }  // namespace salsa::core

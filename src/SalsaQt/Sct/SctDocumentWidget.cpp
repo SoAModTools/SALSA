@@ -23,20 +23,13 @@
 #include <QVBoxLayout>
 
 #include <functional>
+#include <ranges>
 
 namespace salsa::qt {
 namespace {
 
 constexpr int KindRole = Qt::UserRole;
 constexpr int IdRole = Qt::UserRole + 1;
-
-void addProperty(QTreeWidget* tree, QTreeWidgetItem* parent, const core::SctPropertyItem& property) {
-    auto* item = parent == nullptr ? new QTreeWidgetItem(tree) : new QTreeWidgetItem(parent);
-    item->setText(0, QString::fromStdString(property.name));
-    item->setText(1, QString::fromStdString(property.value));
-    item->setText(2, QString::fromStdString(property.notes));
-    for (const auto& child : property.children) addProperty(tree, item, child);
-}
 
 [[nodiscard]] core::SctNavigationTarget targetOf(const QTreeWidgetItem& item) {
     return { static_cast<core::SctNavigationKind>(item.data(0, KindRole).toInt()),
@@ -154,6 +147,21 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             emit becameActive(QString::fromStdString(locator_.identityKey()));
             emit editContextChanged();
         });
+    connect(outline_, &QTreeWidget::itemActivated, this,
+        [this](QTreeWidgetItem* item, int) {
+            if (item == nullptr || !snapshot_) return;
+            const auto target = targetOf(*item);
+            if (target.kind == core::SctNavigationKind::OpaqueAttachment) {
+                const auto* attachment = index_.has_value()
+                    ? index_->find(spice::sct::SctOpaqueAttachmentId(target.id))
+                    : nullptr;
+                if (attachment != nullptr)
+                    selectTarget(core::navigationTargetForOpaqueAnchor(attachment->anchor));
+                return;
+            }
+            if (editingEnabled_ && selectedMessageTarget().has_value())
+                emit editMessageRequested(QString::fromStdString(locator_.identityKey()));
+        });
     connect(applyConventionButton_, &QPushButton::clicked, this, [this]() {
         emit textConventionRequested(QString::fromStdString(locator_.identityKey()),
             conventionCombo_->currentData().toInt());
@@ -163,6 +171,9 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     });
     connect(outline_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& position) {
         QMenu menu(this);
+        auto* editMessage = menu.addAction(tr("Edit Message"));
+        editMessage->setEnabled(canEditSelectedMessage());
+        menu.addSeparator();
         auto* insert = menu.addAction(tr("Insert Instruction..."));
         auto* remove = menu.addAction(tr("Delete Instruction"));
         menu.addSeparator();
@@ -174,6 +185,9 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             && canMoveSelected(core::SctInstructionMoveDirection::Up));
         moveDown->setEnabled(editingEnabled_
             && canMoveSelected(core::SctInstructionMoveDirection::Down));
+        connect(editMessage, &QAction::triggered, this, [this]() {
+            emit editMessageRequested(QString::fromStdString(locator_.identityKey()));
+        });
         connect(insert, &QAction::triggered, this, [this]() {
             emit insertInstructionRequested(QString::fromStdString(locator_.identityKey()));
         });
@@ -198,6 +212,9 @@ void SctDocumentWidget::setSnapshot(
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
     const int sourceStatus) {
     snapshot_ = std::move(snapshot);
+    index_.reset();
+    if (snapshot_ && snapshot_->document)
+        index_.emplace(spice::sct::SctDocumentIndex::build(*snapshot_->document));
     updateSourceBanner(sourceStatus);
     if (!snapshot_) return;
     const auto& assessment = snapshot_->inspection->textAssessment;
@@ -222,14 +239,51 @@ void SctDocumentWidget::setSnapshot(
     rebuildOutline();
 }
 
+void SctDocumentWidget::applyTextOnlySnapshot(
+    std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
+    const int sourceStatus,
+    const core::SctEditChangeSet& changes) {
+    snapshot_ = std::move(snapshot);
+    index_.reset();
+    if (snapshot_ && snapshot_->document)
+        index_.emplace(spice::sct::SctDocumentIndex::build(*snapshot_->document));
+    updateSourceBanner(sourceStatus);
+    if (!currentTarget_.has_value()) return;
+    const bool selectedChanged = std::ranges::any_of(
+        changes.modified, [this](const auto target) {
+            return target == *currentTarget_;
+        });
+    if (selectedChanged) showTarget(*currentTarget_);
+}
+
+void SctDocumentWidget::setSourceStatus(const int sourceStatus) {
+    updateSourceBanner(sourceStatus);
+}
+
 void SctDocumentWidget::selectTarget(
     const core::SctNavigationTarget target,
     const bool reveal) {
+    (void)selectLocation(core::SctInspectionLocation{ target }, reveal);
+}
+
+bool SctDocumentWidget::selectLocation(
+    const core::SctInspectionLocation& location,
+    const bool reveal) {
+    const auto target = core::owningNavigationTarget(location);
     auto* found = findTarget(*outline_, target);
-    if (found == nullptr) return;
+    if (found == nullptr) return false;
     if (reveal) expandAncestors(found);
     outline_->setCurrentItem(found);
     if (reveal) outline_->scrollToItem(found);
+
+    if (std::holds_alternative<core::SctNavigationTarget>(location)) return true;
+    const auto property = std::ranges::find_if(propertyLocations_,
+        [&location](const auto& entry) { return entry.second == location; });
+    if (property == propertyLocations_.end()) return false;
+    if (reveal) expandAncestors(property->first);
+    properties_->setCurrentItem(property->first);
+    if (reveal) properties_->scrollToItem(property->first);
+    return true;
 }
 
 void SctDocumentWidget::setEditingEnabled(const bool enabled) {
@@ -245,7 +299,8 @@ std::optional<core::SctNavigationTarget> SctDocumentWidget::currentTarget() cons
 std::optional<SctDocumentWidget::InstructionInsertionContext>
 SctDocumentWidget::insertionContext() const {
     if (!snapshot_ || !currentTarget_.has_value()) return std::nullopt;
-    const auto index = spice::sct::SctDocumentIndex::build(*snapshot_->document);
+    if (!index_.has_value()) return std::nullopt;
+    const auto& index = *index_;
     if (currentTarget_->kind == core::SctNavigationKind::Instruction) {
         const auto instruction = spice::sct::SctInstructionId(currentTarget_->id);
         const auto location = index.instructionLocation(instruction);
@@ -265,7 +320,8 @@ SctDocumentWidget::insertionContext() const {
 bool SctDocumentWidget::canDeleteSelected() const {
     const auto instruction = selectedInstruction();
     if (!snapshot_ || !instruction.has_value()) return false;
-    const auto index = spice::sct::SctDocumentIndex::build(*snapshot_->document);
+    if (!index_.has_value()) return false;
+    const auto& index = *index_;
     const auto location = index.instructionLocation(*instruction);
     const auto* existing = index.find(*instruction);
     return location.has_value() && existing != nullptr
@@ -278,10 +334,33 @@ std::optional<spice::sct::SctInstructionId> SctDocumentWidget::selectedInstructi
     return spice::sct::SctInstructionId(currentTarget_->id);
 }
 
+std::optional<core::SctMessageTarget> SctDocumentWidget::selectedMessageTarget() const {
+    if (!snapshot_ || !currentTarget_.has_value()) return std::nullopt;
+    if (!index_.has_value()) return std::nullopt;
+    const auto& index = *index_;
+    if (currentTarget_->kind == core::SctNavigationKind::String) {
+        const auto id = spice::sct::SctStringId(currentTarget_->id);
+        const auto* string = index.find(id);
+        if (string != nullptr && std::holds_alternative<spice::sct::SctMessage>(string->value))
+            return core::SctMessageTarget{id};
+    } else if (currentTarget_->kind == core::SctNavigationKind::FooterEntry) {
+        const auto id = spice::sct::SctFooterEntryId(currentTarget_->id);
+        const auto* entry = index.find(id);
+        if (entry != nullptr && std::holds_alternative<spice::sct::SctMessage>(entry->value))
+            return core::SctMessageTarget{id};
+    }
+    return std::nullopt;
+}
+
+bool SctDocumentWidget::canEditSelectedMessage() const {
+    return editingEnabled_ && selectedMessageTarget().has_value();
+}
+
 bool SctDocumentWidget::canMoveSelected(const core::SctInstructionMoveDirection direction) const {
     const auto instruction = selectedInstruction();
     if (!snapshot_ || !instruction.has_value()) return false;
-    const auto index = spice::sct::SctDocumentIndex::build(*snapshot_->document);
+    if (!index_.has_value()) return false;
+    const auto& index = *index_;
     const auto location = index.instructionLocation(*instruction);
     if (!location.has_value()) return false;
     const auto* section = index.find(location->sectionId);
@@ -333,8 +412,9 @@ void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
     const auto presentation = core::SctPresentationService::describe(*snapshot_, target);
     title_->setText(QString::fromStdString(presentation.title));
     subtitle_->setText(QString::fromStdString(presentation.subtitle));
+    propertyLocations_.clear();
     properties_->clear();
-    for (const auto& property : presentation.properties) addProperty(properties_, nullptr, property);
+    for (const auto& property : presentation.properties) addPropertyItem(nullptr, property);
     properties_->collapseAll();
     preview_->clear();
     QTextCursor cursor(preview_->document());
@@ -369,6 +449,21 @@ QTreeWidgetItem* SctDocumentWidget::addOutlineItem(
     widgetItem->setData(0, IdRole, QVariant::fromValue<qulonglong>(item.target.id));
     for (const auto& child : item.children) addOutlineItem(widgetItem, child);
     return widgetItem;
+}
+
+QTreeWidgetItem* SctDocumentWidget::addPropertyItem(
+    QTreeWidgetItem* parent,
+    const core::SctPropertyItem& property) {
+    auto* item = parent == nullptr
+        ? new QTreeWidgetItem(properties_)
+        : new QTreeWidgetItem(parent);
+    item->setText(0, QString::fromStdString(property.name));
+    item->setText(1, QString::fromStdString(property.value));
+    item->setText(2, QString::fromStdString(property.notes));
+    if (property.location.has_value())
+        propertyLocations_.emplace_back(item, *property.location);
+    for (const auto& child : property.children) addPropertyItem(item, child);
+    return item;
 }
 
 }  // namespace salsa::qt

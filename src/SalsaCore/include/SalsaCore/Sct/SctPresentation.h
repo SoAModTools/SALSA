@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SalsaCore/Sct/SctDocumentLoader.h"
+#include "SalsaCore/Sct/SctInspectionLocation.h"
 
 #include <optional>
 #include <string>
@@ -20,6 +21,7 @@ struct SctPropertyItem final {
     std::string value{};
     std::string notes{};
     std::vector<SctPropertyItem> children{};
+    std::optional<SctInspectionLocation> location{};
 };
 
 struct SctTextPreviewRun final {

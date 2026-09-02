@@ -3,6 +3,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
+#include <cassert>
 #include <ranges>
 #include <utility>
 
@@ -90,7 +91,9 @@ void SctDocumentController::synchronizeCatalog(const core::AssetCatalogSnapshot&
                 ? SourceStatus::Current : SourceStatus::Changed;
         if (next != state.status) {
             state.status = next;
-            emit documentChanged(QString::fromStdString(key));
+            emit documentChanged(QString::fromStdString(key),
+                SctDocumentUpdate{SctDocumentUpdateKind::SourceStatus,
+                    state.session->currentSnapshot(), std::nullopt});
         }
     }
 }
@@ -240,6 +243,18 @@ bool SctDocumentController::moveInstruction(
             ? tr("Instruction moved up.") : tr("Instruction moved down."));
 }
 
+bool SctDocumentController::replaceMessage(
+    const core::AssetLocator& locator,
+    const core::SctMessageTarget& target,
+    const core::SctMessageDraft& draft,
+    const core::SctMessageEditKind kind) {
+    auto* state = findState(locator);
+    if (state == nullptr || busy()) return false;
+    auto result = state->session->replaceMessage(target, draft, kind);
+    if (!result.committed && result.diagnostics.empty()) return true;
+    return applyEditResult(*state, std::move(result), tr("Message edited."));
+}
+
 bool SctDocumentController::undo(const core::AssetLocator& locator) {
     auto* state = findState(locator);
     if (state == nullptr || busy()) return false;
@@ -281,7 +296,11 @@ bool SctDocumentController::applyEditResult(
         return false;
     }
     failurePipelineDiagnostics_.clear();
-    emit documentChanged(key);
+    assert(result.transition.has_value());
+    emit documentChanged(key, SctDocumentUpdate{
+        SctDocumentUpdateKind::RevisionTransition,
+        result.snapshot,
+        result.transition});
     if (result.suggestedSelection.has_value()) {
         emit selectionRequested(key, static_cast<int>(result.suggestedSelection->kind),
             static_cast<qulonglong>(result.suggestedSelection->id));
@@ -319,7 +338,9 @@ void SctDocumentController::onFinished() {
         found->second.session = std::make_unique<core::SctEditSession>(std::move(result.document));
         found->second.status = SourceStatus::Current;
     }
-    emit documentChanged(QString::fromStdString(key));
+    emit documentChanged(QString::fromStdString(key),
+        SctDocumentUpdate{SctDocumentUpdateKind::Replacement,
+            documents_.at(key).session->currentSnapshot(), std::nullopt});
     emit focusRequested(QString::fromStdString(key));
     const auto message = operation == Operation::Reimporting
         ? tr("Text convention applied without rereading the source asset.")

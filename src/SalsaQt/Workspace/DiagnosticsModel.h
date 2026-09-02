@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SalsaCore/Foundation/Diagnostic.h"
+#include "SalsaCore/Sct/SctInspectionLocation.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 
 #include <QAbstractTableModel>
@@ -15,7 +16,7 @@ struct DiagnosticRow final {
     QString message{};
     QString location{};
     std::optional<core::AssetLocator> locator{};
-    std::optional<core::SctNavigationTarget> target{};
+    std::optional<core::SctInspectionLocation> inspectionLocation{};
 };
 
 class DiagnosticsModel final : public QAbstractTableModel {

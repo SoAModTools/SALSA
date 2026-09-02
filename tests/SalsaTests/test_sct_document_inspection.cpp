@@ -227,6 +227,117 @@ TEST(SctPresentation, DisplaysSemanticExpressionValuesWithRawEncodingEvidence) {
     EXPECT_NE(operators.front()->notes.find("0x0000000E"), std::string::npos);
 }
 
+TEST(SctPresentation, AttachesExactParameterAndExpressionInspectionLocations) {
+    const auto asset = locator();
+    FakeProject project(asset, inspectableSctBytes(false));
+    const auto loaded = SctDocumentLoader::load(project, asset);
+    ASSERT_TRUE(loaded.succeeded());
+    auto document = std::make_shared<SctDocument>(*loaded.document->document);
+    auto& instruction = std::get<SctScriptSectionContent>(
+        document->sections.front().content).instructions.front();
+
+    instruction.scheduledExpression = SctCanonicalExpression{
+        SctCanonicalExpressionNode{ SctCanonicalExpressionNodeKind::IntVariable,
+            0x10000011u, {}, {} }, SctExpressionTermination::InlineValue };
+    instruction.fixedParameters.push_back({ 20u, SctCanonicalExpression{
+        SctCanonicalExpressionNode{ SctCanonicalExpressionNodeKind::FloatVariable,
+            0x14000022u, {}, {} }, SctExpressionTermination::StopCode } });
+    instruction.repeatedParameterGroups.push_back({ {
+        { 30u, SctCanonicalExpression{
+            SctCanonicalExpressionNode{ SctCanonicalExpressionNodeKind::ByteVariable,
+                0x24000033u, {}, {
+                    SctCanonicalExpressionNode{ SctCanonicalExpressionNodeKind::BitVariable,
+                        0x20000044u, {}, {} } } },
+            SctExpressionTermination::InlineValue } },
+        { 31u, SctCanonicalExpression{
+            SctOpaqueExpression{ { 0xdeadbeefu } },
+            SctExpressionTermination::StopCode } },
+    } });
+
+    auto snapshot = *loaded.document;
+    snapshot.document = std::move(document);
+    const auto presentation = SctPresentationService::describe(snapshot,
+        { SctNavigationKind::Instruction, instruction.id.value() });
+
+    const auto scheduled = propertiesNamed(presentation, "Integer variable");
+    ASSERT_EQ(scheduled.size(), 1u);
+    ASSERT_TRUE(scheduled.front()->location.has_value());
+    const auto* scheduledSite = std::get_if<SctExpressionSite>(&*scheduled.front()->location);
+    ASSERT_NE(scheduledSite, nullptr);
+    EXPECT_EQ(scheduledSite->instruction, instruction.id);
+    EXPECT_TRUE(std::holds_alternative<SctScheduledExpressionSite>(scheduledSite->owner));
+    EXPECT_TRUE(scheduledSite->childPath.empty());
+
+    const auto fixedParameters = propertiesNamed(presentation, "Parameter 20");
+    ASSERT_EQ(fixedParameters.size(), 1u);
+    ASSERT_TRUE(fixedParameters.front()->location.has_value());
+    const auto* fixedParameter = std::get_if<SctParameterSite>(&*fixedParameters.front()->location);
+    ASSERT_NE(fixedParameter, nullptr);
+    EXPECT_EQ(fixedParameter->parameter.schemaIndex, 20u);
+    EXPECT_FALSE(fixedParameter->parameter.repeatedGroupOrdinal.has_value());
+
+    const auto repeatedParameters = propertiesNamed(presentation, "Parameter 30");
+    ASSERT_EQ(repeatedParameters.size(), 1u);
+    ASSERT_TRUE(repeatedParameters.front()->location.has_value());
+    const auto* repeatedParameter = std::get_if<SctParameterSite>(
+        &*repeatedParameters.front()->location);
+    ASSERT_NE(repeatedParameter, nullptr);
+    EXPECT_EQ(repeatedParameter->parameter.repeatedGroupOrdinal, 0u);
+
+    const auto repeatedRoot = propertiesNamed(presentation, "Byte variable");
+    ASSERT_EQ(repeatedRoot.size(), 1u);
+    const auto* repeatedRootSite = std::get_if<SctExpressionSite>(
+        &*repeatedRoot.front()->location);
+    ASSERT_NE(repeatedRootSite, nullptr);
+    ASSERT_TRUE(std::holds_alternative<SctParameterAddress>(repeatedRootSite->owner));
+    EXPECT_EQ(std::get<SctParameterAddress>(repeatedRootSite->owner).schemaIndex, 30u);
+    EXPECT_EQ(std::get<SctParameterAddress>(repeatedRootSite->owner).repeatedGroupOrdinal, 0u);
+    EXPECT_TRUE(repeatedRootSite->childPath.empty());
+
+    const auto nested = propertiesNamed(presentation, "Bit variable");
+    ASSERT_EQ(nested.size(), 1u);
+    const auto* nestedSite = std::get_if<SctExpressionSite>(&*nested.front()->location);
+    ASSERT_NE(nestedSite, nullptr);
+    EXPECT_EQ(nestedSite->childPath, std::vector<std::uint32_t>({ 0u }));
+
+    const auto opaque = propertiesNamed(presentation, "Opaque words");
+    ASSERT_EQ(opaque.size(), 1u);
+    const auto* opaqueSite = std::get_if<SctExpressionSite>(&*opaque.front()->location);
+    ASSERT_NE(opaqueSite, nullptr);
+    ASSERT_TRUE(std::holds_alternative<SctParameterAddress>(opaqueSite->owner));
+    EXPECT_EQ(std::get<SctParameterAddress>(opaqueSite->owner).schemaIndex, 31u);
+    EXPECT_TRUE(opaqueSite->childPath.empty());
+}
+
+TEST(SctPresentation, ExposesOpaqueAttachmentInstructionAnchorsForNavigation) {
+    const auto asset = locator();
+    FakeProject project(asset, inspectableSctBytes(false));
+    const auto loaded = SctDocumentLoader::load(project, asset);
+    ASSERT_TRUE(loaded.succeeded());
+    auto document = std::make_shared<SctDocument>(*loaded.document->document);
+    const auto instruction = std::get<SctScriptSectionContent>(
+        document->sections.front().content).instructions.front().id;
+    const auto attachment = document->allocateOpaqueAttachmentId();
+    document->opaqueAttachments.push_back({ attachment, { 0x11u, 0x22u },
+        SctOpaqueAnchor{ instruction }, SctOpaquePlacement::After, std::nullopt,
+        1u, SctOpaqueRelocationSupport::Relocatable, SctOpaqueReason::Gap });
+
+    auto snapshot = *loaded.document;
+    snapshot.document = std::move(document);
+    const auto presentation = SctPresentationService::describe(snapshot,
+        { SctNavigationKind::OpaqueAttachment, attachment.value() });
+    const auto anchors = propertiesNamed(presentation, "Anchor");
+    ASSERT_EQ(anchors.size(), 1u);
+    EXPECT_EQ(anchors.front()->value,
+        "Instruction " + std::to_string(instruction.value()));
+    ASSERT_TRUE(anchors.front()->location.has_value());
+    const auto* target = std::get_if<SctNavigationTarget>(&*anchors.front()->location);
+    ASSERT_NE(target, nullptr);
+    EXPECT_EQ(*target, (SctNavigationTarget{
+        SctNavigationKind::Instruction, instruction.value() }));
+    EXPECT_EQ(navigationTargetForOpaqueAnchor(SctOpaqueAnchor{ instruction }), *target);
+}
+
 TEST(SctPresentation, KeepsNonFiniteAndMalformedFloatEvidenceInspectable) {
     SctCanonicalExpressionNode infinity{SctCanonicalExpressionNodeKind::FloatLiteral,
         0x04000000u, {std::bit_cast<std::uint32_t>(

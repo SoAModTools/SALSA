@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -137,6 +138,25 @@ public:
     [[nodiscard]] RevisionSnapshot<State> currentRevision() const {
         const auto& current = entries_[currentIndex_];
         return RevisionSnapshot<State>{ current.id, current.state };
+    }
+
+    [[nodiscard]] std::optional<RevisionSnapshot<State>> revision(
+        const RevisionId id) const noexcept {
+        const auto found = std::ranges::find(entries_, id, &Entry::id);
+        if (found == entries_.end()) return std::nullopt;
+        return RevisionSnapshot<State>{ found->id, found->state };
+    }
+
+    [[nodiscard]] std::optional<RevisionSnapshot<State>> undoTarget() const noexcept {
+        if (!canUndo()) return std::nullopt;
+        const auto& target = entries_[currentIndex_ - 1];
+        return RevisionSnapshot<State>{ target.id, target.state };
+    }
+
+    [[nodiscard]] std::optional<RevisionSnapshot<State>> redoTarget() const noexcept {
+        if (!canRedo()) return std::nullopt;
+        const auto& target = entries_[currentIndex_ + 1];
+        return RevisionSnapshot<State>{ target.id, target.state };
     }
 
     [[nodiscard]] bool canUndo() const noexcept {

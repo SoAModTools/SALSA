@@ -22,7 +22,10 @@ namespace salsa::qt {
 
 class DiagnosticsModel;
 class SctDocumentController;
+struct SctDocumentUpdate;
 class SctDocumentWidget;
+class SctMessageEditorWidget;
+class SctSemanticNavigatorWidget;
 class WorkspaceDetailsWidget;
 class WorkspaceModel;
 
@@ -43,7 +46,8 @@ private:
     void syncDiagnostics();
     void syncActions();
     void activateSelectedAsset();
-    void syncDocument(const QString& identityKey);
+    void syncDocument(const QString& identityKey, const SctDocumentUpdate& update);
+    void syncSemanticNavigator();
     void focusDocument(const QString& identityKey);
     void closeDocumentTab(int index);
     void rebuildDocumentTabTitles();
@@ -51,6 +55,8 @@ private:
     void insertInstruction();
     void deleteInstruction();
     void moveInstruction(core::SctInstructionMoveDirection direction);
+    void editSelectedMessage();
+    [[nodiscard]] bool flushMessageEditor();
     void undoActiveDocument();
     void redoActiveDocument();
     [[nodiscard]] SctDocumentWidget* activeDocumentWidget() const;
@@ -60,6 +66,7 @@ private:
     [[nodiscard]] bool confirmDiscardAll(const QString& action);
     void rebuildRecentMenu();
     void recordRecentDataset(const QString& canonicalRoot);
+    void attemptRestoreDataset();
     void restoreApplicationSettings();
     void saveApplicationSettings() const;
     void handleOperationCompleted(
@@ -78,6 +85,10 @@ private:
     QTableView* diagnosticsView_ = nullptr;
     QDockWidget* projectDock_ = nullptr;
     QDockWidget* diagnosticsDock_ = nullptr;
+    QDockWidget* semanticNavigatorDock_ = nullptr;
+    QDockWidget* messageEditorDock_ = nullptr;
+    SctSemanticNavigatorWidget* semanticNavigator_ = nullptr;
+    SctMessageEditorWidget* messageEditor_ = nullptr;
     QProgressBar* progressBar_ = nullptr;
     QToolButton* cancelButton_ = nullptr;
     QAction* openAction_ = nullptr;
@@ -85,12 +96,16 @@ private:
     QAction* refreshAction_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
+    QAction* editMessageAction_ = nullptr;
     QAction* insertInstructionAction_ = nullptr;
     QAction* deleteInstructionAction_ = nullptr;
     QAction* moveInstructionUpAction_ = nullptr;
     QAction* moveInstructionDownAction_ = nullptr;
     QMenu* recentMenu_ = nullptr;
     QStringList recentDatasets_{};
+    QString lastDataset_{};
+    bool restoringDataset_ = false;
+    bool restoringTabAfterCommitFailure_ = false;
 };
 
 }  // namespace salsa::qt

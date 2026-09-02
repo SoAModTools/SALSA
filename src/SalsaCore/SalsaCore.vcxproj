@@ -61,8 +61,11 @@
     <ClInclude Include="include\SalsaCore\Project\ProjectTypes.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentLoader.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctEditSession.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctInspectionLocation.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctMessageAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctSemanticUsageIndex.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctSemanticOperation.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Application\ApplicationInfo.cpp" />
@@ -75,8 +78,10 @@
     <ClCompile Include="src\Project\LocalGameProject.cpp" />
     <ClCompile Include="src\Sct\SctDocumentLoader.cpp" />
     <ClCompile Include="src\Sct\SctEditSession.cpp" />
+    <ClCompile Include="src\Sct\SctMessageAuthoring.cpp" />
     <ClCompile Include="src\Sct\SctPresentation.cpp" />
     <ClCompile Include="src\Sct\SctSemanticUsageIndex.cpp" />
+    <ClCompile Include="src\Sct\SctSemanticOperation.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\third-party\SPICE\Compression\Compression.vcxproj">

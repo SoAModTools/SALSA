@@ -17,6 +17,18 @@
 
 namespace salsa::qt {
 
+enum class SctDocumentUpdateKind {
+    Replacement,
+    SourceStatus,
+    RevisionTransition,
+};
+
+struct SctDocumentUpdate final {
+    SctDocumentUpdateKind kind = SctDocumentUpdateKind::Replacement;
+    std::shared_ptr<const core::SctDocumentSnapshot> snapshot{};
+    std::optional<core::SctRevisionTransition> transition{};
+};
+
 class SctDocumentController final : public QObject {
     Q_OBJECT
 
@@ -45,6 +57,11 @@ public:
         const core::AssetLocator& locator,
         spice::sct::SctInstructionId instruction,
         core::SctInstructionMoveDirection direction);
+    [[nodiscard]] bool replaceMessage(
+        const core::AssetLocator& locator,
+        const core::SctMessageTarget& target,
+        const core::SctMessageDraft& draft,
+        core::SctMessageEditKind kind);
     [[nodiscard]] bool undo(const core::AssetLocator& locator);
     [[nodiscard]] bool redo(const core::AssetLocator& locator);
     void synchronizeCatalog(const core::AssetCatalogSnapshot& catalog);
@@ -72,7 +89,7 @@ public:
 
 signals:
     void busyChanged();
-    void documentChanged(const QString& identityKey);
+    void documentChanged(const QString& identityKey, const SctDocumentUpdate& update);
     void documentClosed(const QString& identityKey);
     void focusRequested(const QString& identityKey);
     void operationCompleted(

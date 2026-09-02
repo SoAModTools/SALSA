@@ -117,7 +117,8 @@ template <typename Range>
 }
 
 [[nodiscard]] SctPropertyItem expressionNodeProperty(
-    const spice::sct::SctCanonicalExpressionNode& node) {
+    const spice::sct::SctCanonicalExpressionNode& node,
+    const SctExpressionSite& site) {
     using enum spice::sct::SctCanonicalExpressionNodeKind;
     std::string value = hexValue(node.encodingCode);
     std::string notes;
@@ -164,24 +165,29 @@ template <typename Range>
         break;
     }
     SctPropertyItem item{ expressionKindName(node.kind), std::move(value),
-        std::move(notes), {} };
-    for (const auto& child : node.children) item.children.push_back(expressionNodeProperty(child));
+        std::move(notes), {}, SctInspectionLocation{ site } };
+    for (std::uint32_t childIndex = 0; childIndex < node.children.size(); ++childIndex) {
+        auto childSite = site;
+        childSite.childPath.push_back(childIndex);
+        item.children.push_back(expressionNodeProperty(node.children[childIndex], childSite));
+    }
     return item;
 }
 
 [[nodiscard]] SctPropertyItem expressionProperty(
     const spice::sct::SctCanonicalExpression& expression,
+    const SctExpressionSite& site,
     std::string name = "Expression") {
     SctPropertyItem item{ std::move(name),
         expression.termination == spice::sct::SctExpressionTermination::StopCode
             ? "stop-terminated" : "inline", {}, {} };
-    std::visit([&item](const auto& root) {
+    std::visit([&item, &site](const auto& root) {
         using T = std::decay_t<decltype(root)>;
         if constexpr (std::is_same_v<T, spice::sct::SctOpaqueExpression>) {
             item.children.push_back({ "Opaque words", hexList(root.words),
-                "Typed structure was not reliable.", {} });
+                "Typed structure was not reliable.", {}, SctInspectionLocation{ site } });
         } else {
-            item.children.push_back(expressionNodeProperty(root));
+            item.children.push_back(expressionNodeProperty(root, site));
         }
     }, expression.root);
     return item;
@@ -198,7 +204,12 @@ template <typename Range>
 }
 
 [[nodiscard]] SctPropertyItem parameterProperty(
-    const spice::sct::SctDocumentParameter& parameter) {
+    const spice::sct::SctInstructionId instruction,
+    const spice::sct::SctDocumentParameter& parameter,
+    const std::optional<std::uint32_t> repeatedGroupOrdinal) {
+    const spice::sct::SctParameterAddress address{
+        parameter.schemaIndex, repeatedGroupOrdinal };
+    const SctParameterSite parameterSite{ instruction, address };
     std::string role;
     std::string notes;
     std::string value;
@@ -209,7 +220,8 @@ template <typename Range>
             role = "Encoded word"; value = hexValue(typed.value);
         } else if constexpr (std::is_same_v<T, spice::sct::SctCanonicalExpression>) {
             role = "SCPT expression";
-            children = expressionProperty(typed).children;
+            children = expressionProperty(typed,
+                SctExpressionSite{ instruction, address, {} }).children;
             value = typed.termination == spice::sct::SctExpressionTermination::StopCode
                 ? "stop-terminated" : "inline";
         } else if constexpr (std::is_same_v<T, spice::sct::SctTerminatedWordSequenceValue>) {
@@ -229,7 +241,8 @@ template <typename Range>
         }
     }, parameter.value);
     return { "Parameter " + std::to_string(parameter.schemaIndex), value,
-        role + (notes.empty() ? "" : "; " + notes), std::move(children) };
+        role + (notes.empty() ? "" : "; " + notes), std::move(children),
+        SctInspectionLocation{ parameterSite } };
 }
 
 [[nodiscard]] std::string commandName(const spice::sct::SctMessageCommandCode code) {
@@ -309,6 +322,22 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
         else if constexpr (std::is_same_v<T, spice::sct::SctLabelSectionContent>) return "Label";
         else return "Opaque";
     }, content);
+}
+
+[[nodiscard]] std::string opaqueAnchorName(const spice::sct::SctOpaqueAnchor& anchor) {
+    return std::visit([](const auto& typed) -> std::string {
+        using T = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<T, spice::sct::SctDocumentAnchor>)
+            return "Document";
+        else if constexpr (std::is_same_v<T, spice::sct::SctSectionId>)
+            return "Section " + std::to_string(typed.value());
+        else if constexpr (std::is_same_v<T, spice::sct::SctInstructionId>)
+            return "Instruction " + std::to_string(typed.value());
+        else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
+            return "Indexed string " + std::to_string(typed.value());
+        else
+            return "Footer entry " + std::to_string(typed.value());
+    }, anchor);
 }
 
 [[nodiscard]] SctEntityPresentation describeText(
@@ -429,16 +458,19 @@ SctEntityPresentation SctPresentationService::describe(
             if (schema != nullptr && !schema->semantic.notes.empty())
                 result.properties.push_back({ "Schema notes", std::string(schema->semantic.notes), {}, {} });
             if (instruction->scheduledExpression.has_value())
-                result.properties.push_back(expressionProperty(*instruction->scheduledExpression, "Scheduled expression"));
+                result.properties.push_back(expressionProperty(*instruction->scheduledExpression,
+                    SctExpressionSite{ instruction->id, SctScheduledExpressionSite{}, {} },
+                    "Scheduled expression"));
             SctPropertyItem fixed{ "Fixed parameters", std::to_string(instruction->fixedParameters.size()), {}, {} };
             for (const auto& parameter : instruction->fixedParameters)
-                fixed.children.push_back(parameterProperty(parameter));
+                fixed.children.push_back(parameterProperty(instruction->id, parameter, std::nullopt));
             result.properties.push_back(std::move(fixed));
             SctPropertyItem repeated{ "Repeated groups", std::to_string(instruction->repeatedParameterGroups.size()), {}, {} };
             for (std::size_t groupIndex = 0; groupIndex < instruction->repeatedParameterGroups.size(); ++groupIndex) {
                 SctPropertyItem group{ "Group " + std::to_string(groupIndex), {}, {}, {} };
                 for (const auto& parameter : instruction->repeatedParameterGroups[groupIndex].parameters)
-                    group.children.push_back(parameterProperty(parameter));
+                    group.children.push_back(parameterProperty(instruction->id, parameter,
+                        static_cast<std::uint32_t>(groupIndex)));
                 repeated.children.push_back(std::move(group));
             }
             result.properties.push_back(std::move(repeated));
@@ -458,9 +490,13 @@ SctEntityPresentation SctPresentationService::describe(
     }
     if (target.kind == SctNavigationKind::OpaqueAttachment) {
         if (const auto* attachment = index.find(spice::sct::SctOpaqueAttachmentId(target.id))) {
+            const auto anchorTarget = navigationTargetForOpaqueAnchor(attachment->anchor);
             return { "Opaque attachment " + std::to_string(attachment->id.value()),
                 std::to_string(attachment->bytes.size()) + " bytes", {
                 { "Bytes", hexList(attachment->bytes), {}, {} },
+                { "Anchor", opaqueAnchorName(attachment->anchor),
+                    "Activate the attachment in the physical outline to follow this anchor.",
+                    {}, SctInspectionLocation{ anchorTarget } },
                 { "Alignment", std::to_string(attachment->alignment), {}, {} },
                 { "Fixed offset", attachment->fixedOffset.has_value()
                     ? hexValue(*attachment->fixedOffset) : "(none)", {}, {} },

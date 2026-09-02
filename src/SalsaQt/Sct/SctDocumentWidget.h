@@ -3,12 +3,15 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctPresentation.h"
+#include "SpiceSCT/SctDocumentIndex.h"
 
 #include <QWidget>
 
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <utility>
+#include <vector>
 
 class QComboBox;
 class QLabel;
@@ -34,11 +37,21 @@ public:
     void setSnapshot(
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
         int sourceStatus);
+    void applyTextOnlySnapshot(
+        std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
+        int sourceStatus,
+        const core::SctEditChangeSet& changes);
+    void setSourceStatus(int sourceStatus);
     void selectTarget(core::SctNavigationTarget target, bool reveal = true);
+    [[nodiscard]] bool selectLocation(
+        const core::SctInspectionLocation& location,
+        bool reveal = true);
     void setEditingEnabled(bool enabled);
     [[nodiscard]] std::optional<core::SctNavigationTarget> currentTarget() const noexcept;
     [[nodiscard]] std::optional<InstructionInsertionContext> insertionContext() const;
     [[nodiscard]] std::optional<spice::sct::SctInstructionId> selectedInstruction() const;
+    [[nodiscard]] std::optional<core::SctMessageTarget> selectedMessageTarget() const;
+    [[nodiscard]] bool canEditSelectedMessage() const;
     [[nodiscard]] bool canDeleteSelected() const;
     [[nodiscard]] bool canMoveSelected(core::SctInstructionMoveDirection direction) const;
 
@@ -50,15 +63,20 @@ signals:
     void insertInstructionRequested(const QString& identityKey);
     void deleteInstructionRequested(const QString& identityKey);
     void moveInstructionRequested(const QString& identityKey, int direction);
+    void editMessageRequested(const QString& identityKey);
 
 private:
     void rebuildOutline();
     void showTarget(core::SctNavigationTarget target);
     void updateSourceBanner(int sourceStatus);
     QTreeWidgetItem* addOutlineItem(QTreeWidgetItem* parent, const core::SctOutlineItem& item);
+    QTreeWidgetItem* addPropertyItem(
+        QTreeWidgetItem* parent,
+        const core::SctPropertyItem& property);
 
     core::AssetLocator locator_;
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot_{};
+    std::optional<spice::sct::SctDocumentIndex> index_{};
     std::optional<core::SctNavigationTarget> currentTarget_{};
     bool editingEnabled_ = false;
     QLabel* sourceBanner_ = nullptr;
@@ -71,6 +89,8 @@ private:
     QLabel* subtitle_ = nullptr;
     QTreeWidget* properties_ = nullptr;
     QTextEdit* preview_ = nullptr;
+    std::vector<std::pair<QTreeWidgetItem*, core::SctInspectionLocation>>
+        propertyLocations_{};
 };
 
 }  // namespace salsa::qt
