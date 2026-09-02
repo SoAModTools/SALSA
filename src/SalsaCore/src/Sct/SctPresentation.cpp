@@ -417,6 +417,13 @@ SctEntityPresentation SctPresentationService::describe(
     const SctDocumentSnapshot& snapshot,
     const SctNavigationTarget target) {
     const auto index = spice::sct::SctDocumentIndex::build(*snapshot.document);
+    return describe(snapshot, target, index);
+}
+
+SctEntityPresentation SctPresentationService::describe(
+    const SctDocumentSnapshot& snapshot,
+    const SctNavigationTarget target,
+    const spice::sct::SctDocumentIndex& index) {
     if (target.kind == SctNavigationKind::Document) {
         return { "SCT document", snapshot.source.descriptor.locator.path().generic_string(), {
             { "Source size", std::to_string(snapshot.source.descriptor.byteSize) + " bytes", {}, {} },

@@ -93,6 +93,7 @@ void DiagnosticsModel::setDiagnostics(std::vector<core::Diagnostic> diagnostics)
 }
 
 void DiagnosticsModel::setRows(std::vector<DiagnosticRow> rows) {
+    if (rows_ == rows) return;
     beginResetModel();
     rows_ = std::move(rows);
     endResetModel();

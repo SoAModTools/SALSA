@@ -8,12 +8,14 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QScrollBar>
+#include <QSignalBlocker>
 #include <QStringList>
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <ranges>
 #include <tuple>
@@ -24,6 +26,8 @@ namespace salsa::qt {
 namespace {
 
 constexpr int StableKeyRole = Qt::UserRole;
+constexpr int NavigationRole = Qt::UserRole + 1;
+constexpr int FallbackNavigationRole = Qt::UserRole + 2;
 
 struct TreeState final {
     QStringList expandedKeys;
@@ -326,13 +330,8 @@ void SctSemanticNavigatorWidget::setDocument(
     }
 
     identityKey_ = nextIdentity;
-    navigation_.clear();
     for (auto* tree : { opcodes_, references_, variables_, incomplete_ }) tree->clear();
-    const auto usage = core::SctSemanticUsageIndex::build(*snapshot.document);
-    buildOpcodes(*snapshot.document, usage);
-    buildReferences(*snapshot.document, usage);
-    buildVariables(*snapshot.document, usage);
-    buildIncompleteEvidence(*snapshot.document, usage);
+    populateTrees(*opcodes_, *references_, *variables_, *incomplete_, *snapshot.document);
     for (auto* tree : { opcodes_, references_, variables_, incomplete_ }) tree->collapseAll();
     if (sameDocument) {
         restoreState(*opcodes_, states[0]);
@@ -344,9 +343,42 @@ void SctSemanticNavigatorWidget::setDocument(
     tabs_->show();
 }
 
+bool SctSemanticNavigatorWidget::applyInstructionChanges(
+    const core::AssetLocator& locator,
+    const core::SctDocumentSnapshot& snapshot,
+    const core::SctEditChangeSet& changes) {
+    const auto nextIdentity = QString::fromStdString(locator.identityKey());
+    const auto isInstruction = [](const core::SctNavigationTarget target) {
+        return target.kind == core::SctNavigationKind::Instruction;
+    };
+    const bool hasStructuralChange = !changes.created.empty()
+        || !changes.removed.empty() || !changes.moved.empty();
+    if (snapshot.document == nullptr || identityKey_ != nextIdentity
+        || !hasStructuralChange || !changes.modified.empty()
+        || !std::ranges::all_of(changes.created, isInstruction)
+        || !std::ranges::all_of(changes.removed, isInstruction)
+        || !std::ranges::all_of(changes.moved, isInstruction)) return false;
+
+    QTreeWidget desiredOpcodes;
+    QTreeWidget desiredReferences;
+    QTreeWidget desiredVariables;
+    QTreeWidget desiredIncomplete;
+    desiredOpcodes.setColumnCount(opcodes_->columnCount());
+    desiredReferences.setColumnCount(references_->columnCount());
+    desiredVariables.setColumnCount(variables_->columnCount());
+    desiredIncomplete.setColumnCount(incomplete_->columnCount());
+    populateTrees(desiredOpcodes, desiredReferences, desiredVariables,
+        desiredIncomplete, *snapshot.document);
+
+    reconcileTree(*opcodes_, desiredOpcodes);
+    reconcileTree(*references_, desiredReferences);
+    reconcileTree(*variables_, desiredVariables);
+    reconcileTree(*incomplete_, desiredIncomplete);
+    return true;
+}
+
 void SctSemanticNavigatorWidget::clear() {
     identityKey_.clear();
-    navigation_.clear();
     for (auto* tree : { opcodes_, references_, variables_, incomplete_ }) tree->clear();
     tabs_->hide();
     emptyLabel_->show();
@@ -354,15 +386,10 @@ void SctSemanticNavigatorWidget::clear() {
 
 void SctSemanticNavigatorWidget::activate(QTreeWidgetItem* item, const int column) {
     if (item == nullptr) return;
-    const auto exact = std::ranges::find_if(navigation_, [item, column](const auto& entry) {
-        return entry.item == item && entry.column == column;
-    });
-    const auto fallback = exact != navigation_.end() ? exact
-        : std::ranges::find_if(navigation_, [item](const auto& entry) {
-            return entry.item == item && entry.column == -1;
-        });
-    if (fallback != navigation_.end()) {
-        emit navigationRequested(identityKey_, fallback->location);
+    auto navigation = item->data(column, NavigationRole);
+    if (!navigation.isValid()) navigation = item->data(0, FallbackNavigationRole);
+    if (navigation.isValid()) {
+        emit navigationRequested(identityKey_, navigation.value<core::SctInspectionLocation>());
     } else if (!item->toolTip(column).isEmpty()) {
         emit statusMessageRequested(item->toolTip(column));
     } else if (item->childCount() != 0) {
@@ -374,17 +401,127 @@ void SctSemanticNavigatorWidget::registerNavigation(
     QTreeWidgetItem* item,
     const int column,
     core::SctInspectionLocation location) {
-    navigation_.push_back({ item, column, std::move(location) });
+    if (column < 0)
+        item->setData(0, FallbackNavigationRole, QVariant::fromValue(std::move(location)));
+    else
+        item->setData(column, NavigationRole, QVariant::fromValue(std::move(location)));
+}
+
+void SctSemanticNavigatorWidget::populateTrees(
+    QTreeWidget& opcodes,
+    QTreeWidget& references,
+    QTreeWidget& variables,
+    QTreeWidget& incomplete,
+    const spice::sct::SctDocument& document) {
+    const auto index = spice::sct::SctDocumentIndex::build(document);
+    const auto usage = core::SctSemanticUsageIndex::build(document);
+    buildOpcodes(opcodes, index, usage);
+    buildReferences(references, index, usage);
+    buildVariables(variables, index, usage);
+    buildIncompleteEvidence(incomplete, document, index, usage);
+}
+
+void SctSemanticNavigatorWidget::reconcileTree(
+    QTreeWidget& current,
+    QTreeWidget& desired) {
+    const auto selectedKey = current.currentItem() == nullptr
+        ? QString{} : current.currentItem()->data(0, StableKeyRole).toString();
+    const auto scrollPosition = current.verticalScrollBar()->value();
+    const QSignalBlocker blocker(&current);
+    current.setUpdatesEnabled(false);
+
+    std::function<void(QTreeWidgetItem*, QTreeWidgetItem*)> reconcileChildren;
+    reconcileChildren = [&](QTreeWidgetItem* currentParent, QTreeWidgetItem* desiredParent) {
+        const auto currentCount = [&]() {
+            return currentParent == nullptr
+                ? current.topLevelItemCount() : currentParent->childCount();
+        };
+        const auto desiredCount = [&]() {
+            return desiredParent == nullptr
+                ? desired.topLevelItemCount() : desiredParent->childCount();
+        };
+        const auto currentAt = [&](const int row) {
+            return currentParent == nullptr
+                ? current.topLevelItem(row) : currentParent->child(row);
+        };
+        const auto desiredAt = [&](const int row) {
+            return desiredParent == nullptr
+                ? desired.topLevelItem(row) : desiredParent->child(row);
+        };
+        const auto takeCurrent = [&](const int row) {
+            return currentParent == nullptr
+                ? current.takeTopLevelItem(row) : currentParent->takeChild(row);
+        };
+        const auto insertCurrent = [&](const int row, QTreeWidgetItem* item) {
+            if (currentParent == nullptr) current.insertTopLevelItem(row, item);
+            else currentParent->insertChild(row, item);
+        };
+        const auto desiredContains = [&](const int first, const QString& key) {
+            for (int row = first; row < desiredCount(); ++row)
+                if (desiredAt(row)->data(0, StableKeyRole).toString() == key) return true;
+            return false;
+        };
+
+        int row = 0;
+        while (row < desiredCount()) {
+            auto* wanted = desiredAt(row);
+            const auto wantedKey = wanted->data(0, StableKeyRole).toString();
+            auto* item = row < currentCount() ? currentAt(row) : nullptr;
+            if (item != nullptr
+                && item->data(0, StableKeyRole).toString() != wantedKey) {
+                const auto currentKey = item->data(0, StableKeyRole).toString();
+                if (!desiredContains(row, currentKey)) {
+                    delete takeCurrent(row);
+                    continue;
+                }
+                int found = row + 1;
+                while (found < currentCount()
+                    && currentAt(found)->data(0, StableKeyRole).toString() != wantedKey)
+                    ++found;
+                item = found < currentCount() ? takeCurrent(found) : nullptr;
+                if (item != nullptr) insertCurrent(row, item);
+            }
+            if (item == nullptr
+                || item->data(0, StableKeyRole).toString() != wantedKey) {
+                item = new QTreeWidgetItem;
+                insertCurrent(row, item);
+            }
+
+            for (int column = 0; column < current.columnCount(); ++column) {
+                if (item->text(column) != wanted->text(column))
+                    item->setText(column, wanted->text(column));
+                if (item->toolTip(column) != wanted->toolTip(column))
+                    item->setToolTip(column, wanted->toolTip(column));
+                item->setData(column, NavigationRole,
+                    wanted->data(column, NavigationRole));
+            }
+            item->setData(0, StableKeyRole, wantedKey);
+            item->setData(0, FallbackNavigationRole,
+                wanted->data(0, FallbackNavigationRole));
+            reconcileChildren(item, wanted);
+            ++row;
+        }
+        while (currentCount() > row) delete takeCurrent(row);
+    };
+
+    reconcileChildren(nullptr, nullptr);
+    if (!selectedKey.isEmpty()) {
+        if (auto* selected = findKey(current, selectedKey))
+            current.setCurrentItem(selected);
+    }
+    current.verticalScrollBar()->setValue(scrollPosition);
+    current.setUpdatesEnabled(true);
+    current.viewport()->update();
 }
 
 void SctSemanticNavigatorWidget::buildOpcodes(
-    const spice::sct::SctDocument& document,
+    QTreeWidget& tree,
+    const spice::sct::SctDocumentIndex& index,
     const core::SctSemanticUsageIndex& usage) {
-    const auto index = spice::sct::SctDocumentIndex::build(document);
     std::map<std::uint16_t, std::vector<core::SctOpcodeUsage>> groups;
     for (const auto& occurrence : usage.opcodeUsages()) groups[occurrence.opcode].push_back(occurrence);
     for (const auto& [opcode, occurrences] : groups) {
-        auto* group = new QTreeWidgetItem(opcodes_);
+        auto* group = new QTreeWidgetItem(&tree);
         group->setText(0, opcodeName(opcode));
         group->setText(1, tr("%1 occurrence(s)").arg(occurrences.size()));
         setKey(*group, QStringLiteral("opcode:%1").arg(opcode));
@@ -401,10 +538,10 @@ void SctSemanticNavigatorWidget::buildOpcodes(
 }
 
 void SctSemanticNavigatorWidget::buildReferences(
-    const spice::sct::SctDocument& document,
+    QTreeWidget& tree,
+    const spice::sct::SctDocumentIndex& index,
     const core::SctSemanticUsageIndex& usage) {
-    const auto index = spice::sct::SctDocumentIndex::build(document);
-    auto* inbound = new QTreeWidgetItem(references_);
+    auto* inbound = new QTreeWidgetItem(&tree);
     inbound->setText(0, tr("Inbound by target"));
     setKey(*inbound, QStringLiteral("references:inbound"));
 
@@ -442,7 +579,7 @@ void SctSemanticNavigatorWidget::buildReferences(
         }
     }
 
-    auto* outbound = new QTreeWidgetItem(references_);
+    auto* outbound = new QTreeWidgetItem(&tree);
     outbound->setText(0, tr("Outbound by instruction"));
     setKey(*outbound, QStringLiteral("references:outbound"));
     std::vector<std::pair<spice::sct::SctInstructionId,
@@ -483,12 +620,12 @@ void SctSemanticNavigatorWidget::buildReferences(
 }
 
 void SctSemanticNavigatorWidget::buildVariables(
-    const spice::sct::SctDocument& document,
+    QTreeWidget& tree,
+    const spice::sct::SctDocumentIndex& index,
     const core::SctSemanticUsageIndex& usage) {
-    const auto index = spice::sct::SctDocumentIndex::build(document);
     for (const auto kind : { core::SctVariableKind::Integer, core::SctVariableKind::Float,
             core::SctVariableKind::Bit, core::SctVariableKind::Byte }) {
-        auto* kindItem = new QTreeWidgetItem(variables_);
+        auto* kindItem = new QTreeWidgetItem(&tree);
         kindItem->setText(0, variableKindName(kind));
         setKey(*kindItem, QStringLiteral("variable-kind:%1").arg(static_cast<int>(kind)));
         std::map<std::uint32_t, std::vector<core::SctVariableUsage>> groups;
@@ -519,11 +656,11 @@ void SctSemanticNavigatorWidget::buildVariables(
 }
 
 void SctSemanticNavigatorWidget::buildIncompleteEvidence(
+    QTreeWidget& tree,
     const spice::sct::SctDocument& document,
+    const spice::sct::SctDocumentIndex& index,
     const core::SctSemanticUsageIndex& usage) {
-    const auto index = spice::sct::SctDocumentIndex::build(document);
-
-    auto* unresolved = new QTreeWidgetItem(incomplete_);
+    auto* unresolved = new QTreeWidgetItem(&tree);
     unresolved->setText(0, tr("Unresolved references"));
     unresolved->setText(2, tr("%1 occurrence(s)").arg(usage.unresolvedReferences().size()));
     setKey(*unresolved, QStringLiteral("incomplete:unresolved"));
@@ -540,7 +677,7 @@ void SctSemanticNavigatorWidget::buildIncompleteEvidence(
         registerNavigation(item, 1, location);
     }
 
-    auto* opaqueParameters = new QTreeWidgetItem(incomplete_);
+    auto* opaqueParameters = new QTreeWidgetItem(&tree);
     opaqueParameters->setText(0, tr("Opaque parameters"));
     opaqueParameters->setText(2, tr("%1 occurrence(s)").arg(usage.opaqueParameters().size()));
     setKey(*opaqueParameters, QStringLiteral("incomplete:opaque-parameters"));
@@ -557,7 +694,7 @@ void SctSemanticNavigatorWidget::buildIncompleteEvidence(
         registerNavigation(item, 1, location);
     }
 
-    auto* opaqueExpressions = new QTreeWidgetItem(incomplete_);
+    auto* opaqueExpressions = new QTreeWidgetItem(&tree);
     opaqueExpressions->setText(0, tr("Opaque expressions"));
     opaqueExpressions->setText(2, tr("%1 occurrence(s)").arg(usage.opaqueExpressions().size()));
     setKey(*opaqueExpressions, QStringLiteral("incomplete:opaque-expressions"));
@@ -574,7 +711,7 @@ void SctSemanticNavigatorWidget::buildIncompleteEvidence(
         registerNavigation(item, 1, location);
     }
 
-    auto* attachments = new QTreeWidgetItem(incomplete_);
+    auto* attachments = new QTreeWidgetItem(&tree);
     attachments->setText(0, tr("Opaque attachments"));
     attachments->setText(2, tr("%1 attachment(s)").arg(document.opaqueAttachments.size()));
     setKey(*attachments, QStringLiteral("incomplete:attachments"));

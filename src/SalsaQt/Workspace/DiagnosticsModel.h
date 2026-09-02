@@ -17,6 +17,8 @@ struct DiagnosticRow final {
     QString location{};
     std::optional<core::AssetLocator> locator{};
     std::optional<core::SctInspectionLocation> inspectionLocation{};
+
+    bool operator==(const DiagnosticRow&) const = default;
 };
 
 class DiagnosticsModel final : public QAbstractTableModel {

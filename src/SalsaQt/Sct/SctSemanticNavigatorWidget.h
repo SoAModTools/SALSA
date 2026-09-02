@@ -2,14 +2,15 @@
 
 #include "SalsaCore/Project/AssetLocator.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
+#include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctInspectionLocation.h"
+#include "SalsaCore/Sct/SctSemanticUsageIndex.h"
+
+#include "SpiceSCT/SctDocumentIndex.h"
 
 #include <QWidget>
 
 #include <array>
-#include <memory>
-#include <vector>
-
 class QLabel;
 class QTabWidget;
 class QTreeWidget;
@@ -28,6 +29,10 @@ public:
     void setDocument(
         const core::AssetLocator& locator,
         const core::SctDocumentSnapshot& snapshot);
+    [[nodiscard]] bool applyInstructionChanges(
+        const core::AssetLocator& locator,
+        const core::SctDocumentSnapshot& snapshot,
+        const core::SctEditChangeSet& changes);
     void clear();
 
 signals:
@@ -37,29 +42,35 @@ signals:
     void statusMessageRequested(const QString& message);
 
 private:
-    struct ItemNavigation final {
-        QTreeWidgetItem* item = nullptr;
-        int column = 0;
-        core::SctInspectionLocation location;
-    };
-
     void activate(QTreeWidgetItem* item, int column);
     void registerNavigation(
         QTreeWidgetItem* item,
         int column,
         core::SctInspectionLocation location);
     void buildOpcodes(
-        const spice::sct::SctDocument& document,
+        QTreeWidget& tree,
+        const spice::sct::SctDocumentIndex& index,
         const core::SctSemanticUsageIndex& usage);
     void buildReferences(
-        const spice::sct::SctDocument& document,
+        QTreeWidget& tree,
+        const spice::sct::SctDocumentIndex& index,
         const core::SctSemanticUsageIndex& usage);
     void buildVariables(
-        const spice::sct::SctDocument& document,
+        QTreeWidget& tree,
+        const spice::sct::SctDocumentIndex& index,
         const core::SctSemanticUsageIndex& usage);
     void buildIncompleteEvidence(
+        QTreeWidget& tree,
         const spice::sct::SctDocument& document,
+        const spice::sct::SctDocumentIndex& index,
         const core::SctSemanticUsageIndex& usage);
+    void populateTrees(
+        QTreeWidget& opcodes,
+        QTreeWidget& references,
+        QTreeWidget& variables,
+        QTreeWidget& incomplete,
+        const spice::sct::SctDocument& document);
+    static void reconcileTree(QTreeWidget& current, QTreeWidget& desired);
 
     QString identityKey_{};
     QLabel* emptyLabel_ = nullptr;
@@ -68,7 +79,6 @@ private:
     QTreeWidget* references_ = nullptr;
     QTreeWidget* variables_ = nullptr;
     QTreeWidget* incomplete_ = nullptr;
-    std::vector<ItemNavigation> navigation_{};
 };
 
 }  // namespace salsa::qt

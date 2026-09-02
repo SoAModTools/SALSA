@@ -3,6 +3,8 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctInspectionLocation.h"
 
+#include "SpiceSCT/SctDocumentIndex.h"
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -44,6 +46,10 @@ public:
     [[nodiscard]] static SctEntityPresentation describe(
         const SctDocumentSnapshot& snapshot,
         SctNavigationTarget target);
+    [[nodiscard]] static SctEntityPresentation describe(
+        const SctDocumentSnapshot& snapshot,
+        SctNavigationTarget target,
+        const spice::sct::SctDocumentIndex& index);
 };
 
 }  // namespace salsa::core

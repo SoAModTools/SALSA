@@ -77,6 +77,22 @@ constexpr qsizetype MaximumRecentDatasets = 10;
     });
 }
 
+[[nodiscard]] bool isIncrementalInstructionTransition(
+    const SctDocumentUpdate& update) {
+    if (update.kind != SctDocumentUpdateKind::RevisionTransition
+        || !update.transition.has_value()) return false;
+    const auto& changes = update.transition->changes;
+    const bool hasStructuralChange = !changes.created.empty()
+        || !changes.removed.empty() || !changes.moved.empty();
+    const auto isInstruction = [](const auto target) {
+        return target.kind == core::SctNavigationKind::Instruction;
+    };
+    return hasStructuralChange && changes.modified.empty()
+        && std::ranges::all_of(changes.created, isInstruction)
+        && std::ranges::all_of(changes.removed, isInstruction)
+        && std::ranges::all_of(changes.moved, isInstruction);
+}
+
 [[nodiscard]] bool affectsMessageTarget(
     const SctDocumentUpdate& update,
     const core::SctMessageTarget& target) {
@@ -780,9 +796,17 @@ void MainWindow::syncDocument(
         ? update.snapshot : documentController_->snapshot(*found);
     const auto sourceStatus = static_cast<int>(documentController_->sourceStatus(*found));
     const bool textOnly = !createdWidget && isTextOnlyTransition(update);
+    const bool instructionDelta = !createdWidget
+        && isIncrementalInstructionTransition(update);
+    bool incrementalInstructionApplied = false;
     if (createdWidget || update.kind == SctDocumentUpdateKind::Replacement
-        || (update.kind == SctDocumentUpdateKind::RevisionTransition && !textOnly)) {
+        || (update.kind == SctDocumentUpdateKind::RevisionTransition
+            && !textOnly && !instructionDelta)) {
         widget->setSnapshot(snapshot, sourceStatus);
+    } else if (instructionDelta) {
+        incrementalInstructionApplied = widget->applyInstructionChanges(
+            snapshot, sourceStatus, update.transition->changes);
+        if (!incrementalInstructionApplied) widget->setSnapshot(snapshot, sourceStatus);
     } else if (textOnly) {
         widget->applyTextOnlySnapshot(snapshot, sourceStatus, update.transition->changes);
     } else {
@@ -796,9 +820,14 @@ void MainWindow::syncDocument(
     }
     rebuildDocumentTabTitles();
     syncDiagnostics();
-    if (createdWidget || update.kind == SctDocumentUpdateKind::Replacement
-        || (update.kind == SctDocumentUpdateKind::RevisionTransition && !textOnly)) {
-        syncSemanticNavigator();
+    if (widget == activeDocumentWidget()
+        && (createdWidget || update.kind == SctDocumentUpdateKind::Replacement
+            || (update.kind == SctDocumentUpdateKind::RevisionTransition && !textOnly))) {
+        if (!incrementalInstructionApplied
+            || !semanticNavigator_->applyInstructionChanges(
+                widget->locator(), *snapshot, update.transition->changes)) {
+            syncSemanticNavigator();
+        }
     }
     syncEditActions();
 }

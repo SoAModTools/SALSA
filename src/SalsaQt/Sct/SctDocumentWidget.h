@@ -41,6 +41,10 @@ public:
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
         int sourceStatus,
         const core::SctEditChangeSet& changes);
+    [[nodiscard]] bool applyInstructionChanges(
+        std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
+        int sourceStatus,
+        const core::SctEditChangeSet& changes);
     void setSourceStatus(int sourceStatus);
     void selectTarget(core::SctNavigationTarget target, bool reveal = true);
     [[nodiscard]] bool selectLocation(
@@ -67,6 +71,13 @@ signals:
 
 private:
     void rebuildOutline();
+    void reconcileOutline(const std::vector<core::SctOutlineItem>& outline);
+    void reconcileOutlineChildren(
+        QTreeWidgetItem* parent,
+        const std::vector<core::SctOutlineItem>& desired);
+    void updateOutlineItem(
+        QTreeWidgetItem& item,
+        const core::SctOutlineItem& desired);
     void showTarget(core::SctNavigationTarget target);
     void updateSourceBanner(int sourceStatus);
     QTreeWidgetItem* addOutlineItem(QTreeWidgetItem* parent, const core::SctOutlineItem& item);

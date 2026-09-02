@@ -23,6 +23,7 @@
 #include <QVBoxLayout>
 
 #include <functional>
+#include <algorithm>
 #include <ranges>
 
 namespace salsa::qt {
@@ -256,6 +257,53 @@ void SctDocumentWidget::applyTextOnlySnapshot(
     if (selectedChanged) showTarget(*currentTarget_);
 }
 
+bool SctDocumentWidget::applyInstructionChanges(
+    std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
+    const int sourceStatus,
+    const core::SctEditChangeSet& changes) {
+    if (snapshot == nullptr || snapshot->document == nullptr) return false;
+    const auto isInstruction = [](const core::SctNavigationTarget target) {
+        return target.kind == core::SctNavigationKind::Instruction;
+    };
+    const bool hasStructuralChange = !changes.created.empty()
+        || !changes.removed.empty() || !changes.moved.empty();
+    if (!hasStructuralChange || !changes.modified.empty()
+        || !std::ranges::all_of(changes.created, isInstruction)
+        || !std::ranges::all_of(changes.removed, isInstruction)
+        || !std::ranges::all_of(changes.moved, isInstruction)) return false;
+
+    auto nextIndex = spice::sct::SctDocumentIndex::build(*snapshot->document);
+    const auto desired = core::SctPresentationService::outline(*snapshot);
+    const auto retained = currentTarget_;
+    const auto scrollPosition = outline_->verticalScrollBar()->value();
+
+    const QSignalBlocker blocker(outline_);
+    outline_->setUpdatesEnabled(false);
+    snapshot_ = std::move(snapshot);
+    index_ = std::move(nextIndex);
+    updateSourceBanner(sourceStatus);
+    reconcileOutline(desired);
+
+    auto* selected = retained.has_value() ? findTarget(*outline_, *retained) : nullptr;
+    if (selected != nullptr) {
+        currentTarget_ = *retained;
+        outline_->setCurrentItem(selected);
+        showTarget(*currentTarget_);
+    } else {
+        currentTarget_.reset();
+        title_->clear();
+        subtitle_->clear();
+        propertyLocations_.clear();
+        properties_->clear();
+        preview_->clear();
+        preview_->hide();
+    }
+    outline_->verticalScrollBar()->setValue(scrollPosition);
+    outline_->setUpdatesEnabled(true);
+    outline_->viewport()->update();
+    return true;
+}
+
 void SctDocumentWidget::setSourceStatus(const int sourceStatus) {
     updateSourceBanner(sourceStatus);
 }
@@ -407,9 +455,77 @@ void SctDocumentWidget::rebuildOutline() {
     outline_->verticalScrollBar()->setValue(scrollPosition);
 }
 
+void SctDocumentWidget::reconcileOutline(
+    const std::vector<core::SctOutlineItem>& desired) {
+    reconcileOutlineChildren(nullptr, desired);
+}
+
+void SctDocumentWidget::reconcileOutlineChildren(
+    QTreeWidgetItem* parent,
+    const std::vector<core::SctOutlineItem>& desired) {
+    const auto childCount = [this, parent]() {
+        return parent == nullptr ? outline_->topLevelItemCount() : parent->childCount();
+    };
+    const auto childAt = [this, parent](const int row) {
+        return parent == nullptr ? outline_->topLevelItem(row) : parent->child(row);
+    };
+    const auto takeChild = [this, parent](const int row) {
+        return parent == nullptr ? outline_->takeTopLevelItem(row) : parent->takeChild(row);
+    };
+    const auto insertChild = [this, parent](const int row, QTreeWidgetItem* item) {
+        if (parent == nullptr) outline_->insertTopLevelItem(row, item);
+        else parent->insertChild(row, item);
+    };
+    const auto desiredContains = [&desired](
+        const int first, const core::SctNavigationTarget target) {
+        return std::ranges::any_of(desired | std::views::drop(first),
+            [target](const auto& item) { return item.target == target; });
+    };
+
+    int row = 0;
+    while (row < static_cast<int>(desired.size())) {
+        const auto& wanted = desired[static_cast<std::size_t>(row)];
+        QTreeWidgetItem* item = row < childCount() ? childAt(row) : nullptr;
+        if (item != nullptr && targetOf(*item) != wanted.target) {
+            if (!desiredContains(row, targetOf(*item))) {
+                delete takeChild(row);
+                continue;
+            }
+            int found = row + 1;
+            while (found < childCount() && targetOf(*childAt(found)) != wanted.target)
+                ++found;
+            item = found < childCount() ? takeChild(found) : nullptr;
+            if (item != nullptr) insertChild(row, item);
+        }
+        if (item == nullptr || targetOf(*item) != wanted.target) {
+            item = new QTreeWidgetItem;
+            insertChild(row, item);
+        }
+        updateOutlineItem(*item, wanted);
+        reconcileOutlineChildren(item, wanted.children);
+        ++row;
+    }
+    while (childCount() > row) delete takeChild(row);
+}
+
+void SctDocumentWidget::updateOutlineItem(
+    QTreeWidgetItem& item,
+    const core::SctOutlineItem& desired) {
+    const auto label = QString::fromStdString(desired.label);
+    const auto secondary = QString::fromStdString(desired.secondary);
+    if (item.text(0) != label) item.setText(0, label);
+    if (item.text(1) != secondary) item.setText(1, secondary);
+    if (item.data(0, KindRole).toInt() != static_cast<int>(desired.target.kind))
+        item.setData(0, KindRole, static_cast<int>(desired.target.kind));
+    if (item.data(0, IdRole).toULongLong() != desired.target.id)
+        item.setData(0, IdRole, QVariant::fromValue<qulonglong>(desired.target.id));
+}
+
 void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
     if (!snapshot_) return;
-    const auto presentation = core::SctPresentationService::describe(*snapshot_, target);
+    const auto presentation = index_.has_value()
+        ? core::SctPresentationService::describe(*snapshot_, target, *index_)
+        : core::SctPresentationService::describe(*snapshot_, target);
     title_->setText(QString::fromStdString(presentation.title));
     subtitle_->setText(QString::fromStdString(presentation.subtitle));
     propertyLocations_.clear();
