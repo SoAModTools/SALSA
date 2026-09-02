@@ -327,7 +327,7 @@ bool SctDocumentController::applyEditResult(
         SctDocumentUpdateKind::RevisionTransition,
         result.snapshot,
         result.transition});
-    if (qEnvironmentVariableIsSet("SALSA_EDIT_TIMINGS")) {
+    if (editTimingsEnabled_) {
         qInfo().noquote() << QStringLiteral(
             "SALSA edit timing %1: preflight=%2us journal=%3us model-notification=%4us")
             .arg(key).arg(result.preflightMicroseconds)
@@ -381,7 +381,7 @@ void SctDocumentController::finishMaterialization(
     auto* completedWatcher = state.materializationWatcher.release();
     auto result = completedWatcher->result();
     completedWatcher->deleteLater();
-    if (qEnvironmentVariableIsSet("SALSA_EDIT_TIMINGS")) {
+    if (editTimingsEnabled_) {
         qInfo().noquote() << QStringLiteral(
             "SALSA materialization timing %1 generation %2: replay=%3us validation=%4us semantic=%5us index=%6us")
             .arg(QString::fromStdString(identityKey)).arg(generation)
@@ -440,6 +440,10 @@ void SctDocumentController::retireMaterialization(DocumentState& state) {
     state.materializationStop.request_stop();
     state.materializationWatcher->disconnect(this);
     retiredMaterializations_.push_back(std::move(state.materializationWatcher));
+}
+
+void SctDocumentController::setEditTimingsEnabled(const bool enabled) noexcept {
+    editTimingsEnabled_ = enabled;
 }
 
 void SctDocumentController::onFinished() {

@@ -293,6 +293,12 @@ bool SctDocumentWidget::selectLocation(
     if (!found.isValid()) return false;
     if (reveal) expandAncestors(*outline_, found);
     outline_->setCurrentIndex(found);
+    if (!currentTarget_.has_value() || *currentTarget_ != target) {
+        currentTarget_ = target;
+        showTarget(target);
+        emit becameActive(QString::fromStdString(locator_.identityKey()));
+        emit editContextChanged();
+    }
     if (reveal) outline_->scrollTo(found);
 
     if (std::holds_alternative<core::SctNavigationTarget>(location)) return true;

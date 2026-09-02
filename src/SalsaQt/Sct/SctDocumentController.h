@@ -70,6 +70,7 @@ public:
     void closeDocument(const core::AssetLocator& locator);
     void closeAll();
     void cancel();
+    void setEditTimingsEnabled(bool enabled) noexcept;
 
     [[nodiscard]] bool busy() const noexcept;
     [[nodiscard]] bool contains(const core::AssetLocator& locator) const;
@@ -141,6 +142,7 @@ private:
         retiredMaterializations_{};
     std::vector<core::Diagnostic> failureDiagnostics_{};
     std::vector<core::SctPipelineDiagnostic> failurePipelineDiagnostics_{};
+    bool editTimingsEnabled_ = false;
 };
 
 }  // namespace salsa::qt

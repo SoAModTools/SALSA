@@ -241,6 +241,23 @@ void MainWindow::buildUi() {
     viewMenu->addAction(messageEditorDock_->toggleViewAction());
     viewMenu->addAction(editToolbar->toggleViewAction());
 
+#if defined(_DEBUG)
+    developerMenu_ = menuBar()->addMenu(tr("DEV"));
+    logSctEditTimingsAction_ = developerMenu_->addAction(
+        tr("Log SCT Edit Timings"));
+    logSctEditTimingsAction_->setCheckable(true);
+    logSctEditTimingsAction_->setStatusTip(
+        tr("Log foreground edit and background verification phase timings."));
+    connect(logSctEditTimingsAction_, &QAction::toggled, this,
+        [this](const bool enabled) {
+            editTimingsEnabled_ = enabled;
+            documentController_->setEditTimingsEnabled(enabled);
+            statusBar()->showMessage(enabled
+                ? tr("SCT edit timing logging enabled.")
+                : tr("SCT edit timing logging disabled."), 5000);
+        });
+#endif
+
     progressBar_ = new QProgressBar(this);
     progressBar_->setTextVisible(true);
     progressBar_->setMinimumWidth(180);
@@ -538,7 +555,7 @@ void MainWindow::queueDiagnosticsSync() {
         QElapsedTimer timer;
         timer.start();
         syncDiagnostics();
-        if (qEnvironmentVariableIsSet("SALSA_EDIT_TIMINGS")) {
+        if (editTimingsEnabled_) {
             qInfo().noquote() << QStringLiteral(
                 "SALSA edit timing: diagnostics-delivery=%1us")
                 .arg(timer.nsecsElapsed() / 1000);

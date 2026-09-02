@@ -102,11 +102,14 @@ private:
     QAction* deleteInstructionAction_ = nullptr;
     QAction* moveInstructionUpAction_ = nullptr;
     QAction* moveInstructionDownAction_ = nullptr;
+    QAction* logSctEditTimingsAction_ = nullptr;
     QMenu* recentMenu_ = nullptr;
+    QMenu* developerMenu_ = nullptr;
     QStringList recentDatasets_{};
     QString lastDataset_{};
     bool restoringDataset_ = false;
     bool diagnosticsSyncPending_ = false;
+    bool editTimingsEnabled_ = false;
     bool restoringTabAfterCommitFailure_ = false;
 };
 
