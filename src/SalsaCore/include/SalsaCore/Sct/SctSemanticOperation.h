@@ -2,6 +2,7 @@
 
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctMessageAuthoring.h"
+#include "SalsaCore/Sct/SctStructuredAuthoring.h"
 #include "SpiceSCT/SctDocument.h"
 #include "SpiceSCT/SctDocumentAnalysis.h"
 
@@ -29,9 +30,30 @@ struct SctInstructionStructuralChange final {
     spice::sct::SctInstructionSemanticContribution afterSemantics{};
 };
 
+enum class SctDerivedAnalysisInvalidation : std::uint32_t {
+    None = 0,
+    StructuredControlFlow = 1u << 0u,
+};
+
+[[nodiscard]] constexpr SctDerivedAnalysisInvalidation operator|(
+    const SctDerivedAnalysisInvalidation left,
+    const SctDerivedAnalysisInvalidation right) noexcept {
+    return static_cast<SctDerivedAnalysisInvalidation>(
+        static_cast<std::uint32_t>(left) | static_cast<std::uint32_t>(right));
+}
+
+[[nodiscard]] constexpr bool hasInvalidation(
+    const SctDerivedAnalysisInvalidation value,
+    const SctDerivedAnalysisInvalidation flag) noexcept {
+    return (static_cast<std::uint32_t>(value) & static_cast<std::uint32_t>(flag)) != 0u;
+}
+
 struct SctEditChangeSet final {
     std::vector<SctInstructionStructuralChange> instructions{};
     std::vector<SctNavigationTarget> modified{};
+    std::vector<SctStructuredAuthoringChange> structuredAuthoring{};
+    SctDerivedAnalysisInvalidation invalidations = SctDerivedAnalysisInvalidation::None;
+    bool documentChanged = false;
 };
 
 struct SctInsertInstructionAfterOperation final {
@@ -53,10 +75,16 @@ struct SctReplaceMessageOperation final {
     spice::sct::SctMessage message;
 };
 
+struct SctReplaceInstructionOperation final {
+    spice::sct::SctInstructionId instruction;
+    spice::sct::SctDocumentInstruction replacement;
+};
+
 using SctPrimitiveOperation = std::variant<
     SctInsertInstructionAfterOperation,
     SctDeleteInstructionOperation,
     SctRelocateInstructionAfterOperation,
+    SctReplaceInstructionOperation,
     SctReplaceMessageOperation>;
 
 struct SctSemanticOperationBatch final {

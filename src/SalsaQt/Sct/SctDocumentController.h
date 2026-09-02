@@ -28,6 +28,7 @@ struct SctDocumentUpdate final {
     SctDocumentUpdateKind kind = SctDocumentUpdateKind::Replacement;
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot{};
     std::optional<core::SctRevisionTransition> transition{};
+    std::shared_ptr<const core::SctSemanticEditorProjection> semanticProjection{};
 };
 
 class SctDocumentController final : public QObject {
@@ -63,6 +64,29 @@ public:
         const core::SctMessageTarget& target,
         const core::SctMessageDraft& draft,
         core::SctMessageEditKind kind);
+    [[nodiscard]] bool addVirtualElse(
+        const core::AssetLocator& locator,
+        spice::sct::SctInstructionId controller);
+    [[nodiscard]] bool addVirtualCase(
+        const core::AssetLocator& locator,
+        spice::sct::SctInstructionId controller);
+    [[nodiscard]] bool setVirtualCaseValue(
+        const core::AssetLocator& locator,
+        core::SctAuthoredArmId arm,
+        std::optional<std::int32_t> value);
+    [[nodiscard]] bool removeVirtualArm(
+        const core::AssetLocator& locator, core::SctAuthoredArmId arm);
+    [[nodiscard]] bool insertInstructionIntoAuthoredArm(
+        const core::AssetLocator& locator,
+        core::SctAuthoredArmId arm, std::uint16_t opcode);
+    [[nodiscard]] bool deleteOnlyInstructionFromAuthoredArm(
+        const core::AssetLocator& locator, core::SctAuthoredArmId arm,
+        spice::sct::SctInstructionId instruction);
+    [[nodiscard]] bool insertInstructionIntoStructuredArm(
+        const core::AssetLocator& locator,
+        spice::sct::SctInstructionId controller,
+        spice_sct_prototype::SctStructuredArmKind arm,
+        std::uint16_t opcode);
     [[nodiscard]] bool undo(const core::AssetLocator& locator);
     [[nodiscard]] bool redo(const core::AssetLocator& locator);
     void synchronizeCatalog(const core::AssetCatalogSnapshot& catalog);
@@ -70,11 +94,14 @@ public:
     void closeAll();
     void cancel();
     void setEditTimingsEnabled(bool enabled) noexcept;
+    void setStructureTimingsEnabled(bool enabled) noexcept;
 
     [[nodiscard]] bool busy() const noexcept;
     [[nodiscard]] bool contains(const core::AssetLocator& locator) const;
     [[nodiscard]] std::shared_ptr<const core::SctDocumentSnapshot> snapshot(
         const core::AssetLocator& locator) const;
+    [[nodiscard]] std::shared_ptr<const core::SctSemanticEditorProjection>
+        semanticProjection(const core::AssetLocator& locator) const;
     [[nodiscard]] std::optional<spice::sct::SctMessage> workingMessage(
         const core::AssetLocator& locator,
         const core::SctMessageTarget& target) const;
@@ -142,6 +169,7 @@ private:
     std::vector<core::Diagnostic> failureDiagnostics_{};
     std::vector<core::SctPipelineDiagnostic> failurePipelineDiagnostics_{};
     bool editTimingsEnabled_ = false;
+    bool structureTimingsEnabled_ = false;
 };
 
 }  // namespace salsa::qt

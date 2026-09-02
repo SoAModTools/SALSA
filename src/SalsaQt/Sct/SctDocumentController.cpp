@@ -159,6 +159,12 @@ std::shared_ptr<const core::SctDocumentSnapshot> SctDocumentController::snapshot
     return state == nullptr ? nullptr : state->session->currentSnapshot();
 }
 
+std::shared_ptr<const core::SctSemanticEditorProjection>
+SctDocumentController::semanticProjection(const core::AssetLocator& locator) const {
+    const auto* state = findState(locator);
+    return state == nullptr ? nullptr : state->session->semanticProjection();
+}
+
 SctDocumentController::SourceStatus SctDocumentController::sourceStatus(
     const core::AssetLocator& locator) const {
     const auto found = documents_.find(locator.identityKey());
@@ -279,6 +285,66 @@ bool SctDocumentController::replaceMessage(
     return applyEditResult(*state, std::move(result), tr("Message edited."));
 }
 
+bool SctDocumentController::addVirtualElse(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId controller) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->addVirtualElse(controller), tr("Empty Else added."));
+}
+
+bool SctDocumentController::addVirtualCase(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId controller) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->addVirtualCase(controller), tr("Empty Switch case added."));
+}
+
+bool SctDocumentController::setVirtualCaseValue(
+    const core::AssetLocator& locator, const core::SctAuthoredArmId arm,
+    const std::optional<std::int32_t> value) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->setVirtualCaseValue(arm, value), tr("Switch case value changed."));
+}
+
+bool SctDocumentController::removeVirtualArm(
+    const core::AssetLocator& locator, const core::SctAuthoredArmId arm) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->removeVirtualArm(arm), tr("Empty semantic arm removed."));
+}
+
+bool SctDocumentController::insertInstructionIntoAuthoredArm(
+    const core::AssetLocator& locator, const core::SctAuthoredArmId arm,
+    const std::uint16_t opcode) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->insertInstructionIntoAuthoredArm(arm, opcode),
+        tr("Semantic arm realized."));
+}
+
+bool SctDocumentController::insertInstructionIntoStructuredArm(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId controller,
+    const spice_sct_prototype::SctStructuredArmKind arm,
+    const std::uint16_t opcode) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->insertInstructionIntoStructuredArm(controller, arm, opcode),
+        tr("Instruction inserted into semantic arm."));
+}
+
+bool SctDocumentController::deleteOnlyInstructionFromAuthoredArm(
+    const core::AssetLocator& locator, const core::SctAuthoredArmId arm,
+    const spice::sct::SctInstructionId instruction) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
+        state->session->deleteOnlyInstructionFromAuthoredArm(arm, instruction),
+        tr("Semantic arm returned to empty."));
+}
+
 bool SctDocumentController::undo(const core::AssetLocator& locator) {
     auto* state = findState(locator);
     if (state == nullptr || busy() || state->editBlocked) return false;
@@ -326,7 +392,8 @@ bool SctDocumentController::applyEditResult(
     emit documentChanged(key, SctDocumentUpdate{
         SctDocumentUpdateKind::RevisionTransition,
         result.snapshot,
-        result.transition});
+        result.transition,
+        state.session->semanticProjection()});
     if (editTimingsEnabled_) {
         qInfo().noquote() << QStringLiteral(
             "SALSA edit timing %1: preflight=%2us journal=%3us model-notification=%4us")
@@ -339,7 +406,7 @@ bool SctDocumentController::applyEditResult(
             static_cast<qulonglong>(result.suggestedSelection->id));
     }
     emit editCompleted(key, true, std::move(successMessage));
-    requestMaterialization(state);
+    if (result.changes.documentChanged) requestMaterialization(state);
     return true;
 }
 
@@ -389,13 +456,33 @@ void SctDocumentController::finishMaterialization(
             .arg(result.timings.validationMicroseconds)
             .arg(result.timings.analysisMicroseconds);
     }
+    if (structureTimingsEnabled_) {
+        std::size_t blocks = 0;
+        std::size_t regions = 0;
+        std::size_t issues = 0;
+        if (result.structuredControlFlow) {
+            for (const auto& section : result.structuredControlFlow->sections()) {
+                blocks += section.blocks.size();
+                regions += section.regions.size();
+                issues += section.issues.size();
+            }
+        }
+        qInfo().noquote() << QStringLiteral(
+            "SALSA structure analysis %1 generation %2: time=%3us sections=%4 blocks=%5 regions=%6 issues=%7")
+            .arg(QString::fromStdString(identityKey)).arg(generation)
+            .arg(result.timings.structureAnalysisMicroseconds)
+            .arg(result.structuredControlFlow
+                ? result.structuredControlFlow->sections().size() : 0u)
+            .arg(blocks).arg(regions).arg(issues);
+    }
 
     const bool currentTarget = result.targetRevision == state.session->workingRevision();
     if (!result.cancelled && result.succeeded()) {
         if (state.session->installVerifiedMaterialization(result) && currentTarget) {
             emit documentChanged(QString::fromStdString(identityKey), SctDocumentUpdate{
                 SctDocumentUpdateKind::VerifiedMaterialization,
-                state.session->verifiedSnapshot(), std::nullopt});
+                state.session->verifiedSnapshot(), std::nullopt,
+                state.session->semanticProjection()});
         }
     } else if (!result.cancelled && currentTarget) {
         state.editBlocked = true;
@@ -416,7 +503,8 @@ void SctDocumentController::finishMaterialization(
         if (rollback.has_value() && rollback->transition.has_value()) {
             emit documentChanged(QString::fromStdString(identityKey), SctDocumentUpdate{
                 SctDocumentUpdateKind::RevisionTransition,
-                rollback->snapshot, rollback->transition});
+                rollback->snapshot, rollback->transition,
+                state.session->semanticProjection()});
             state.requestedMaterializationRevision = rollback->revision;
             state.editBlocked = false;
             emit editCompleted(QString::fromStdString(identityKey), false,
@@ -442,6 +530,10 @@ void SctDocumentController::retireMaterialization(DocumentState& state) {
 
 void SctDocumentController::setEditTimingsEnabled(const bool enabled) noexcept {
     editTimingsEnabled_ = enabled;
+}
+
+void SctDocumentController::setStructureTimingsEnabled(const bool enabled) noexcept {
+    structureTimingsEnabled_ = enabled;
 }
 
 void SctDocumentController::onFinished() {
@@ -475,7 +567,8 @@ void SctDocumentController::onFinished() {
     }
     emit documentChanged(QString::fromStdString(key),
         SctDocumentUpdate{SctDocumentUpdateKind::Replacement,
-            documents_.at(key).session->currentSnapshot(), std::nullopt});
+            documents_.at(key).session->currentSnapshot(), std::nullopt,
+            documents_.at(key).session->semanticProjection()});
     emit focusRequested(QString::fromStdString(key));
     const auto message = operation == Operation::Reimporting
         ? tr("Text convention applied without rereading the source asset.")

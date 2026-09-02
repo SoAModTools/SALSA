@@ -209,6 +209,8 @@ TEST(SctEditSession, InsertUndoRedoAndBranchingPreserveAtomicHistory) {
 
     const auto inserted = session.insertInstructionAfter(original, 125);
     ASSERT_TRUE(inserted.committed);
+    EXPECT_TRUE(hasInvalidation(inserted.changes.invalidations,
+        SctDerivedAnalysisInvalidation::StructuredControlFlow));
     ASSERT_EQ(inserted.changes.instructions.size(), 1u);
     const auto insertedId = inserted.changes.instructions.front().instruction;
     EXPECT_NE(insertedId, original);
@@ -252,6 +254,8 @@ TEST(SctEditSession, DeletesUnreferencedInstructionsWithDeterministicSelectionAn
 
     const auto deleted = session.deleteInstruction(middle);
     ASSERT_TRUE(deleted.committed);
+    EXPECT_TRUE(hasInvalidation(deleted.changes.invalidations,
+        SctDerivedAnalysisInvalidation::StructuredControlFlow));
     ASSERT_TRUE(deleted.suggestedSelection.has_value());
     EXPECT_EQ(deleted.suggestedSelection->id, last.value());
     const auto section = baseline->document->sections.front().id;
@@ -306,6 +310,8 @@ TEST(SctEditSession, MovesOnlyWithinASectionAndPreservesInstructionIdentity) {
 
     const auto moved = session.moveInstruction(original[2].id, SctInstructionMoveDirection::Up);
     ASSERT_TRUE(moved.committed);
+    EXPECT_TRUE(hasInvalidation(moved.changes.invalidations,
+        SctDerivedAnalysisInvalidation::StructuredControlFlow));
     const auto section = baseline->document->sections.front().id;
     const auto reordered = session.workingState().instructionOrder(section);
     ASSERT_EQ(reordered.size(), 5u);
@@ -452,6 +458,8 @@ TEST(SctEditSession, ReplacesIndexedAndFooterMessagesAsAtomicRevisions) {
     const auto indexedEdit = session.replaceMessage(
         SctMessageTarget{indexed.id}, indexedDraft, SctMessageEditKind::Typing);
     ASSERT_TRUE(indexedEdit.committed);
+    EXPECT_FALSE(hasInvalidation(indexedEdit.changes.invalidations,
+        SctDerivedAnalysisInvalidation::StructuredControlFlow));
     ASSERT_EQ(indexedEdit.changes.modified.size(), 1u);
     EXPECT_EQ(indexedEdit.changes.modified.front(),
         (SctNavigationTarget{SctNavigationKind::String, indexed.id.value()}));
@@ -706,12 +714,15 @@ TEST(SctEditSession, MaterializesAndInstallsTheNewestWorkingRevision) {
     const auto materialized = SctDocumentMaterializer::materialize(*request);
     ASSERT_TRUE(materialized.succeeded());
     ASSERT_NE(materialized.analysis, nullptr);
+    ASSERT_NE(materialized.structuredControlFlow, nullptr);
     EXPECT_EQ(materialized.analysis->usage.opcodeUsages().size(), 4u);
     EXPECT_TRUE(materialized.analysis->importedSites.has_value());
     EXPECT_EQ(materialized.generation, 17u);
     EXPECT_TRUE(session.installVerifiedMaterialization(materialized));
     EXPECT_EQ(session.verifiedSnapshot()->document.get(), materialized.document.get());
     EXPECT_EQ(session.verifiedSnapshot()->analysis.get(), materialized.analysis.get());
+    EXPECT_EQ(session.verifiedSnapshot()->structuredControlFlow.get(),
+        materialized.structuredControlFlow.get());
     EXPECT_EQ(script(*session.verifiedSnapshot()).instructions.size(), 4u);
 }
 

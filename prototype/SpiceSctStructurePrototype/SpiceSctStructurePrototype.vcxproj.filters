@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Header Files"><UniqueIdentifier>{D7B90E4B-AE20-46C3-AF51-45414BF13608}</UniqueIdentifier></Filter>
+    <Filter Include="Source Files"><UniqueIdentifier>{17D1F2F6-B9E7-40C8-86E4-C0DDE2AA9460}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\SpiceSctStructurePrototype\SctStructuredControlFlow.h"><Filter>Header Files</Filter></ClInclude>
+    <ClCompile Include="src\SctStructuredControlFlow.cpp"><Filter>Source Files</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup><None Include="HANDOFF.md" /></ItemGroup>
+</Project>

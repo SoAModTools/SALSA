@@ -12,19 +12,19 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
-    <ProjectGuid>{A6772AC9-96E8-4282-B3BC-79B90F793160}</ProjectGuid>
-    <RootNamespace>SalsaTests</RootNamespace>
+    <ProjectGuid>{3D1A0E20-2B51-4C7A-9EB7-6544E784A630}</ProjectGuid>
+    <RootNamespace>SpiceSctStructurePrototype</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -33,7 +33,6 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
-    <Import Project="..\..\build\Salsa.Common.props" />
   </ImportGroup>
   <PropertyGroup>
     <OutDir>$(SalsaRepositoryRoot)bin\$(Platform)\$(Configuration)\</OutDir>
@@ -41,44 +40,29 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\googletest\googletest\include;$(SalsaRepositoryRoot)third-party\googletest\googletest;$(SalsaRepositoryRoot)prototype\SpiceSctStructurePrototype\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(SalsaRepositoryRoot)third-party\SPICE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
-    <Link>
-      <SubSystem>Console</SubSystem>
-    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc" />
-    <ClCompile Include="run_tests.cpp" />
-    <ClCompile Include="test_application_info.cpp" />
-    <ClCompile Include="test_asset_catalog_diff.cpp" />
-    <ClCompile Include="test_asset_locator.cpp" />
-    <ClCompile Include="test_hashing.cpp" />
-    <ClCompile Include="test_local_game_project.cpp" />
-    <ClCompile Include="test_patch_envelope_persistence.cpp" />
-    <ClCompile Include="test_result.cpp" />
-    <ClCompile Include="test_revision_history.cpp" />
-    <ClCompile Include="test_sct_edit_session.cpp" />
-    <ClCompile Include="test_sct_document_inspection.cpp" />
-    <ClCompile Include="test_sct_message_authoring.cpp" />
-    <ClCompile Include="test_sct_structured_control_flow.cpp" />
-    <ClCompile Include="test_sct_structured_authoring.cpp" />
+    <ClInclude Include="include\SpiceSctStructurePrototype\SctStructuredControlFlow.h" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\third-party\SPICE\Compression\Compression.vcxproj">
-      <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\..\third-party\SPICE\SpiceRoot\SpiceRoot.vcxproj">
-      <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
-    </ProjectReference>
+    <ClCompile Include="src\SctStructuredControlFlow.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="HANDOFF.md" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\third-party\SPICE\SpiceSCT\SpiceSCT.vcxproj">
       <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\..\src\SalsaCore\SalsaCore.vcxproj">
-      <Project>{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\..\prototype\SpiceSctStructurePrototype\SpiceSctStructurePrototype.vcxproj">
-      <Project>{3D1A0E20-2B51-4C7A-9EB7-6544E784A630}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

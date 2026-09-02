@@ -37,6 +37,11 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     target.modified.insert(target.modified.end(),
         std::make_move_iterator(source.modified.begin()),
         std::make_move_iterator(source.modified.end()));
+    target.structuredAuthoring.insert(target.structuredAuthoring.end(),
+        std::make_move_iterator(source.structuredAuthoring.begin()),
+        std::make_move_iterator(source.structuredAuthoring.end()));
+    target.invalidations = target.invalidations | source.invalidations;
+    target.documentChanged = target.documentChanged || source.documentChanged;
 }
 
 [[nodiscard]] SctInstructionStructuralChange reversed(
@@ -243,6 +248,10 @@ std::optional<SctOperationIssue> SctWorkingState::applyPrimitive(
             change.afterSemantics = semantics;
             forward.instructions.push_back(change);
             reverseChanges.instructions.push_back(reversed(change));
+            forward.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            reverseChanges.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            forward.documentChanged = true;
+            reverseChanges.documentChanged = true;
             inverse = SctDeleteInstructionOperation{typed.instruction.id};
             return std::nullopt;
         } else if constexpr (std::is_same_v<T, SctDeleteInstructionOperation>) {
@@ -267,6 +276,10 @@ std::optional<SctOperationIssue> SctWorkingState::applyPrimitive(
             change.beforeSemantics = semantics;
             forward.instructions.push_back(change);
             reverseChanges.instructions.push_back(reversed(change));
+            forward.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            reverseChanges.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            forward.documentChanged = true;
+            reverseChanges.documentChanged = true;
             inverse = SctInsertInstructionAfterOperation{*before->after, std::move(removed)};
             return std::nullopt;
         } else if constexpr (std::is_same_v<T, SctRelocateInstructionAfterOperation>) {
@@ -306,7 +319,50 @@ std::optional<SctOperationIssue> SctWorkingState::applyPrimitive(
             change.afterSemantics = found->second.semantics;
             forward.instructions.push_back(change);
             reverseChanges.instructions.push_back(reversed(change));
+            forward.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            reverseChanges.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            forward.documentChanged = true;
+            reverseChanges.documentChanged = true;
             inverse = SctRelocateInstructionAfterOperation{typed.instruction, *before->after};
+            return std::nullopt;
+        } else if constexpr (std::is_same_v<T, SctReplaceInstructionOperation>) {
+            const auto found = instructions_.find(typed.instruction);
+            if (found == instructions_.end())
+                return issue("InstructionNotFound", "The replaced instruction does not exist.",
+                    instructionTarget(typed.instruction));
+            if (typed.replacement.id != typed.instruction)
+                return issue("InstructionReplacementIdMismatch",
+                    "An instruction replacement must retain its stable ID.",
+                    instructionTarget(typed.instruction));
+            if (typed.replacement.opcode != found->second.value.opcode)
+                return issue("InstructionReplacementOpcodeMismatch",
+                    "An instruction replacement cannot change the opcode.",
+                    instructionTarget(typed.instruction));
+            auto previous = found->second.value;
+            auto previousSemantics = found->second.semantics;
+            auto nextSemantics = spice::sct::SctInstructionSemanticAnalyzer::build(
+                typed.replacement);
+            removeContribution(previousSemantics);
+            found->second.value = typed.replacement;
+            found->second.semantics = nextSemantics;
+            addContribution(nextSemantics);
+            SctInstructionStructuralChange change;
+            change.instruction = typed.instruction;
+            change.before = placement(typed.instruction);
+            change.after = change.before;
+            change.beforeValue = previous;
+            change.afterValue = typed.replacement;
+            change.beforeSemantics = previousSemantics;
+            change.afterSemantics = nextSemantics;
+            forward.instructions.push_back(change);
+            reverseChanges.instructions.push_back(reversed(change));
+            forward.modified.push_back(instructionTarget(typed.instruction));
+            reverseChanges.modified.push_back(instructionTarget(typed.instruction));
+            forward.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            reverseChanges.invalidations = SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            forward.documentChanged = true;
+            reverseChanges.documentChanged = true;
+            inverse = SctReplaceInstructionOperation{typed.instruction, std::move(previous)};
             return std::nullopt;
         } else {
             auto* current = const_cast<spice::sct::SctMessage*>(message(typed.target));
@@ -318,6 +374,8 @@ std::optional<SctOperationIssue> SctWorkingState::applyPrimitive(
             const auto target = messageNavigation(typed.target);
             forward.modified.push_back(target);
             reverseChanges.modified.push_back(target);
+            forward.documentChanged = true;
+            reverseChanges.documentChanged = true;
             inverse = SctReplaceMessageOperation{typed.target, std::move(previous)};
             return std::nullopt;
         }

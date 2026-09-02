@@ -225,10 +225,15 @@ SctLoadResult SctDocumentLoader::materialize(
     auto analysis = std::make_shared<const spice::sct::SctDocumentAnalysis>(
         spice::sct::SctDocumentAnalysis::build(*document,
             evidence ? &*evidence : nullptr));
+    auto structuredControlFlow = std::make_shared<
+        const spice_sct_prototype::SctStructuredControlFlowAnalysis>(
+        spice_sct_prototype::SctStructuredControlFlowAnalysis::build(
+            *document, *analysis));
     auto snapshot = std::make_shared<SctDocumentSnapshot>(SctDocumentSnapshot{
         std::move(provenance), document, std::move(analysis),
         assessment.readiness,
         std::move(diagnostics),
+        std::move(structuredControlFlow),
     });
     result.document = std::move(snapshot);
     return result;

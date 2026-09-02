@@ -5,6 +5,7 @@
 #include "SalsaCore/Sct/SctDocumentMaterializer.h"
 #include "SalsaCore/Sct/SctMessageAuthoring.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
+#include "SalsaCore/Sct/SctStructuredAuthoring.h"
 #include "SalsaCore/Sct/SctWorkingState.h"
 
 #include "SpiceSCT/SctDocument.h"
@@ -85,6 +86,21 @@ public:
         const SctMessageTarget& target,
         const SctMessageDraft& draft,
         SctMessageEditKind editKind);
+    [[nodiscard]] SctEditResult addVirtualElse(
+        spice::sct::SctInstructionId controller);
+    [[nodiscard]] SctEditResult addVirtualCase(
+        spice::sct::SctInstructionId controller);
+    [[nodiscard]] SctEditResult setVirtualCaseValue(
+        SctAuthoredArmId arm, std::optional<std::int32_t> value);
+    [[nodiscard]] SctEditResult removeVirtualArm(SctAuthoredArmId arm);
+    [[nodiscard]] SctEditResult insertInstructionIntoAuthoredArm(
+        SctAuthoredArmId arm, std::uint16_t opcode);
+    [[nodiscard]] SctEditResult deleteOnlyInstructionFromAuthoredArm(
+        SctAuthoredArmId arm, spice::sct::SctInstructionId instruction);
+    [[nodiscard]] SctEditResult insertInstructionIntoStructuredArm(
+        spice::sct::SctInstructionId controller,
+        spice_sct_prototype::SctStructuredArmKind arm,
+        std::uint16_t opcode);
 
     [[nodiscard]] std::optional<SctEditResult> undo();
     [[nodiscard]] std::optional<SctEditResult> redo();
@@ -111,6 +127,9 @@ public:
     [[nodiscard]] bool isActiveRevision(RevisionId revision) const;
 
     [[nodiscard]] const SctWorkingState& workingState() const noexcept;
+    [[nodiscard]] const SctStructuredAuthoringState& structuredAuthoring() const noexcept;
+    [[nodiscard]] std::shared_ptr<const SctSemanticEditorProjection>
+        semanticProjection() const noexcept;
 
     [[nodiscard]] static const std::vector<SctInsertableOpcode>& insertableOpcodes();
 
@@ -124,6 +143,8 @@ private:
         RevisionId parent{};
         SctSemanticOperationBatch forward{};
         SctSemanticOperationBatch inverse{};
+        SctStructuredAuthoringOperationBatch authoringForward{};
+        SctStructuredAuthoringOperationBatch authoringInverse{};
         SctEditChangeSet forwardChanges{};
         SctEditChangeSet reverseChanges{};
         SelectionHints selections{};
@@ -137,14 +158,18 @@ private:
     [[nodiscard]] SctEditResult failure(std::vector<SctPipelineDiagnostic> diagnostics) const;
     [[nodiscard]] SctEditResult commit(
         SctSemanticOperationBatch operation,
+        SctStructuredAuthoringOperationBatch authoringOperation,
         std::string description,
         SelectionHints selections,
         std::uint64_t preflightMicroseconds = 0);
     void pruneMaterializationCheckpoints();
+    void rebuildSemanticProjection();
 
     std::shared_ptr<const SctDocumentSnapshot> baselineSnapshot_;
     RevisionHistory<RevisionDelta> history_;
     SctWorkingState workingState_;
+    SctStructuredAuthoringState structuredAuthoring_{};
+    std::shared_ptr<const SctSemanticEditorProjection> semanticProjection_{};
     std::shared_ptr<const spice::sct::SctDocument> materializedDocument_;
     std::shared_ptr<const SctDocumentSnapshot> currentSnapshot_;
     bool structurallyValid_ = false;

@@ -11,6 +11,7 @@
 #include "SpiceSCT/SctModel.h"
 #include "SpiceSCT/SctTextContract.h"
 #include "SpiceSCT/SctTextEvidence.h"
+#include "SpiceSctStructurePrototype/SctStructuredControlFlow.h"
 
 #include <cstdint>
 #include <memory>
@@ -82,6 +83,8 @@ struct SctDocumentSnapshot final {
     std::shared_ptr<const spice::sct::SctDocumentAnalysis> analysis;
     spice::sct::SctDocumentReadiness readiness = spice::sct::SctDocumentReadiness::Unavailable;
     std::vector<SctPipelineDiagnostic> diagnostics;
+    std::shared_ptr<const spice_sct_prototype::SctStructuredControlFlowAnalysis>
+        structuredControlFlow;
 };
 
 struct SctLoadResult final {

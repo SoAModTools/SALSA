@@ -35,5 +35,8 @@
     <ClCompile Include="test_revision_history.cpp"><Filter>History</Filter></ClCompile>
     <ClCompile Include="test_sct_edit_session.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_sct_document_inspection.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="test_sct_message_authoring.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="test_sct_structured_control_flow.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="test_sct_structured_authoring.cpp"><Filter>SCT</Filter></ClCompile>
   </ItemGroup>
 </Project>

@@ -20,6 +20,7 @@
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QItemSelectionModel>
+#include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -41,6 +42,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <type_traits>
@@ -255,6 +257,67 @@ void MainWindow::buildUi() {
             statusBar()->showMessage(enabled
                 ? tr("SCT edit timing logging enabled.")
                 : tr("SCT edit timing logging disabled."), 5000);
+        });
+    developerMenu_->addSeparator();
+    showStructuredBasicBlocksAction_ = developerMenu_->addAction(
+        tr("Show Semantic Basic Blocks"));
+    showStructuredBasicBlocksAction_->setCheckable(true);
+    showStructuredBasicBlocksAction_->setStatusTip(
+        tr("Show derived basic-block wrapper rows in Semantic views."));
+    connect(showStructuredBasicBlocksAction_, &QAction::toggled, this,
+        [this](const bool enabled) {
+            showStructuredBasicBlocks_ = enabled;
+            for (int index = 1; index < tabs_->count(); ++index) {
+                if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index))) {
+                    widget->setStructuredDeveloperOptions(
+                        enabled, showRejectedStructureEvidence_,
+                        showSemanticControlFlowInstructions_);
+                }
+            }
+        });
+    showRejectedStructureEvidenceAction_ = developerMenu_->addAction(
+        tr("Show Rejected Structure Evidence"));
+    showRejectedStructureEvidenceAction_->setCheckable(true);
+    showRejectedStructureEvidenceAction_->setStatusTip(
+        tr("Show conservative structure-analysis issue rows and evidence."));
+    connect(showRejectedStructureEvidenceAction_, &QAction::toggled, this,
+        [this](const bool enabled) {
+            showRejectedStructureEvidence_ = enabled;
+            for (int index = 1; index < tabs_->count(); ++index) {
+                if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index))) {
+                    widget->setStructuredDeveloperOptions(
+                        showStructuredBasicBlocks_, enabled,
+                        showSemanticControlFlowInstructions_);
+                }
+            }
+        });
+    showSemanticControlFlowInstructionsAction_ = developerMenu_->addAction(
+        tr("Show Semantic Control-Flow Instructions"));
+    showSemanticControlFlowInstructionsAction_->setCheckable(true);
+    showSemanticControlFlowInstructionsAction_->setStatusTip(
+        tr("Reveal managed and inferred jump scaffolding in the Semantic view."));
+    connect(showSemanticControlFlowInstructionsAction_, &QAction::toggled, this,
+        [this](const bool enabled) {
+            showSemanticControlFlowInstructions_ = enabled;
+            for (int index = 1; index < tabs_->count(); ++index) {
+                if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index))) {
+                    widget->setStructuredDeveloperOptions(showStructuredBasicBlocks_,
+                        showRejectedStructureEvidence_, enabled);
+                }
+            }
+        });
+    logStructureAnalysisAction_ = developerMenu_->addAction(
+        tr("Log Structure Analysis Timings"));
+    logStructureAnalysisAction_->setCheckable(true);
+    logStructureAnalysisAction_->setStatusTip(
+        tr("Log structured-control-flow timings and result statistics."));
+    connect(logStructureAnalysisAction_, &QAction::toggled, this,
+        [this](const bool enabled) {
+            structureAnalysisTimingsEnabled_ = enabled;
+            documentController_->setStructureTimingsEnabled(enabled);
+            statusBar()->showMessage(enabled
+                ? tr("Structure-analysis timing logging enabled.")
+                : tr("Structure-analysis timing logging disabled."), 5000);
         });
 #endif
 
@@ -785,6 +848,9 @@ void MainWindow::syncDocument(
     const bool createdWidget = widget == nullptr;
     if (createdWidget) {
         widget = new SctDocumentWidget(*found, tabs_);
+        widget->setStructuredDeveloperOptions(
+            showStructuredBasicBlocks_, showRejectedStructureEvidence_,
+            showSemanticControlFlowInstructions_);
         tabs_->addTab(widget, QString::fromStdWString(found->path().filename().wstring()));
         connect(widget, &SctDocumentWidget::textConventionRequested, this,
             [this, widget](const QString&, const int convention) {
@@ -816,6 +882,59 @@ void MainWindow::syncDocument(
             });
         connect(widget, &SctDocumentWidget::editMessageRequested,
             this, [this](const QString&) { editSelectedMessage(); });
+        connect(widget, &SctDocumentWidget::addElseRequested,
+            this, [this, widget](const QString&, const qulonglong controller) {
+                (void)documentController_->addVirtualElse(widget->locator(),
+                    spice::sct::SctInstructionId(controller));
+            });
+        connect(widget, &SctDocumentWidget::addCaseRequested,
+            this, [this, widget](const QString&, const qulonglong controller) {
+                (void)documentController_->addVirtualCase(widget->locator(),
+                    spice::sct::SctInstructionId(controller));
+            });
+        connect(widget, &SctDocumentWidget::setCaseValueRequested,
+            this, [this, widget](const QString&, const qulonglong arm) {
+                bool accepted = false;
+                const auto value = QInputDialog::getInt(this, tr("Switch Case Value"),
+                    tr("Signed case value:"), 0,
+                    (std::numeric_limits<int>::lowest)(),
+                    (std::numeric_limits<int>::max)(), 1, &accepted);
+                if (accepted) {
+                    (void)documentController_->setVirtualCaseValue(widget->locator(),
+                        core::SctAuthoredArmId{arm}, static_cast<std::int32_t>(value));
+                }
+            });
+        connect(widget, &SctDocumentWidget::removeSemanticArmRequested,
+            this, [this, widget](const QString&, const qulonglong arm) {
+                (void)documentController_->removeVirtualArm(
+                    widget->locator(), core::SctAuthoredArmId{arm});
+            });
+        connect(widget, &SctDocumentWidget::insertIntoSemanticArmRequested,
+            this, [this, widget](const QString&, const qulonglong arm) {
+                const auto opcode = chooseInsertableOpcode(false);
+                if (opcode) {
+                    (void)documentController_->insertInstructionIntoAuthoredArm(
+                        widget->locator(), core::SctAuthoredArmId{arm}, *opcode);
+                }
+            });
+        connect(widget, &SctDocumentWidget::insertIntoStructuredArmRequested,
+            this, [this, widget](const QString&, const qulonglong controller,
+                const int armKind) {
+                const auto opcode = chooseInsertableOpcode(false);
+                if (opcode) {
+                    (void)documentController_->insertInstructionIntoStructuredArm(
+                        widget->locator(), spice::sct::SctInstructionId(controller),
+                        static_cast<spice_sct_prototype::SctStructuredArmKind>(armKind),
+                        *opcode);
+                }
+            });
+        connect(widget, &SctDocumentWidget::returnSemanticArmToEmptyRequested,
+            this, [this, widget](const QString&, const qulonglong arm,
+                const qulonglong instruction) {
+                (void)documentController_->deleteOnlyInstructionFromAuthoredArm(
+                    widget->locator(), core::SctAuthoredArmId{arm},
+                    spice::sct::SctInstructionId(instruction));
+            });
     }
     const auto snapshot = update.snapshot != nullptr
         ? update.snapshot : documentController_->snapshot(*found);
@@ -823,9 +942,14 @@ void MainWindow::syncDocument(
     const bool textOnly = !createdWidget && isTextOnlyTransition(update);
     const bool instructionDelta = !createdWidget
         && isIncrementalInstructionTransition(update);
+    const bool authoringOnly = !createdWidget && update.transition
+        && !update.transition->changes.structuredAuthoring.empty()
+        && !update.transition->changes.documentChanged;
     bool incrementalInstructionApplied = false;
     if (update.kind == SctDocumentUpdateKind::VerifiedMaterialization) {
         widget->installVerifiedSnapshot(snapshot, sourceStatus);
+    } else if (authoringOnly) {
+        widget->setSourceStatus(sourceStatus);
     } else if (createdWidget || update.kind == SctDocumentUpdateKind::Replacement
         || (update.kind == SctDocumentUpdateKind::RevisionTransition
             && !textOnly && !instructionDelta)) {
@@ -839,6 +963,8 @@ void MainWindow::syncDocument(
     } else {
         widget->setSourceStatus(sourceStatus);
     }
+    widget->setSemanticProjection(update.semanticProjection != nullptr
+        ? update.semanticProjection : documentController_->semanticProjection(*found));
     if (!messageEditor_->isCommitting() && messageEditor_->boundLocator().has_value()
         && *messageEditor_->boundLocator() == *found
         && messageEditor_->boundTarget().has_value()

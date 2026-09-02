@@ -205,6 +205,7 @@ TEST(SctDocumentLoader, LoadsNoTextDocumentWithoutInventingAConvention) {
     EXPECT_EQ(loaded.document->provenance->textSelectionOrigin, SctTextSelectionOrigin::None);
     ASSERT_TRUE(loaded.document->provenance->importEvidence.has_value());
     ASSERT_NE(loaded.document->analysis, nullptr);
+    ASSERT_NE(loaded.document->structuredControlFlow, nullptr);
     EXPECT_TRUE(loaded.document->analysis->importedSites.has_value());
     ASSERT_EQ(loaded.document->document->sections.size(), 1u);
 }

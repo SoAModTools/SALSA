@@ -59,6 +59,7 @@
     <ClCompile Include="Sct\SctDocumentController.cpp" />
     <ClCompile Include="Sct\SctDocumentWidget.cpp" />
     <ClCompile Include="Sct\SctOutlineModel.cpp" />
+    <ClCompile Include="Sct\SctStructuredOutlineModel.cpp" />
     <ClCompile Include="Sct\SctMessageEditorWidget.cpp" />
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp" />
     <ClCompile Include="Workspace\DiagnosticsModel.cpp" />
@@ -69,6 +70,7 @@
     <QtMoc Include="Sct\SctDocumentController.h" />
     <QtMoc Include="Sct\SctDocumentWidget.h" />
     <QtMoc Include="Sct\SctOutlineModel.h" />
+    <QtMoc Include="Sct\SctStructuredOutlineModel.h" />
     <QtMoc Include="Sct\SctMessageEditorWidget.h" />
     <QtMoc Include="Sct\SctSemanticNavigatorWidget.h" />
   </ItemGroup>
@@ -90,6 +92,9 @@
     </ProjectReference>
     <ProjectReference Include="..\SalsaCore\SalsaCore.vcxproj">
       <Project>{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\..\prototype\SpiceSctStructurePrototype\SpiceSctStructurePrototype.vcxproj">
+      <Project>{3D1A0E20-2B51-4C7A-9EB7-6544E784A630}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

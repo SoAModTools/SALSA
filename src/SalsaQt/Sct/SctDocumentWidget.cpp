@@ -20,6 +20,7 @@
 #include <QTextCursor>
 #include <QTextEdit>
 #include <QTextFormat>
+#include <QTabWidget>
 #include <QTreeWidget>
 #include <QTreeView>
 #include <QVBoxLayout>
@@ -94,7 +95,15 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     layout->addLayout(conventionRow);
 
     auto* splitter = new QSplitter(this);
-    outline_ = new QTreeView(splitter);
+    auto* outlinePane = new QWidget(splitter);
+    auto* outlineLayout = new QVBoxLayout(outlinePane);
+    outlineLayout->setContentsMargins(0, 0, 0, 0);
+    outlineTabs_ = new QTabWidget(outlinePane);
+
+    auto* physicalTab = new QWidget(outlineTabs_);
+    auto* physicalLayout = new QVBoxLayout(physicalTab);
+    physicalLayout->setContentsMargins(0, 0, 0, 0);
+    outline_ = new QTreeView(physicalTab);
     outlineModel_ = new SctOutlineModel(outline_);
     outline_->setModel(outlineModel_);
     outline_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -102,6 +111,27 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     outline_->header()->setStretchLastSection(false);
     outline_->header()->resizeSection(0, 420);
     outline_->header()->resizeSection(1, 180);
+    physicalLayout->addWidget(outline_);
+    outlineTabs_->addTab(physicalTab, tr("Physical"));
+
+    auto* structuredTab = new QWidget(outlineTabs_);
+    auto* structuredLayout = new QVBoxLayout(structuredTab);
+    structuredLayout->setContentsMargins(0, 0, 0, 0);
+    structuredBanner_ = new QLabel(structuredTab);
+    structuredBanner_->setWordWrap(true);
+    structuredBanner_->hide();
+    structuredOutline_ = new QTreeView(structuredTab);
+    structuredOutlineModel_ = new SctStructuredOutlineModel(structuredOutline_);
+    structuredOutline_->setModel(structuredOutlineModel_);
+    structuredOutline_->setContextMenuPolicy(Qt::CustomContextMenu);
+    structuredOutline_->header()->setSectionResizeMode(QHeaderView::Interactive);
+    structuredOutline_->header()->setStretchLastSection(false);
+    structuredOutline_->header()->resizeSection(0, 420);
+    structuredOutline_->header()->resizeSection(1, 180);
+    structuredLayout->addWidget(structuredBanner_);
+    structuredLayout->addWidget(structuredOutline_, 1);
+    outlineTabs_->addTab(structuredTab, tr("Semantic"));
+    outlineLayout->addWidget(outlineTabs_);
 
     auto* details = new QWidget(splitter);
     auto* detailsLayout = new QVBoxLayout(details);
@@ -127,7 +157,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     detailsLayout->addWidget(subtitle_);
     detailsLayout->addWidget(properties_, 1);
     detailsLayout->addWidget(preview_);
-    splitter->addWidget(outline_);
+    splitter->addWidget(outlinePane);
     splitter->addWidget(details);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 2);
@@ -142,6 +172,155 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             emit becameActive(QString::fromStdString(locator_.identityKey()));
             emit editContextChanged();
         });
+    connect(structuredOutline_->selectionModel(), &QItemSelectionModel::currentChanged,
+        this, [this](const QModelIndex& current) {
+            const auto target = structuredOutlineModel_->target(current);
+            if (!target) return;
+            currentTarget_ = *target;
+            showTarget(*target);
+            const auto physical = outlineModel_->indexForTarget(*target);
+            if (physical.isValid()) {
+                const QSignalBlocker blocker(outline_->selectionModel());
+                outline_->setCurrentIndex(physical);
+            }
+            emit becameActive(QString::fromStdString(locator_.identityKey()));
+            emit editContextChanged();
+        });
+    connect(structuredOutline_, &QTreeView::activated, this,
+        [this](const QModelIndex& current) {
+            const auto target = structuredOutlineModel_->target(current);
+            if (!target) return;
+            currentTarget_ = *target;
+            showTarget(*target);
+        });
+    connect(structuredOutline_, &QTreeView::customContextMenuRequested,
+        this, [this](const QPoint& position) {
+            const auto index = structuredOutline_->indexAt(position);
+            const auto target = structuredOutlineModel_->target(index);
+            const auto context = structuredOutlineModel_->editContext(index);
+            QMenu menu(this);
+            auto* showPhysical = menu.addAction(tr("Show in Physical Outline"));
+            showPhysical->setEnabled(target.has_value());
+            connect(showPhysical, &QAction::triggered, this, [this, target] {
+                if (!target) return;
+                outlineTabs_->setCurrentIndex(0);
+                selectTarget(*target);
+            });
+            if (context && context->verified && context->controller) {
+                menu.addSeparator();
+                if (context->regionKind
+                    == spice_sct_prototype::SctStructuredRegionKind::If
+                    || context->regionKind
+                        == spice_sct_prototype::SctStructuredRegionKind::IfElse) {
+                    auto* insertThen = menu.addAction(tr("Insert Instruction into Then..."));
+                    connect(insertThen, &QAction::triggered, this,
+                        [this, controller = *context->controller] {
+                            emit insertIntoStructuredArmRequested(
+                                QString::fromStdString(locator_.identityKey()),
+                                controller.value(), static_cast<int>(
+                                    spice_sct_prototype::SctStructuredArmKind::Then));
+                        });
+                }
+                if (context->regionKind
+                    == spice_sct_prototype::SctStructuredRegionKind::While
+                    || context->regionKind
+                        == spice_sct_prototype::SctStructuredRegionKind::NaturalLoop) {
+                    auto* insertBody = menu.addAction(tr("Insert Instruction into Body..."));
+                    connect(insertBody, &QAction::triggered, this,
+                        [this, controller = *context->controller] {
+                            emit insertIntoStructuredArmRequested(
+                                QString::fromStdString(locator_.identityKey()),
+                                controller.value(), static_cast<int>(
+                                    spice_sct_prototype::SctStructuredArmKind::LoopBody));
+                        });
+                }
+                if (context->regionKind
+                    == spice_sct_prototype::SctStructuredRegionKind::If) {
+                    auto* addElse = menu.addAction(tr("Add Empty Else"));
+                    connect(addElse, &QAction::triggered, this,
+                        [this, controller = *context->controller] {
+                            emit addElseRequested(
+                                QString::fromStdString(locator_.identityKey()),
+                                controller.value());
+                        });
+                }
+                if (context->regionKind
+                    == spice_sct_prototype::SctStructuredRegionKind::Switch) {
+                    auto* addCase = menu.addAction(tr("Add Empty Case"));
+                    connect(addCase, &QAction::triggered, this,
+                        [this, controller = *context->controller] {
+                            emit addCaseRequested(
+                                QString::fromStdString(locator_.identityKey()),
+                                controller.value());
+                        });
+                }
+            }
+            if (context && context->authoredArm) {
+                menu.addSeparator();
+                if (context->armKind
+                    == spice_sct_prototype::SctStructuredArmKind::SwitchCase) {
+                    auto* setValue = menu.addAction(tr("Set Case Value..."));
+                    connect(setValue, &QAction::triggered, this,
+                        [this, arm = *context->authoredArm] {
+                            emit setCaseValueRequested(
+                                QString::fromStdString(locator_.identityKey()), arm.value);
+                        });
+                }
+                auto* insert = menu.addAction(tr("Insert First Instruction..."));
+                insert->setEnabled(context->virtualArm && !context->needsValue);
+                connect(insert, &QAction::triggered, this,
+                    [this, arm = *context->authoredArm] {
+                        emit insertIntoSemanticArmRequested(
+                            QString::fromStdString(locator_.identityKey()), arm.value);
+                    });
+                auto* remove = menu.addAction(tr("Remove Empty Arm"));
+                remove->setEnabled(context->virtualArm);
+                connect(remove, &QAction::triggered, this,
+                    [this, arm = *context->authoredArm] {
+                        emit removeSemanticArmRequested(
+                            QString::fromStdString(locator_.identityKey()), arm.value);
+                    });
+                if (context->canReturnToEmpty && target
+                    && target->kind == core::SctNavigationKind::Instruction) {
+                    auto* returnToEmpty = menu.addAction(tr("Delete and Keep Empty Arm"));
+                    connect(returnToEmpty, &QAction::triggered, this,
+                        [this, arm = *context->authoredArm, instruction = target->id] {
+                            emit returnSemanticArmToEmptyRequested(
+                                QString::fromStdString(locator_.identityKey()),
+                                arm.value, instruction);
+                        });
+                }
+            }
+            if (context && !context->authoredArm && context->verified
+                && context->controller && context->armKind
+                && *context->armKind != spice_sct_prototype::SctStructuredArmKind::Then
+                && *context->armKind != spice_sct_prototype::SctStructuredArmKind::LoopBody) {
+                auto* insert = menu.addAction(tr("Insert Instruction into Arm..."));
+                connect(insert, &QAction::triggered, this,
+                    [this, controller = *context->controller, arm = *context->armKind] {
+                        emit insertIntoStructuredArmRequested(
+                            QString::fromStdString(locator_.identityKey()),
+                            controller.value(), static_cast<int>(arm));
+                    });
+            }
+            menu.exec(structuredOutline_->viewport()->mapToGlobal(position));
+        });
+    connect(outlineTabs_, &QTabWidget::currentChanged, this, [this](const int index) {
+        if (!currentTarget_) {
+            emit editContextChanged();
+            return;
+        }
+        auto* view = index == 0 ? outline_ : structuredOutline_;
+        const auto found = index == 0
+            ? outlineModel_->indexForTarget(*currentTarget_)
+            : structuredOutlineModel_->indexForTarget(*currentTarget_);
+        if (found.isValid()) {
+            expandAncestors(*view, found);
+            view->setCurrentIndex(found);
+            view->scrollTo(found);
+        }
+        emit editContextChanged();
+    });
     connect(outline_, &QTreeView::activated, this,
         [this](const QModelIndex& modelIndex) {
             if (!modelIndex.isValid() || !snapshot_) return;
@@ -283,6 +462,7 @@ void SctDocumentWidget::setSnapshot(
         }
     }
     rebuildOutline();
+    rebuildStructuredOutline(true);
 }
 
 void SctDocumentWidget::installVerifiedSnapshot(
@@ -295,6 +475,10 @@ void SctDocumentWidget::installVerifiedSnapshot(
         rebuildOutline();
         outlineReconciliationPending_ = false;
     }
+    structuredOutlinePending_ = false;
+    structuredBanner_->hide();
+    structuredOutline_->setEnabled(true);
+    rebuildStructuredOutline(false);
     if (currentTarget_.has_value()) showTarget(*currentTarget_);
 }
 
@@ -304,6 +488,10 @@ void SctDocumentWidget::applyTextOnlySnapshot(
     const core::SctEditChangeSet& changes) {
     Q_UNUSED(snapshot);
     updateSourceBanner(sourceStatus);
+    if (core::hasInvalidation(changes.invalidations,
+            core::SctDerivedAnalysisInvalidation::StructuredControlFlow)) {
+        markStructuredOutlinePending();
+    }
     if (!currentTarget_.has_value()) return;
     const bool selectedChanged = std::ranges::any_of(
         changes.modified, [this](const auto target) {
@@ -323,6 +511,10 @@ bool SctDocumentWidget::applyInstructionChanges(
     if (!outlineModel_->apply(changes)) {
         outlineReconciliationPending_ = true;
         return false;
+    }
+    if (core::hasInvalidation(changes.invalidations,
+            core::SctDerivedAnalysisInvalidation::StructuredControlFlow)) {
+        markStructuredOutlinePending();
     }
 
     const auto selected = retained.has_value()
@@ -355,6 +547,9 @@ void SctDocumentWidget::selectTarget(
 bool SctDocumentWidget::selectLocation(
     const core::SctInspectionLocation& location,
     const bool reveal) {
+    // Diagnostic, property, and semantic navigation always reveal the
+    // authoritative physical representation.
+    outlineTabs_->setCurrentIndex(0);
     const auto target = core::owningNavigationTarget(location);
     const auto found = outlineModel_->indexForTarget(target);
     if (!found.isValid()) return false;
@@ -384,12 +579,30 @@ void SctDocumentWidget::setEditingEnabled(const bool enabled) {
     emit editContextChanged();
 }
 
+void SctDocumentWidget::setSemanticProjection(
+    std::shared_ptr<const core::SctSemanticEditorProjection> projection) {
+    semanticProjection_ = std::move(projection);
+    rebuildStructuredOutline(false);
+}
+
+void SctDocumentWidget::setStructuredDeveloperOptions(
+    const bool showBasicBlocks, const bool showRejectedEvidence,
+    const bool showControlFlowInstructions) {
+    showStructuredBasicBlocks_ = showBasicBlocks;
+    showRejectedStructureEvidence_ = showRejectedEvidence;
+    showSemanticControlFlowInstructions_ = showControlFlowInstructions;
+    structuredOutlineModel_->setDeveloperOptions(
+        showBasicBlocks, showRejectedEvidence, showControlFlowInstructions);
+    structuredOutline_->collapseAll();
+}
+
 std::optional<core::SctNavigationTarget> SctDocumentWidget::currentTarget() const noexcept {
     return currentTarget_;
 }
 
 std::optional<SctDocumentWidget::InstructionInsertionContext>
 SctDocumentWidget::insertionContext() const {
+    if (outlineTabs_->currentIndex() != 0) return std::nullopt;
     if (!currentTarget_.has_value()) return std::nullopt;
     if (currentTarget_->kind == core::SctNavigationKind::Instruction) {
         const auto instruction = spice::sct::SctInstructionId(currentTarget_->id);
@@ -403,6 +616,7 @@ SctDocumentWidget::insertionContext() const {
 }
 
 bool SctDocumentWidget::canDeleteSelected() const {
+    if (outlineTabs_->currentIndex() != 0) return false;
     const auto instruction = selectedInstruction();
     if (!instruction.has_value()) return false;
     const auto* existing = outlineModel_->instruction(*instruction);
@@ -411,6 +625,7 @@ bool SctDocumentWidget::canDeleteSelected() const {
 }
 
 std::optional<spice::sct::SctInstructionId> SctDocumentWidget::selectedInstruction() const {
+    if (outlineTabs_->currentIndex() != 0) return std::nullopt;
     if (!currentTarget_.has_value()
         || currentTarget_->kind != core::SctNavigationKind::Instruction) return std::nullopt;
     return spice::sct::SctInstructionId(currentTarget_->id);
@@ -439,6 +654,7 @@ bool SctDocumentWidget::canEditSelectedMessage() const {
 }
 
 bool SctDocumentWidget::canMoveSelected(const core::SctInstructionMoveDirection direction) const {
+    if (outlineTabs_->currentIndex() != 0) return false;
     const auto instruction = selectedInstruction();
     if (!instruction.has_value()) return false;
     const auto* current = outlineModel_->instruction(*instruction);
@@ -469,6 +685,28 @@ void SctDocumentWidget::rebuildOutline() {
     } else {
         currentTarget_.reset();
     }
+}
+
+void SctDocumentWidget::rebuildStructuredOutline(const bool initialLoad) {
+    const auto retained = currentTarget_;
+    structuredOutlineModel_->setDeveloperOptions(
+        showStructuredBasicBlocks_, showRejectedStructureEvidence_,
+        showSemanticControlFlowInstructions_);
+    structuredOutlineModel_->resetFrom(snapshot_, semanticProjection_);
+    if (initialLoad) structuredOutline_->collapseAll();
+    if (!retained) return;
+    const auto selected = structuredOutlineModel_->indexForTarget(*retained);
+    if (!selected.isValid()) return;
+    structuredOutline_->setCurrentIndex(selected);
+    if (!initialLoad) expandAncestors(*structuredOutline_, selected);
+}
+
+void SctDocumentWidget::markStructuredOutlinePending() {
+    structuredOutlinePending_ = true;
+    structuredBanner_->setText(tr(
+        "Semantic structure is updating. Verified regions remain available while the latest document revision is checked."));
+    structuredBanner_->show();
+    structuredOutline_->setEnabled(true);
 }
 
 void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {

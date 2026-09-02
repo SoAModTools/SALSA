@@ -41,7 +41,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;$(SalsaRepositoryRoot)prototype\SpiceSctStructurePrototype\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -66,6 +66,7 @@
     <ClInclude Include="include\SalsaCore\Sct\SctMessageAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctSemanticOperation.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctStructuredAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctWorkingState.h" />
   </ItemGroup>
   <ItemGroup>
@@ -83,6 +84,7 @@
     <ClCompile Include="src\Sct\SctMessageAuthoring.cpp" />
     <ClCompile Include="src\Sct\SctPresentation.cpp" />
     <ClCompile Include="src\Sct\SctSemanticOperation.cpp" />
+    <ClCompile Include="src\Sct\SctStructuredAuthoring.cpp" />
     <ClCompile Include="src\Sct\SctWorkingState.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -94,6 +96,9 @@
     </ProjectReference>
     <ProjectReference Include="..\..\third-party\SPICE\SpiceSCT\SpiceSCT.vcxproj">
       <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\..\prototype\SpiceSctStructurePrototype\SpiceSctStructurePrototype.vcxproj">
+      <Project>{3D1A0E20-2B51-4C7A-9EB7-6544E784A630}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

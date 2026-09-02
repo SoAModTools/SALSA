@@ -74,6 +74,11 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     target.modified.insert(target.modified.end(),
         std::make_move_iterator(source.modified.begin()),
         std::make_move_iterator(source.modified.end()));
+    target.structuredAuthoring.insert(target.structuredAuthoring.end(),
+        std::make_move_iterator(source.structuredAuthoring.begin()),
+        std::make_move_iterator(source.structuredAuthoring.end()));
+    target.invalidations = target.invalidations | source.invalidations;
+    target.documentChanged = target.documentChanged || source.documentChanged;
 }
 
 [[nodiscard]] PrimitiveApplication applyInsert(
@@ -121,8 +126,8 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     reverse.afterSemantics = {};
     return {
         SctDeleteInstructionOperation{operation.instruction.id},
-        SctEditChangeSet{{std::move(change)}, {}},
-        SctEditChangeSet{{std::move(reverse)}, {}},
+        SctEditChangeSet{{std::move(change)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
+        SctEditChangeSet{{std::move(reverse)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
         std::nullopt,
     };
 }
@@ -165,8 +170,8 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     reverse.beforeSemantics = {};
     return {
         SctInsertInstructionAfterOperation{anchor, removed},
-        SctEditChangeSet{{std::move(change)}, {}},
-        SctEditChangeSet{{std::move(reverse)}, {}},
+        SctEditChangeSet{{std::move(change)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
+        SctEditChangeSet{{std::move(reverse)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
         std::nullopt,
     };
 }
@@ -230,8 +235,61 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     std::swap(reverse.before, reverse.after);
     return {
         SctRelocateInstructionAfterOperation{operation.instruction, oldAnchor},
-        SctEditChangeSet{{std::move(change)}, {}},
-        SctEditChangeSet{{std::move(reverse)}, {}},
+        SctEditChangeSet{{std::move(change)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
+        SctEditChangeSet{{std::move(reverse)}, {}, {}, SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
+        std::nullopt,
+    };
+}
+
+[[nodiscard]] PrimitiveApplication applyReplaceInstruction(
+    spice::sct::SctDocument& document,
+    const SctReplaceInstructionOperation& operation) {
+    const auto target = instructionTarget(operation.instruction);
+    const auto index = spice::sct::SctDocumentIndex::build(document);
+    const auto location = index.instructionLocation(operation.instruction);
+    const auto* existing = index.find(document, operation.instruction);
+    if (!location || existing == nullptr) {
+        return {.issue = issue("InstructionNotFound",
+            "The replaced instruction does not exist.", target)};
+    }
+    if (operation.replacement.id != operation.instruction) {
+        return {.issue = issue("InstructionReplacementIdMismatch",
+            "An instruction replacement must retain its stable ID.", target)};
+    }
+    if (operation.replacement.opcode != existing->opcode) {
+        return {.issue = issue("InstructionReplacementOpcodeMismatch",
+            "An instruction replacement cannot change the opcode.", target)};
+    }
+    auto* section = findSection(document, location->sectionId);
+    auto* script = section == nullptr ? nullptr
+        : std::get_if<spice::sct::SctScriptSectionContent>(&section->content);
+    if (script == nullptr || location->instructionOrdinal >= script->instructions.size()) {
+        return {.issue = issue("InstructionReplacementNotScript",
+            "The instruction is not in a script section.", target)};
+    }
+    auto previous = script->instructions[location->instructionOrdinal];
+    script->instructions[location->instructionOrdinal] = operation.replacement;
+    SctInstructionStructuralChange change;
+    change.instruction = operation.instruction;
+    const auto after = location->instructionOrdinal == 0u
+        ? std::optional<spice::sct::SctInstructionId>{}
+        : std::optional{script->instructions[location->instructionOrdinal - 1u].id};
+    change.before = SctInstructionPlacement{location->sectionId, after};
+    change.after = change.before;
+    change.beforeValue = previous;
+    change.afterValue = operation.replacement;
+    change.beforeSemantics = spice::sct::SctInstructionSemanticAnalyzer::build(previous);
+    change.afterSemantics = spice::sct::SctInstructionSemanticAnalyzer::build(
+        operation.replacement);
+    auto reverse = change;
+    std::swap(reverse.beforeValue, reverse.afterValue);
+    std::swap(reverse.beforeSemantics, reverse.afterSemantics);
+    return {
+        SctReplaceInstructionOperation{operation.instruction, std::move(previous)},
+        SctEditChangeSet{{std::move(change)}, {target}, {},
+            SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
+        SctEditChangeSet{{std::move(reverse)}, {target}, {},
+            SctDerivedAnalysisInvalidation::StructuredControlFlow, true},
         std::nullopt,
     };
 }
@@ -263,8 +321,8 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     *value = operation.message;
     return {
         SctReplaceMessageOperation{operation.target, std::move(previous)},
-        SctEditChangeSet{{}, {target}},
-        SctEditChangeSet{{}, {target}},
+        SctEditChangeSet{{}, {target}, {}, SctDerivedAnalysisInvalidation::None, true},
+        SctEditChangeSet{{}, {target}, {}, SctDerivedAnalysisInvalidation::None, true},
         std::nullopt,
     };
 }
@@ -280,6 +338,8 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
             return applyDelete(document, typed);
         else if constexpr (std::is_same_v<T, SctRelocateInstructionAfterOperation>)
             return applyRelocate(document, typed);
+        else if constexpr (std::is_same_v<T, SctReplaceInstructionOperation>)
+            return applyReplaceInstruction(document, typed);
         else
             return applyReplaceMessage(document, typed);
     }, operation);

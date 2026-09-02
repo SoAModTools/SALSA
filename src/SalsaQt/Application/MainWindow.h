@@ -103,6 +103,10 @@ private:
     QAction* moveInstructionUpAction_ = nullptr;
     QAction* moveInstructionDownAction_ = nullptr;
     QAction* logSctEditTimingsAction_ = nullptr;
+    QAction* showStructuredBasicBlocksAction_ = nullptr;
+    QAction* showRejectedStructureEvidenceAction_ = nullptr;
+    QAction* showSemanticControlFlowInstructionsAction_ = nullptr;
+    QAction* logStructureAnalysisAction_ = nullptr;
     QMenu* recentMenu_ = nullptr;
     QMenu* developerMenu_ = nullptr;
     QStringList recentDatasets_{};
@@ -110,6 +114,10 @@ private:
     bool restoringDataset_ = false;
     bool diagnosticsSyncPending_ = false;
     bool editTimingsEnabled_ = false;
+    bool showStructuredBasicBlocks_ = false;
+    bool showRejectedStructureEvidence_ = false;
+    bool showSemanticControlFlowInstructions_ = false;
+    bool structureAnalysisTimingsEnabled_ = false;
     bool restoringTabAfterCommitFailure_ = false;
 };
 
