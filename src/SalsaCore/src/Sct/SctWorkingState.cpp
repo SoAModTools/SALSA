@@ -65,7 +65,7 @@ SctWorkingState::SctWorkingState(
             auto& order = sectionOrder_[section.id];
             order.reserve(script->instructions.size());
             for (const auto& instruction : script->instructions) {
-                auto semantics = SctSemanticUsageIndex::contributionFor(instruction);
+                auto semantics = spice::sct::SctInstructionSemanticAnalyzer::build(instruction);
                 order.push_back(instruction.id);
                 instructions_.emplace(instruction.id,
                     InstructionEntry{instruction, section.id, semantics});
@@ -134,7 +134,7 @@ std::optional<spice::sct::SctInstructionId> SctWorkingState::instructionAfter(
     return *std::next(position);
 }
 
-const SctInstructionSemanticContribution* SctWorkingState::contribution(
+const spice::sct::SctInstructionSemanticContribution* SctWorkingState::contribution(
     const spice::sct::SctInstructionId id) const noexcept {
     const auto found = instructions_.find(id);
     return found == instructions_.end() ? nullptr : &found->second.semantics;
@@ -229,7 +229,7 @@ std::optional<SctOperationIssue> SctWorkingState::applyPrimitive(
             if (position == order.end())
                 return issue("InstructionAnchorNotFound", "The instruction insertion anchor does not exist.",
                     instructionTarget(typed.anchor));
-            const auto semantics = SctSemanticUsageIndex::contributionFor(typed.instruction);
+            const auto semantics = spice::sct::SctInstructionSemanticAnalyzer::build(typed.instruction);
             const SctInstructionPlacement after{anchor->second.section, typed.anchor};
             order.insert(std::next(position), typed.instruction.id);
             instructions_.emplace(typed.instruction.id,
@@ -325,7 +325,7 @@ std::optional<SctOperationIssue> SctWorkingState::applyPrimitive(
 }
 
 void SctWorkingState::addContribution(
-    const SctInstructionSemanticContribution& contribution) {
+    const spice::sct::SctInstructionSemanticContribution& contribution) {
     for (const auto& reference : contribution.references) {
         if (const auto* target = std::get_if<spice::sct::SctInstructionId>(&reference.target))
             ++incomingReferences_[*target];
@@ -333,7 +333,7 @@ void SctWorkingState::addContribution(
 }
 
 void SctWorkingState::removeContribution(
-    const SctInstructionSemanticContribution& contribution) {
+    const spice::sct::SctInstructionSemanticContribution& contribution) {
     for (const auto& reference : contribution.references) {
         const auto* target = std::get_if<spice::sct::SctInstructionId>(&reference.target);
         if (target == nullptr) continue;

@@ -2,9 +2,8 @@
 
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctMessageAuthoring.h"
-#include "SalsaCore/Sct/SctSemanticUsageIndex.h"
-
 #include "SpiceSCT/SctDocument.h"
+#include "SpiceSCT/SctDocumentAnalysis.h"
 
 #include <memory>
 #include <optional>
@@ -26,8 +25,8 @@ struct SctInstructionStructuralChange final {
     std::optional<SctInstructionPlacement> after{};
     std::optional<spice::sct::SctDocumentInstruction> beforeValue{};
     std::optional<spice::sct::SctDocumentInstruction> afterValue{};
-    SctInstructionSemanticContribution beforeSemantics{};
-    SctInstructionSemanticContribution afterSemantics{};
+    spice::sct::SctInstructionSemanticContribution beforeSemantics{};
+    spice::sct::SctInstructionSemanticContribution afterSemantics{};
 };
 
 struct SctEditChangeSet final {

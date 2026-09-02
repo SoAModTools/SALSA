@@ -131,7 +131,7 @@ private:
 
     struct MaterializationCheckpoint final {
         RevisionId revision{};
-        std::shared_ptr<const spice::sct::SctDocument> document{};
+        std::shared_ptr<const SctDocumentSnapshot> snapshot{};
     };
 
     [[nodiscard]] SctEditResult failure(std::vector<SctPipelineDiagnostic> diagnostics) const;
@@ -140,9 +140,6 @@ private:
         std::string description,
         SelectionHints selections,
         std::uint64_t preflightMicroseconds = 0);
-    void rebuildSnapshot(
-        std::shared_ptr<const spice::sct::SctDocument> document,
-        const spice::sct::SctDocumentValidationResult& validation);
     void pruneMaterializationCheckpoints();
 
     std::shared_ptr<const SctDocumentSnapshot> baselineSnapshot_;

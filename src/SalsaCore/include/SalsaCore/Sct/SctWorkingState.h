@@ -41,7 +41,7 @@ public:
         spice::sct::SctInstructionId id) const noexcept;
     [[nodiscard]] std::optional<spice::sct::SctInstructionId> instructionAfter(
         spice::sct::SctInstructionId id) const noexcept;
-    [[nodiscard]] const SctInstructionSemanticContribution* contribution(
+    [[nodiscard]] const spice::sct::SctInstructionSemanticContribution* contribution(
         spice::sct::SctInstructionId id) const noexcept;
     [[nodiscard]] std::size_t incomingReferenceCount(
         spice::sct::SctInstructionId id) const noexcept;
@@ -58,7 +58,7 @@ private:
     struct InstructionEntry final {
         spice::sct::SctDocumentInstruction value{};
         spice::sct::SctSectionId section{};
-        SctInstructionSemanticContribution semantics{};
+        spice::sct::SctInstructionSemanticContribution semantics{};
     };
 
     [[nodiscard]] std::optional<SctOperationIssue> applyPrimitive(
@@ -66,8 +66,8 @@ private:
         SctPrimitiveOperation& inverse,
         SctEditChangeSet& forward,
         SctEditChangeSet& reverse);
-    void addContribution(const SctInstructionSemanticContribution& contribution);
-    void removeContribution(const SctInstructionSemanticContribution& contribution);
+    void addContribution(const spice::sct::SctInstructionSemanticContribution& contribution);
+    void removeContribution(const spice::sct::SctInstructionSemanticContribution& contribution);
 
     std::shared_ptr<const spice::sct::SctDocument> checkpoint_{};
     std::unordered_map<spice::sct::SctInstructionId, InstructionEntry> instructions_{};

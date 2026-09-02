@@ -825,7 +825,7 @@ void MainWindow::syncDocument(
         && isIncrementalInstructionTransition(update);
     bool incrementalInstructionApplied = false;
     if (update.kind == SctDocumentUpdateKind::VerifiedMaterialization) {
-        widget->installVerifiedSnapshot(snapshot, update.documentIndex, sourceStatus);
+        widget->installVerifiedSnapshot(snapshot, sourceStatus);
     } else if (createdWidget || update.kind == SctDocumentUpdateKind::Replacement
         || (update.kind == SctDocumentUpdateKind::RevisionTransition
             && !textOnly && !instructionDelta)) {

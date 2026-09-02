@@ -138,6 +138,10 @@ std::shared_ptr<const SctDocumentSnapshot> snapshotWith(
     SctDocument document) {
     auto result = std::make_shared<SctDocumentSnapshot>(*baseline);
     result->document = std::make_shared<const SctDocument>(std::move(document));
+    result->analysis = std::make_shared<const SctDocumentAnalysis>(
+        SctDocumentAnalysis::build(*result->document,
+            result->provenance->importEvidence
+                ? &*result->provenance->importEvidence : nullptr));
     const auto validation = SctDocumentValidator::validateDocument(*result->document);
     result->readiness = validation.validDocument
         ? SctDocumentReadiness::StructurallyValid
@@ -589,9 +593,9 @@ TEST(SctSemanticOperation, RelocatesAndReplacesMessagesWithExactInverseChanges) 
         *applied.document, applied.inverse);
     ASSERT_TRUE(restored.succeeded());
     const auto index = SctDocumentIndex::build(*restored.document);
-    ASSERT_NE(index.find(stringId), nullptr);
+    ASSERT_NE(index.find(*restored.document, stringId), nullptr);
     const auto projection = SctMessageAuthoringProfile::project(
-        std::get<SctMessage>(index.find(stringId)->value));
+        std::get<SctMessage>(index.find(*restored.document, stringId)->value));
     ASSERT_TRUE(projection.supported());
     EXPECT_FALSE(projection.draft->headerUtf8.has_value());
 }
@@ -701,9 +705,13 @@ TEST(SctEditSession, MaterializesAndInstallsTheNewestWorkingRevision) {
     EXPECT_EQ(request->journalTail.size(), 2u);
     const auto materialized = SctDocumentMaterializer::materialize(*request);
     ASSERT_TRUE(materialized.succeeded());
+    ASSERT_NE(materialized.analysis, nullptr);
+    EXPECT_EQ(materialized.analysis->usage.opcodeUsages().size(), 4u);
+    EXPECT_TRUE(materialized.analysis->importedSites.has_value());
     EXPECT_EQ(materialized.generation, 17u);
     EXPECT_TRUE(session.installVerifiedMaterialization(materialized));
     EXPECT_EQ(session.verifiedSnapshot()->document.get(), materialized.document.get());
+    EXPECT_EQ(session.verifiedSnapshot()->analysis.get(), materialized.analysis.get());
     EXPECT_EQ(script(*session.verifiedSnapshot()).instructions.size(), 4u);
 }
 
@@ -744,6 +752,8 @@ TEST(SctEditSession, VerificationRejectionRollsBackAndDiscardsTheRejectedLineage
         SctRevisionTransitionKind::VerificationRollback);
     EXPECT_EQ(session.workingRevision().value, 1u);
     EXPECT_EQ(session.workingState().instructionOrder(section).size(), 2u);
+    EXPECT_EQ(session.verifiedSnapshot().get(), baseline.get());
+    EXPECT_EQ(session.verifiedSnapshot()->analysis.get(), baseline->analysis.get());
     EXPECT_FALSE(session.canRedo());
     EXPECT_FALSE(session.materializeRevision(second.revision).has_value());
 

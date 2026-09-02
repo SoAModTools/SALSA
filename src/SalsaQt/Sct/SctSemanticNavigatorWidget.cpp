@@ -1,8 +1,6 @@
 #include "Sct/SctSemanticNavigatorWidget.h"
 
-#include "SalsaCore/Sct/SctSemanticUsageIndex.h"
-
-#include "SpiceSCT/SctDocumentIndex.h"
+#include "SpiceSCT/SctDocumentAnalysis.h"
 #include "SpiceSCT/SctOpcodeMetadata.h"
 
 #include <QHeaderView>
@@ -61,9 +59,10 @@ struct TreeState final {
 }
 
 [[nodiscard]] QString instructionName(
+    const spice::sct::SctDocument& document,
     const spice::sct::SctDocumentIndex& index,
     const spice::sct::SctInstructionId instruction) {
-    const auto* value = index.find(instruction);
+    const auto* value = index.find(document, instruction);
     return value == nullptr
         ? SctSemanticNavigatorWidget::tr("Instruction %1").arg(instruction.value())
         : QStringLiteral("%1 — %2")
@@ -72,10 +71,12 @@ struct TreeState final {
 }
 
 [[nodiscard]] QString instructionContext(
+    const spice::sct::SctDocument& document,
     const spice::sct::SctDocumentIndex& index,
     const spice::sct::SctInstructionId instruction) {
     const auto location = index.instructionLocation(instruction);
-    const auto* section = location.has_value() ? index.find(location->sectionId) : nullptr;
+    const auto* section = location.has_value()
+        ? index.find(document, location->sectionId) : nullptr;
     return section == nullptr
         ? SctSemanticNavigatorWidget::tr("Unknown section")
         : QStringLiteral("[%1] %2")
@@ -92,9 +93,9 @@ struct TreeState final {
     return SctSemanticNavigatorWidget::tr("Parameter %1").arg(parameter.schemaIndex);
 }
 
-[[nodiscard]] QString expressionName(const core::SctExpressionSite& site) {
+[[nodiscard]] QString expressionName(const spice::sct::SctExpressionSite& site) {
     QString result;
-    if (std::holds_alternative<core::SctScheduledExpressionSite>(site.owner)) {
+    if (std::holds_alternative<spice::sct::SctScheduledExpressionSite>(site.owner)) {
         result = SctSemanticNavigatorWidget::tr("Scheduled expression");
     } else {
         result = parameterName(std::get<spice::sct::SctParameterAddress>(site.owner));
@@ -120,13 +121,13 @@ struct TreeState final {
         if constexpr (std::is_same_v<T, core::SctNavigationTarget>) {
             return QStringLiteral("entity:%1:%2")
                 .arg(static_cast<int>(typed.kind)).arg(typed.id);
-        } else if constexpr (std::is_same_v<T, core::SctParameterSite>) {
+        } else if constexpr (std::is_same_v<T, spice::sct::SctParameterSite>) {
             return QStringLiteral("parameter:%1:%2")
                 .arg(typed.instruction.value()).arg(parameterKey(typed.parameter));
         } else {
             QString key = QStringLiteral("expression:%1:")
                 .arg(typed.instruction.value());
-            if (std::holds_alternative<core::SctScheduledExpressionSite>(typed.owner)) {
+            if (std::holds_alternative<spice::sct::SctScheduledExpressionSite>(typed.owner)) {
                 key += QStringLiteral("scheduled");
             } else {
                 key += QStringLiteral("parameter:")
@@ -139,12 +140,12 @@ struct TreeState final {
     }, location);
 }
 
-[[nodiscard]] QString variableKindName(const core::SctVariableKind kind) {
+[[nodiscard]] QString variableKindName(const spice::sct::SctVariableKind kind) {
     switch (kind) {
-    case core::SctVariableKind::Integer: return SctSemanticNavigatorWidget::tr("Integer");
-    case core::SctVariableKind::Float: return SctSemanticNavigatorWidget::tr("Float");
-    case core::SctVariableKind::Bit: return SctSemanticNavigatorWidget::tr("Bit");
-    case core::SctVariableKind::Byte: return SctSemanticNavigatorWidget::tr("Byte");
+    case spice::sct::SctVariableKind::Integer: return SctSemanticNavigatorWidget::tr("Integer");
+    case spice::sct::SctVariableKind::Float: return SctSemanticNavigatorWidget::tr("Float");
+    case spice::sct::SctVariableKind::Bit: return SctSemanticNavigatorWidget::tr("Bit");
+    case spice::sct::SctVariableKind::Byte: return SctSemanticNavigatorWidget::tr("Byte");
     }
     return SctSemanticNavigatorWidget::tr("Unknown");
 }
@@ -189,9 +190,12 @@ struct TreeState final {
 }
 
 [[nodiscard]] bool targetExists(
+    const spice::sct::SctDocument& document,
     const spice::sct::SctDocumentIndex& index,
     const spice::sct::SctDocumentReferenceTarget& target) {
-    return std::visit([&index](const auto typed) { return index.find(typed) != nullptr; }, target);
+    return std::visit([&](const auto typed) {
+        return index.find(document, typed) != nullptr;
+    }, target);
 }
 
 [[nodiscard]] QString placementName(const spice::sct::SctOpaquePlacement placement) {
@@ -350,9 +354,9 @@ void SctSemanticNavigatorWidget::setDocument(
 
     identityKey_ = nextIdentity;
     for (auto* tree : { opcodes_, references_, variables_, incomplete_ }) tree->clear();
-    populateTrees(*opcodes_, *references_, *variables_, *incomplete_, *snapshot.document);
-    resetIncrementalState(*snapshot.document,
-        spice::sct::SctDocumentIndex::build(*snapshot.document));
+    populateTrees(*opcodes_, *references_, *variables_, *incomplete_,
+        *snapshot.document, *snapshot.analysis);
+    resetIncrementalState(*snapshot.document, snapshot.analysis->entities);
     for (auto* tree : { opcodes_, references_, variables_, incomplete_ }) tree->collapseAll();
     if (sameDocument) {
         restoreState(*opcodes_, states[0]);
@@ -423,8 +427,8 @@ void SctSemanticNavigatorWidget::resetIncrementalState(
             instructionPresentation_[instruction.id.value()] = InstructionPresentation{
                 instruction.opcode,
                 sectionId,
-                instructionName(index, instruction.id),
-                instructionContext(index, instruction.id),
+                instructionName(document, index, instruction.id),
+                instructionContext(document, index, instruction.id),
             };
         }
     }
@@ -528,7 +532,8 @@ void SctSemanticNavigatorWidget::removeContribution(
     const auto instructionLocation = core::SctInspectionLocation{
         core::SctNavigationTarget{core::SctNavigationKind::Instruction,
             change.instruction.value()}};
-    for (const auto& usage : change.beforeSemantics.opcodes) {
+    {
+        const auto& usage = change.beforeSemantics.opcode;
         const auto key = QStringLiteral("opcode:%1:").arg(usage.opcode)
             + inspectionKey(instructionLocation);
         auto* occurrence = findKey(*opcodes_, key);
@@ -611,7 +616,8 @@ void SctSemanticNavigatorWidget::addContribution(
     const auto instructionLocation = core::SctInspectionLocation{
         core::SctNavigationTarget{core::SctNavigationKind::Instruction,
             change.instruction.value()}};
-    for (const auto& usage : change.afterSemantics.opcodes) {
+    {
+        const auto& usage = change.afterSemantics.opcode;
         const auto groupKey = QStringLiteral("opcode:%1").arg(usage.opcode);
         auto* group = findKey(*opcodes_, groupKey);
         if (group == nullptr) {
@@ -838,13 +844,12 @@ void SctSemanticNavigatorWidget::populateTrees(
     QTreeWidget& references,
     QTreeWidget& variables,
     QTreeWidget& incomplete,
-    const spice::sct::SctDocument& document) {
-    const auto index = spice::sct::SctDocumentIndex::build(document);
-    const auto usage = core::SctSemanticUsageIndex::build(document);
-    buildOpcodes(opcodes, index, usage);
-    buildReferences(references, index, usage);
-    buildVariables(variables, index, usage);
-    buildIncompleteEvidence(incomplete, document, index, usage);
+    const spice::sct::SctDocument& document,
+    const spice::sct::SctDocumentAnalysis& analysis) {
+    buildOpcodes(opcodes, document, analysis.entities, analysis.usage);
+    buildReferences(references, document, analysis.entities, analysis.usage);
+    buildVariables(variables, document, analysis.entities, analysis.usage);
+    buildIncompleteEvidence(incomplete, document, analysis.entities, analysis.usage);
 }
 
 void SctSemanticNavigatorWidget::reconcileTree(
@@ -942,9 +947,10 @@ void SctSemanticNavigatorWidget::reconcileTree(
 
 void SctSemanticNavigatorWidget::buildOpcodes(
     QTreeWidget& tree,
+    const spice::sct::SctDocument& document,
     const spice::sct::SctDocumentIndex& index,
-    const core::SctSemanticUsageIndex& usage) {
-    std::map<std::uint16_t, std::vector<core::SctOpcodeUsage>> groups;
+    const spice::sct::SctSemanticUsageIndex& usage) {
+    std::map<std::uint16_t, std::vector<spice::sct::SctOpcodeUsage>> groups;
     for (const auto& occurrence : usage.opcodeUsages()) groups[occurrence.opcode].push_back(occurrence);
     for (const auto& [opcode, occurrences] : groups) {
         auto* group = new QTreeWidgetItem(&tree);
@@ -953,8 +959,8 @@ void SctSemanticNavigatorWidget::buildOpcodes(
         setKey(*group, QStringLiteral("opcode:%1").arg(opcode));
         for (const auto& occurrence : occurrences) {
             auto* item = new QTreeWidgetItem(group);
-            item->setText(0, instructionName(index, occurrence.instruction));
-            item->setText(1, instructionContext(index, occurrence.instruction));
+            item->setText(0, instructionName(document, index, occurrence.instruction));
+            item->setText(1, instructionContext(document, index, occurrence.instruction));
             const core::SctInspectionLocation location{ core::SctNavigationTarget{
                 core::SctNavigationKind::Instruction, occurrence.instruction.value() } };
             setKey(*item, QStringLiteral("opcode:%1:").arg(opcode) + inspectionKey(location));
@@ -965,14 +971,15 @@ void SctSemanticNavigatorWidget::buildOpcodes(
 
 void SctSemanticNavigatorWidget::buildReferences(
     QTreeWidget& tree,
+    const spice::sct::SctDocument& document,
     const spice::sct::SctDocumentIndex& index,
-    const core::SctSemanticUsageIndex& usage) {
+    const spice::sct::SctSemanticUsageIndex& usage) {
     auto* inbound = new QTreeWidgetItem(&tree);
     inbound->setText(0, tr("Inbound by target"));
     setKey(*inbound, QStringLiteral("references:inbound"));
 
     using TargetKey = std::pair<std::size_t, std::uint64_t>;
-    std::map<TargetKey, std::vector<core::SctReferenceUsage>> inboundGroups;
+    std::map<TargetKey, std::vector<spice::sct::SctReferenceUsage>> inboundGroups;
     for (const auto& reference : usage.referenceUsages()) {
         const auto id = std::visit([](const auto typed) { return typed.value(); }, reference.target);
         inboundGroups[{ reference.target.index(), id }].push_back(reference);
@@ -983,21 +990,21 @@ void SctSemanticNavigatorWidget::buildReferences(
         group->setText(0, referenceTargetName(target));
         group->setText(1, tr("%1 inbound occurrence(s)").arg(occurrences.size()));
         setKey(*group, QStringLiteral("reference:target:%1:%2").arg(key.first).arg(key.second));
-        if (targetExists(index, target))
+        if (targetExists(document, index, target))
             registerNavigation(group, 0, core::SctInspectionLocation{ referenceTarget(target) });
         else
             group->setToolTip(0, tr("The target is not present in this document revision."));
         for (const auto& occurrence : occurrences) {
             auto* item = new QTreeWidgetItem(group);
             item->setText(0, parameterName(occurrence.source.parameter));
-            item->setText(1, instructionName(index, occurrence.source.instruction));
+            item->setText(1, instructionName(document, index, occurrence.source.instruction));
             item->setText(2, referenceTargetName(occurrence.target));
             const core::SctInspectionLocation sourceLocation{ occurrence.source };
             setKey(*item, QStringLiteral("reference:in:%1:%2:")
                 .arg(key.first).arg(key.second) + inspectionKey(sourceLocation));
             registerNavigation(item, 0, sourceLocation);
             registerNavigation(item, 1, sourceLocation);
-            if (targetExists(index, occurrence.target))
+            if (targetExists(document, index, occurrence.target))
                 registerNavigation(item, 2,
                     core::SctInspectionLocation{ referenceTarget(occurrence.target) });
             else
@@ -1009,7 +1016,7 @@ void SctSemanticNavigatorWidget::buildReferences(
     outbound->setText(0, tr("Outbound by instruction"));
     setKey(*outbound, QStringLiteral("references:outbound"));
     std::vector<std::pair<spice::sct::SctInstructionId,
-        std::vector<core::SctReferenceUsage>>> outboundGroups;
+        std::vector<spice::sct::SctReferenceUsage>>> outboundGroups;
     for (const auto& reference : usage.referenceUsages()) {
         auto found = std::ranges::find_if(outboundGroups, [&reference](const auto& group) {
             return group.first == reference.source.instruction;
@@ -1022,7 +1029,7 @@ void SctSemanticNavigatorWidget::buildReferences(
     }
     for (const auto& [instruction, occurrences] : outboundGroups) {
         auto* group = new QTreeWidgetItem(outbound);
-        group->setText(0, instructionName(index, instruction));
+        group->setText(0, instructionName(document, index, instruction));
         group->setText(1, tr("%1 outbound occurrence(s)").arg(occurrences.size()));
         setKey(*group, QStringLiteral("reference:source:%1").arg(instruction.value()));
         registerNavigation(group, 0, core::SctInspectionLocation{ core::SctNavigationTarget{
@@ -1030,13 +1037,13 @@ void SctSemanticNavigatorWidget::buildReferences(
         for (const auto& occurrence : occurrences) {
             auto* item = new QTreeWidgetItem(group);
             item->setText(0, parameterName(occurrence.source.parameter));
-            item->setText(1, instructionContext(index, occurrence.source.instruction));
+            item->setText(1, instructionContext(document, index, occurrence.source.instruction));
             item->setText(2, referenceTargetName(occurrence.target));
             const core::SctInspectionLocation sourceLocation{ occurrence.source };
             setKey(*item, QStringLiteral("reference:out:") + inspectionKey(sourceLocation));
             registerNavigation(item, 0, sourceLocation);
             registerNavigation(item, 1, sourceLocation);
-            if (targetExists(index, occurrence.target))
+            if (targetExists(document, index, occurrence.target))
                 registerNavigation(item, 2,
                     core::SctInspectionLocation{ referenceTarget(occurrence.target) });
             else
@@ -1047,14 +1054,15 @@ void SctSemanticNavigatorWidget::buildReferences(
 
 void SctSemanticNavigatorWidget::buildVariables(
     QTreeWidget& tree,
+    const spice::sct::SctDocument& document,
     const spice::sct::SctDocumentIndex& index,
-    const core::SctSemanticUsageIndex& usage) {
-    for (const auto kind : { core::SctVariableKind::Integer, core::SctVariableKind::Float,
-            core::SctVariableKind::Bit, core::SctVariableKind::Byte }) {
+    const spice::sct::SctSemanticUsageIndex& usage) {
+    for (const auto kind : { spice::sct::SctVariableKind::Integer, spice::sct::SctVariableKind::Float,
+            spice::sct::SctVariableKind::Bit, spice::sct::SctVariableKind::Byte }) {
         auto* kindItem = new QTreeWidgetItem(&tree);
         kindItem->setText(0, variableKindName(kind));
         setKey(*kindItem, QStringLiteral("variable-kind:%1").arg(static_cast<int>(kind)));
-        std::map<std::uint32_t, std::vector<core::SctVariableUsage>> groups;
+        std::map<std::uint32_t, std::vector<spice::sct::SctVariableUsage>> groups;
         for (const auto& occurrence : usage.variableUsages())
             if (occurrence.variable.kind == kind)
                 groups[occurrence.variable.index].push_back(occurrence);
@@ -1069,8 +1077,8 @@ void SctSemanticNavigatorWidget::buildVariables(
                 auto* item = new QTreeWidgetItem(group);
                 item->setText(0, expressionName(occurrence.source));
                 item->setText(1, QStringLiteral("%1 — %2")
-                    .arg(instructionName(index, occurrence.source.instruction))
-                    .arg(instructionContext(index, occurrence.source.instruction)));
+                    .arg(instructionName(document, index, occurrence.source.instruction))
+                    .arg(instructionContext(document, index, occurrence.source.instruction)));
                 const core::SctInspectionLocation location{ occurrence.source };
                 setKey(*item, QStringLiteral("variable:%1:%2:")
                     .arg(static_cast<int>(kind)).arg(variable) + inspectionKey(location));
@@ -1085,7 +1093,7 @@ void SctSemanticNavigatorWidget::buildIncompleteEvidence(
     QTreeWidget& tree,
     const spice::sct::SctDocument& document,
     const spice::sct::SctDocumentIndex& index,
-    const core::SctSemanticUsageIndex& usage) {
+    const spice::sct::SctSemanticUsageIndex& usage) {
     auto* unresolved = new QTreeWidgetItem(&tree);
     unresolved->setText(0, tr("Unresolved references"));
     unresolved->setText(2, tr("%1 occurrence(s)").arg(usage.unresolvedReferences().size()));
@@ -1094,7 +1102,7 @@ void SctSemanticNavigatorWidget::buildIncompleteEvidence(
         auto* item = new QTreeWidgetItem(unresolved);
         item->setText(0, expectedTargetName(occurrence.expectedTarget));
         item->setText(1, QStringLiteral("%1 — %2")
-            .arg(instructionName(index, occurrence.source.instruction))
+            .arg(instructionName(document, index, occurrence.source.instruction))
             .arg(parameterName(occurrence.source.parameter)));
         item->setText(2, tr("%1 word(s)").arg(occurrence.encodedWordCount));
         const core::SctInspectionLocation location{ occurrence.source };
@@ -1111,7 +1119,7 @@ void SctSemanticNavigatorWidget::buildIncompleteEvidence(
         auto* item = new QTreeWidgetItem(opaqueParameters);
         item->setText(0, tr("Opaque parameter"));
         item->setText(1, QStringLiteral("%1 — %2")
-            .arg(instructionName(index, occurrence.source.instruction))
+            .arg(instructionName(document, index, occurrence.source.instruction))
             .arg(parameterName(occurrence.source.parameter)));
         item->setText(2, tr("%1 word(s)").arg(occurrence.wordCount));
         const core::SctInspectionLocation location{ occurrence.source };
@@ -1128,7 +1136,7 @@ void SctSemanticNavigatorWidget::buildIncompleteEvidence(
         auto* item = new QTreeWidgetItem(opaqueExpressions);
         item->setText(0, tr("Opaque expression"));
         item->setText(1, QStringLiteral("%1 — %2")
-            .arg(instructionName(index, occurrence.source.instruction))
+            .arg(instructionName(document, index, occurrence.source.instruction))
             .arg(expressionName(occurrence.source)));
         item->setText(2, tr("%1 word(s)").arg(occurrence.wordCount));
         const core::SctInspectionLocation location{ occurrence.source };

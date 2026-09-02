@@ -4,9 +4,7 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctInspectionLocation.h"
-#include "SalsaCore/Sct/SctSemanticUsageIndex.h"
-
-#include "SpiceSCT/SctDocumentIndex.h"
+#include "SpiceSCT/SctDocumentAnalysis.h"
 
 #include <QWidget>
 
@@ -55,27 +53,31 @@ private:
         core::SctInspectionLocation location);
     void buildOpcodes(
         QTreeWidget& tree,
+        const spice::sct::SctDocument& document,
         const spice::sct::SctDocumentIndex& index,
-        const core::SctSemanticUsageIndex& usage);
+        const spice::sct::SctSemanticUsageIndex& usage);
     void buildReferences(
         QTreeWidget& tree,
+        const spice::sct::SctDocument& document,
         const spice::sct::SctDocumentIndex& index,
-        const core::SctSemanticUsageIndex& usage);
+        const spice::sct::SctSemanticUsageIndex& usage);
     void buildVariables(
         QTreeWidget& tree,
+        const spice::sct::SctDocument& document,
         const spice::sct::SctDocumentIndex& index,
-        const core::SctSemanticUsageIndex& usage);
+        const spice::sct::SctSemanticUsageIndex& usage);
     void buildIncompleteEvidence(
         QTreeWidget& tree,
         const spice::sct::SctDocument& document,
         const spice::sct::SctDocumentIndex& index,
-        const core::SctSemanticUsageIndex& usage);
+        const spice::sct::SctSemanticUsageIndex& usage);
     void populateTrees(
         QTreeWidget& opcodes,
         QTreeWidget& references,
         QTreeWidget& variables,
         QTreeWidget& incomplete,
-        const spice::sct::SctDocument& document);
+        const spice::sct::SctDocument& document,
+        const spice::sct::SctDocumentAnalysis& analysis);
     void resetIncrementalState(
         const spice::sct::SctDocument& document,
         const spice::sct::SctDocumentIndex& index);

@@ -383,12 +383,11 @@ void SctDocumentController::finishMaterialization(
     completedWatcher->deleteLater();
     if (editTimingsEnabled_) {
         qInfo().noquote() << QStringLiteral(
-            "SALSA materialization timing %1 generation %2: replay=%3us validation=%4us semantic=%5us index=%6us")
+            "SALSA materialization timing %1 generation %2: replay=%3us validation=%4us analysis=%5us")
             .arg(QString::fromStdString(identityKey)).arg(generation)
             .arg(result.timings.replayMicroseconds)
             .arg(result.timings.validationMicroseconds)
-            .arg(result.timings.semanticAuditMicroseconds)
-            .arg(result.timings.documentIndexMicroseconds);
+            .arg(result.timings.analysisMicroseconds);
     }
 
     const bool currentTarget = result.targetRevision == state.session->workingRevision();
@@ -396,8 +395,7 @@ void SctDocumentController::finishMaterialization(
         if (state.session->installVerifiedMaterialization(result) && currentTarget) {
             emit documentChanged(QString::fromStdString(identityKey), SctDocumentUpdate{
                 SctDocumentUpdateKind::VerifiedMaterialization,
-                state.session->verifiedSnapshot(), std::nullopt,
-                result.documentIndex});
+                state.session->verifiedSnapshot(), std::nullopt});
         }
     } else if (!result.cancelled && currentTarget) {
         state.editBlocked = true;

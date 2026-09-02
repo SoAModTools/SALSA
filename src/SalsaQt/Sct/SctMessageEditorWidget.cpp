@@ -507,10 +507,11 @@ bool SctMessageEditorWidget::refreshMessage(
 const spice::sct::SctMessage* SctMessageEditorWidget::findBoundMessage(
     const core::SctDocumentSnapshot& snapshot) const {
     if (!target_ || !snapshot.document) return nullptr;
-    const auto index = spice::sct::SctDocumentIndex::build(*snapshot.document);
+    if (!snapshot.analysis) return nullptr;
+    const auto& index = snapshot.analysis->entities;
     const spice::sct::SctTextValue* value = std::visit([&](const auto id)
         -> const spice::sct::SctTextValue* {
-        const auto* entity = index.find(id);
+        const auto* entity = index.find(*snapshot.document, id);
         return entity == nullptr ? nullptr : &entity->value;
     }, *target_);
     return value == nullptr ? nullptr : std::get_if<spice::sct::SctMessage>(value);

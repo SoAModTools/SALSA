@@ -38,6 +38,10 @@ SctMaterializationResult SctDocumentMaterializer::materialize(
     }
     const auto validationStart = std::chrono::steady_clock::now();
     result.validation = spice::sct::SctDocumentValidator::validateDocument(*document);
+    for (const auto& diagnostic : result.validation.diagnostics) {
+        result.diagnostics.push_back(convertSctDiagnostic(
+            diagnostic, SctPipelineStage::Validation, request.locator));
+    }
     result.timings.validationMicroseconds = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - validationStart).count());
@@ -45,17 +49,13 @@ SctMaterializationResult SctDocumentMaterializer::materialize(
         result.cancelled = true;
         return result;
     }
-    const auto semanticStart = std::chrono::steady_clock::now();
-    result.semanticIndex = SctSemanticUsageIndex::build(*document);
-    result.timings.semanticAuditMicroseconds = static_cast<std::uint64_t>(
+    const auto analysisStart = std::chrono::steady_clock::now();
+    result.analysis = std::make_shared<const spice::sct::SctDocumentAnalysis>(
+        spice::sct::SctDocumentAnalysis::build(*document,
+            request.importEvidence ? &*request.importEvidence : nullptr));
+    result.timings.analysisMicroseconds = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - semanticStart).count());
-    const auto indexStart = std::chrono::steady_clock::now();
-    result.documentIndex = std::make_shared<const spice::sct::SctDocumentIndex>(
-        spice::sct::SctDocumentIndex::build(*document));
-    result.timings.documentIndexMicroseconds = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - indexStart).count());
+            std::chrono::steady_clock::now() - analysisStart).count());
     result.document = std::move(document);
     return result;
 }

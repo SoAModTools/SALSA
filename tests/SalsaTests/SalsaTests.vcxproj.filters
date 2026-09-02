@@ -35,6 +35,5 @@
     <ClCompile Include="test_revision_history.cpp"><Filter>History</Filter></ClCompile>
     <ClCompile Include="test_sct_edit_session.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_sct_document_inspection.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="test_sct_semantic_usage_index.cpp"><Filter>SCT</Filter></ClCompile>
   </ItemGroup>
 </Project>

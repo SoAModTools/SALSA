@@ -41,7 +41,6 @@ public:
         int sourceStatus);
     void installVerifiedSnapshot(
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
-        std::shared_ptr<const spice::sct::SctDocumentIndex> index,
         int sourceStatus);
     void applyTextOnlySnapshot(
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
@@ -85,7 +84,7 @@ private:
 
     core::AssetLocator locator_;
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot_{};
-    std::shared_ptr<const spice::sct::SctDocumentIndex> index_{};
+    const spice::sct::SctDocumentIndex* index_ = nullptr;
     bool outlineReconciliationPending_ = false;
     std::optional<core::SctNavigationTarget> currentTarget_{};
     bool editingEnabled_ = false;

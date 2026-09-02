@@ -1,6 +1,6 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 
-#include "SpiceSCT/SctDocumentIndex.h"
+#include "SpiceSCT/SctDocumentAnalysis.h"
 #include "SpiceSCT/SctParser.h"
 
 #include <span>
@@ -53,53 +53,9 @@ namespace {
     case ProvisionalOpcodeConstraint: return "ProvisionalOpcodeConstraint";
     case TextInvalid: return "TextInvalid";
     case HeaderUnavailable: return "HeaderUnavailable";
+    case ExpressionRuntimeStackDepth: return "ExpressionRuntimeStackDepth";
     }
     return "UnknownSctDiagnostic";
-}
-
-[[nodiscard]] std::optional<SctNavigationTarget> navigationFor(
-    const std::optional<spice::sct::SctDocumentEntityId>& entity) {
-    if (!entity.has_value()) return std::nullopt;
-    return std::visit([](const auto& id) -> std::optional<SctNavigationTarget> {
-        using T = std::decay_t<decltype(id)>;
-        if constexpr (std::is_same_v<T, std::monostate>) return std::nullopt;
-        else if constexpr (std::is_same_v<T, spice::sct::SctSectionId>)
-            return SctNavigationTarget{ SctNavigationKind::Section, id.value() };
-        else if constexpr (std::is_same_v<T, spice::sct::SctInstructionId>)
-            return SctNavigationTarget{ SctNavigationKind::Instruction, id.value() };
-        else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
-            return SctNavigationTarget{ SctNavigationKind::String, id.value() };
-        else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryId>)
-            return SctNavigationTarget{ SctNavigationKind::FooterEntry, id.value() };
-        else
-            return SctNavigationTarget{ SctNavigationKind::OpaqueAttachment, id.value() };
-    }, *entity);
-}
-
-[[nodiscard]] SctPipelineDiagnostic convertDocumentDiagnostic(
-    const AssetLocator& locator,
-    const SctPipelineStage stage,
-    const spice::sct::SctDocumentDiagnostic& source) {
-    SctPipelineDiagnostic converted;
-    converted.severity = severityOf(source.severity);
-    converted.stage = stage;
-    converted.code = diagnosticCodeName(source.code);
-    converted.message = source.message;
-    converted.locator = locator;
-    converted.target = navigationFor(source.entity);
-    if (source.parameter.has_value()) {
-        converted.schemaIndex = source.parameter->schemaIndex;
-        converted.repeatedGroupOrdinal = source.parameter->repeatedGroupOrdinal;
-    }
-    converted.expressionChildPath = source.expressionChildPath;
-    if (source.textRange.has_value()) {
-        converted.textOffset = source.textRange->offset;
-        converted.textSize = source.textRange->size;
-    } else if (source.textLocation.has_value()) {
-        converted.textOffset = source.textLocation->utf8Range.offset;
-        converted.textSize = source.textLocation->utf8Range.size;
-    }
-    return converted;
 }
 
 void addAssessmentDiagnostics(SctSourceInspection& inspection) {
@@ -119,10 +75,35 @@ void addAssessmentDiagnostics(SctSourceInspection& inspection) {
 
 }  // namespace
 
+SctPipelineDiagnostic convertSctDiagnostic(
+    const spice::sct::SctDocumentDiagnostic& source,
+    const SctPipelineStage stage,
+    std::optional<AssetLocator> locator) {
+    SctPipelineDiagnostic converted;
+    converted.severity = severityOf(source.severity);
+    converted.stage = stage;
+    converted.code = diagnosticCodeName(source.code);
+    converted.message = source.message;
+    converted.locator = std::move(locator);
+    converted.primaryLocation = source.primaryLocation;
+    converted.relatedLocations = source.relatedLocations;
+    return converted;
+}
+
 std::string_view sctTextConventionName(
     const spice::sct::SctKnownTextConvention convention) noexcept {
     const auto* descriptor = spice::sct::findSctKnownTextConvention(convention);
     return descriptor == nullptr ? std::string_view{} : descriptor->stableName;
+}
+
+std::optional<spice::sct::SctKnownTextConvention> recommendedSctTextConvention(
+    const spice::sct::SctSourceTextAssessment& assessment) noexcept {
+    if (assessment.records.empty()
+        || assessment.recommendation.status
+            != spice::sct::SctSourceTextRecommendationStatus::Unique) {
+        return std::nullopt;
+    }
+    return assessment.recommendation.convention;
 }
 
 SctLoadResult SctDocumentLoader::load(
@@ -183,9 +164,9 @@ SctLoadResult SctDocumentLoader::load(
     addAssessmentDiagnostics(*inspection);
     std::optional<spice::sct::SctKnownTextConvention> convention;
     auto origin = SctTextSelectionOrigin::None;
-    if (!inspection->textAssessment.records.empty()
-        && inspection->textAssessment.viableConventions.size() == 1) {
-        convention = inspection->textAssessment.viableConventions.front();
+    if (const auto recommended = recommendedSctTextConvention(
+            inspection->textAssessment)) {
+        convention = recommended;
         origin = SctTextSelectionOrigin::UniqueAssessment;
     }
     return materialize(std::move(inspection), convention, origin, stopToken);
@@ -208,6 +189,9 @@ SctLoadResult SctDocumentLoader::materialize(
 
     spice::sct::SctDocumentImportOptions options;
     if (convention.has_value()) options.sourceTextEncoding = spice::sct::sctTextEncodingFor(*convention);
+    options.footerTextPromotion = origin == SctTextSelectionOrigin::UserSelected
+        ? spice::sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding
+        : spice::sct::SctFooterTextPromotionPolicy::PreserveAmbiguous;
     auto assessment = spice::sct::SctDocumentWorkflow::importForEditing(*inspection->parsed, options);
     if (!assessment.import.document.has_value()) {
         result.infrastructureDiagnostics.push_back({ DiagnosticSeverity::Error,
@@ -218,28 +202,31 @@ SctLoadResult SctDocumentLoader::materialize(
 
     auto diagnostics = inspection->diagnostics;
     for (const auto& diagnostic : assessment.import.diagnostics) {
-        diagnostics.push_back(convertDocumentDiagnostic(
-            locator, SctPipelineStage::Import, diagnostic));
+        diagnostics.push_back(convertSctDiagnostic(
+            diagnostic, SctPipelineStage::Import, locator));
     }
     for (const auto& diagnostic : assessment.documentValidation.diagnostics) {
-        diagnostics.push_back(convertDocumentDiagnostic(
-            locator, SctPipelineStage::Validation, diagnostic));
+        diagnostics.push_back(convertSctDiagnostic(
+            diagnostic, SctPipelineStage::Validation, locator));
     }
     std::vector<SctPipelineDiagnostic> baselineDiagnostics;
     for (const auto& diagnostic : diagnostics) {
         if (diagnostic.stage != SctPipelineStage::Validation)
             baselineDiagnostics.push_back(diagnostic);
     }
-    auto receipt = std::make_shared<const spice::sct::SctDocumentImportReceipt>(
-        std::move(assessment.import.receipt));
+    auto evidence = assessment.import.context.bind(
+        assessment.import.context.revisionProvenance());
     auto provenance = std::make_shared<const SctDocumentProvenance>(SctDocumentProvenance{
-        inspection, convention, origin, std::move(receipt),
+        inspection, convention, origin, evidence,
         std::move(baselineDiagnostics),
     });
+    auto document = std::make_shared<const spice::sct::SctDocument>(
+        std::move(*assessment.import.document));
+    auto analysis = std::make_shared<const spice::sct::SctDocumentAnalysis>(
+        spice::sct::SctDocumentAnalysis::build(*document,
+            evidence ? &*evidence : nullptr));
     auto snapshot = std::make_shared<SctDocumentSnapshot>(SctDocumentSnapshot{
-        std::move(provenance),
-        std::make_shared<const spice::sct::SctDocument>(
-            std::move(*assessment.import.document)),
+        std::move(provenance), document, std::move(analysis),
         assessment.readiness,
         std::move(diagnostics),
     });

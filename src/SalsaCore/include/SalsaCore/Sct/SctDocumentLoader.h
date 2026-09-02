@@ -5,6 +5,7 @@
 #include "SalsaCore/Project/GameProjectContext.h"
 
 #include "SpiceSCT/SctDocument.h"
+#include "SpiceSCT/SctDocumentAnalysis.h"
 #include "SpiceSCT/SctDocumentImporter.h"
 #include "SpiceSCT/SctDocumentWorkflow.h"
 #include "SpiceSCT/SctModel.h"
@@ -48,11 +49,8 @@ struct SctPipelineDiagnostic final {
     std::optional<AssetLocator> locator{};
     std::optional<std::uint32_t> payloadOffset{};
     std::optional<SctNavigationTarget> target{};
-    std::optional<std::uint32_t> schemaIndex{};
-    std::optional<std::uint32_t> repeatedGroupOrdinal{};
-    std::vector<std::uint32_t> expressionChildPath{};
-    std::optional<std::uint32_t> textOffset{};
-    std::optional<std::uint32_t> textSize{};
+    std::optional<spice::sct::SctDiagnosticLocation> primaryLocation{};
+    std::vector<spice::sct::SctDiagnosticLocation> relatedLocations{};
 };
 
 struct SctSourceInspection final {
@@ -66,17 +64,22 @@ struct SctDocumentProvenance final {
     std::shared_ptr<const SctSourceInspection> inspection;
     std::optional<spice::sct::SctKnownTextConvention> textConvention;
     SctTextSelectionOrigin textSelectionOrigin = SctTextSelectionOrigin::None;
-    std::shared_ptr<const spice::sct::SctDocumentImportReceipt> importReceipt;
+    std::optional<spice::sct::SctBoundImportEvidence> importEvidence;
     std::vector<SctPipelineDiagnostic> baselineDiagnostics;
 
     [[nodiscard]] const SourceAssetSnapshot& source() const noexcept {
         return inspection->source;
+    }
+
+    [[nodiscard]] const spice::sct::SctDocumentImportReceipt* importReceipt() const noexcept {
+        return importEvidence ? &importEvidence->receipt() : nullptr;
     }
 };
 
 struct SctDocumentSnapshot final {
     std::shared_ptr<const SctDocumentProvenance> provenance;
     std::shared_ptr<const spice::sct::SctDocument> document;
+    std::shared_ptr<const spice::sct::SctDocumentAnalysis> analysis;
     spice::sct::SctDocumentReadiness readiness = spice::sct::SctDocumentReadiness::Unavailable;
     std::vector<SctPipelineDiagnostic> diagnostics;
 };
@@ -106,5 +109,14 @@ public:
 
 [[nodiscard]] std::string_view sctTextConventionName(
     spice::sct::SctKnownTextConvention convention) noexcept;
+
+[[nodiscard]] std::optional<spice::sct::SctKnownTextConvention>
+recommendedSctTextConvention(
+    const spice::sct::SctSourceTextAssessment& assessment) noexcept;
+
+[[nodiscard]] SctPipelineDiagnostic convertSctDiagnostic(
+    const spice::sct::SctDocumentDiagnostic& source,
+    SctPipelineStage stage,
+    std::optional<AssetLocator> locator = std::nullopt);
 
 }  // namespace salsa::core

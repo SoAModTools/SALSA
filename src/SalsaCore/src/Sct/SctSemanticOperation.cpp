@@ -81,7 +81,7 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     const SctInsertInstructionAfterOperation& operation) {
     const auto target = instructionTarget(operation.instruction.id);
     const auto index = spice::sct::SctDocumentIndex::build(document);
-    if (index.find(operation.instruction.id) != nullptr) {
+    if (index.find(document, operation.instruction.id) != nullptr) {
         return {.issue = issue("InstructionAlreadyExists",
             "The inserted instruction ID already exists.", target)};
     }
@@ -106,7 +106,7 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
         script->instructions.begin()
             + static_cast<std::ptrdiff_t>(location->instructionOrdinal + 1u),
         operation.instruction);
-    const auto semantics = SctSemanticUsageIndex::contributionFor(operation.instruction);
+    const auto semantics = spice::sct::SctInstructionSemanticAnalyzer::build(operation.instruction);
     SctInstructionStructuralChange change;
     change.instruction = operation.instruction.id;
     change.after = SctInstructionPlacement{location->sectionId, operation.anchor};
@@ -133,7 +133,7 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     const auto target = instructionTarget(operation.instruction);
     const auto index = spice::sct::SctDocumentIndex::build(document);
     const auto location = index.instructionLocation(operation.instruction);
-    const auto* existing = index.find(operation.instruction);
+    const auto* existing = index.find(document, operation.instruction);
     if (!location.has_value() || existing == nullptr) {
         return {.issue = issue("InstructionNotFound",
             "The deleted instruction does not exist.", target)};
@@ -148,7 +148,7 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     }
     const auto removed = script->instructions[location->instructionOrdinal];
     const auto anchor = script->instructions[location->instructionOrdinal - 1u].id;
-    const auto semantics = SctSemanticUsageIndex::contributionFor(removed);
+    const auto semantics = spice::sct::SctInstructionSemanticAnalyzer::build(removed);
     script->instructions.erase(script->instructions.begin()
         + static_cast<std::ptrdiff_t>(location->instructionOrdinal));
     SctInstructionStructuralChange change;
@@ -217,7 +217,7 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
         script->instructions, operation.instruction,
         &spice::sct::SctDocumentInstruction::id);
     const auto* movedValue = std::addressof(*movedPosition);
-    const auto semantics = SctSemanticUsageIndex::contributionFor(*movedValue);
+    const auto semantics = spice::sct::SctInstructionSemanticAnalyzer::build(*movedValue);
     SctInstructionStructuralChange change;
     change.instruction = operation.instruction;
     change.before = SctInstructionPlacement{sourceLocation->sectionId, oldAnchor};

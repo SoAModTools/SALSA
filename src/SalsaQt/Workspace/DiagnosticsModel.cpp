@@ -52,27 +52,12 @@ namespace {
 
 [[nodiscard]] std::optional<core::SctInspectionLocation> inspectionLocation(
     const core::SctPipelineDiagnostic& diagnostic) {
-    if (!diagnostic.target.has_value()) return std::nullopt;
-    if (diagnostic.target->kind != core::SctNavigationKind::Instruction)
-        return core::SctInspectionLocation{ *diagnostic.target };
-
-    const auto instruction = spice::sct::SctInstructionId(diagnostic.target->id);
-    if (diagnostic.schemaIndex.has_value()) {
-        const spice::sct::SctParameterAddress parameter{
-            *diagnostic.schemaIndex, diagnostic.repeatedGroupOrdinal };
-        if (!diagnostic.expressionChildPath.empty()) {
-            return core::SctInspectionLocation{ core::SctExpressionSite{
-                instruction, parameter, diagnostic.expressionChildPath } };
-        }
-        return core::SctInspectionLocation{
-            core::SctParameterSite{ instruction, parameter } };
+    if (!diagnostic.primaryLocation) {
+        return diagnostic.target
+            ? std::optional<core::SctInspectionLocation>{*diagnostic.target}
+            : std::nullopt;
     }
-    if (!diagnostic.expressionChildPath.empty()) {
-        return core::SctInspectionLocation{ core::SctExpressionSite{
-            instruction, core::SctScheduledExpressionSite{},
-            diagnostic.expressionChildPath } };
-    }
-    return core::SctInspectionLocation{ *diagnostic.target };
+    return core::inspectionLocationForDiagnostic(*diagnostic.primaryLocation);
 }
 
 }  // namespace
@@ -87,6 +72,7 @@ void DiagnosticsModel::setDiagnostics(std::vector<core::Diagnostic> diagnostics)
         rows.push_back({ diagnostic.severity, codeText(diagnostic.code),
             QString::fromStdString(diagnostic.message),
             diagnostic.path.has_value() ? QString::fromStdWString(diagnostic.path->wstring()) : QString{},
+            QString::fromStdString(diagnostic.message),
             std::nullopt, std::nullopt });
     }
     setRows(std::move(rows));
@@ -108,6 +94,7 @@ void DiagnosticsModel::setCombinedDiagnostics(
         rows.push_back({ diagnostic.severity, codeText(diagnostic.code),
             QString::fromStdString(diagnostic.message),
             diagnostic.path.has_value() ? QString::fromStdWString(diagnostic.path->wstring()) : QString{},
+            QString::fromStdString(diagnostic.message),
             std::nullopt, std::nullopt });
     }
     for (const auto& diagnostic : document) {
@@ -116,20 +103,18 @@ void DiagnosticsModel::setCombinedDiagnostics(
             location = QString::fromStdWString(diagnostic.locator->path().wstring());
         if (diagnostic.payloadOffset.has_value())
             location += QStringLiteral(" @ 0x%1").arg(*diagnostic.payloadOffset, 0, 16);
-        if (diagnostic.schemaIndex.has_value())
-            location += QStringLiteral(" parameter %1").arg(*diagnostic.schemaIndex);
-        if (diagnostic.repeatedGroupOrdinal.has_value())
-            location += QStringLiteral(" group %1").arg(*diagnostic.repeatedGroupOrdinal);
-        if (!diagnostic.expressionChildPath.empty()) {
-            location += QStringLiteral(" expression");
-            for (const auto child : diagnostic.expressionChildPath)
-                location += QStringLiteral("/%1").arg(child);
-        }
-        if (diagnostic.textOffset.has_value())
-            location += QStringLiteral(" text[%1..%2)").arg(*diagnostic.textOffset)
-                .arg(*diagnostic.textOffset + diagnostic.textSize.value_or(0));
+        if (diagnostic.primaryLocation)
+            location += QStringLiteral(" — ") + QString::fromStdString(
+                core::formatSctDiagnosticLocation(*diagnostic.primaryLocation));
+        if (!diagnostic.relatedLocations.empty())
+            location += tr(" (+%1 related)").arg(diagnostic.relatedLocations.size());
+        QString tooltip = QString::fromStdString(diagnostic.message);
+        for (const auto& related : diagnostic.relatedLocations)
+            tooltip += QStringLiteral("\nRelated: ") + QString::fromStdString(
+                core::formatSctDiagnosticLocation(related));
         rows.push_back({ diagnostic.severity, QString::fromStdString(diagnostic.code),
             QString::fromStdString(diagnostic.message), std::move(location),
+            std::move(tooltip),
             diagnostic.locator, inspectionLocation(diagnostic) });
     }
     setRows(std::move(rows));
@@ -174,7 +159,7 @@ QVariant DiagnosticsModel::data(const QModelIndex& index, const int role) const 
         }
     }
     if (role == Qt::ToolTipRole) {
-        return diagnostic.message;
+        return diagnostic.tooltip.isEmpty() ? diagnostic.message : diagnostic.tooltip;
     }
     return {};
 }
@@ -190,7 +175,7 @@ QVariant DiagnosticsModel::headerData(
     case 0: return tr("Severity");
     case 1: return tr("Code");
     case 2: return tr("Message");
-    case 3: return tr("Path");
+    case 3: return tr("Location");
     default: return {};
     }
 }

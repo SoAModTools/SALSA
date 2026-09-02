@@ -36,7 +36,6 @@
     <ClInclude Include="include\SalsaCore\Sct\SctInspectionLocation.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctMessageAuthoring.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h"><Filter>SCT</Filter></ClInclude>
-    <ClInclude Include="include\SalsaCore\Sct\SctSemanticUsageIndex.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctSemanticOperation.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctWorkingState.h"><Filter>SCT</Filter></ClInclude>
   </ItemGroup>
@@ -53,7 +52,6 @@
     <ClCompile Include="src\Sct\SctEditSession.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctMessageAuthoring.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctPresentation.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="src\Sct\SctSemanticUsageIndex.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctSemanticOperation.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctWorkingState.cpp"><Filter>SCT</Filter></ClCompile>
   </ItemGroup>

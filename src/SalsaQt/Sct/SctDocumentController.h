@@ -28,7 +28,6 @@ struct SctDocumentUpdate final {
     SctDocumentUpdateKind kind = SctDocumentUpdateKind::Replacement;
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot{};
     std::optional<core::SctRevisionTransition> transition{};
-    std::shared_ptr<const spice::sct::SctDocumentIndex> documentIndex{};
 };
 
 class SctDocumentController final : public QObject {

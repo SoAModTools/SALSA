@@ -3,10 +3,12 @@
 
 #include "SpiceSCT/SctDocumentBuilder.h"
 #include "SpiceSCT/SctDocumentExporter.h"
+#include "SpiceSCT/SctDocumentImporter.h"
 #include "SpiceSCT/SctInstructionFactory.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
 #include <limits>
@@ -54,6 +56,49 @@ std::vector<std::byte> inspectableSctBytes(const bool includeText) {
     return bytes;
 }
 
+SctParseResult importedGapParse() {
+    SctParseResult parsed;
+    parsed.parseOk = true;
+    parsed.file.detectedEndian = "big";
+    parsed.file.originalPayloadBytes.resize(56u, 0u);
+    parsed.file.originalPayloadBytes[11] = 1u;
+    parsed.file.originalPayloadBytes[16] = 'M';
+    parsed.file.originalPayloadBytes[17] = 'A';
+    parsed.file.originalPayloadBytes[18] = 'I';
+    parsed.file.originalPayloadBytes[19] = 'N';
+    std::fill(parsed.file.originalPayloadBytes.begin() + 40,
+        parsed.file.originalPayloadBytes.begin() + 52, 0xacu);
+
+    SctInstruction jump;
+    jump.offset = 0u;
+    jump.payloadOffset = 0u;
+    jump.opcode = 10u;
+    jump.rawWords = {10u, 12u};
+    jump.parameters = {{0u, "offset", SctParameterValueKind::Link,
+        SctSemanticConfidence::Known, {12u}}};
+    jump.sizeBytes = 8u;
+    jump.decodeOk = true;
+
+    SctInstruction target;
+    target.offset = 20u;
+    target.payloadOffset = 20u;
+    target.opcode = 12u;
+    target.rawWords = {12u};
+    target.sizeBytes = 4u;
+    target.decodeOk = true;
+
+    SctSection section;
+    section.id = {0u, "MAIN"};
+    section.startOffset = 32u;
+    section.endOffset = 56u;
+    section.kind = SctSectionKind::Script;
+    section.instructions = {jump, target};
+    section.edges.push_back({SctEdgeType::Jump, SctSemanticConfidence::Known,
+        0u, 20u, 0u, 20u, 10u, "jump"});
+    parsed.file.sections.push_back(std::move(section));
+    return parsed;
+}
+
 class FakeCatalog final : public AssetCatalog {
 public:
     FakeCatalog(AssetLocator assetLocator, std::vector<std::byte> bytes)
@@ -90,6 +135,22 @@ private:
     FakeCatalog catalog_;
 };
 
+SctDocumentSnapshot snapshotWithEvidence(
+    SctDocument document, const SctBoundImportEvidence& evidence) {
+    const auto asset = locator();
+    FakeProject project(asset, inspectableSctBytes(false));
+    const auto loaded = SctDocumentLoader::load(project, asset);
+    EXPECT_TRUE(loaded.succeeded());
+    auto provenance = std::make_shared<SctDocumentProvenance>(
+        *loaded.document->provenance);
+    provenance->importEvidence = evidence;
+    auto documentPtr = std::make_shared<const SctDocument>(std::move(document));
+    auto analysis = std::make_shared<const SctDocumentAnalysis>(
+        SctDocumentAnalysis::build(*documentPtr, &evidence));
+    return {std::move(provenance), std::move(documentPtr), std::move(analysis),
+        SctDocumentReadiness::StructurallyValid, {}};
+}
+
 void collectProperties(
     const SctPropertyItem& property,
     const std::string_view name,
@@ -124,6 +185,10 @@ SctEntityPresentation expressionPresentation(
     script.instructions.insert(script.instructions.begin(), std::move(instruction));
     auto snapshot = *loaded.document;
     snapshot.document = std::move(document);
+    snapshot.analysis = std::make_shared<const SctDocumentAnalysis>(
+        SctDocumentAnalysis::build(*snapshot.document,
+            snapshot.provenance->importEvidence
+                ? &*snapshot.provenance->importEvidence : nullptr));
     return SctPresentationService::describe(
         snapshot, {SctNavigationKind::Instruction, instructionId.value()});
 }
@@ -138,7 +203,80 @@ TEST(SctDocumentLoader, LoadsNoTextDocumentWithoutInventingAConvention) {
     EXPECT_TRUE(loaded.inspection->textAssessment.records.empty());
     EXPECT_FALSE(loaded.document->provenance->textConvention.has_value());
     EXPECT_EQ(loaded.document->provenance->textSelectionOrigin, SctTextSelectionOrigin::None);
+    ASSERT_TRUE(loaded.document->provenance->importEvidence.has_value());
+    ASSERT_NE(loaded.document->analysis, nullptr);
+    EXPECT_TRUE(loaded.document->analysis->importedSites.has_value());
     ASSERT_EQ(loaded.document->document->sections.size(), 1u);
+}
+
+TEST(SctDocumentLoader, AutomaticConventionSelectionFollowsV2RecommendationStatus) {
+    SctSourceTextAssessment assessment;
+    assessment.records.push_back({});
+    for (const auto status : {SctSourceTextRecommendationStatus::Ambiguous,
+            SctSourceTextRecommendationStatus::Conflicting,
+            SctSourceTextRecommendationStatus::InsufficientEvidence}) {
+        assessment.recommendation.status = status;
+        assessment.recommendation.convention = SctKnownTextConvention::ShiftJisByte7F;
+        EXPECT_FALSE(recommendedSctTextConvention(assessment).has_value());
+    }
+    assessment.recommendation.status = SctSourceTextRecommendationStatus::Unique;
+    assessment.recommendation.convention = SctKnownTextConvention::Windows1252Byte7F;
+    EXPECT_EQ(recommendedSctTextConvention(assessment),
+        SctKnownTextConvention::Windows1252Byte7F);
+    assessment.records.clear();
+    EXPECT_FALSE(recommendedSctTextConvention(assessment).has_value());
+}
+
+TEST(SctDocumentLoader, BoundImportEvidenceAndAnalysisOutliveTheLoadResult) {
+    const auto asset = locator();
+    FakeProject project(asset, inspectableSctBytes(false));
+    std::shared_ptr<const SctDocumentSnapshot> snapshot;
+    {
+        auto loaded = SctDocumentLoader::load(project, asset);
+        ASSERT_TRUE(loaded.succeeded());
+        snapshot = std::move(loaded.document);
+    }
+    ASSERT_TRUE(snapshot->provenance->importEvidence.has_value());
+    EXPECT_GT(snapshot->provenance->importReceipt()->sourceMap.decodedPayloadSize(), 0u);
+    ASSERT_NE(snapshot->analysis, nullptr);
+    EXPECT_EQ(snapshot->analysis->entities.find(*snapshot->document,
+        std::get<SctScriptSectionContent>(snapshot->document->sections.front().content)
+            .instructions.front().id)->opcode, 12u);
+
+    SctDocument unrelated;
+    const auto instruction = std::get<SctScriptSectionContent>(
+        snapshot->document->sections.front().content).instructions.front().id;
+    EXPECT_EQ(snapshot->analysis->entities.find(unrelated, instruction), nullptr);
+}
+
+TEST(SctDiagnostics, PreservesExactPrimaryAndRelatedV2Locations) {
+    const SctParameterSite primary{SctInstructionId{7}, {3u, 2u}};
+    const SctExpressionSite related{SctInstructionId{7},
+        SctScheduledExpressionSite{}, {1u, 0u}};
+    SctDocumentDiagnostic source;
+    source.severity = SctDiagnosticSeverity::Warning;
+    source.code = SctDiagnosticCode::ExpressionRuntimeStackDepth;
+    source.message = "runtime stack evidence";
+    source.primaryLocation = SctDiagnosticLocation{primary};
+    source.relatedLocations = {SctDiagnosticLocation{related},
+        SctDiagnosticLocation{SctDraftExpressionSite{10u,
+            SctExpressionOwner{SctScheduledExpressionSite{}}, {2u}}}};
+
+    const auto converted = convertSctDiagnostic(
+        source, SctPipelineStage::Validation, locator());
+    EXPECT_EQ(converted.code, "ExpressionRuntimeStackDepth");
+    EXPECT_EQ(converted.primaryLocation, source.primaryLocation);
+    EXPECT_EQ(converted.relatedLocations, source.relatedLocations);
+    EXPECT_FALSE(converted.target.has_value());
+    const auto location = inspectionLocationForDiagnostic(*converted.primaryLocation);
+    ASSERT_TRUE(location.has_value());
+    const auto* parameter = std::get_if<SctParameterSite>(&*location);
+    ASSERT_NE(parameter, nullptr);
+    EXPECT_EQ(*parameter, primary);
+    EXPECT_EQ(formatSctDiagnosticLocation(*converted.primaryLocation),
+        "instruction 7, parameter 3 group 2");
+    EXPECT_EQ(formatSctDiagnosticLocation(converted.relatedLocations.back()),
+        "draft opcode 10 scheduled expression/2");
 }
 
 TEST(SctDocumentLoader, AmbiguousTextStaysOpaqueUntilExplicitReimport) {
@@ -157,6 +295,10 @@ TEST(SctDocumentLoader, AmbiguousTextStaysOpaqueUntilExplicitReimport) {
         SctKnownTextConvention::ShiftJisByte7F);
     EXPECT_EQ(reimported.document->provenance->textSelectionOrigin,
         SctTextSelectionOrigin::UserSelected);
+    EXPECT_EQ(loaded.document->provenance->importReceipt()->footerTextPromotion,
+        SctFooterTextPromotionPolicy::PreserveAmbiguous);
+    EXPECT_EQ(reimported.document->provenance->importReceipt()->footerTextPromotion,
+        SctFooterTextPromotionPolicy::TrustSelectedEncoding);
     ASSERT_EQ(reimported.document->document->sections.size(), 2u);
     const auto& string = std::get<SctStringSectionContent>(
         reimported.document->document->sections.back().content).string;
@@ -203,11 +345,16 @@ TEST(SctPresentation, DisplaysSemanticExpressionValuesWithRawEncodingEvidence) {
         0x08000380u, {}, {}};
     SctCanonicalExpressionNode variable{SctCanonicalExpressionNodeKind::BitVariable,
         0x2000002au, {}, {}};
+    SctCanonicalExpressionNode negated{SctCanonicalExpressionNodeKind::NegatedIntVariable,
+        0x5000002bu, {}, {}};
+    SctCanonicalExpressionNode low16{
+        SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison,
+        0x5000002cu, {}, {}};
     SctCanonicalExpressionNode add{SctCanonicalExpressionNodeKind::ArithmeticOperator,
         0x0eu, {}, {decimal, variable}};
 
     const auto presentation = expressionPresentation(
-        {positiveFloat, negativeFloat, decimal, variable, add});
+        {positiveFloat, negativeFloat, decimal, variable, negated, low16, add});
     const auto floats = propertiesNamed(presentation, "Float literal");
     ASSERT_EQ(floats.size(), 2u);
     EXPECT_EQ(floats[0]->value, "1.5");
@@ -223,6 +370,13 @@ TEST(SctPresentation, DisplaysSemanticExpressionValuesWithRawEncodingEvidence) {
     ASSERT_GE(variables.size(), 2u);
     EXPECT_EQ(variables.front()->value, "42");
     EXPECT_NE(variables.front()->notes.find("0x2000002A"), std::string::npos);
+    const auto negatedVariables = propertiesNamed(presentation, "Negated integer variable");
+    ASSERT_EQ(negatedVariables.size(), 1u);
+    EXPECT_EQ(negatedVariables.front()->value, "43");
+    const auto low16Variables = propertiesNamed(
+        presentation, "Negated integer variable (low-16 comparison)");
+    ASSERT_EQ(low16Variables.size(), 1u);
+    EXPECT_EQ(low16Variables.front()->value, "44");
     const auto operators = propertiesNamed(presentation, "Arithmetic");
     ASSERT_EQ(operators.size(), 1u);
     EXPECT_EQ(operators.front()->value, "+");
@@ -258,6 +412,10 @@ TEST(SctPresentation, AttachesExactParameterAndExpressionInspectionLocations) {
 
     auto snapshot = *loaded.document;
     snapshot.document = std::move(document);
+    snapshot.analysis = std::make_shared<const SctDocumentAnalysis>(
+        SctDocumentAnalysis::build(*snapshot.document,
+            snapshot.provenance->importEvidence
+                ? &*snapshot.provenance->importEvidence : nullptr));
     const auto presentation = SctPresentationService::describe(snapshot,
         { SctNavigationKind::Instruction, instruction.id.value() });
 
@@ -326,6 +484,10 @@ TEST(SctPresentation, ExposesOpaqueAttachmentInstructionAnchorsForNavigation) {
 
     auto snapshot = *loaded.document;
     snapshot.document = std::move(document);
+    snapshot.analysis = std::make_shared<const SctDocumentAnalysis>(
+        SctDocumentAnalysis::build(*snapshot.document,
+            snapshot.provenance->importEvidence
+                ? &*snapshot.provenance->importEvidence : nullptr));
     const auto presentation = SctPresentationService::describe(snapshot,
         { SctNavigationKind::OpaqueAttachment, attachment.value() });
     const auto anchors = propertiesNamed(presentation, "Anchor");
@@ -338,6 +500,137 @@ TEST(SctPresentation, ExposesOpaqueAttachmentInstructionAnchorsForNavigation) {
     EXPECT_EQ(*target, (SctNavigationTarget{
         SctNavigationKind::Instruction, instruction.value() }));
     EXPECT_EQ(navigationTargetForOpaqueAnchor(SctOpaqueAnchor{ instruction }), *target);
+}
+
+TEST(SctPresentation, ShowsImportedContextForBetweenInstructionOpaqueGap) {
+    const auto imported = SctDocumentImporter::import(importedGapParse());
+    ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
+    ASSERT_TRUE(evidence.has_value());
+    const auto attachment = imported.document->opaqueAttachments.front().id;
+    const auto snapshot = snapshotWithEvidence(std::move(*imported.document), *evidence);
+
+    const auto presentation = SctPresentationService::describe(snapshot,
+        {SctNavigationKind::OpaqueAttachment, attachment.value()});
+    const auto spans = propertiesNamed(presentation, "Decoded source span");
+    ASSERT_EQ(spans.size(), 1u);
+    EXPECT_EQ(spans.front()->value, "0x00000028 - 0x00000034");
+    const auto regions = propertiesNamed(presentation, "Source region");
+    ASSERT_EQ(regions.size(), 1u);
+    EXPECT_EQ(regions.front()->value, "section payload");
+    EXPECT_EQ(propertiesNamed(presentation, "Containing section").size(), 1u);
+    EXPECT_EQ(propertiesNamed(presentation, "Section-relative offset").size(), 1u);
+
+    const auto previous = propertiesNamed(presentation, "Previous semantic entity");
+    const auto next = propertiesNamed(presentation, "Next semantic entity");
+    ASSERT_EQ(previous.size(), 1u);
+    ASSERT_EQ(next.size(), 1u);
+    EXPECT_TRUE(previous.front()->location.has_value());
+    EXPECT_TRUE(next.front()->location.has_value());
+    EXPECT_EQ(propertiesNamed(presentation, "Preceding targeted source leaf").size(), 1u);
+    EXPECT_EQ(propertiesNamed(presentation, "Following targeted source leaf").size(), 1u);
+    const auto envelopes = propertiesNamed(presentation, "Containing source envelopes");
+    ASSERT_EQ(envelopes.size(), 1u);
+    EXPECT_FALSE(envelopes.front()->children.empty());
+    const auto edges = propertiesNamed(presentation, "Crossing imported control-flow edges");
+    ASSERT_EQ(edges.size(), 1u);
+    ASSERT_EQ(edges.front()->children.size(), 1u);
+    const auto interpretations = propertiesNamed(presentation, "Evidence-qualified interpretations");
+    ASSERT_EQ(interpretations.size(), 1u);
+    ASSERT_EQ(interpretations.front()->children.size(), 1u);
+    EXPECT_EQ(interpretations.front()->children.front().name, "Control-flow gap");
+}
+
+TEST(SctPresentation, ShowsWithinInstructionSourceNeighborhoodWithoutInventingOwnership) {
+    SctDocument document;
+    const auto section = document.allocateSectionId();
+    const auto instruction = document.allocateInstructionId();
+    const auto attachment = document.allocateOpaqueAttachmentId();
+    SctDocumentInstruction value{instruction, 125u};
+    value.fixedParameters = {
+        {0u, SctEncodedWordValue{1u}},
+        {1u, SctEncodedWordValue{2u}},
+    };
+    document.sections.push_back({section, "MAIN", SctScriptSectionContent{{value}}});
+    document.opaqueAttachments.push_back({attachment, {0xdeu, 0xadu},
+        SctOpaqueAnchor{instruction}, SctOpaquePlacement::After, std::nullopt, 1u,
+        SctOpaqueRelocationSupport::Relocatable, SctOpaqueReason::Gap});
+
+    const SctDocumentEntityId instructionEntity{instruction};
+    const SctDocumentEntityId attachmentEntity{attachment};
+    const SctParameterSite first{instruction, {0u, std::nullopt}};
+    const SctParameterSite second{instruction, {1u, std::nullopt}};
+    auto sourceMap = SctImportedSourceMap::build(16u, {
+        {{0u, 16u}, SctSourceSpanRole::Instruction, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, instructionEntity, std::nullopt, std::nullopt,
+            SctSourceRegion::SectionPayload, true},
+        {{0u, 4u}, SctSourceSpanRole::InstructionParameter, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{first}},
+        {{4u, 4u}, SctSourceSpanRole::OpaqueAttachment, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::OpaqueAttachment, attachmentEntity, std::nullopt, std::nullopt,
+            SctSourceRegion::SectionPayload, true},
+        {{8u, 4u}, SctSourceSpanRole::InstructionParameter, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{second}},
+        {{12u, 4u}, SctSourceSpanRole::DerivedPadding, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::DerivedLayout},
+    });
+    ASSERT_TRUE(sourceMap.map.has_value());
+    SctDocumentImportReceipt receipt;
+    receipt.sourceMap = std::move(*sourceMap.map);
+    SctDocumentImportContext context(std::move(receipt));
+    const auto evidence = context.bind(context.revisionProvenance());
+    ASSERT_TRUE(evidence.has_value());
+    const auto snapshot = snapshotWithEvidence(std::move(document), *evidence);
+
+    const auto presentation = SctPresentationService::describe(snapshot,
+        {SctNavigationKind::OpaqueAttachment, attachment.value()});
+    const auto preceding = propertiesNamed(presentation, "Preceding targeted source leaf");
+    const auto following = propertiesNamed(presentation, "Following targeted source leaf");
+    ASSERT_EQ(preceding.size(), 1u);
+    ASSERT_EQ(following.size(), 1u);
+    ASSERT_TRUE(preceding.front()->location.has_value());
+    ASSERT_TRUE(following.front()->location.has_value());
+    EXPECT_NE(std::get_if<SctParameterSite>(&*preceding.front()->location), nullptr);
+    EXPECT_NE(std::get_if<SctParameterSite>(&*following.front()->location), nullptr);
+    const auto envelopes = propertiesNamed(presentation, "Containing source envelopes");
+    ASSERT_EQ(envelopes.size(), 1u);
+    ASSERT_EQ(envelopes.front()->children.size(), 1u);
+    EXPECT_EQ(envelopes.front()->children.front().name, "instruction");
+    EXPECT_EQ(propertiesNamed(presentation, "Containing section").size(), 0u);
+}
+
+TEST(SctPresentation, ShowsDocumentAnchoredOpaqueSourceContext) {
+    SctDocument document;
+    const auto attachment = document.allocateOpaqueAttachmentId();
+    document.opaqueAttachments.push_back({attachment, {0xbeu, 0xefu},
+        SctOpaqueAnchor{SctDocumentAnchor{}}, SctOpaquePlacement::After,
+        std::nullopt, 1u, SctOpaqueRelocationSupport::Relocatable,
+        SctOpaqueReason::Gap});
+    const SctDocumentEntityId attachmentEntity{attachment};
+    auto sourceMap = SctImportedSourceMap::build(4u, {
+        {{0u, 4u}, SctSourceSpanRole::OpaqueAttachment, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::OpaqueAttachment, attachmentEntity, std::nullopt,
+            std::nullopt, SctSourceRegion::Footer, true},
+    });
+    ASSERT_TRUE(sourceMap.map.has_value());
+    SctDocumentImportReceipt receipt;
+    receipt.sourceMap = std::move(*sourceMap.map);
+    SctDocumentImportContext context(std::move(receipt));
+    const auto evidence = context.bind(context.revisionProvenance());
+    ASSERT_TRUE(evidence.has_value());
+    const auto snapshot = snapshotWithEvidence(std::move(document), *evidence);
+
+    const auto presentation = SctPresentationService::describe(snapshot,
+        {SctNavigationKind::OpaqueAttachment, attachment.value()});
+    const auto anchors = propertiesNamed(presentation, "Anchor");
+    ASSERT_EQ(anchors.size(), 1u);
+    EXPECT_EQ(anchors.front()->value, "Document");
+    EXPECT_EQ(propertiesNamed(presentation, "Containing section").size(), 0u);
+    const auto regions = propertiesNamed(presentation, "Source region");
+    ASSERT_EQ(regions.size(), 1u);
+    EXPECT_EQ(regions.front()->value, "footer");
+    EXPECT_EQ(navigationTargetForOpaqueAnchor(SctOpaqueAnchor{SctDocumentAnchor{}}),
+        (SctNavigationTarget{SctNavigationKind::Document, 0u}));
 }
 
 TEST(SctPresentation, KeepsNonFiniteAndMalformedFloatEvidenceInspectable) {

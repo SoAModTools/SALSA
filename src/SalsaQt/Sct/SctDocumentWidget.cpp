@@ -31,6 +31,24 @@
 namespace salsa::qt {
 namespace {
 
+std::optional<core::SctNavigationTarget> navigationForEntity(
+    const spice::sct::SctDocumentEntityId& entity) {
+    return std::visit([](const auto& id) -> std::optional<core::SctNavigationTarget> {
+        using T = std::decay_t<decltype(id)>;
+        if constexpr (std::is_same_v<T, std::monostate>) return std::nullopt;
+        else if constexpr (std::is_same_v<T, spice::sct::SctSectionId>)
+            return core::SctNavigationTarget{core::SctNavigationKind::Section, id.value()};
+        else if constexpr (std::is_same_v<T, spice::sct::SctInstructionId>)
+            return core::SctNavigationTarget{core::SctNavigationKind::Instruction, id.value()};
+        else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
+            return core::SctNavigationTarget{core::SctNavigationKind::String, id.value()};
+        else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryId>)
+            return core::SctNavigationTarget{core::SctNavigationKind::FooterEntry, id.value()};
+        else return core::SctNavigationTarget{
+            core::SctNavigationKind::OpaqueAttachment, id.value()};
+    }, entity);
+}
+
 void expandAncestors(QTreeView& tree, QModelIndex index) {
     for (auto parent = index.parent(); parent.isValid(); parent = parent.parent())
         tree.setExpanded(parent, true);
@@ -130,10 +148,51 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             const auto target = *outlineModel_->target(modelIndex);
             if (target.kind == core::SctNavigationKind::OpaqueAttachment) {
                 const auto* attachment = index_
-                    ? index_->find(spice::sct::SctOpaqueAttachmentId(target.id))
+                    ? index_->find(*snapshot_->document,
+                        spice::sct::SctOpaqueAttachmentId(target.id))
                     : nullptr;
-                if (attachment != nullptr)
-                    selectTarget(core::navigationTargetForOpaqueAnchor(attachment->anchor));
+                if (attachment == nullptr) return;
+                if (const auto* direct = std::get_if<spice::sct::SctInstructionId>(
+                        &attachment->anchor)) {
+                    selectTarget({core::SctNavigationKind::Instruction, direct->value()});
+                    return;
+                }
+                const auto* context = snapshot_->analysis->opaqueContext.find(attachment->id);
+                if (context != nullptr && !context->crossingImportedEdges.empty()) {
+                    const auto source = context->crossingImportedEdges.front().sourceInstruction;
+                    if (index_->find(*snapshot_->document, source) != nullptr) {
+                        selectTarget({core::SctNavigationKind::Instruction, source.value()});
+                        return;
+                    }
+                }
+                if (context != nullptr && context->nextSemanticEntity) {
+                    const auto imported = spice::sct::SctImportedSourceTarget{
+                        *context->nextSemanticEntity};
+                    const auto* status = snapshot_->analysis->importedSites
+                        ? snapshot_->analysis->importedSites->find(imported) : nullptr;
+                    const auto next = navigationForEntity(*context->nextSemanticEntity);
+                    if ((status == nullptr || status->addressability
+                            != spice::sct::SctImportedSiteAddressability::MissingEntity)
+                        && next) {
+                        selectTarget(*next);
+                        return;
+                    }
+                }
+                if (context != nullptr && context->previousSemanticEntity) {
+                    const auto imported = spice::sct::SctImportedSourceTarget{
+                        *context->previousSemanticEntity};
+                    const auto* status = snapshot_->analysis->importedSites
+                        ? snapshot_->analysis->importedSites->find(imported) : nullptr;
+                    const auto previous = navigationForEntity(
+                        *context->previousSemanticEntity);
+                    if ((status == nullptr || status->addressability
+                            != spice::sct::SctImportedSiteAddressability::MissingEntity)
+                        && previous) {
+                        selectTarget(*previous);
+                        return;
+                    }
+                }
+                selectTarget(core::navigationTargetForOpaqueAnchor(attachment->anchor));
                 return;
             }
             if (editingEnabled_ && selectedMessageTarget().has_value())
@@ -189,10 +248,7 @@ void SctDocumentWidget::setSnapshot(
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
     const int sourceStatus) {
     snapshot_ = std::move(snapshot);
-    index_.reset();
-    if (snapshot_ && snapshot_->document)
-        index_ = std::make_shared<const spice::sct::SctDocumentIndex>(
-            spice::sct::SctDocumentIndex::build(*snapshot_->document));
+    index_ = snapshot_ && snapshot_->analysis ? &snapshot_->analysis->entities : nullptr;
     updateSourceBanner(sourceStatus);
     if (!snapshot_) return;
     const auto& assessment = snapshot_->provenance->inspection->textAssessment;
@@ -209,20 +265,31 @@ void SctDocumentWidget::setSnapshot(
                 static_cast<qsizetype>(core::sctTextConventionName(*snapshot_->provenance->textConvention).size()))));
         const auto comboIndex = conventionCombo_->findData(static_cast<int>(*snapshot_->provenance->textConvention));
         if (comboIndex >= 0) conventionCombo_->setCurrentIndex(comboIndex);
-    } else if (assessment.viableConventions.empty()) {
-        conventionBanner_->setText(tr("No convention decodes every text record. Text remains opaque; choose an interpretation to inspect it."));
     } else {
-        conventionBanner_->setText(tr("Multiple text conventions are viable. Text remains opaque until you choose one."));
+        using Status = spice::sct::SctSourceTextRecommendationStatus;
+        switch (assessment.recommendation.status) {
+        case Status::Ambiguous:
+            conventionBanner_->setText(tr("Indexed text supports multiple conventions. Text remains opaque until you choose one."));
+            break;
+        case Status::Conflicting:
+            conventionBanner_->setText(tr("Indexed text records conflict about their encoding. Text remains opaque until you choose an interpretation."));
+            break;
+        case Status::InsufficientEvidence:
+            conventionBanner_->setText(tr("There is not enough indexed-text evidence to recommend an encoding. Text remains opaque until you choose one."));
+            break;
+        case Status::Unique:
+            conventionBanner_->setText(tr("The recommended text convention could not be applied automatically."));
+            break;
+        }
     }
     rebuildOutline();
 }
 
 void SctDocumentWidget::installVerifiedSnapshot(
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
-    std::shared_ptr<const spice::sct::SctDocumentIndex> index,
     const int sourceStatus) {
     snapshot_ = std::move(snapshot);
-    index_ = std::move(index);
+    index_ = snapshot_ && snapshot_->analysis ? &snapshot_->analysis->entities : nullptr;
     updateSourceBanner(sourceStatus);
     if (outlineReconciliationPending_) {
         rebuildOutline();
@@ -355,12 +422,12 @@ std::optional<core::SctMessageTarget> SctDocumentWidget::selectedMessageTarget()
     const auto& index = *index_;
     if (currentTarget_->kind == core::SctNavigationKind::String) {
         const auto id = spice::sct::SctStringId(currentTarget_->id);
-        const auto* string = index.find(id);
+        const auto* string = index.find(*snapshot_->document, id);
         if (string != nullptr && std::holds_alternative<spice::sct::SctMessage>(string->value))
             return core::SctMessageTarget{id};
     } else if (currentTarget_->kind == core::SctNavigationKind::FooterEntry) {
         const auto id = spice::sct::SctFooterEntryId(currentTarget_->id);
-        const auto* entry = index.find(id);
+        const auto* entry = index.find(*snapshot_->document, id);
         if (entry != nullptr && std::holds_alternative<spice::sct::SctMessage>(entry->value))
             return core::SctMessageTarget{id};
     }
@@ -408,7 +475,8 @@ void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
     if (!snapshot_) return;
     if (target.kind == core::SctNavigationKind::Instruction
         && (!index_
-            || index_->find(spice::sct::SctInstructionId(target.id)) == nullptr)) {
+            || index_->find(*snapshot_->document,
+                spice::sct::SctInstructionId(target.id)) == nullptr)) {
         const auto* instruction = outlineModel_->instruction(
             spice::sct::SctInstructionId(target.id));
         if (instruction != nullptr) {

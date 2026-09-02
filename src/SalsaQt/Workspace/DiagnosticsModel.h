@@ -15,6 +15,7 @@ struct DiagnosticRow final {
     QString code{};
     QString message{};
     QString location{};
+    QString tooltip{};
     std::optional<core::AssetLocator> locator{};
     std::optional<core::SctInspectionLocation> inspectionLocation{};
 
