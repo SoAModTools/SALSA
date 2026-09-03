@@ -2,6 +2,7 @@
 
 #include "Workspace/WorkspaceController.h"
 #include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
+#include "SalsaCore/Persistence/WorkspaceSession.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 
 #include <QMainWindow>
@@ -19,6 +20,7 @@ class QTableView;
 class QTabWidget;
 class QToolButton;
 class QTreeView;
+class QTimer;
 
 namespace salsa::qt {
 
@@ -53,7 +55,10 @@ private:
     void chooseDataset();
     void openDataset(const QString& rootPath);
     void associatePatchWorkspace();
+    [[nodiscard]] bool openPatchWorkspace(
+        const QString& workspaceRoot, bool allowConfirmation);
     void disconnectPatchWorkspace();
+    void detachPatchWorkspace(bool saveSession);
     void restorePatchWorkspaceAssociation();
     void rememberPatchWorkspaceAssociation(
         const QString& datasetRoot, const QString& workspaceRoot);
@@ -117,6 +122,17 @@ private:
     void attemptRestoreDataset();
     void restoreApplicationSettings();
     void saveApplicationSettings() const;
+    void scheduleWorkspaceSessionSave();
+    void saveWorkspaceSession();
+    [[nodiscard]] std::optional<core::WorkspaceSessionState>
+        captureWorkspaceSession() const;
+    void restoreWorkspaceSession();
+    void restoreNextWorkspaceDocument();
+    void continueWorkspaceSessionRestore(
+        const QString& identityKey, bool success, bool cancelled,
+        const QString& message);
+    void finishWorkspaceSessionRestore();
+    void restoreProjectTreeState(const core::WorkspaceSessionState& state);
     void handleOperationCompleted(
         WorkspaceController::Operation operation,
         bool success,
@@ -180,7 +196,12 @@ private:
     QString lastDataset_{};
     QString lastExportDirectory_{};
     std::shared_ptr<const core::LocalSalsaWorkspace> patchWorkspace_{};
+    QTimer* workspaceSessionSaveTimer_ = nullptr;
+    std::optional<core::WorkspaceSessionState> restoringWorkspaceSessionState_{};
+    std::size_t restoringWorkspaceDocumentIndex_ = 0;
+    QStringList workspaceRestoreMessages_{};
     bool restoringDataset_ = false;
+    bool restoringWorkspaceSession_ = false;
     bool diagnosticsSyncPending_ = false;
     bool editTimingsEnabled_ = false;
     bool showStructuredBasicBlocks_ = false;

@@ -57,6 +57,12 @@ private:
     return AssetLocator::fromRelativePath(std::filesystem::path(value)).value();
 }
 
+[[nodiscard]] DatasetContext patchDataset(const std::filesystem::path& root,
+    const std::string_view identity = "workspace-dataset") {
+    return {root, DatasetIdentity{std::nullopt, std::nullopt,
+        DatasetFingerprint{patchDigest(identity)}}};
+}
+
 [[nodiscard]] SctDocument makeBaselineDocument() {
     SctDocument document;
     const auto scriptSection = document.allocateSectionId();
@@ -415,7 +421,7 @@ TEST(LocalSalsaWorkspaceTest, CreatesReopensAndSeparatesPatchFilesFromDataset) {
     const auto workspace = temporary.path() / L"workspace";
     std::filesystem::create_directory(dataset);
 
-    auto created = LocalSalsaWorkspace::openOrCreate(workspace, dataset);
+    auto created = LocalSalsaWorkspace::openOrCreate(workspace, patchDataset(dataset));
     ASSERT_TRUE(created);
     EXPECT_TRUE(std::filesystem::exists(workspace / L"project.json"));
     EXPECT_TRUE(std::filesystem::is_directory(workspace / L"patches"));
@@ -438,11 +444,12 @@ TEST(LocalSalsaWorkspaceTest, CreatesReopensAndSeparatesPatchFilesFromDataset) {
     ASSERT_TRUE(loaded.value().has_value());
     EXPECT_EQ(loaded.value()->payload.bytes, envelope.payload.bytes);
 
-    const auto reopened = LocalSalsaWorkspace::openOrCreate(workspace, dataset);
+    const auto reopened = LocalSalsaWorkspace::openOrCreate(workspace, patchDataset(dataset));
     EXPECT_TRUE(reopened);
     const auto otherDataset = temporary.path() / L"other-dataset";
     std::filesystem::create_directory(otherDataset);
-    EXPECT_FALSE(LocalSalsaWorkspace::openOrCreate(workspace, otherDataset));
+    EXPECT_FALSE(LocalSalsaWorkspace::openOrCreate(
+        workspace, patchDataset(otherDataset, "other-dataset")));
 }
 
 TEST(LocalSalsaWorkspaceTest, RejectsAConflictingNonemptyDirectory) {
@@ -453,7 +460,8 @@ TEST(LocalSalsaWorkspaceTest, RejectsAConflictingNonemptyDirectory) {
     std::filesystem::create_directory(workspace);
     std::ofstream(workspace / L"unrelated.txt") << "keep";
 
-    const auto result = LocalSalsaWorkspace::openOrCreate(workspace, dataset);
+    const auto result = LocalSalsaWorkspace::openOrCreate(
+        workspace, patchDataset(dataset));
     ASSERT_FALSE(result);
     EXPECT_TRUE(std::filesystem::exists(workspace / L"unrelated.txt"));
     EXPECT_FALSE(std::filesystem::exists(workspace / L"project.json"));

@@ -4,6 +4,7 @@
 
 #include <QAbstractItemModel>
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -20,6 +21,10 @@ public:
     [[nodiscard]] std::optional<core::AssetDescriptor> assetAt(
         const QModelIndex& index) const;
     [[nodiscard]] QModelIndex indexForLocator(const core::AssetLocator& locator) const;
+    [[nodiscard]] std::optional<std::filesystem::path> logicalDirectoryAt(
+        const QModelIndex& index) const;
+    [[nodiscard]] QModelIndex indexForLogicalDirectory(
+        const std::filesystem::path& path) const;
 
     [[nodiscard]] QModelIndex index(
         int row,
@@ -47,6 +52,10 @@ private:
     [[nodiscard]] QModelIndex indexForLocator(
         const Node& parent,
         const core::AssetLocator& locator) const;
+    [[nodiscard]] QModelIndex indexForLogicalDirectory(
+        const Node& parent,
+        std::filesystem::path::const_iterator component,
+        std::filesystem::path::const_iterator end) const;
 
     Node root_{};
 };

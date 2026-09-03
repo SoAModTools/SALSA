@@ -40,6 +40,8 @@ enum class DiagnosticCode {
     PersistenceWriteFailed,
     PersistenceReplaceFailed,
     InvalidSalsaWorkspace,
+    WorkspaceDatasetReassociationRequired,
+    InvalidWorkspaceSession,
     UnsupportedSctPatchSchema,
     InvalidSctPatch,
     SctPatchSourceMismatch,

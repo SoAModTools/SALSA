@@ -66,6 +66,28 @@ QModelIndex WorkspaceModel::indexForLocator(const core::AssetLocator& locator) c
     return indexForLocator(root_, locator);
 }
 
+std::optional<std::filesystem::path> WorkspaceModel::logicalDirectoryAt(
+    const QModelIndex& index) const {
+    if (!index.isValid()) return std::nullopt;
+    const auto* node = static_cast<const Node*>(index.internalPointer());
+    if (node->asset) return std::nullopt;
+    std::filesystem::path result;
+    std::vector<std::wstring> components;
+    while (node != nullptr && node != &root_) {
+        components.push_back(node->name.toStdWString());
+        node = node->parent;
+    }
+    for (auto component = components.rbegin(); component != components.rend(); ++component)
+        result /= *component;
+    return result;
+}
+
+QModelIndex WorkspaceModel::indexForLogicalDirectory(
+    const std::filesystem::path& path) const {
+    if (path.empty() || path.is_absolute() || path.has_root_path()) return {};
+    return indexForLogicalDirectory(root_, path.begin(), path.end());
+}
+
 QModelIndex WorkspaceModel::index(
     const int row,
     const int column,
@@ -184,6 +206,24 @@ QModelIndex WorkspaceModel::indexForLocator(
         if (nested.isValid()) {
             return nested;
         }
+    }
+    return {};
+}
+
+QModelIndex WorkspaceModel::indexForLogicalDirectory(
+    const Node& parent,
+    const std::filesystem::path::const_iterator component,
+    const std::filesystem::path::const_iterator end) const {
+    if (component == end) return {};
+    for (std::size_t row = 0; row < parent.children.size(); ++row) {
+        const auto& child = *parent.children[row];
+        if (child.asset || child.name.compare(
+                QString::fromStdWString(component->wstring()), Qt::CaseInsensitive) != 0)
+            continue;
+        const auto current = createIndex(static_cast<int>(row), 0,
+            const_cast<Node*>(&child));
+        const auto next = std::next(component);
+        return next == end ? current : indexForLogicalDirectory(child, next, end);
     }
     return {};
 }

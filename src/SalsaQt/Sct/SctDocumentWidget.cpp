@@ -540,6 +540,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             if (!menu.isEmpty()) menu.exec(parameterTable_->viewport()->mapToGlobal(position));
         });
     connect(outlineTabs_, &QTabWidget::currentChanged, this, [this](const int index) {
+        emit activeViewChanged(QString::fromStdString(locator_.identityKey()), index);
         if (!currentTarget_) {
             syncDocumentButtons();
             emit editContextChanged();
@@ -907,6 +908,15 @@ void SctDocumentWidget::setStructuredDeveloperOptions(
 
 std::optional<core::SctNavigationTarget> SctDocumentWidget::currentTarget() const noexcept {
     return currentTarget_;
+}
+
+core::SctDocumentView SctDocumentWidget::activeView() const noexcept {
+    return outlineTabs_->currentIndex() == 1
+        ? core::SctDocumentView::Semantic : core::SctDocumentView::Physical;
+}
+
+void SctDocumentWidget::setActiveView(const core::SctDocumentView view) {
+    outlineTabs_->setCurrentIndex(view == core::SctDocumentView::Semantic ? 1 : 0);
 }
 
 bool SctDocumentWidget::containsTarget(const core::SctNavigationTarget target) const {

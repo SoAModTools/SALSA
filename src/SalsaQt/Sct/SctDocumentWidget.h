@@ -3,6 +3,7 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctPresentation.h"
+#include "SalsaCore/Persistence/WorkspaceSession.h"
 #include "Sct/SctOutlineModel.h"
 #include "Sct/SctParameterTableModel.h"
 #include "Sct/SctStructuredOutlineModel.h"
@@ -74,6 +75,8 @@ public:
         bool showBasicBlocks, bool showRejectedEvidence,
         bool showControlFlowInstructions = false);
     [[nodiscard]] std::optional<core::SctNavigationTarget> currentTarget() const noexcept;
+    [[nodiscard]] core::SctDocumentView activeView() const noexcept;
+    void setActiveView(core::SctDocumentView view);
     [[nodiscard]] bool containsTarget(core::SctNavigationTarget target) const;
     [[nodiscard]] QString targetLabel(core::SctNavigationTarget target) const;
     [[nodiscard]] std::optional<InstructionInsertionContext> insertionContext() const;
@@ -126,6 +129,7 @@ signals:
     void moveRepeatedGroupRequested(const QString& identityKey,
         qulonglong instruction, quint32 ordinal, int direction);
     void navigationChanged(const QString& identityKey, int kind, qulonglong id);
+    void activeViewChanged(const QString& identityKey, int view);
 
 private:
     void rebuildOutline();

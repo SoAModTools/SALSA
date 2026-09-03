@@ -56,6 +56,7 @@
     <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelopeFileStore.h" />
     <ClInclude Include="include\SalsaCore\Persistence\LocalSalsaWorkspace.h" />
     <ClInclude Include="include\SalsaCore\Persistence\SctScriptPatch.h" />
+    <ClInclude Include="include\SalsaCore\Persistence\WorkspaceSession.h" />
     <ClInclude Include="include\SalsaCore\Project\AssetCatalogDiff.h" />
     <ClInclude Include="include\SalsaCore\Project\AssetLocator.h" />
     <ClInclude Include="include\SalsaCore\Project\GameProjectContext.h" />
@@ -83,6 +84,7 @@
     <ClCompile Include="src\Persistence\PatchEnvelopeFileStore.cpp" />
     <ClCompile Include="src\Persistence\LocalSalsaWorkspace.cpp" />
     <ClCompile Include="src\Persistence\SctScriptPatch.cpp" />
+    <ClCompile Include="src\Persistence\WorkspaceSession.cpp" />
     <ClCompile Include="src\Project\AssetCatalogDiff.cpp" />
     <ClCompile Include="src\Project\AssetLocator.cpp" />
     <ClCompile Include="src\Project\LocalGameProject.cpp" />

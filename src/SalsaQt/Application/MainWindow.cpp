@@ -55,6 +55,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -201,6 +202,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         event->ignore();
         return;
     }
+    saveWorkspaceSession();
     saveApplicationSettings();
     controller_->cancel();
     documentController_->cancel();
@@ -333,9 +335,9 @@ void MainWindow::buildUi() {
 
     auto* projectMenu = menuBar()->addMenu(tr("&Project"));
     associatePatchWorkspaceAction_ = projectMenu->addAction(
-        tr("Associate &Workspace..."));
+        tr("Open or Create &Workspace..."));
     disconnectPatchWorkspaceAction_ = projectMenu->addAction(
-        tr("Disconnect Workspace"));
+        tr("Close Workspace"));
     projectMenu->addSeparator();
     refreshAction_ = projectMenu->addAction(tr("&Refresh Dataset"));
     refreshAction_->setShortcut(QKeySequence::Refresh);
@@ -487,6 +489,12 @@ void MainWindow::buildUi() {
     cancelButton_->hide();
     statusBar()->addPermanentWidget(cancelButton_);
 
+    workspaceSessionSaveTimer_ = new QTimer(this);
+    workspaceSessionSaveTimer_->setSingleShot(true);
+    workspaceSessionSaveTimer_->setInterval(500);
+    connect(workspaceSessionSaveTimer_, &QTimer::timeout,
+        this, &MainWindow::saveWorkspaceSession);
+
     connect(openAction_, &QAction::triggered, this, &MainWindow::chooseDataset);
     connect(saveAction_, &QAction::triggered, this, &MainWindow::saveActiveDocument);
     connect(exportAction_, &QAction::triggered, this, &MainWindow::exportActiveDocument);
@@ -499,9 +507,9 @@ void MainWindow::buildUi() {
                 tr("close the dataset"), PendingLifecycle::CloseDataset)) return;
         scptEditor_->clear();
         messageEditor_->clear();
+        saveWorkspaceSession();
         documentController_->closeAll();
-        documentController_->setWorkspace(nullptr);
-        patchWorkspace_.reset();
+        detachPatchWorkspace(false);
         controller_->closeWorkspace();
         statusBar()->showMessage(tr("Dataset closed."), 5000);
     });
@@ -557,7 +565,12 @@ void MainWindow::buildUi() {
             controller_->selectAsset(asset.has_value()
                 ? std::optional<core::AssetLocator>(asset->locator)
                 : std::nullopt);
+            scheduleWorkspaceSessionSave();
         });
+    connect(projectTree_, &QTreeView::expanded,
+        this, [this](const QModelIndex&) { scheduleWorkspaceSessionSave(); });
+    connect(projectTree_, &QTreeView::collapsed,
+        this, [this](const QModelIndex&) { scheduleWorkspaceSessionSave(); });
     connect(projectTree_, &QTreeView::activated, this, [this](const QModelIndex&) {
         activateSelectedAsset();
     });
@@ -582,7 +595,10 @@ void MainWindow::buildUi() {
         syncSemanticNavigator();
         syncEditActions();
         recordActiveNavigation();
+        scheduleWorkspaceSessionSave();
     });
+    connect(tabs_->tabBar(), &QTabBar::tabMoved,
+        this, [this](int, int) { scheduleWorkspaceSessionSave(); });
     connect(diagnosticsView_, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
         const auto* row = diagnosticsModel_->rowAt(index.row());
         if (row == nullptr || !row->locator.has_value()) return;
@@ -717,6 +733,7 @@ void MainWindow::connectWorkspace() {
             syncDiagnostics();
             syncSemanticNavigator();
             syncActions();
+            scheduleWorkspaceSessionSave();
         });
     connect(documentController_, &SctDocumentController::operationCompleted,
         this, [this](const QString& identityKey, bool success, bool cancelled,
@@ -737,6 +754,8 @@ void MainWindow::connectWorkspace() {
                 message, identityKey);
             syncDiagnostics();
             syncActions();
+            continueWorkspaceSessionRestore(
+                identityKey, success, cancelled, message);
         });
     connect(documentController_, &SctDocumentController::editCompleted,
         this, [this](const QString&, const bool success, const QString& message) {
@@ -772,6 +791,7 @@ void MainWindow::connectWorkspace() {
                 cancelButton_->hide();
             }
             continuePendingLifecycle(identityKey, success, cancelled);
+            scheduleWorkspaceSessionSave();
         });
     connect(documentController_, &SctDocumentController::publicationCompleted,
         this, [this](const QString& identityKey, const bool success,
@@ -815,6 +835,7 @@ void MainWindow::chooseDataset() {
 void MainWindow::openDataset(const QString& rootPath) {
     if (!prepareScptEditor() || !flushMessageEditor()
         || !confirmDiscardAll(tr("open another dataset"))) return;
+    saveWorkspaceSession();
     scptEditor_->clear();
     if (controller_->openDataset(rootPath)) {
         statusBar()->showMessage(tr("Inspecting dataset..."));
@@ -826,36 +847,93 @@ void MainWindow::associatePatchWorkspace() {
     if (dataset == nullptr || !documentController_->openLocators().empty()) return;
     const auto datasetRoot = QString::fromStdWString(dataset->root.wstring());
     const auto selected = QFileDialog::getExistingDirectory(
-        this, tr("Associate SALSA workspace"),
+        this, tr("Open or create SALSA workspace"),
         patchWorkspace_ ? QString::fromStdWString(
             patchWorkspace_->descriptor().root.wstring()) : datasetRoot,
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (selected.isEmpty()) return;
 
-    auto opened = core::LocalSalsaWorkspace::openOrCreate(
-        std::filesystem::path(selected.toStdWString()), dataset->root);
+    (void)openPatchWorkspace(selected, true);
+}
+
+bool MainWindow::openPatchWorkspace(
+    const QString& workspaceRoot, const bool allowConfirmation) {
+    const auto* dataset = controller_->dataset();
+    if (dataset == nullptr || !documentController_->openLocators().empty()) return false;
+    const auto path = std::filesystem::path(workspaceRoot.toStdWString());
+    auto assessment = core::LocalSalsaWorkspace::assess(path, *dataset);
+    if (!assessment) {
+        const auto message = assessment.diagnostics().empty()
+            ? tr("The SALSA workspace could not be assessed.")
+            : QString::fromStdString(assessment.diagnostics().front().message);
+        if (allowConfirmation)
+            QMessageBox::warning(this, tr("Workspace could not be opened"), message);
+        else statusBar()->showMessage(message, 10000);
+        return false;
+    }
+    auto acceptance = core::WorkspaceDatasetAcceptance::ExactOnly;
+    if (assessment.value().requiresReassociation()) {
+        if (!allowConfirmation) {
+            statusBar()->showMessage(tr(
+                "The associated workspace needs explicit dataset reassociation; the dataset remains open."),
+                12000);
+            return false;
+        }
+        const auto previous = assessment.value().storedDatasetRoot
+            ? QString::fromStdWString(assessment.value().storedDatasetRoot->wstring())
+            : tr("Unknown");
+        const auto current = QString::fromStdWString(dataset->root.wstring());
+        const auto answer = QMessageBox::warning(this, tr("Reassociate workspace?"),
+            tr("%1\n\nPrevious dataset:\n%2\n\nSelected dataset:\n%3\n\n"
+               "Reassociation updates the workspace binding. Individual SCT patches still "
+               "require their recorded source revision to match.")
+                .arg(QString::fromStdString(assessment.value().message),
+                    QDir::toNativeSeparators(previous),
+                    QDir::toNativeSeparators(current)),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) return false;
+        acceptance = core::WorkspaceDatasetAcceptance::UserConfirmedReassociation;
+    }
+    saveWorkspaceSession();
+    auto opened = core::LocalSalsaWorkspace::openOrCreate(path, *dataset, acceptance);
     if (!opened) {
         const auto message = opened.diagnostics().empty()
-            ? tr("The SALSA workspace could not be associated.")
+            ? tr("The SALSA workspace could not be opened.")
             : QString::fromStdString(opened.diagnostics().front().message);
-        QMessageBox::warning(this, tr("Workspace could not be associated"), message);
-        return;
+        if (allowConfirmation)
+            QMessageBox::warning(this, tr("Workspace could not be opened"), message);
+        else statusBar()->showMessage(message, 10000);
+        return false;
     }
+    detachPatchWorkspace(false);
     patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
         std::move(opened).takeValue());
     documentController_->setWorkspace(patchWorkspace_);
-    rememberPatchWorkspaceAssociation(datasetRoot, selected);
-    statusBar()->showMessage(tr("SALSA workspace associated: %1")
-        .arg(QDir::toNativeSeparators(selected)), 8000);
+    rememberPatchWorkspaceAssociation(
+        QString::fromStdWString(dataset->root.wstring()), workspaceRoot);
+    statusBar()->showMessage(tr("SALSA workspace opened: %1")
+        .arg(QDir::toNativeSeparators(workspaceRoot)), 8000);
     syncActions();
+    restoreWorkspaceSession();
+    return true;
 }
 
 void MainWindow::disconnectPatchWorkspace() {
     if (!documentController_->openLocators().empty()) return;
-    documentController_->setWorkspace(nullptr);
-    patchWorkspace_.reset();
+    detachPatchWorkspace(true);
     statusBar()->showMessage(tr("SALSA workspace disconnected."), 5000);
     syncActions();
+}
+
+void MainWindow::detachPatchWorkspace(const bool saveSession) {
+    if (saveSession) saveWorkspaceSession();
+    if (workspaceSessionSaveTimer_) workspaceSessionSaveTimer_->stop();
+    restoringWorkspaceSession_ = false;
+    restoringWorkspaceSessionState_.reset();
+    restoringWorkspaceDocumentIndex_ = 0;
+    workspaceRestoreMessages_.clear();
+    documentController_->setWorkspace(nullptr);
+    patchWorkspace_.reset();
 }
 
 void MainWindow::restorePatchWorkspaceAssociation() {
@@ -868,17 +946,19 @@ void MainWindow::restorePatchWorkspaceAssociation() {
     for (qsizetype index = 0; index + 1 < patchWorkspaceAssociations_.size(); index += 2) {
         if (!sameDatasetPath(patchWorkspaceAssociations_[index], datasetRoot)) continue;
         const auto workspaceRoot = patchWorkspaceAssociations_[index + 1];
-        auto opened = core::LocalSalsaWorkspace::openOrCreate(
-            std::filesystem::path(workspaceRoot.toStdWString()), dataset->root);
-        if (!opened) {
+        const QDir workspaceDirectory(workspaceRoot);
+        const bool hasManifest = QFileInfo(workspaceDirectory.filePath(
+            QStringLiteral("project.json"))).isFile();
+        const bool hasRollback = QFileInfo(workspaceDirectory.filePath(
+            QStringLiteral("project.json.schema1.rollback"))).isFile();
+        if (!workspaceDirectory.exists()
+            || (!hasManifest && !hasRollback)) {
             statusBar()->showMessage(tr(
-                "The associated SALSA workspace could not be reopened; saving is disabled."),
+                "The last associated SALSA workspace is missing; the dataset remains open."),
                 10000);
             return;
         }
-        patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
-            std::move(opened).takeValue());
-        documentController_->setWorkspace(patchWorkspace_);
+        (void)openPatchWorkspace(workspaceRoot, false);
         return;
     }
 }
@@ -888,7 +968,8 @@ void MainWindow::rememberPatchWorkspaceAssociation(
     const auto normalizedDataset = normalizedRecentDatasetPath(datasetRoot);
     const auto normalizedWorkspace = normalizedRecentDatasetPath(workspaceRoot);
     for (qsizetype index = patchWorkspaceAssociations_.size() - 2; index >= 0; index -= 2) {
-        if (sameDatasetPath(patchWorkspaceAssociations_[index], normalizedDataset)) {
+        if (sameDatasetPath(patchWorkspaceAssociations_[index], normalizedDataset)
+            && sameDatasetPath(patchWorkspaceAssociations_[index + 1], normalizedWorkspace)) {
             patchWorkspaceAssociations_.removeAt(index + 1);
             patchWorkspaceAssociations_.removeAt(index);
         }
@@ -1102,6 +1183,7 @@ void MainWindow::recordNavigation(NavigationEntry entry) {
     navigationHistory_.push_back(std::move(entry));
     navigationHistoryIndex_ = navigationHistory_.size() - 1u;
     syncNavigationActions();
+    scheduleWorkspaceSessionSave();
 }
 
 bool MainWindow::navigationEntryAvailable(const NavigationEntry& entry) const {
@@ -1157,7 +1239,10 @@ void MainWindow::navigateBack() {
     pruneNavigationHistory();
     while (!navigationHistory_.empty() && navigationHistoryIndex_ > 0u) {
         --navigationHistoryIndex_;
-        if (navigateTo(navigationHistory_[navigationHistoryIndex_])) return;
+        if (navigateTo(navigationHistory_[navigationHistoryIndex_])) {
+            scheduleWorkspaceSessionSave();
+            return;
+        }
     }
     syncNavigationActions();
 }
@@ -1167,7 +1252,10 @@ void MainWindow::navigateForward() {
     while (!navigationHistory_.empty()
         && navigationHistoryIndex_ + 1u < navigationHistory_.size()) {
         ++navigationHistoryIndex_;
-        if (navigateTo(navigationHistory_[navigationHistoryIndex_])) return;
+        if (navigateTo(navigationHistory_[navigationHistoryIndex_])) {
+            scheduleWorkspaceSessionSave();
+            return;
+        }
     }
     syncNavigationActions();
 }
@@ -1993,9 +2081,9 @@ void MainWindow::continuePendingLifecycle(
     } else if (action == PendingLifecycle::CloseDataset) {
         scptEditor_->clear();
         messageEditor_->clear();
+        saveWorkspaceSession();
         documentController_->closeAll();
-        documentController_->setWorkspace(nullptr);
-        patchWorkspace_.reset();
+        detachPatchWorkspace(false);
         controller_->closeWorkspace();
         statusBar()->showMessage(tr("Dataset closed."), 5000);
     } else if (action == PendingLifecycle::Exit) {
@@ -2070,6 +2158,8 @@ void MainWindow::syncDocument(
                 recordNavigation({widget->locator(), core::SctNavigationTarget{
                     static_cast<core::SctNavigationKind>(kind), id}});
             });
+        connect(widget, &SctDocumentWidget::activeViewChanged, this,
+            [this](const QString&, int) { scheduleWorkspaceSessionSave(); });
         connect(widget, &SctDocumentWidget::editContextChanged,
             this, &MainWindow::syncEditActions);
         connect(widget, &SctDocumentWidget::insertInstructionRequested,
@@ -2343,6 +2433,7 @@ void MainWindow::syncDocument(
     }
     pruneNavigationHistory();
     syncEditActions();
+    if (createdWidget) scheduleWorkspaceSessionSave();
 }
 
 void MainWindow::focusDocument(const QString& identityKey) {
@@ -2397,6 +2488,223 @@ void MainWindow::rebuildDocumentTabTitles() {
         tabs_->setTabText(tabIndex, title);
         tabs_->setTabToolTip(tabIndex, path);
     }
+}
+
+void MainWindow::scheduleWorkspaceSessionSave() {
+    if (restoringWorkspaceSession_ || patchWorkspace_ == nullptr
+        || workspaceSessionSaveTimer_ == nullptr) return;
+    workspaceSessionSaveTimer_->start();
+}
+
+std::optional<core::WorkspaceSessionState> MainWindow::captureWorkspaceSession() const {
+    if (patchWorkspace_ == nullptr) return std::nullopt;
+    core::WorkspaceSessionState state;
+    state.workspaceId = patchWorkspace_->descriptor().workspaceId;
+    for (int index = 1; index < tabs_->count(); ++index) {
+        const auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index));
+        if (widget == nullptr) continue;
+        const bool checkpointed = !documentController_->isDirty(widget->locator());
+        state.documents.push_back({widget->locator(), widget->activeView(),
+            checkpointed ? widget->currentTarget()
+                         : std::optional<core::SctNavigationTarget>{}});
+    }
+    if (const auto* active = activeDocumentWidget()) state.activeDocument = active->locator();
+    state.selectedProjectAsset = controller_->selectedLocator();
+
+    std::function<void(const QModelIndex&)> collectExpanded;
+    collectExpanded = [this, &state, &collectExpanded](const QModelIndex& parent) {
+        for (int row = 0; row < workspaceModel_->rowCount(parent); ++row) {
+            const auto index = workspaceModel_->index(row, 0, parent);
+            if (!index.isValid()) continue;
+            if (projectTree_->isExpanded(index)) {
+                if (const auto path = workspaceModel_->logicalDirectoryAt(index))
+                    state.expandedProjectDirectories.push_back(*path);
+            }
+            collectExpanded(index);
+        }
+    };
+    collectExpanded({});
+
+    std::size_t retainedThroughCurrent = 0;
+    for (std::size_t index = 0; index < navigationHistory_.size(); ++index) {
+        const auto& entry = navigationHistory_[index];
+        bool include = !entry.locator && !entry.target;
+        if (entry.locator && entry.target) {
+            include = !documentController_->isDirty(*entry.locator)
+                && navigationEntryAvailable(entry);
+        }
+        if (!include) continue;
+        state.navigation.push_back({entry.locator, entry.target});
+        if (index <= navigationHistoryIndex_) retainedThroughCurrent = state.navigation.size();
+    }
+    state.navigationIndex = state.navigation.empty() || retainedThroughCurrent == 0u
+        ? 0u : retainedThroughCurrent - 1u;
+    return state;
+}
+
+void MainWindow::saveWorkspaceSession() {
+    if (restoringWorkspaceSession_ || patchWorkspace_ == nullptr) return;
+    if (workspaceSessionSaveTimer_) workspaceSessionSaveTimer_->stop();
+    const auto state = captureWorkspaceSession();
+    if (!state) return;
+    core::WorkspaceSessionStore store;
+    const auto saved = store.checkpoint(patchWorkspace_->sessionPath(), *state);
+    if (!saved) {
+        const auto message = saved.diagnostics().empty()
+            ? tr("The workspace session could not be saved.")
+            : QString::fromStdString(saved.diagnostics().front().message);
+        statusBar()->showMessage(message, 10000);
+    }
+}
+
+void MainWindow::restoreWorkspaceSession() {
+    if (patchWorkspace_ == nullptr) return;
+    if (workspaceSessionSaveTimer_) workspaceSessionSaveTimer_->stop();
+    core::WorkspaceSessionStore store;
+    auto loaded = store.load(patchWorkspace_->sessionPath(),
+        patchWorkspace_->descriptor().workspaceId);
+    navigationHistory_.clear();
+    navigationHistoryIndex_ = 0;
+    if (!loaded) {
+        const auto message = loaded.diagnostics().empty()
+            ? tr("The optional workspace session was ignored.")
+            : QString::fromStdString(loaded.diagnostics().front().message);
+        statusBar()->showMessage(tr("%1 Durable workspace content remains available.")
+            .arg(message), 12000);
+        scheduleWorkspaceSessionSave();
+        return;
+    }
+    if (!loaded.value()) {
+        recordActiveNavigation();
+        scheduleWorkspaceSessionSave();
+        return;
+    }
+    restoringWorkspaceSession_ = true;
+    replayingNavigation_ = true;
+    restoringWorkspaceSessionState_ = std::move(*loaded.value());
+    restoringWorkspaceDocumentIndex_ = 0;
+    workspaceRestoreMessages_.clear();
+    restoreNextWorkspaceDocument();
+}
+
+void MainWindow::restoreNextWorkspaceDocument() {
+    if (!restoringWorkspaceSession_ || !restoringWorkspaceSessionState_) return;
+    const auto& documents = restoringWorkspaceSessionState_->documents;
+    if (restoringWorkspaceDocumentIndex_ >= documents.size()) {
+        finishWorkspaceSessionRestore();
+        return;
+    }
+    const auto& document = documents[restoringWorkspaceDocumentIndex_];
+    const auto* catalog = controller_->catalog();
+    const bool exists = catalog != nullptr && std::ranges::any_of(
+        catalog->assets, [&document](const auto& asset) {
+            return asset.locator == document.locator;
+        });
+    const auto project = controller_->projectSnapshot();
+    if (!exists || !project) {
+        workspaceRestoreMessages_.push_back(tr("Missing document: %1")
+            .arg(QString::fromStdWString(document.locator.path().wstring())));
+        ++restoringWorkspaceDocumentIndex_;
+        QTimer::singleShot(0, this, &MainWindow::restoreNextWorkspaceDocument);
+        return;
+    }
+    if (!documentController_->openDocument(*project, document.locator)) {
+        workspaceRestoreMessages_.push_back(tr("Could not start restoration of %1")
+            .arg(QString::fromStdWString(document.locator.path().wstring())));
+        ++restoringWorkspaceDocumentIndex_;
+        QTimer::singleShot(0, this, &MainWindow::restoreNextWorkspaceDocument);
+    }
+}
+
+void MainWindow::continueWorkspaceSessionRestore(
+    const QString& identityKey, const bool success, const bool cancelled,
+    const QString& message) {
+    if (!restoringWorkspaceSession_ || !restoringWorkspaceSessionState_) return;
+    const auto& documents = restoringWorkspaceSessionState_->documents;
+    if (restoringWorkspaceDocumentIndex_ >= documents.size()) return;
+    const auto& state = documents[restoringWorkspaceDocumentIndex_];
+    if (QString::fromStdString(state.locator.identityKey()) != identityKey) return;
+    if (success) {
+        SctDocumentWidget* widget = nullptr;
+        for (int index = 1; index < tabs_->count(); ++index) {
+            auto* candidate = qobject_cast<SctDocumentWidget*>(tabs_->widget(index));
+            if (candidate && candidate->locator() == state.locator) {
+                widget = candidate;
+                break;
+            }
+        }
+        if (widget != nullptr) {
+            if (state.selection && widget->containsTarget(*state.selection))
+                widget->selectTarget(*state.selection, false);
+            else if (state.selection)
+                workspaceRestoreMessages_.push_back(tr("Stale selection in %1")
+                    .arg(QString::fromStdWString(state.locator.path().wstring())));
+            widget->setActiveView(state.view);
+        }
+    } else {
+        workspaceRestoreMessages_.push_back(message);
+    }
+    ++restoringWorkspaceDocumentIndex_;
+    if (cancelled) restoringWorkspaceDocumentIndex_ = documents.size();
+    QTimer::singleShot(0, this, &MainWindow::restoreNextWorkspaceDocument);
+}
+
+void MainWindow::restoreProjectTreeState(
+    const core::WorkspaceSessionState& state) {
+    for (const auto& path : state.expandedProjectDirectories) {
+        const auto index = workspaceModel_->indexForLogicalDirectory(path);
+        if (index.isValid()) projectTree_->setExpanded(index, true);
+    }
+    if (state.selectedProjectAsset) {
+        const auto index = workspaceModel_->indexForLocator(*state.selectedProjectAsset);
+        if (index.isValid()) projectTree_->setCurrentIndex(index);
+    }
+}
+
+void MainWindow::finishWorkspaceSessionRestore() {
+    if (!restoringWorkspaceSessionState_) return;
+    const auto state = std::move(*restoringWorkspaceSessionState_);
+    restoringWorkspaceSessionState_.reset();
+    restoreProjectTreeState(state);
+
+    navigationHistory_.clear();
+    std::size_t retainedThroughCurrent = 0;
+    for (std::size_t index = 0; index < state.navigation.size(); ++index) {
+        NavigationEntry entry{state.navigation[index].locator,
+            state.navigation[index].target};
+        if (!navigationEntryAvailable(entry)) continue;
+        navigationHistory_.push_back(std::move(entry));
+        if (index <= state.navigationIndex) retainedThroughCurrent = navigationHistory_.size();
+    }
+    navigationHistoryIndex_ = navigationHistory_.empty() || retainedThroughCurrent == 0u
+        ? 0u : retainedThroughCurrent - 1u;
+
+    bool activated = false;
+    if (state.activeDocument) {
+        for (int index = 1; index < tabs_->count(); ++index) {
+            const auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index));
+            if (widget && widget->locator() == *state.activeDocument) {
+                tabs_->setCurrentIndex(index);
+                activated = true;
+                break;
+            }
+        }
+    }
+    if (!activated) tabs_->setCurrentIndex(0);
+    replayingNavigation_ = false;
+    restoringWorkspaceSession_ = false;
+    restoringWorkspaceDocumentIndex_ = 0;
+    syncNavigationActions();
+    syncDiagnostics();
+    syncSemanticNavigator();
+    syncEditActions();
+    if (workspaceRestoreMessages_.isEmpty())
+        statusBar()->showMessage(tr("Workspace session restored."), 8000);
+    else
+        statusBar()->showMessage(tr("Workspace restored with %1 stale or unavailable item(s).")
+            .arg(workspaceRestoreMessages_.size()), 12000);
+    workspaceRestoreMessages_.clear();
+    scheduleWorkspaceSessionSave();
 }
 
 void MainWindow::rebuildRecentMenu() {
@@ -2535,6 +2843,7 @@ void MainWindow::handleOperationCompleted(
     }
     if (success && operation == WorkspaceController::Operation::Opening) {
         documentController_->closeAll();
+        detachPatchWorkspace(false);
         restorePatchWorkspaceAssociation();
     }
     if (success && operation == WorkspaceController::Operation::Refreshing) {
