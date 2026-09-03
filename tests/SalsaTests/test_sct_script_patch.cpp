@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <unordered_map>
 #include <span>
 #include <string>
 #include <cstring>
@@ -86,6 +87,13 @@ private:
     return document;
 }
 
+[[nodiscard]] SctSemanticState semanticState(const SctDocument& document,
+    const std::span<const SctAuthoredArm> arms = {},
+    const std::span<const SctPatchedTextRepair> repairs = {}) {
+    return {std::make_shared<const SctDocument>(document),
+        {arms.begin(), arms.end()}, {repairs.begin(), repairs.end()}};
+}
+
 [[nodiscard]] const SctScriptSectionContent& scriptAt(
     const SctDocument& document, const std::size_t index) {
     return std::get<SctScriptSectionContent>(document.sections.at(index).content);
@@ -123,7 +131,7 @@ public:
     PatchFakeCatalog(AssetLocator locator, std::vector<std::byte> bytes)
         : bytes_(std::move(bytes)), descriptor_{std::move(locator),
               static_cast<std::uint64_t>(bytes_.size()),
-              SourceRevision{patchDigest("source-revision")}},
+              SourceRevision{sha256(bytes_).value()}},
           snapshot_{{descriptor_}, DatasetFingerprint{patchDigest("catalog")}} {}
 
     [[nodiscard]] const AssetCatalogSnapshot& snapshot() const noexcept override {
@@ -165,7 +173,7 @@ private:
     PatchFakeCatalog catalog_;
 };
 
-class MemoryPatchStore final : public SctPatchStore {
+class MemoryPatchStore final : public SctPatchStore, public SctBaselineStore {
 public:
     [[nodiscard]] Result<std::optional<PatchEnvelope>> load(
         const AssetLocator&) const override {
@@ -183,14 +191,36 @@ public:
         return Result<void>::success();
     }
 
+    [[nodiscard]] Result<std::optional<std::vector<std::byte>>> loadBaseline(
+        const SourceRevision& revision) const override {
+        const auto found = baselines_.find(revision.digest.toHex());
+        if (found == baselines_.end())
+            return Result<std::optional<std::vector<std::byte>>>::success(std::nullopt);
+        return Result<std::optional<std::vector<std::byte>>>::success(found->second);
+    }
+
+    [[nodiscard]] Result<void> retainBaseline(const SourceRevision& revision,
+        const std::span<const std::byte> bytes) const override {
+        if (baselineRetainFailure_) {
+            return Result<void>::failure({DiagnosticSeverity::Error,
+                DiagnosticCode::PersistenceWriteFailed,
+                "retained baseline could not be written", std::nullopt});
+        }
+        baselines_[revision.digest.toHex()] = {bytes.begin(), bytes.end()};
+        return Result<void>::success();
+    }
+
     void failLoads() noexcept { loadFailure_ = true; }
+    void failBaselineRetains() noexcept { baselineRetainFailure_ = true; }
     [[nodiscard]] const std::optional<PatchEnvelope>& envelope() const noexcept {
         return envelope_;
     }
 
 private:
     mutable std::optional<PatchEnvelope> envelope_;
+    mutable std::unordered_map<std::string, std::vector<std::byte>> baselines_;
     bool loadFailure_ = false;
+    bool baselineRetainFailure_ = false;
 };
 
 TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
@@ -231,14 +261,16 @@ TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
 
     const std::array arms{arm};
     const std::array repairs{repair};
-    const auto patch = SalsaScriptPatchService::diff(baseline, working,
-        SctKnownTextConvention::Windows1252Byte7F, arms, repairs);
+    const auto baselineState = semanticState(baseline);
+    const auto workingState = semanticState(working, arms, repairs);
+    const auto patch = SalsaScriptPatchService::diff(baselineState, workingState,
+        SctKnownTextConvention::Windows1252Byte7F);
     ASSERT_TRUE(patch);
     EXPECT_FALSE(patch.value().empty());
     ASSERT_EQ(patch.value().scriptSections.size(), 1u);
     EXPECT_EQ(patch.value().scriptSections.front().section, working.sections[0].id);
     ASSERT_EQ(patch.value().textValues.size(), 1u);
-    ASSERT_EQ(patch.value().upsertedFooterEntries.size(), 2u);
+    ASSERT_EQ(patch.value().footerEntries.size(), 2u);
 
     const auto encoded = SalsaScriptPatchCodec::serialize(patch.value());
     ASSERT_TRUE(encoded);
@@ -250,7 +282,7 @@ TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
 
     const auto decoded = SalsaScriptPatchCodec::deserialize(encoded.value());
     ASSERT_TRUE(decoded);
-    const auto applied = SalsaScriptPatchService::apply(baseline, decoded.value());
+    const auto applied = SalsaScriptPatchService::apply(baselineState, decoded.value());
     ASSERT_TRUE(applied);
     ASSERT_EQ(applied.value().document->sections.size(), working.sections.size());
     EXPECT_EQ(applied.value().document->sections[0].nameBytes, "M00001_EDIT");
@@ -274,9 +306,8 @@ TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
     ASSERT_EQ(applied.value().textRepairs.size(), 1u);
     EXPECT_EQ(applied.value().textRepairs.front().provenance, repair.provenance);
 
-    const auto net = SalsaScriptPatchService::diff(baseline,
-        *applied.value().document, decoded.value().sourceTextConvention,
-        applied.value().authoredArms, applied.value().textRepairs);
+    const auto net = SalsaScriptPatchService::diff(baselineState,
+        applied.value(), decoded.value().sourceTextConvention);
     ASSERT_TRUE(net);
     const auto reencoded = SalsaScriptPatchCodec::serialize(net.value());
     ASSERT_TRUE(reencoded);
@@ -285,8 +316,8 @@ TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
 
 TEST(SalsaScriptPatchTest, EmptyDocumentDeltaRemainsCanonical) {
     const auto baseline = makeBaselineDocument();
-    const auto patch = SalsaScriptPatchService::diff(
-        baseline, baseline, std::nullopt, {}, {});
+    const auto state = semanticState(baseline);
+    const auto patch = SalsaScriptPatchService::diff(state, state, std::nullopt);
     ASSERT_TRUE(patch);
     EXPECT_TRUE(patch.value().empty());
     const auto encoded = SalsaScriptPatchCodec::serialize(patch.value());
@@ -310,12 +341,13 @@ TEST(SalsaScriptPatchTest, PreservesAllocatorHighWaterAfterTransientEdits) {
     (void)discardedFooter;
     (void)discardedOpaque;
 
+    const auto baselineState = semanticState(baseline);
     const auto patch = SalsaScriptPatchService::diff(
-        baseline, working, std::nullopt, {}, {});
+        baselineState, semanticState(working), std::nullopt);
     ASSERT_TRUE(patch);
     ASSERT_TRUE(patch.value().allocatorState.has_value());
     EXPECT_FALSE(patch.value().empty());
-    const auto applied = SalsaScriptPatchService::apply(baseline, patch.value());
+    const auto applied = SalsaScriptPatchService::apply(baselineState, patch.value());
     ASSERT_TRUE(applied);
     EXPECT_EQ(applied.value().document->nextSectionIdValue(),
         working.nextSectionIdValue());
@@ -339,28 +371,28 @@ TEST(SalsaScriptPatchTest, RoundTripsV3ScptProgramsAndStringGroupMarkers) {
         SctScptStackOverwritePreviousWithTopOperation{},
         SctScptInertOperation{},
     }}, SctExpressionTermination::StopCode};
-    patch.insertedSections.push_back({SctSectionId{1u}, "GROUP",
-        SctStringGroupMarkerSectionContent{{9u, 0x1du}}});
-    patch.insertedSections.push_back({SctSectionId{2u}, "SCRIPT",
-        SctScriptSectionContent{{instruction}}});
+    patch.sections.push_back({std::nullopt, SctDocumentSection{SctSectionId{1u}, "GROUP",
+        SctStringGroupMarkerSectionContent{{9u, 0x1du}}}});
+    patch.sections.push_back({std::nullopt, SctDocumentSection{SctSectionId{2u}, "SCRIPT",
+        SctScriptSectionContent{{instruction}}}});
 
     const auto encoded = SalsaScriptPatchCodec::serialize(patch);
     ASSERT_TRUE(encoded);
     const std::string json(reinterpret_cast<const char*>(encoded.value().data()),
         encoded.value().size());
-    EXPECT_NE(json.find("\"schemaVersion\": 2"), std::string::npos);
+    EXPECT_NE(json.find("\"schemaVersion\": 3"), std::string::npos);
     EXPECT_NE(json.find("\"stringGroupMarker\""), std::string::npos);
     EXPECT_NE(json.find("\"stackOverwrite\""), std::string::npos);
     EXPECT_NE(json.find("\"inert\""), std::string::npos);
 
     const auto decoded = SalsaScriptPatchCodec::deserialize(encoded.value());
     ASSERT_TRUE(decoded);
-    ASSERT_EQ(decoded.value().insertedSections.size(), 2u);
+    ASSERT_EQ(decoded.value().sections.size(), 2u);
     const auto& marker = std::get<SctStringGroupMarkerSectionContent>(
-        decoded.value().insertedSections[0].content);
+        decoded.value().sections[0].after->content);
     EXPECT_EQ(marker.preambleWords, (std::vector<std::uint32_t>{9u, 0x1du}));
     const auto& restoredInstruction = std::get<SctScriptSectionContent>(
-        decoded.value().insertedSections[1].content).instructions.front();
+        decoded.value().sections[1].after->content).instructions.front();
     ASSERT_TRUE(restoredInstruction.scheduledExpression.has_value());
     const auto& program = std::get<SctTypedScptProgram>(
         restoredInstruction.scheduledExpression->body);
@@ -384,10 +416,10 @@ TEST(SalsaScriptPatchTest, RejectsUnknownFieldsVersionsAndInvalidTargets) {
 
     std::string wrongVersion(reinterpret_cast<const char*>(encoded.value().data()),
         encoded.value().size());
-    const auto version = wrongVersion.find("\"schemaVersion\": 2");
+    const auto version = wrongVersion.find("\"schemaVersion\": 3");
     ASSERT_NE(version, std::string::npos);
-    wrongVersion.replace(version, std::string("\"schemaVersion\": 2").size(),
-        "\"schemaVersion\": 1");
+    wrongVersion.replace(version, std::string("\"schemaVersion\": 3").size(),
+        "\"schemaVersion\": 2");
     const auto unsupported = SalsaScriptPatchCodec::deserialize(patchBytes(wrongVersion));
     ASSERT_FALSE(unsupported);
     ASSERT_FALSE(unsupported.diagnostics().empty());
@@ -408,9 +440,10 @@ TEST(SalsaScriptPatchTest, RejectsUnknownFieldsVersionsAndInvalidTargets) {
     EXPECT_FALSE(SalsaScriptPatchCodec::deserialize(patchBytes(badConvention)));
 
     SalsaScriptPatch missingTarget;
-    missingTarget.textValues.push_back({SctStringId{99}, SctPlainText{"missing"}});
+    missingTarget.textValues.push_back({SctStringId{99},
+        SctPlainText{"expected"}, SctPlainText{"missing"}});
     const auto applied = SalsaScriptPatchService::apply(
-        makeBaselineDocument(), missingTarget);
+        semanticState(makeBaselineDocument()), missingTarget);
     ASSERT_FALSE(applied);
     EXPECT_EQ(applied.diagnostics().front().code, DiagnosticCode::SctPatchApplyFailed);
 }
@@ -471,7 +504,7 @@ TEST(SctPatchCheckpointServiceTest, SavesAndRestoresACleanDocumentCheckpoint) {
     const auto locator = patchLocator("scripts/checkpoint.sct");
     const auto source = exportDocumentBytes(makeExportableDocument());
     PatchFakeProject project(locator, source, "dataset-a");
-    auto loaded = SctPatchCheckpointService::load(project, nullptr, locator);
+    auto loaded = SctPatchCheckpointService::load(project, nullptr, nullptr, locator);
     ASSERT_TRUE(loaded.load.succeeded());
     ASSERT_NE(loaded.baseline, nullptr);
 
@@ -486,7 +519,7 @@ TEST(SctPatchCheckpointServiceTest, SavesAndRestoresACleanDocumentCheckpoint) {
     ASSERT_TRUE(request.has_value());
 
     MemoryPatchStore store;
-    const auto saved = SctPatchCheckpointService::checkpoint(*request, store);
+    const auto saved = SctPatchCheckpointService::checkpoint(*request, store, store);
     ASSERT_TRUE(saved.saved);
     ASSERT_TRUE(store.envelope().has_value());
     EXPECT_EQ(store.envelope()->affectedAssets.front().locator, locator);
@@ -496,7 +529,7 @@ TEST(SctPatchCheckpointServiceTest, SavesAndRestoresACleanDocumentCheckpoint) {
         saved.revision, saved.historyStateToken));
     EXPECT_FALSE(session.isDirty());
 
-    auto restored = SctPatchCheckpointService::load(project, &store, locator);
+    auto restored = SctPatchCheckpointService::load(project, &store, &store, locator);
     ASSERT_TRUE(restored.load.succeeded());
     EXPECT_TRUE(restored.patchApplied);
     EXPECT_FALSE(restored.patchConflict);
@@ -510,7 +543,7 @@ TEST(SctPatchCheckpointServiceTest, WarnsForDatasetDriftButBlocksAssetOrPayloadC
     const auto locator = patchLocator("scripts/checkpoint.sct");
     const auto source = exportDocumentBytes(makeExportableDocument());
     PatchFakeProject firstProject(locator, source, "dataset-a");
-    auto loaded = SctPatchCheckpointService::load(firstProject, nullptr, locator);
+    auto loaded = SctPatchCheckpointService::load(firstProject, nullptr, nullptr, locator);
     ASSERT_TRUE(loaded.load.succeeded());
     SctEditSession session(loaded.load.document);
     const auto& script = std::get<SctScriptSectionContent>(
@@ -518,10 +551,11 @@ TEST(SctPatchCheckpointServiceTest, WarnsForDatasetDriftButBlocksAssetOrPayloadC
     ASSERT_TRUE(session.insertInstructionAfter(script.instructions.front().id, 125u).committed);
     MemoryPatchStore store;
     ASSERT_TRUE(SctPatchCheckpointService::checkpoint(
-        *session.checkpointRequest(1u), store).saved);
+        *session.checkpointRequest(1u), store, store).saved);
 
     PatchFakeProject movedDataset(locator, source, "dataset-b");
-    const auto moved = SctPatchCheckpointService::load(movedDataset, &store, locator);
+    const auto moved = SctPatchCheckpointService::load(
+        movedDataset, &store, &store, locator);
     EXPECT_TRUE(moved.patchApplied);
     EXPECT_FALSE(moved.patchConflict);
     EXPECT_TRUE(std::ranges::any_of(moved.load.infrastructureDiagnostics,
@@ -536,25 +570,61 @@ TEST(SctPatchCheckpointServiceTest, WarnsForDatasetDriftButBlocksAssetOrPayloadC
     MemoryPatchStore wrongAssetStore;
     ASSERT_TRUE(wrongAssetStore.checkpoint(locator, wrongAssetEnvelope));
     const auto wrongAsset = SctPatchCheckpointService::load(
-        firstProject, &wrongAssetStore, locator);
+        firstProject, &wrongAssetStore, &wrongAssetStore, locator);
     EXPECT_FALSE(wrongAsset.patchApplied);
     EXPECT_TRUE(wrongAsset.patchConflict);
     EXPECT_TRUE(wrongAsset.load.succeeded());
 
+    MemoryPatchStore missingBaselineStore;
+    ASSERT_TRUE(missingBaselineStore.checkpoint(locator, *store.envelope()));
+    const auto missingBaseline = SctPatchCheckpointService::load(
+        firstProject, &missingBaselineStore, &missingBaselineStore, locator);
+    EXPECT_FALSE(missingBaseline.patchApplied);
+    EXPECT_TRUE(missingBaseline.patchConflict);
+    EXPECT_TRUE(std::ranges::any_of(missingBaseline.load.infrastructureDiagnostics,
+        [](const auto& diagnostic) {
+            return diagnostic.code == DiagnosticCode::SctBaselineMissing;
+        }));
+
     MemoryPatchStore corruptStore;
     corruptStore.failLoads();
     const auto corrupt = SctPatchCheckpointService::load(
-        firstProject, &corruptStore, locator);
+        firstProject, &corruptStore, &corruptStore, locator);
     EXPECT_FALSE(corrupt.patchApplied);
     EXPECT_TRUE(corrupt.patchConflict);
     EXPECT_TRUE(corrupt.load.succeeded());
+}
+
+TEST(SctPatchCheckpointServiceTest, RetainsBaselineBeforePublishingPatch) {
+    const auto locator = patchLocator("scripts/checkpoint.sct");
+    PatchFakeProject project(locator,
+        exportDocumentBytes(makeExportableDocument()), "dataset-a");
+    const auto loaded = SctPatchCheckpointService::load(
+        project, nullptr, nullptr, locator);
+    ASSERT_TRUE(loaded.load.succeeded());
+    SctEditSession session(loaded.load.document);
+    const auto& script = std::get<SctScriptSectionContent>(
+        loaded.load.document->document->sections.front().content);
+    ASSERT_TRUE(session.insertInstructionAfter(
+        script.instructions.front().id, 125u).committed);
+
+    MemoryPatchStore store;
+    store.failBaselineRetains();
+    const auto saved = SctPatchCheckpointService::checkpoint(
+        *session.checkpointRequest(1u), store, store);
+    EXPECT_FALSE(saved.saved);
+    EXPECT_FALSE(store.envelope().has_value());
+    ASSERT_FALSE(saved.diagnostics.empty());
+    EXPECT_EQ(saved.diagnostics.front().code,
+        DiagnosticCode::PersistenceWriteFailed);
 }
 
 TEST(SctPatchCheckpointServiceTest, CapturedCheckpointSurvivesConcurrentBranchReplacement) {
     const auto locator = patchLocator("scripts/checkpoint.sct");
     PatchFakeProject project(locator,
         exportDocumentBytes(makeExportableDocument()), "dataset-a");
-    const auto loaded = SctPatchCheckpointService::load(project, nullptr, locator);
+    const auto loaded = SctPatchCheckpointService::load(
+        project, nullptr, nullptr, locator);
     ASSERT_TRUE(loaded.load.succeeded());
     SctEditSession session(loaded.load.document);
     const auto& script = std::get<SctScriptSectionContent>(
@@ -567,7 +637,8 @@ TEST(SctPatchCheckpointServiceTest, CapturedCheckpointSurvivesConcurrentBranchRe
     ASSERT_NE(session.currentRevision(), captured->revision);
 
     MemoryPatchStore store;
-    const auto saved = SctPatchCheckpointService::checkpoint(*captured, store);
+    const auto saved = SctPatchCheckpointService::checkpoint(
+        *captured, store, store);
     ASSERT_TRUE(saved.saved);
     EXPECT_TRUE(session.markPatchCheckpoint(
         saved.revision, saved.historyStateToken));

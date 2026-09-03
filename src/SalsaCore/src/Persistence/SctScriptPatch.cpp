@@ -762,13 +762,54 @@ void advanceAllocatorsTo(spice::sct::SctDocument& document,
         (void)document.allocateOpaqueAttachmentId();
 }
 
+[[nodiscard]] bool sameSection(const spice::sct::SctDocumentSection& left,
+    const spice::sct::SctDocumentSection& right) {
+    return encodeSection(left) == encodeSection(right);
+}
+
+[[nodiscard]] bool sameFooter(const spice::sct::SctDocumentFooterEntry& left,
+    const spice::sct::SctDocumentFooterEntry& right) {
+    return encodeFooter(left) == encodeFooter(right);
+}
+
+[[nodiscard]] bool sameArm(const SctAuthoredArm& left,
+    const SctAuthoredArm& right) {
+    return encodeArm(left) == encodeArm(right);
+}
+
+[[nodiscard]] bool sameRepair(const SctPatchedTextRepair& left,
+    const SctPatchedTextRepair& right) {
+    return encodeRepair(left) == encodeRepair(right);
+}
+
+template<typename T>
+void requireDelta(const SctValueDelta<T>& delta, const char* label) {
+    if (!delta.before && !delta.after)
+        throw std::runtime_error(std::string(label) + " delta has no before or after value");
+}
+
+template<typename T, typename Id>
+[[nodiscard]] T* findMutableById(std::vector<T>& values, const Id target) {
+    const auto found = std::ranges::find(values, target, &T::id);
+    return found == values.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] const SctPatchedTextRepair* findRepair(
+    const std::vector<SctPatchedTextRepair>& values, const SctTextTarget& target) {
+    const auto key = targetKey(target);
+    const auto found = std::ranges::find_if(values, [&](const auto& value) {
+        return targetKey(value.target) == key;
+    });
+    return found == values.end() ? nullptr : &*found;
+}
+
 }  // namespace
 
 bool SalsaScriptPatch::empty() const noexcept {
     return !allocatorState.has_value()
-        && sectionOrder.empty() && deletedSections.empty() && insertedSections.empty()
-        && scriptSections.empty() && textValues.empty() && footerOrder.empty()
-        && deletedFooterEntries.empty() && upsertedFooterEntries.empty()
+        && !sectionOrder.has_value() && sections.empty()
+        && scriptSections.empty() && textValues.empty() && !footerOrder.has_value()
+        && footerEntries.empty()
         && authoredArms.empty() && textRepairs.empty();
 }
 
@@ -781,38 +822,61 @@ Result<std::vector<std::byte>> SalsaScriptPatchCodec::serialize(
         document["sourceTextConvention"] = patch.sourceTextConvention
             ? Json(static_cast<std::uint32_t>(*patch.sourceTextConvention)) : Json(nullptr);
         document["allocatorState"] = patch.allocatorState
-            ? encodeAllocatorState(*patch.allocatorState) : Json(nullptr);
-        document["sectionOrder"] = ids(std::span{patch.sectionOrder});
-        document["deletedSections"] = ids(std::span{patch.deletedSections});
-        document["insertedSections"] = Json::array();
-        for (const auto& section : patch.insertedSections)
-            document["insertedSections"].push_back(encodeSection(section));
+            ? Json{{"before", encodeAllocatorState(*patch.allocatorState->before)},
+                {"after", encodeAllocatorState(*patch.allocatorState->after)}} : Json(nullptr);
+        document["sectionOrder"] = patch.sectionOrder
+            ? Json{{"before", ids(std::span{patch.sectionOrder->before})},
+                {"after", ids(std::span{patch.sectionOrder->after})}} : Json(nullptr);
+        document["sections"] = Json::array();
+        for (const auto& section : patch.sections)
+            document["sections"].push_back(Json{
+                {"before", section.before ? encodeSection(*section.before) : Json(nullptr)},
+                {"after", section.after ? encodeSection(*section.after) : Json(nullptr)}});
         document["scriptSections"] = Json::array();
         for (const auto& section : patch.scriptSections) {
-            Json upserts = Json::array();
-            for (const auto& instruction : section.upsertedInstructions)
-                upserts.push_back(encodeInstruction(instruction));
+            Json instructions = Json::array();
+            for (const auto& instruction : section.instructions)
+                instructions.push_back(Json{
+                    {"before", instruction.before
+                        ? encodeInstruction(*instruction.before) : Json(nullptr)},
+                    {"after", instruction.after
+                        ? encodeInstruction(*instruction.after) : Json(nullptr)}});
             document["scriptSections"].push_back(Json{{"section", section.section.value()},
-                {"nameBytes", section.nameBytes ? Json(*section.nameBytes) : Json(nullptr)},
-                {"instructionOrder", ids(std::span{section.instructionOrder})},
-                {"deletedInstructions", ids(std::span{section.deletedInstructions})},
-                {"upsertedInstructions", std::move(upserts)}});
+                {"nameBytes", section.nameBytes
+                    ? Json{{"before", *section.nameBytes->before},
+                        {"after", *section.nameBytes->after}} : Json(nullptr)},
+                {"instructionOrder", section.instructionOrder
+                    ? Json{{"before", ids(std::span{section.instructionOrder->before})},
+                        {"after", ids(std::span{section.instructionOrder->after})}} : Json(nullptr)},
+                {"instructions", std::move(instructions)}});
         }
         document["textValues"] = Json::array();
         for (const auto& value : patch.textValues)
             document["textValues"].push_back(Json{{"target", encodeTarget(value.target)},
-                {"value", encodeText(value.value)}});
-        document["footerOrder"] = ids(std::span{patch.footerOrder});
-        document["deletedFooterEntries"] = ids(std::span{patch.deletedFooterEntries});
-        document["upsertedFooterEntries"] = Json::array();
-        for (const auto& entry : patch.upsertedFooterEntries)
-            document["upsertedFooterEntries"].push_back(encodeFooter(entry));
+                {"before", encodeText(value.beforeValue)},
+                {"after", encodeText(value.afterValue)}});
+        document["footerOrder"] = patch.footerOrder
+            ? Json{{"before", ids(std::span{patch.footerOrder->before})},
+                {"after", ids(std::span{patch.footerOrder->after})}} : Json(nullptr);
+        document["footerEntries"] = Json::array();
+        for (const auto& entry : patch.footerEntries)
+            document["footerEntries"].push_back(Json{
+                {"before", entry.before ? encodeFooter(*entry.before) : Json(nullptr)},
+                {"after", entry.after ? encodeFooter(*entry.after) : Json(nullptr)}});
         document["authoredArms"] = Json::array();
         for (const auto& arm : patch.authoredArms)
-            document["authoredArms"].push_back(encodeArm(arm));
+            document["authoredArms"].push_back(Json{
+                {"before", arm.before ? encodeArm(*arm.before) : Json(nullptr)},
+                {"after", arm.after ? encodeArm(*arm.after) : Json(nullptr)}});
         document["textRepairs"] = Json::array();
-        for (const auto& repair : patch.textRepairs)
-            document["textRepairs"].push_back(encodeRepair(repair));
+        for (const auto& repair : patch.textRepairs) {
+            const auto before = repair.before
+                ? encodeRepair(SctPatchedTextRepair{repair.target, *repair.before}) : Json(nullptr);
+            const auto after = repair.after
+                ? encodeRepair(SctPatchedTextRepair{repair.target, *repair.after}) : Json(nullptr);
+            document["textRepairs"].push_back(Json{{"target", encodeTarget(repair.target)},
+                {"before", before}, {"after", after}});
+        }
         auto text = document.dump(2);
         text.push_back('\n');
         const auto raw = std::as_bytes(std::span{text.data(), text.size()});
@@ -829,10 +893,8 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
         const std::string_view text(reinterpret_cast<const char*>(bytesValue.data()), bytesValue.size());
         const auto document = Json::parse(text);
         requireObject(document, {"formatId", "schemaVersion", "sourceTextConvention",
-            "allocatorState",
-            "sectionOrder", "deletedSections", "insertedSections", "scriptSections",
-            "textValues", "footerOrder", "deletedFooterEntries", "upsertedFooterEntries",
-            "authoredArms", "textRepairs"});
+            "allocatorState", "sectionOrder", "sections", "scriptSections",
+            "textValues", "footerOrder", "footerEntries", "authoredArms", "textRepairs"});
         if (document.at("formatId").get<std::string>() != PayloadType)
             throw std::runtime_error("patch format ID does not match SALSA SCT patches");
         if (!document.at("schemaVersion").is_number_unsigned()
@@ -845,37 +907,104 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
         if (!document.at("sourceTextConvention").is_null())
             patch.sourceTextConvention = checkedEnum<spice::sct::SctKnownTextConvention>(
                 document.at("sourceTextConvention"), 2u, "source text convention");
-        if (!document.at("allocatorState").is_null())
-            patch.allocatorState = parseAllocatorState(document.at("allocatorState"));
-        patch.sectionOrder = parseIds<spice::sct::SctSectionId>(document.at("sectionOrder"));
-        patch.deletedSections = parseIds<spice::sct::SctSectionId>(document.at("deletedSections"));
-        for (const auto& section : document.at("insertedSections"))
-            patch.insertedSections.push_back(parseSection(section));
+        if (!document.at("allocatorState").is_null()) {
+            const auto& value = document.at("allocatorState");
+            requireObject(value, {"before", "after"});
+            patch.allocatorState = SctValueDelta<SctPatchedAllocatorState>{
+                parseAllocatorState(value.at("before")), parseAllocatorState(value.at("after"))};
+        }
+        if (!document.at("sectionOrder").is_null()) {
+            const auto& value = document.at("sectionOrder");
+            requireObject(value, {"before", "after"});
+            patch.sectionOrder = SctOrderDelta<spice::sct::SctSectionId>{
+                parseIds<spice::sct::SctSectionId>(value.at("before")),
+                parseIds<spice::sct::SctSectionId>(value.at("after"))};
+        }
+        for (const auto& section : document.at("sections")) {
+            requireObject(section, {"before", "after"});
+            SctValueDelta<spice::sct::SctDocumentSection> delta;
+            if (!section.at("before").is_null()) delta.before = parseSection(section.at("before"));
+            if (!section.at("after").is_null()) delta.after = parseSection(section.at("after"));
+            requireDelta(delta, "section");
+            patch.sections.push_back(std::move(delta));
+        }
         for (const auto& section : document.at("scriptSections")) {
-            requireObject(section, {"section", "nameBytes", "instructionOrder",
-                "deletedInstructions", "upsertedInstructions"});
+            requireObject(section, {"section", "nameBytes", "instructionOrder", "instructions"});
             SctPatchedScriptSection parsed;
             parsed.section = id<spice::sct::SctSectionId>(section.at("section"));
-            if (!section.at("nameBytes").is_null())
-                parsed.nameBytes = section.at("nameBytes").get<std::string>();
-            parsed.instructionOrder = parseIds<spice::sct::SctInstructionId>(section.at("instructionOrder"));
-            parsed.deletedInstructions = parseIds<spice::sct::SctInstructionId>(section.at("deletedInstructions"));
-            for (const auto& instruction : section.at("upsertedInstructions"))
-                parsed.upsertedInstructions.push_back(parseInstruction(instruction));
+            if (!section.at("nameBytes").is_null()) {
+                const auto& name = section.at("nameBytes");
+                requireObject(name, {"before", "after"});
+                parsed.nameBytes = SctValueDelta<std::string>{
+                    name.at("before").get<std::string>(), name.at("after").get<std::string>()};
+            }
+            if (!section.at("instructionOrder").is_null()) {
+                const auto& order = section.at("instructionOrder");
+                requireObject(order, {"before", "after"});
+                parsed.instructionOrder = SctOrderDelta<spice::sct::SctInstructionId>{
+                    parseIds<spice::sct::SctInstructionId>(order.at("before")),
+                    parseIds<spice::sct::SctInstructionId>(order.at("after"))};
+            }
+            for (const auto& instruction : section.at("instructions")) {
+                requireObject(instruction, {"before", "after"});
+                SctPatchedInstruction delta;
+                if (!instruction.at("before").is_null())
+                    delta.before = parseInstruction(instruction.at("before"));
+                if (!instruction.at("after").is_null())
+                    delta.after = parseInstruction(instruction.at("after"));
+                if (!delta.before && !delta.after)
+                    throw std::runtime_error("instruction delta has no before or after value");
+                parsed.instructions.push_back(std::move(delta));
+            }
             patch.scriptSections.push_back(std::move(parsed));
         }
         for (const auto& value : document.at("textValues")) {
-            requireObject(value, {"target", "value"});
+            requireObject(value, {"target", "before", "after"});
             patch.textValues.push_back({parseTarget(value.at("target")),
-                parseText(value.at("value"))});
+                parseText(value.at("before")), parseText(value.at("after"))});
         }
-        patch.footerOrder = parseIds<spice::sct::SctFooterEntryId>(document.at("footerOrder"));
-        patch.deletedFooterEntries = parseIds<spice::sct::SctFooterEntryId>(
-            document.at("deletedFooterEntries"));
-        for (const auto& entry : document.at("upsertedFooterEntries"))
-            patch.upsertedFooterEntries.push_back(parseFooter(entry));
-        for (const auto& arm : document.at("authoredArms")) patch.authoredArms.push_back(parseArm(arm));
-        for (const auto& repair : document.at("textRepairs")) patch.textRepairs.push_back(parseRepair(repair));
+        if (!document.at("footerOrder").is_null()) {
+            const auto& value = document.at("footerOrder");
+            requireObject(value, {"before", "after"});
+            patch.footerOrder = SctOrderDelta<spice::sct::SctFooterEntryId>{
+                parseIds<spice::sct::SctFooterEntryId>(value.at("before")),
+                parseIds<spice::sct::SctFooterEntryId>(value.at("after"))};
+        }
+        for (const auto& entry : document.at("footerEntries")) {
+            requireObject(entry, {"before", "after"});
+            SctValueDelta<spice::sct::SctDocumentFooterEntry> delta;
+            if (!entry.at("before").is_null()) delta.before = parseFooter(entry.at("before"));
+            if (!entry.at("after").is_null()) delta.after = parseFooter(entry.at("after"));
+            requireDelta(delta, "footer entry");
+            patch.footerEntries.push_back(std::move(delta));
+        }
+        for (const auto& arm : document.at("authoredArms")) {
+            requireObject(arm, {"before", "after"});
+            SctValueDelta<SctAuthoredArm> delta;
+            if (!arm.at("before").is_null()) delta.before = parseArm(arm.at("before"));
+            if (!arm.at("after").is_null()) delta.after = parseArm(arm.at("after"));
+            requireDelta(delta, "authored arm");
+            patch.authoredArms.push_back(std::move(delta));
+        }
+        for (const auto& repair : document.at("textRepairs")) {
+            requireObject(repair, {"target", "before", "after"});
+            SctPatchedTextRepairDelta delta{parseTarget(repair.at("target"))};
+            if (!repair.at("before").is_null()) {
+                auto parsed = parseRepair(repair.at("before"));
+                if (targetKey(parsed.target) != targetKey(delta.target))
+                    throw std::runtime_error("repair before target does not match its delta");
+                delta.before = std::move(parsed.provenance);
+            }
+            if (!repair.at("after").is_null()) {
+                auto parsed = parseRepair(repair.at("after"));
+                if (targetKey(parsed.target) != targetKey(delta.target))
+                    throw std::runtime_error("repair after target does not match its delta");
+                delta.after = std::move(parsed.provenance);
+            }
+            if (!delta.before && !delta.after)
+                throw std::runtime_error("text repair delta has no before or after value");
+            patch.textRepairs.push_back(std::move(delta));
+        }
         return Result<SalsaScriptPatch>::success(std::move(patch));
     } catch (const std::exception& error) {
         return Result<SalsaScriptPatch>::failure(patchError(
@@ -884,26 +1013,31 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
 }
 
 Result<SalsaScriptPatch> SalsaScriptPatchService::diff(
-    const spice::sct::SctDocument& baseline,
-    const spice::sct::SctDocument& working,
-    const std::optional<spice::sct::SctKnownTextConvention> sourceTextConvention,
-    const std::span<const SctAuthoredArm> authoredArms,
-    const std::span<const SctPatchedTextRepair> textRepairs) {
+    const SctSemanticState& baseline,
+    const SctSemanticState& working,
+    const std::optional<spice::sct::SctKnownTextConvention> sourceTextConvention) {
+    if (!baseline.document || !working.document)
+        return Result<SalsaScriptPatch>::failure(patchError(
+            "A semantic diff requires complete before and after documents."));
+    const auto& baselineDocument = *baseline.document;
+    const auto& workingDocument = *working.document;
     SalsaScriptPatch patch;
     patch.sourceTextConvention = sourceTextConvention;
-    const auto baselineAllocators = allocatorState(baseline);
-    const auto workingAllocators = allocatorState(working);
+    const auto baselineAllocators = allocatorState(baselineDocument);
+    const auto workingAllocators = allocatorState(workingDocument);
     if (baselineAllocators != workingAllocators)
-        patch.allocatorState = workingAllocators;
+        patch.allocatorState = SctValueDelta<SctPatchedAllocatorState>{
+            baselineAllocators, workingAllocators};
     std::vector<spice::sct::SctSectionId> baselineOrder, workingOrder;
-    for (const auto& section : baseline.sections) baselineOrder.push_back(section.id);
-    for (const auto& section : working.sections) workingOrder.push_back(section.id);
-    if (baselineOrder != workingOrder) patch.sectionOrder = workingOrder;
+    for (const auto& section : baselineDocument.sections) baselineOrder.push_back(section.id);
+    for (const auto& section : workingDocument.sections) workingOrder.push_back(section.id);
+    if (baselineOrder != workingOrder)
+        patch.sectionOrder = SctOrderDelta<spice::sct::SctSectionId>{baselineOrder, workingOrder};
 
-    for (const auto& source : baseline.sections) {
-        const auto* target = findById(working.sections, source.id);
+    for (const auto& source : baselineDocument.sections) {
+        const auto* target = findById(workingDocument.sections, source.id);
         if (target == nullptr) {
-            patch.deletedSections.push_back(source.id);
+            patch.sections.push_back({source, std::nullopt});
             continue;
         }
         if (source.content.index() != target->content.index())
@@ -911,21 +1045,26 @@ Result<SalsaScriptPatch> SalsaScriptPatchService::diff(
                 "A source section changed physical kind without receiving a new ID."));
         SctPatchedScriptSection sectionPatch;
         sectionPatch.section = source.id;
-        if (source.nameBytes != target->nameBytes) sectionPatch.nameBytes = target->nameBytes;
+        if (source.nameBytes != target->nameBytes)
+            sectionPatch.nameBytes = SctValueDelta<std::string>{
+                source.nameBytes, target->nameBytes};
         const auto* sourceScript = std::get_if<spice::sct::SctScriptSectionContent>(&source.content);
         const auto* targetScript = std::get_if<spice::sct::SctScriptSectionContent>(&target->content);
         if (sourceScript && targetScript) {
             std::vector<spice::sct::SctInstructionId> sourceOrder, targetOrder;
             for (const auto& item : sourceScript->instructions) sourceOrder.push_back(item.id);
             for (const auto& item : targetScript->instructions) targetOrder.push_back(item.id);
-            if (sourceOrder != targetOrder) sectionPatch.instructionOrder = targetOrder;
+            if (sourceOrder != targetOrder)
+                sectionPatch.instructionOrder = SctOrderDelta<spice::sct::SctInstructionId>{
+                    sourceOrder, targetOrder};
             for (const auto& item : sourceScript->instructions)
                 if (!findById(targetScript->instructions, item.id))
-                    sectionPatch.deletedInstructions.push_back(item.id);
+                    sectionPatch.instructions.push_back({item, std::nullopt});
             for (const auto& item : targetScript->instructions) {
                 const auto* old = findById(sourceScript->instructions, item.id);
-                if (old == nullptr || !sameInstruction(*old, item))
-                    sectionPatch.upsertedInstructions.push_back(item);
+                if (old == nullptr) sectionPatch.instructions.push_back({std::nullopt, item});
+                else if (!sameInstruction(*old, item))
+                    sectionPatch.instructions.push_back({*old, item});
             }
         } else if (const auto* sourceText = std::get_if<spice::sct::SctStringSectionContent>(&source.content)) {
             const auto& targetText = std::get<spice::sct::SctStringSectionContent>(target->content);
@@ -935,76 +1074,184 @@ Result<SalsaScriptPatch> SalsaScriptPatchService::diff(
                 return Result<SalsaScriptPatch>::failure(patchError(
                     "Indexed-string structure changed outside the supported patch contract."));
             if (!sameText(sourceText->string.value, targetText.string.value))
-                patch.textValues.push_back({sourceText->string.id, targetText.string.value});
+                patch.textValues.push_back({sourceText->string.id,
+                    sourceText->string.value, targetText.string.value});
         }
-        if (sectionPatch.nameBytes || !sectionPatch.instructionOrder.empty()
-            || !sectionPatch.deletedInstructions.empty()
-            || !sectionPatch.upsertedInstructions.empty())
+        if (sectionPatch.nameBytes || sectionPatch.instructionOrder
+            || !sectionPatch.instructions.empty())
             patch.scriptSections.push_back(std::move(sectionPatch));
     }
-    for (const auto& section : working.sections)
-        if (!findById(baseline.sections, section.id)) patch.insertedSections.push_back(section);
+    for (const auto& section : workingDocument.sections)
+        if (!findById(baselineDocument.sections, section.id))
+            patch.sections.push_back({std::nullopt, section});
 
     std::vector<spice::sct::SctFooterEntryId> baselineFooterOrder, workingFooterOrder;
-    for (const auto& entry : baseline.footerEntries) baselineFooterOrder.push_back(entry.id);
-    for (const auto& entry : working.footerEntries) workingFooterOrder.push_back(entry.id);
-    if (baselineFooterOrder != workingFooterOrder) patch.footerOrder = workingFooterOrder;
-    for (const auto& entry : baseline.footerEntries)
-        if (!findById(working.footerEntries, entry.id)) patch.deletedFooterEntries.push_back(entry.id);
-    for (const auto& entry : working.footerEntries) {
-        const auto* old = findById(baseline.footerEntries, entry.id);
-        if (old == nullptr || old->kind != entry.kind || !sameText(old->value, entry.value))
-            patch.upsertedFooterEntries.push_back(entry);
+    for (const auto& entry : baselineDocument.footerEntries) baselineFooterOrder.push_back(entry.id);
+    for (const auto& entry : workingDocument.footerEntries) workingFooterOrder.push_back(entry.id);
+    if (baselineFooterOrder != workingFooterOrder)
+        patch.footerOrder = SctOrderDelta<spice::sct::SctFooterEntryId>{
+            baselineFooterOrder, workingFooterOrder};
+    for (const auto& entry : baselineDocument.footerEntries) {
+        const auto* target = findById(workingDocument.footerEntries, entry.id);
+        if (!target) patch.footerEntries.push_back({entry, std::nullopt});
+        else if (!sameFooter(entry, *target)) patch.footerEntries.push_back({entry, *target});
     }
+    for (const auto& entry : workingDocument.footerEntries)
+        if (!findById(baselineDocument.footerEntries, entry.id))
+            patch.footerEntries.push_back({std::nullopt, entry});
 
-    if (baseline.opaqueAttachments.size() != working.opaqueAttachments.size()
-        || !std::ranges::equal(baseline.opaqueAttachments, working.opaqueAttachments,
+    if (baselineDocument.opaqueAttachments.size() != workingDocument.opaqueAttachments.size()
+        || !std::ranges::equal(baselineDocument.opaqueAttachments,
+            workingDocument.opaqueAttachments,
             sameOpaqueAttachment))
         return Result<SalsaScriptPatch>::failure(patchError(
             "Opaque attachments changed outside the supported patch contract."));
-    patch.authoredArms.assign(authoredArms.begin(), authoredArms.end());
-    patch.textRepairs.assign(textRepairs.begin(), textRepairs.end());
-    std::ranges::sort(patch.deletedSections, {}, [](auto value) { return value.value(); });
-    std::ranges::sort(patch.insertedSections, {}, [](const auto& value) { return value.id.value(); });
+
+    for (const auto& arm : baseline.authoredArms) {
+        const auto* target = findById(working.authoredArms, arm.id);
+        if (!target) patch.authoredArms.push_back({arm, std::nullopt});
+        else if (!sameArm(arm, *target)) patch.authoredArms.push_back({arm, *target});
+    }
+    for (const auto& arm : working.authoredArms)
+        if (!findById(baseline.authoredArms, arm.id))
+            patch.authoredArms.push_back({std::nullopt, arm});
+    for (const auto& repair : baseline.textRepairs) {
+        const auto* target = findRepair(working.textRepairs, repair.target);
+        if (!target) patch.textRepairs.push_back({repair.target, repair.provenance, std::nullopt});
+        else if (!sameRepair(repair, *target))
+            patch.textRepairs.push_back({repair.target, repair.provenance, target->provenance});
+    }
+    for (const auto& repair : working.textRepairs)
+        if (!findRepair(baseline.textRepairs, repair.target))
+            patch.textRepairs.push_back({repair.target, std::nullopt, repair.provenance});
+
+    std::ranges::sort(patch.sections, {}, [](const auto& value) {
+        return (value.before ? value.before->id : value.after->id).value();
+    });
     std::ranges::sort(patch.scriptSections, {}, [](const auto& value) { return value.section.value(); });
+    for (auto& section : patch.scriptSections)
+        std::ranges::sort(section.instructions, {}, [](const auto& value) {
+            return (value.before ? value.before->id : value.after->id).value();
+        });
     std::ranges::sort(patch.textValues, {}, [](const auto& value) { return targetKey(value.target); });
-    std::ranges::sort(patch.deletedFooterEntries, {}, [](auto value) { return value.value(); });
-    std::ranges::sort(patch.upsertedFooterEntries, {}, [](const auto& value) { return value.id.value(); });
-    std::ranges::sort(patch.authoredArms, {}, [](const auto& value) { return value.id.value; });
+    std::ranges::sort(patch.footerEntries, {}, [](const auto& value) {
+        return (value.before ? value.before->id : value.after->id).value();
+    });
+    std::ranges::sort(patch.authoredArms, {}, [](const auto& value) {
+        return (value.before ? value.before->id : value.after->id).value;
+    });
     std::ranges::sort(patch.textRepairs, {}, [](const auto& value) { return targetKey(value.target); });
     return Result<SalsaScriptPatch>::success(std::move(patch));
 }
 
-Result<SctPatchApplication> SalsaScriptPatchService::apply(
-    const spice::sct::SctDocument& baseline, const SalsaScriptPatch& patch) {
+Result<SctSemanticState> SalsaScriptPatchService::apply(
+    const SctSemanticState& baseline, const SalsaScriptPatch& patch) {
     try {
-        auto document = std::make_shared<spice::sct::SctDocument>(baseline);
-        for (const auto deleted : patch.deletedSections)
-            std::erase_if(document->sections, [&](const auto& value) { return value.id == deleted; });
-        for (const auto& inserted : patch.insertedSections) {
-            if (findById(document->sections, inserted.id)) throw std::runtime_error("inserted section ID exists");
-            document->sections.push_back(inserted);
+        if (!baseline.document) throw std::runtime_error("the baseline document is missing");
+        const auto& source = *baseline.document;
+        if (patch.allocatorState && allocatorState(source) != *patch.allocatorState->before)
+            throw std::runtime_error("allocator expected-before state does not match");
+        if (patch.sectionOrder) {
+            std::vector<spice::sct::SctSectionId> order;
+            for (const auto& section : source.sections) order.push_back(section.id);
+            if (order != patch.sectionOrder->before)
+                throw std::runtime_error("section order expected-before state does not match");
+        }
+        for (const auto& change : patch.sections) {
+            requireDelta(change, "section");
+            const auto id = change.before ? change.before->id : change.after->id;
+            const auto* current = findById(source.sections, id);
+            if (change.before) {
+                if (!current || !sameSection(*current, *change.before))
+                    throw std::runtime_error("section expected-before state does not match");
+            } else if (current) throw std::runtime_error("inserted section already exists");
         }
         for (const auto& change : patch.scriptSections) {
-            auto found = std::ranges::find(document->sections, change.section,
+            const auto found = std::ranges::find(source.sections, change.section,
                 &spice::sct::SctDocumentSection::id);
-            if (found == document->sections.end()) throw std::runtime_error("patched section is missing");
-            if (change.nameBytes) found->nameBytes = *change.nameBytes;
-            if (!change.deletedInstructions.empty() || !change.upsertedInstructions.empty()
-                || !change.instructionOrder.empty()) {
-                auto* script = std::get_if<spice::sct::SctScriptSectionContent>(&found->content);
-                if (!script) throw std::runtime_error("patched instruction section is not a script");
-                for (const auto deleted : change.deletedInstructions)
-                    std::erase_if(script->instructions, [&](const auto& item) { return item.id == deleted; });
-                for (const auto& upsert : change.upsertedInstructions) {
-                    auto existing = std::ranges::find(script->instructions, upsert.id,
-                        &spice::sct::SctDocumentInstruction::id);
-                    if (existing == script->instructions.end()) script->instructions.push_back(upsert);
-                    else *existing = upsert;
-                }
-                if (!reorder(script->instructions, change.instructionOrder))
-                    throw std::runtime_error("instruction order does not match patched entities");
+            if (found == source.sections.end()) throw std::runtime_error("patched section is missing");
+            const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(&found->content);
+            if (!script) throw std::runtime_error("patched instruction section is not a script");
+            if (change.nameBytes && found->nameBytes != *change.nameBytes->before)
+                throw std::runtime_error("section name expected-before state does not match");
+            if (change.instructionOrder) {
+                std::vector<spice::sct::SctInstructionId> order;
+                for (const auto& instruction : script->instructions) order.push_back(instruction.id);
+                if (order != change.instructionOrder->before)
+                    throw std::runtime_error("instruction order expected-before state does not match");
             }
+            for (const auto& instruction : change.instructions) {
+                const auto id = instruction.before ? instruction.before->id : instruction.after->id;
+                const auto* current = findById(script->instructions, id);
+                if (instruction.before) {
+                    if (!current || !sameInstruction(*current, *instruction.before))
+                        throw std::runtime_error("instruction expected-before state does not match");
+                } else if (current) throw std::runtime_error("inserted instruction already exists");
+            }
+        }
+        for (const auto& change : patch.textValues) {
+            const auto* current = findText(source, change.target);
+            if (!current || !sameText(*current, change.beforeValue))
+                throw std::runtime_error("text expected-before state does not match");
+        }
+        if (patch.footerOrder) {
+            std::vector<spice::sct::SctFooterEntryId> order;
+            for (const auto& entry : source.footerEntries) order.push_back(entry.id);
+            if (order != patch.footerOrder->before)
+                throw std::runtime_error("footer order expected-before state does not match");
+        }
+        for (const auto& change : patch.footerEntries) {
+            requireDelta(change, "footer entry");
+            const auto id = change.before ? change.before->id : change.after->id;
+            const auto* current = findById(source.footerEntries, id);
+            if (change.before) {
+                if (!current || !sameFooter(*current, *change.before))
+                    throw std::runtime_error("footer entry expected-before state does not match");
+            } else if (current) throw std::runtime_error("inserted footer entry already exists");
+        }
+        for (const auto& change : patch.authoredArms) {
+            requireDelta(change, "authored arm");
+            const auto id = change.before ? change.before->id : change.after->id;
+            const auto* current = findById(baseline.authoredArms, id);
+            if (change.before) {
+                if (!current || !sameArm(*current, *change.before))
+                    throw std::runtime_error("authored arm expected-before state does not match");
+            } else if (current) throw std::runtime_error("inserted authored arm already exists");
+        }
+        for (const auto& change : patch.textRepairs) {
+            const auto* current = findRepair(baseline.textRepairs, change.target);
+            if (change.before) {
+                if (!current || current->provenance != *change.before)
+                    throw std::runtime_error("text repair expected-before state does not match");
+            } else if (current) throw std::runtime_error("inserted text repair already exists");
+        }
+
+        auto document = std::make_shared<spice::sct::SctDocument>(source);
+        for (const auto& change : patch.sections) {
+            const auto id = change.before ? change.before->id : change.after->id;
+            auto* existing = findMutableById(document->sections, id);
+            if (change.before && change.after) *existing = *change.after;
+            else if (change.before)
+                std::erase_if(document->sections, [&](const auto& value) { return value.id == id; });
+            else document->sections.push_back(*change.after);
+        }
+        for (const auto& change : patch.scriptSections) {
+            auto* found = findMutableById(document->sections, change.section);
+            if (!found) throw std::runtime_error("patched section was removed");
+            if (change.nameBytes) found->nameBytes = *change.nameBytes->after;
+            auto* script = std::get_if<spice::sct::SctScriptSectionContent>(&found->content);
+            for (const auto& instruction : change.instructions) {
+                const auto id = instruction.before ? instruction.before->id : instruction.after->id;
+                auto* existing = findMutableById(script->instructions, id);
+                if (instruction.before && instruction.after) *existing = *instruction.after;
+                else if (instruction.before)
+                    std::erase_if(script->instructions,
+                        [&](const auto& value) { return value.id == id; });
+                else script->instructions.push_back(*instruction.after);
+            }
+            if (change.instructionOrder
+                && !reorder(script->instructions, change.instructionOrder->after))
+                throw std::runtime_error("instruction order does not match patched entities");
         }
         for (const auto& change : patch.textValues) {
             const bool replaced = std::visit([&](const auto target) {
@@ -1013,40 +1260,52 @@ Result<SctPatchApplication> SalsaScriptPatchService::apply(
                     for (auto& section : document->sections)
                         if (auto* text = std::get_if<spice::sct::SctStringSectionContent>(&section.content);
                             text && text->string.id == target) {
-                            text->string.value = change.value;
+                            text->string.value = change.afterValue;
                             return true;
                         }
                 } else {
-                    auto found = std::ranges::find(document->footerEntries, target,
-                        &spice::sct::SctDocumentFooterEntry::id);
-                    if (found != document->footerEntries.end()) {
-                        found->value = change.value;
-                        return true;
-                    }
+                    auto* entry = findMutableById(document->footerEntries, target);
+                    if (entry) { entry->value = change.afterValue; return true; }
                 }
                 return false;
             }, change.target);
             if (!replaced) throw std::runtime_error("patched text target is missing");
         }
-        for (const auto deleted : patch.deletedFooterEntries)
-            std::erase_if(document->footerEntries, [&](const auto& value) { return value.id == deleted; });
-        for (const auto& upsert : patch.upsertedFooterEntries) {
-            auto found = std::ranges::find(document->footerEntries, upsert.id,
-                &spice::sct::SctDocumentFooterEntry::id);
-            if (found == document->footerEntries.end()) document->footerEntries.push_back(upsert);
-            else *found = upsert;
+        for (const auto& change : patch.footerEntries) {
+            const auto id = change.before ? change.before->id : change.after->id;
+            auto* existing = findMutableById(document->footerEntries, id);
+            if (change.before && change.after) *existing = *change.after;
+            else if (change.before)
+                std::erase_if(document->footerEntries,
+                    [&](const auto& value) { return value.id == id; });
+            else document->footerEntries.push_back(*change.after);
         }
-        if (!reorder(document->sections, patch.sectionOrder))
+        if (patch.sectionOrder && !reorder(document->sections, patch.sectionOrder->after))
             throw std::runtime_error("section order does not match patched entities");
-        if (!reorder(document->footerEntries, patch.footerOrder))
+        if (patch.footerOrder && !reorder(document->footerEntries, patch.footerOrder->after))
             throw std::runtime_error("footer order does not match patched entities");
         advanceAllocators(*document);
-        if (patch.allocatorState) advanceAllocatorsTo(*document, *patch.allocatorState);
-        verifyTextRepairs(baseline, *document, patch.textRepairs);
-        return Result<SctPatchApplication>::success(SctPatchApplication{
-            std::move(document), patch.authoredArms, patch.textRepairs});
+        if (patch.allocatorState) advanceAllocatorsTo(*document, *patch.allocatorState->after);
+
+        auto authoredArms = baseline.authoredArms;
+        for (const auto& change : patch.authoredArms) {
+            const auto id = change.before ? change.before->id : change.after->id;
+            std::erase_if(authoredArms, [&](const auto& value) { return value.id == id; });
+            if (change.after) authoredArms.push_back(*change.after);
+        }
+        std::ranges::sort(authoredArms, {}, [](const auto& value) { return value.id.value; });
+        auto repairs = baseline.textRepairs;
+        for (const auto& change : patch.textRepairs) {
+            const auto key = targetKey(change.target);
+            std::erase_if(repairs, [&](const auto& value) { return targetKey(value.target) == key; });
+            if (change.after) repairs.push_back({change.target, *change.after});
+        }
+        std::ranges::sort(repairs, {}, [](const auto& value) { return targetKey(value.target); });
+        verifyTextRepairs(*baseline.document, *document, repairs);
+        return Result<SctSemanticState>::success(SctSemanticState{
+            std::move(document), std::move(authoredArms), std::move(repairs)});
     } catch (const std::exception& error) {
-        return Result<SctPatchApplication>::failure(patchError(
+        return Result<SctSemanticState>::failure(patchError(
             std::string("The SCT patch could not be applied: ") + error.what(),
             DiagnosticCode::SctPatchApplyFailed));
     }
@@ -1054,7 +1313,8 @@ Result<SctPatchApplication> SalsaScriptPatchService::apply(
 
 SctPatchedLoadResult SctPatchCheckpointService::load(
     const GameProjectContext& project, const SctPatchStore* store,
-    const AssetLocator& locator, const std::stop_token stopToken) {
+    const SctBaselineStore* baselines, const AssetLocator& locator,
+    const std::stop_token stopToken) {
     SctPatchedLoadResult result;
     result.load = SctDocumentLoader::load(project, locator, stopToken);
     result.baseline = result.load.document;
@@ -1089,6 +1349,28 @@ SctPatchedLoadResult SctPatchCheckpointService::load(
             DiagnosticCode::UnsupportedSctPatchSchema));
         return result;
     }
+    if (baselines == nullptr) {
+        result.patchConflict = true;
+        result.load.infrastructureDiagnostics.push_back(patchError(
+            "The saved SCT patch has no retained baseline store.",
+            DiagnosticCode::SctBaselineMissing));
+        return result;
+    }
+    auto retained = baselines->loadBaseline(sourceRevision);
+    if (!retained) {
+        result.patchConflict = true;
+        result.load.infrastructureDiagnostics.insert(
+            result.load.infrastructureDiagnostics.end(), retained.diagnostics().begin(),
+            retained.diagnostics().end());
+        return result;
+    }
+    if (!retained.value()) {
+        result.patchConflict = true;
+        result.load.infrastructureDiagnostics.push_back(patchError(
+            "The exact source baseline retained for this SCT patch is missing.",
+            DiagnosticCode::SctBaselineMissing));
+        return result;
+    }
     if (envelope.sourceDatasetFingerprint
         != result.baseline->provenance->inspection->sourceDatasetFingerprint) {
         result.load.infrastructureDiagnostics.push_back({DiagnosticSeverity::Warning,
@@ -1118,8 +1400,8 @@ SctPatchedLoadResult SctPatchCheckpointService::load(
             return result;
         }
     }
-    auto application = SalsaScriptPatchService::apply(
-        *result.baseline->document, patch);
+    auto application = SalsaScriptPatchService::apply(SctSemanticState{
+        result.baseline->document, {}, {}}, patch);
     if (!application) {
         result.patchConflict = true;
         auto diagnostics = application.diagnostics();
@@ -1162,7 +1444,7 @@ SctPatchedLoadResult SctPatchCheckpointService::load(
 
 SctCheckpointResult SctPatchCheckpointService::checkpoint(
     const SctCheckpointRequest& request, const SctPatchStore& store,
-    const std::stop_token stopToken) {
+    const SctBaselineStore& baselines, const std::stop_token stopToken) {
     SctCheckpointResult result;
     result.revision = request.revision;
     result.historyStateToken = request.historyStateToken;
@@ -1185,9 +1467,11 @@ SctCheckpointResult SctPatchCheckpointService::checkpoint(
             DiagnosticCode::SctPatchVerificationFailed));
         return result;
     }
-    auto patch = SalsaScriptPatchService::diff(*request.baseline->document,
-        *materialized.document, request.baseline->provenance->textConvention,
-        request.materialization.expectedStructuredArms, request.textRepairs);
+    const SctSemanticState baselineState{request.baseline->document, {}, {}};
+    const SctSemanticState workingState{materialized.document,
+        request.materialization.expectedStructuredArms, request.textRepairs};
+    auto patch = SalsaScriptPatchService::diff(baselineState, workingState,
+        request.baseline->provenance->textConvention);
     if (!patch) {
         result.diagnostics = patch.diagnostics();
         return result;
@@ -1202,15 +1486,13 @@ SctCheckpointResult SctPatchCheckpointService::checkpoint(
         result.diagnostics = decoded.diagnostics();
         return result;
     }
-    auto reapplied = SalsaScriptPatchService::apply(
-        *request.baseline->document, decoded.value());
+    auto reapplied = SalsaScriptPatchService::apply(baselineState, decoded.value());
     if (!reapplied) {
         result.diagnostics = reapplied.diagnostics();
         return result;
     }
-    auto comparison = SalsaScriptPatchService::diff(*request.baseline->document,
-        *reapplied.value().document, request.baseline->provenance->textConvention,
-        reapplied.value().authoredArms, reapplied.value().textRepairs);
+    auto comparison = SalsaScriptPatchService::diff(baselineState,
+        reapplied.value(), request.baseline->provenance->textConvention);
     if (!comparison) {
         result.diagnostics = comparison.diagnostics();
         return result;
@@ -1228,6 +1510,11 @@ SctCheckpointResult SctPatchCheckpointService::checkpoint(
         {{source.descriptor.locator, source.descriptor.revision}}, {},
         {std::string(SalsaScriptPatchCodec::PayloadType),
             SalsaScriptPatchCodec::SchemaVersion, std::move(payload).takeValue()}};
+    auto retained = baselines.retainBaseline(source.descriptor.revision, source.bytes);
+    if (!retained) {
+        result.diagnostics = retained.diagnostics();
+        return result;
+    }
     auto saved = store.checkpoint(source.descriptor.locator, envelope);
     if (!saved) {
         result.diagnostics = saved.diagnostics();

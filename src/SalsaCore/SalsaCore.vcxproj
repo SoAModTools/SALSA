@@ -55,6 +55,7 @@
     <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelopeCodec.h" />
     <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelopeFileStore.h" />
     <ClInclude Include="include\SalsaCore\Persistence\LocalSalsaWorkspace.h" />
+    <ClInclude Include="include\SalsaCore\Persistence\SctBaselineStore.h" />
     <ClInclude Include="include\SalsaCore\Persistence\SctScriptPatch.h" />
     <ClInclude Include="include\SalsaCore\Persistence\WorkspaceSession.h" />
     <ClInclude Include="include\SalsaCore\Project\AssetCatalogDiff.h" />
@@ -63,6 +64,7 @@
     <ClInclude Include="include\SalsaCore\Project\LocalGameProject.h" />
     <ClInclude Include="include\SalsaCore\Project\ProjectTypes.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentLoader.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctChangePlan.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentMaterializer.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctEditSession.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctInspectionLocation.h" />
@@ -83,12 +85,14 @@
     <ClCompile Include="src\Persistence\PatchEnvelopeCodec.cpp" />
     <ClCompile Include="src\Persistence\PatchEnvelopeFileStore.cpp" />
     <ClCompile Include="src\Persistence\LocalSalsaWorkspace.cpp" />
+    <ClCompile Include="src\Persistence\SctBaselineStore.cpp" />
     <ClCompile Include="src\Persistence\SctScriptPatch.cpp" />
     <ClCompile Include="src\Persistence\WorkspaceSession.cpp" />
     <ClCompile Include="src\Project\AssetCatalogDiff.cpp" />
     <ClCompile Include="src\Project\AssetLocator.cpp" />
     <ClCompile Include="src\Project\LocalGameProject.cpp" />
     <ClCompile Include="src\Sct\SctDocumentLoader.cpp" />
+    <ClCompile Include="src\Sct\SctChangePlan.cpp" />
     <ClCompile Include="src\Sct\SctDocumentMaterializer.cpp" />
     <ClCompile Include="src\Sct\SctEditSession.cpp" />
     <ClCompile Include="src\Sct\SctGlyphCatalog.cpp" />

@@ -6,6 +6,7 @@
 #include "SalsaCore/Sct/SctDocumentMaterializer.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -15,18 +16,36 @@
 namespace salsa::core {
 
 class SctPatchStore;
+class SctBaselineStore;
+
+template<typename T>
+struct SctValueDelta final {
+    std::optional<T> before{};
+    std::optional<T> after{};
+};
+
+template<typename T>
+struct SctOrderDelta final {
+    std::vector<T> before{};
+    std::vector<T> after{};
+};
+
+struct SctPatchedInstruction final {
+    std::optional<spice::sct::SctDocumentInstruction> before{};
+    std::optional<spice::sct::SctDocumentInstruction> after{};
+};
 
 struct SctPatchedScriptSection final {
     spice::sct::SctSectionId section;
-    std::optional<std::string> nameBytes{};
-    std::vector<spice::sct::SctInstructionId> instructionOrder{};
-    std::vector<spice::sct::SctInstructionId> deletedInstructions{};
-    std::vector<spice::sct::SctDocumentInstruction> upsertedInstructions{};
+    std::optional<SctValueDelta<std::string>> nameBytes{};
+    std::optional<SctOrderDelta<spice::sct::SctInstructionId>> instructionOrder{};
+    std::vector<SctPatchedInstruction> instructions{};
 };
 
 struct SctPatchedTextValue final {
     SctTextTarget target;
-    spice::sct::SctTextValue value;
+    spice::sct::SctTextValue beforeValue;
+    spice::sct::SctTextValue afterValue;
 };
 
 using SctPatchedTextRepair = SctTextRepairRecord;
@@ -40,20 +59,30 @@ struct SctPatchedAllocatorState final {
     auto operator<=>(const SctPatchedAllocatorState&) const = default;
 };
 
+struct SctPatchedTextRepairDelta final {
+    SctTextTarget target;
+    std::optional<SctTextRepairProvenance> before{};
+    std::optional<SctTextRepairProvenance> after{};
+};
+
+struct SctSemanticState final {
+    std::shared_ptr<const spice::sct::SctDocument> document{};
+    std::vector<SctAuthoredArm> authoredArms{};
+    std::vector<SctPatchedTextRepair> textRepairs{};
+};
+
 // A canonical baseline-to-working delta. It is intentionally not the undo journal.
 struct SalsaScriptPatch final {
     std::optional<spice::sct::SctKnownTextConvention> sourceTextConvention{};
-    std::optional<SctPatchedAllocatorState> allocatorState{};
-    std::vector<spice::sct::SctSectionId> sectionOrder{};
-    std::vector<spice::sct::SctSectionId> deletedSections{};
-    std::vector<spice::sct::SctDocumentSection> insertedSections{};
+    std::optional<SctValueDelta<SctPatchedAllocatorState>> allocatorState{};
+    std::optional<SctOrderDelta<spice::sct::SctSectionId>> sectionOrder{};
+    std::vector<SctValueDelta<spice::sct::SctDocumentSection>> sections{};
     std::vector<SctPatchedScriptSection> scriptSections{};
     std::vector<SctPatchedTextValue> textValues{};
-    std::vector<spice::sct::SctFooterEntryId> footerOrder{};
-    std::vector<spice::sct::SctFooterEntryId> deletedFooterEntries{};
-    std::vector<spice::sct::SctDocumentFooterEntry> upsertedFooterEntries{};
-    std::vector<SctAuthoredArm> authoredArms{};
-    std::vector<SctPatchedTextRepair> textRepairs{};
+    std::optional<SctOrderDelta<spice::sct::SctFooterEntryId>> footerOrder{};
+    std::vector<SctValueDelta<spice::sct::SctDocumentFooterEntry>> footerEntries{};
+    std::vector<SctValueDelta<SctAuthoredArm>> authoredArms{};
+    std::vector<SctPatchedTextRepairDelta> textRepairs{};
 
     [[nodiscard]] bool empty() const noexcept;
 };
@@ -67,7 +96,7 @@ struct SctPatchApplication final {
 class SalsaScriptPatchCodec final {
 public:
     static constexpr std::string_view PayloadType = "jahorta.salsa.sct-script-patch";
-    static constexpr std::uint32_t SchemaVersion = 2;
+    static constexpr std::uint32_t SchemaVersion = 3;
 
     [[nodiscard]] static Result<std::vector<std::byte>> serialize(
         const SalsaScriptPatch& patch);
@@ -78,14 +107,12 @@ public:
 class SalsaScriptPatchService final {
 public:
     [[nodiscard]] static Result<SalsaScriptPatch> diff(
-        const spice::sct::SctDocument& baseline,
-        const spice::sct::SctDocument& working,
-        std::optional<spice::sct::SctKnownTextConvention> sourceTextConvention,
-        std::span<const SctAuthoredArm> authoredArms,
-        std::span<const SctPatchedTextRepair> textRepairs);
+        const SctSemanticState& baseline,
+        const SctSemanticState& working,
+        std::optional<spice::sct::SctKnownTextConvention> sourceTextConvention);
 
-    [[nodiscard]] static Result<SctPatchApplication> apply(
-        const spice::sct::SctDocument& baseline,
+    [[nodiscard]] static Result<SctSemanticState> apply(
+        const SctSemanticState& baseline,
         const SalsaScriptPatch& patch);
 };
 
@@ -119,12 +146,14 @@ public:
     [[nodiscard]] static SctPatchedLoadResult load(
         const GameProjectContext& project,
         const SctPatchStore* store,
+        const SctBaselineStore* baselines,
         const AssetLocator& locator,
         std::stop_token stopToken = {});
 
     [[nodiscard]] static SctCheckpointResult checkpoint(
         const SctCheckpointRequest& request,
         const SctPatchStore& store,
+        const SctBaselineStore& baselines,
         std::stop_token stopToken = {});
 };
 

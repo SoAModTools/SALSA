@@ -64,6 +64,7 @@ struct SctTextRepairProvenance final {
 struct SctTextRepairRecord final {
     SctTextTarget target;
     SctTextRepairProvenance provenance;
+    auto operator<=>(const SctTextRepairRecord&) const = default;
 };
 
 struct SctInstructionStructuralChange final {

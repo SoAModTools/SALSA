@@ -72,7 +72,7 @@ bool SctDocumentController::openDocument(
     watcher_.setFuture(QtConcurrent::run(
         [project = std::move(project), locator, token, workspace = std::move(workspace)]() {
             return core::SctPatchCheckpointService::load(
-                project, workspace.get(), locator, token);
+                project, workspace.get(), workspace.get(), locator, token);
         }));
     return true;
 }
@@ -86,7 +86,7 @@ bool SctDocumentController::reloadDocument(
     watcher_.setFuture(QtConcurrent::run(
         [project = std::move(project), locator, token, workspace = std::move(workspace)]() {
             return core::SctPatchCheckpointService::load(
-                project, workspace.get(), locator, token);
+                project, workspace.get(), workspace.get(), locator, token);
         }));
     return true;
 }
@@ -676,7 +676,7 @@ bool SctDocumentController::saveDocument(const core::AssetLocator& locator) {
     state->checkpointWatcher->setFuture(QtConcurrent::run(
         [request = std::move(*request), token, workspace = std::move(workspace)] {
             return core::SctPatchCheckpointService::checkpoint(
-                request, *workspace, token);
+                request, *workspace, *workspace, token);
         }));
     emit documentChanged(identity(locator), SctDocumentUpdate{
         SctDocumentUpdateKind::SourceStatus,

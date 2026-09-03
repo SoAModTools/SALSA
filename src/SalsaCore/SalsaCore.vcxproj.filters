@@ -26,6 +26,7 @@
     <ClInclude Include="include\SalsaCore\Foundation\Result.h"><Filter>Foundation</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\History\RevisionHistory.h"><Filter>History</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\LocalSalsaWorkspace.h"><Filter>Project</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Persistence\SctBaselineStore.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\SctScriptPatch.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\WorkspaceSession.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Project\AssetCatalogDiff.h"><Filter>Project</Filter></ClInclude>
@@ -34,6 +35,7 @@
     <ClInclude Include="include\SalsaCore\Project\LocalGameProject.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Project\ProjectTypes.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentLoader.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Sct\SctChangePlan.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentMaterializer.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctEditSession.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctInspectionLocation.h"><Filter>SCT</Filter></ClInclude>
@@ -53,12 +55,14 @@
     </ClCompile>
     <ClCompile Include="src\Foundation\Hashing.cpp"><Filter>Foundation</Filter></ClCompile>
     <ClCompile Include="src\Persistence\LocalSalsaWorkspace.cpp"><Filter>Project</Filter></ClCompile>
+    <ClCompile Include="src\Persistence\SctBaselineStore.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Persistence\SctScriptPatch.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Persistence\WorkspaceSession.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\AssetCatalogDiff.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\AssetLocator.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\LocalGameProject.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctDocumentLoader.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="src\Sct\SctChangePlan.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctDocumentMaterializer.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctEditSession.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctGlyphCatalog.cpp"><Filter>SCT</Filter></ClCompile>

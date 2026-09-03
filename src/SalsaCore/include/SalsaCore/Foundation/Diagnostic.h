@@ -47,6 +47,8 @@ enum class DiagnosticCode {
     SctPatchSourceMismatch,
     SctPatchApplyFailed,
     SctPatchVerificationFailed,
+    SctBaselineMissing,
+    SctBaselineCorrupt,
     SctExportFailed,
     PublicationSourceChanged,
     PublicationSourceReplacementNotConfirmed,

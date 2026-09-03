@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SalsaCore/Persistence/PatchEnvelopeFileStore.h"
+#include "SalsaCore/Persistence/SctBaselineStore.h"
 #include "SalsaCore/Persistence/SctScriptPatch.h"
 #include "SalsaCore/Project/ProjectTypes.h"
 
@@ -66,7 +67,7 @@ public:
         const AssetLocator& locator, const PatchEnvelope& envelope) const = 0;
 };
 
-class LocalSalsaWorkspace final : public SctPatchStore {
+class LocalSalsaWorkspace final : public SctPatchStore, public SctBaselineStore {
 public:
     static constexpr std::uint32_t SchemaVersion = 2;
 
@@ -87,6 +88,10 @@ public:
         const AssetLocator& locator) const override;
     [[nodiscard]] Result<void> checkpoint(
         const AssetLocator& locator, const PatchEnvelope& envelope) const override;
+    [[nodiscard]] Result<std::optional<std::vector<std::byte>>> loadBaseline(
+        const SourceRevision& revision) const override;
+    [[nodiscard]] Result<void> retainBaseline(
+        const SourceRevision& revision, std::span<const std::byte> bytes) const override;
 
 private:
     explicit LocalSalsaWorkspace(SalsaWorkspaceDescriptor descriptor);

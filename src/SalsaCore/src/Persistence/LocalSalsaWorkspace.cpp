@@ -744,4 +744,16 @@ Result<void> LocalSalsaWorkspace::checkpoint(
     return files_.checkpoint(patchPath(locator), envelope);
 }
 
+Result<std::optional<std::vector<std::byte>>> LocalSalsaWorkspace::loadBaseline(
+    const SourceRevision& revision) const {
+    return DirectorySctBaselineStore(componentPath(descriptor_.components.baselines))
+        .loadBaseline(revision);
+}
+
+Result<void> LocalSalsaWorkspace::retainBaseline(
+    const SourceRevision& revision, const std::span<const std::byte> bytes) const {
+    return DirectorySctBaselineStore(componentPath(descriptor_.components.baselines))
+        .retainBaseline(revision, bytes);
+}
+
 }  // namespace salsa::core
