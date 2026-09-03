@@ -57,6 +57,7 @@
     <ClCompile Include="Application\MainWindow.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Sct\SctDocumentController.cpp" />
+    <ClCompile Include="Sct\SctExportDialog.cpp" />
     <ClCompile Include="Sct\SctDocumentWidget.cpp" />
     <ClCompile Include="Sct\SctOutlineModel.cpp" />
     <ClCompile Include="Sct\SctStructuredOutlineModel.cpp" />
@@ -71,6 +72,7 @@
     <ClCompile Include="Workspace\WorkspaceModel.cpp" />
     <QtMoc Include="Workspace\WorkspaceController.h" />
     <QtMoc Include="Sct\SctDocumentController.h" />
+    <ClInclude Include="Sct\SctExportDialog.h" />
     <QtMoc Include="Sct\SctDocumentWidget.h" />
     <QtMoc Include="Sct\SctOutlineModel.h" />
     <QtMoc Include="Sct\SctStructuredOutlineModel.h" />

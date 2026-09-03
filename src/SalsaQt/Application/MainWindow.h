@@ -58,6 +58,7 @@ private:
     void rememberPatchWorkspaceAssociation(
         const QString& datasetRoot, const QString& workspaceRoot);
     void saveActiveDocument();
+    void exportActiveDocument();
     void syncWorkspace();
     void syncSelection();
     void syncDiagnostics();
@@ -146,6 +147,7 @@ private:
     QAction* openAction_ = nullptr;
     QAction* closeWorkspaceAction_ = nullptr;
     QAction* saveAction_ = nullptr;
+    QAction* exportAction_ = nullptr;
     QAction* refreshAction_ = nullptr;
     QAction* associatePatchWorkspaceAction_ = nullptr;
     QAction* disconnectPatchWorkspaceAction_ = nullptr;
@@ -176,6 +178,7 @@ private:
     QStringList recentDatasets_{};
     QStringList patchWorkspaceAssociations_{};
     QString lastDataset_{};
+    QString lastExportDirectory_{};
     std::shared_ptr<const core::LocalSalsaWorkspace> patchWorkspace_{};
     bool restoringDataset_ = false;
     bool diagnosticsSyncPending_ = false;

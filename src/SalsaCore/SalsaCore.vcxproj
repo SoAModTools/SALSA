@@ -70,6 +70,7 @@
     <ClInclude Include="include\SalsaCore\Sct\SctParameterAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctExpressionLanguage.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctPublication.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctSemanticOperation.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctStructuredAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctWorkingState.h" />
@@ -93,6 +94,7 @@
     <ClCompile Include="src\Sct\SctParameterAuthoring.cpp" />
     <ClCompile Include="src\Sct\SctExpressionLanguage.cpp" />
     <ClCompile Include="src\Sct\SctPresentation.cpp" />
+    <ClCompile Include="src\Sct\SctPublication.cpp" />
     <ClCompile Include="src\Sct\SctSemanticOperation.cpp" />
     <ClCompile Include="src\Sct\SctStructuredAuthoring.cpp" />
     <ClCompile Include="src\Sct\SctWorkingState.cpp" />

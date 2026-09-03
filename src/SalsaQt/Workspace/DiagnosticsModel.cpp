@@ -52,6 +52,10 @@ namespace {
     case core::DiagnosticCode::SctPatchSourceMismatch: return QStringLiteral("SctPatchSourceMismatch");
     case core::DiagnosticCode::SctPatchApplyFailed: return QStringLiteral("SctPatchApplyFailed");
     case core::DiagnosticCode::SctPatchVerificationFailed: return QStringLiteral("SctPatchVerificationFailed");
+    case core::DiagnosticCode::SctExportFailed: return QStringLiteral("SctExportFailed");
+    case core::DiagnosticCode::PublicationSourceChanged: return QStringLiteral("PublicationSourceChanged");
+    case core::DiagnosticCode::PublicationSourceReplacementNotConfirmed: return QStringLiteral("PublicationSourceReplacementNotConfirmed");
+    case core::DiagnosticCode::PublicationWriteFailed: return QStringLiteral("PublicationWriteFailed");
     }
     return QStringLiteral("Unknown");
 }

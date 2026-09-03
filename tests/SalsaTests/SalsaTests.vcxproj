@@ -62,6 +62,7 @@
     <ClCompile Include="test_sct_expression_language.cpp" />
     <ClCompile Include="test_sct_document_inspection.cpp" />
     <ClCompile Include="test_sct_message_authoring.cpp" />
+    <ClCompile Include="test_sct_publication.cpp" />
     <ClCompile Include="test_sct_script_patch.cpp" />
     <ClCompile Include="test_sct_structured_authoring.cpp" />
   </ItemGroup>

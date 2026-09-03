@@ -1731,6 +1731,24 @@ std::optional<SctCheckpointRequest> SctEditSession::checkpointRequest(
     };
 }
 
+std::optional<SctPublicationRevision> SctEditSession::capturePublicationRevision(
+    const std::uint64_t generation) const {
+    const auto revision = history_.currentRevision();
+    if (!revision.id.valid() || revision.state == nullptr) return std::nullopt;
+    SctPublicationRevision result;
+    result.revision = revision.id;
+    result.historyStateToken = revision.state;
+    result.provenance = baselineSnapshot_->provenance;
+    if (verifiedRevision_ == revision.id && currentSnapshot_
+        && currentSnapshot_->document) {
+        result.verifiedSnapshot = currentSnapshot_;
+    } else {
+        result.materialization = materializationRequest(generation);
+        if (!result.materialization) return std::nullopt;
+    }
+    return result;
+}
+
 bool SctEditSession::markPatchCheckpoint(const RevisionId revision,
     std::shared_ptr<const void> historyStateToken) noexcept {
     if (historyStateToken == nullptr) return false;

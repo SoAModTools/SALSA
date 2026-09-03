@@ -5,6 +5,7 @@
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
 #include "Sct/SctDocumentController.h"
 #include "Sct/SctDocumentWidget.h"
+#include "Sct/SctExportDialog.h"
 #include "Sct/SctMessageEditorWidget.h"
 #include "Sct/SctScptEditorWidget.h"
 #include "Sct/SctSemanticNavigatorWidget.h"
@@ -323,6 +324,8 @@ void MainWindow::buildUi() {
     recentMenu_ = fileMenu->addMenu(tr("Open &Recent"));
     saveAction_ = fileMenu->addAction(tr("&Save Document"));
     saveAction_->setShortcut(QKeySequence::Save);
+    exportAction_ = fileMenu->addAction(tr("&Export Active SCT..."));
+    exportAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
     closeWorkspaceAction_ = fileMenu->addAction(tr("&Close Dataset"));
     fileMenu->addSeparator();
     auto* exitAction = fileMenu->addAction(tr("E&xit"));
@@ -486,6 +489,7 @@ void MainWindow::buildUi() {
 
     connect(openAction_, &QAction::triggered, this, &MainWindow::chooseDataset);
     connect(saveAction_, &QAction::triggered, this, &MainWindow::saveActiveDocument);
+    connect(exportAction_, &QAction::triggered, this, &MainWindow::exportActiveDocument);
     connect(associatePatchWorkspaceAction_, &QAction::triggered,
         this, &MainWindow::associatePatchWorkspace);
     connect(disconnectPatchWorkspaceAction_, &QAction::triggered,
@@ -769,6 +773,31 @@ void MainWindow::connectWorkspace() {
             }
             continuePendingLifecycle(identityKey, success, cancelled);
         });
+    connect(documentController_, &SctDocumentController::publicationCompleted,
+        this, [this](const QString& identityKey, const bool success,
+            const bool cancelled, const QString& message, const bool replacedSource) {
+            progressBar_->hide();
+            cancelButton_->hide();
+            statusBar()->showMessage(message, 10000);
+            diagnosticJournalModel_->appendActivity(
+                cancelled ? QStringLiteral("PublicationCancelled")
+                    : success ? QStringLiteral("PublicationCompleted")
+                        : QStringLiteral("PublicationFailed"),
+                message, identityKey);
+            syncDiagnostics();
+            syncActions();
+            if (!success && !cancelled) {
+                diagnosticsDock_->show();
+                diagnosticsDock_->raise();
+                if (!documentController_->failureDiagnostics().empty()) {
+                    QMessageBox::warning(this, tr("SCT export failed"), message);
+                }
+            } else if (success && replacedSource) {
+                statusBar()->showMessage(
+                    tr("Source SCT replaced. Reload the document before saving another patch checkpoint."),
+                    12000);
+            }
+        });
 }
 
 void MainWindow::chooseDataset() {
@@ -885,6 +914,52 @@ void MainWindow::saveActiveDocument() {
     }
 }
 
+void MainWindow::exportActiveDocument() {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr || !prepareScptEditor(widget->locator())
+        || !flushMessageEditor()) return;
+    const auto project = controller_->projectSnapshot();
+    const auto snapshot = documentController_->snapshot(widget->locator());
+    if (!project || !snapshot || !snapshot->provenance) return;
+
+    const auto sourcePath = project->dataset().root / widget->locator().path();
+    const auto defaults = core::SctPublicationService::defaultsFor(
+        project->dataset(), *snapshot);
+    SctExportDialog dialog(widget->locator(),
+        documentController_->workingRevision(widget->locator()), defaults,
+        sourcePath, lastExportDirectory_, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    const auto destination = dialog.destination();
+    const bool replacingSource = sameDatasetPath(
+        QString::fromStdWString(sourcePath.wstring()),
+        QString::fromStdWString(destination.wstring()));
+    if (replacingSource) {
+        const auto answer = QMessageBox::warning(this,
+            tr("Replace loaded source SCT?"),
+            tr("This will atomically replace the SCT in the loaded dataset. "
+               "The open document and any SALSA patch will still refer to the previous source bytes, "
+               "so the document must be reloaded before another patch checkpoint or source replacement.\n\n"
+               "Replace the loaded source file?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) return;
+    }
+
+    if (!documentController_->exportDocument(*project, widget->locator(),
+            dialog.options(), destination, replacingSource)) {
+        statusBar()->showMessage(tr("The SCT export could not be started."), 8000);
+        return;
+    }
+    lastExportDirectory_ = QString::fromStdWString(destination.parent_path().wstring());
+    QSettings{}.setValue(QStringLiteral("publication/lastDirectory"),
+        lastExportDirectory_);
+    statusBar()->showMessage(tr("Exporting captured SCT revision..."));
+    progressBar_->setRange(0, 0);
+    progressBar_->show();
+    cancelButton_->show();
+    syncActions();
+}
+
 void MainWindow::syncWorkspace() {
     const auto* dataset = controller_->dataset();
     const auto* catalog = controller_->catalog();
@@ -980,16 +1055,18 @@ void MainWindow::syncSemanticNavigator() {
 
 void MainWindow::syncActions() {
     const bool busy = controller_->busy() || documentController_->busy();
+    const bool publishing = documentController_->isPublishing();
     const bool hasDataset = controller_->hasWorkspace();
     const bool hasOpenDocuments = !documentController_->openLocators().empty();
-    openAction_->setEnabled(!busy);
-    recentMenu_->setEnabled(!busy && !recentDatasets_.isEmpty());
-    closeWorkspaceAction_->setEnabled(hasDataset || busy);
-    associatePatchWorkspaceAction_->setEnabled(hasDataset && !busy && !hasOpenDocuments);
+    openAction_->setEnabled(!busy && !publishing);
+    recentMenu_->setEnabled(!busy && !publishing && !recentDatasets_.isEmpty());
+    closeWorkspaceAction_->setEnabled(hasDataset || busy || publishing);
+    associatePatchWorkspaceAction_->setEnabled(
+        hasDataset && !busy && !publishing && !hasOpenDocuments);
     disconnectPatchWorkspaceAction_->setEnabled(
-        patchWorkspace_ != nullptr && !busy && !hasOpenDocuments);
-    refreshAction_->setEnabled(hasDataset && !busy);
-    projectTree_->setEnabled(hasDataset && !busy);
+        patchWorkspace_ != nullptr && !busy && !publishing && !hasOpenDocuments);
+    refreshAction_->setEnabled(hasDataset && !busy && !publishing);
+    projectTree_->setEnabled(hasDataset && !busy && !publishing);
     messageEditor_->setEnabled(!busy);
     syncEditActions();
 }
@@ -1137,7 +1214,12 @@ void MainWindow::syncEditActions() {
     saveAction_->setEnabled(available && patchWorkspace_ != nullptr
         && documentController_->isDirty(widget->locator())
         && !documentController_->isSaving(widget->locator())
-        && !documentController_->patchConflict(widget->locator()));
+        && !documentController_->patchConflict(widget->locator())
+        && !documentController_->isPublishing()
+        && documentController_->sourceStatus(widget->locator())
+            == SctDocumentController::SourceStatus::Current);
+    exportAction_->setEnabled(editable && !documentController_->isPublishing()
+        && !documentController_->isSaving(widget->locator()));
     for (int i = 1; i < tabs_->count(); ++i) {
         if (auto* document = qobject_cast<SctDocumentWidget*>(tabs_->widget(i))) {
             document->setEditingEnabled(!controller_->busy() && !documentController_->busy()
@@ -2380,6 +2462,8 @@ void MainWindow::restoreApplicationSettings() {
         QStringLiteral("workspace/lastDataset"),
         stored.isEmpty() ? QString{} : stored.front()).toString();
     lastDataset_ = normalizedRecentDatasetPath(storedLastDataset);
+    lastExportDirectory_ = normalizedRecentDatasetPath(
+        settings.value(QStringLiteral("publication/lastDirectory")).toString());
     for (const auto& root : stored) {
         const auto normalizedRoot = normalizedRecentDatasetPath(root);
         if (!normalizedRoot.isEmpty() && QFileInfo(normalizedRoot).isDir()
@@ -2419,6 +2503,8 @@ void MainWindow::saveApplicationSettings() const {
     settings.setValue(QStringLiteral("workspace/lastDataset"), lastDataset_);
     settings.setValue(QStringLiteral("workspace/patchAssociations"),
         patchWorkspaceAssociations_);
+    settings.setValue(QStringLiteral("publication/lastDirectory"),
+        lastExportDirectory_);
 }
 
 void MainWindow::handleOperationCompleted(

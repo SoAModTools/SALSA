@@ -5,6 +5,7 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctDocumentMaterializer.h"
 #include "SalsaCore/Sct/SctMessageAuthoring.h"
+#include "SalsaCore/Sct/SctPublication.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
 #include "SalsaCore/Sct/SctStructuredAuthoring.h"
 #include "SalsaCore/Sct/SctWorkingState.h"
@@ -194,6 +195,8 @@ public:
         std::vector<SctPipelineDiagnostic> diagnostics);
     [[nodiscard]] bool isActiveRevision(RevisionId revision) const;
     [[nodiscard]] std::optional<SctCheckpointRequest> checkpointRequest(
+        std::uint64_t generation) const;
+    [[nodiscard]] std::optional<SctPublicationRevision> capturePublicationRevision(
         std::uint64_t generation) const;
     [[nodiscard]] bool markPatchCheckpoint(
         RevisionId revision, std::shared_ptr<const void> historyStateToken) noexcept;

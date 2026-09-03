@@ -74,7 +74,7 @@ Result<void> replaceFileAtomically(
     if (destination.empty() || destination.filename().empty()) {
         return Result<void>::failure(persistenceError(
             DiagnosticCode::PersistenceWriteFailed,
-            "The checkpoint destination must identify a file.",
+            "The destination must identify a file.",
             destination));
     }
 
@@ -83,7 +83,7 @@ Result<void> replaceFileAtomically(
     if (pathError) {
         return Result<void>::failure(persistenceError(
             DiagnosticCode::PersistenceWriteFailed,
-            "The checkpoint destination could not be resolved: " + pathError.message(),
+            "The destination could not be resolved: " + pathError.message(),
             destination));
     }
 
@@ -92,7 +92,7 @@ Result<void> replaceFileAtomically(
     if (pathError || !parentExists || !std::filesystem::is_directory(parent, pathError) || pathError) {
         return Result<void>::failure(persistenceError(
             DiagnosticCode::PersistenceWriteFailed,
-            "The checkpoint destination's parent directory does not exist or is not accessible.",
+            "The destination's parent directory does not exist or is not accessible.",
             destination));
     }
 
@@ -121,7 +121,7 @@ Result<void> replaceFileAtomically(
     if (rawHandle == INVALID_HANDLE_VALUE) {
         return Result<void>::failure(persistenceError(
             DiagnosticCode::PersistenceWriteFailed,
-            "A temporary checkpoint file could not be created",
+            "A temporary file could not be created",
             destination,
             createError));
     }
@@ -155,7 +155,7 @@ Result<void> replaceFileAtomically(
             removeTemporary();
             return Result<void>::failure(persistenceError(
                 DiagnosticCode::PersistenceWriteFailed,
-                "The temporary checkpoint file could not be written completely",
+                "The temporary file could not be written completely",
                 destination,
                 writeError));
         }
@@ -168,7 +168,7 @@ Result<void> replaceFileAtomically(
         removeTemporary();
         return Result<void>::failure(persistenceError(
             DiagnosticCode::PersistenceWriteFailed,
-            "The temporary checkpoint file could not be flushed",
+            "The temporary file could not be flushed",
             destination,
             flushError));
     }
@@ -177,7 +177,7 @@ Result<void> replaceFileAtomically(
         removeTemporary();
         return Result<void>::failure(persistenceError(
             DiagnosticCode::PersistenceWriteFailed,
-            "The temporary checkpoint file could not be closed",
+            "The temporary file could not be closed",
             destination,
             closeError));
     }
@@ -190,7 +190,7 @@ Result<void> replaceFileAtomically(
         removeTemporary();
         return Result<void>::failure(persistenceError(
             DiagnosticCode::PersistenceReplaceFailed,
-            "The previous checkpoint could not be replaced atomically",
+            "The destination could not be replaced atomically",
             destination,
             replaceError));
     }

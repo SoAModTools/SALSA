@@ -21,7 +21,7 @@
 
 namespace salsa::core {
 
-enum class SctPipelineStage { Parse, TextAssessment, Import, Validation, Edit };
+enum class SctPipelineStage { Parse, TextAssessment, Import, Validation, Edit, Publication };
 enum class SctTextSelectionOrigin { None, UniqueAssessment, UserSelected };
 
 enum class SctNavigationKind {

@@ -30,12 +30,18 @@ namespace {
 
 SctDocumentController::SctDocumentController(QObject* parent) : QObject(parent) {
     connect(&watcher_, &QFutureWatcherBase::finished, this, &SctDocumentController::onFinished);
+    connect(&publicationWatcher_, &QFutureWatcherBase::finished,
+        this, &SctDocumentController::finishPublication);
 }
 
 SctDocumentController::~SctDocumentController() {
     if (watcher_.isRunning()) {
         stopSource_.request_stop();
         watcher_.waitForFinished();
+    }
+    if (publicationWatcher_.isRunning()) {
+        publicationStop_.request_stop();
+        publicationWatcher_.waitForFinished();
     }
     for (auto& [key, state] : documents_) {
         if (state.materializationWatcher) {
@@ -123,6 +129,8 @@ void SctDocumentController::synchronizeCatalog(const core::AssetCatalogSnapshot&
 }
 
 void SctDocumentController::closeDocument(const core::AssetLocator& locator) {
+    if (publicationLocator_ && *publicationLocator_ == locator)
+        publicationStop_.request_stop();
     if (runningLocator_.has_value() && *runningLocator_ == locator) {
         stopSource_.request_stop();
         ++generation_;
@@ -136,6 +144,7 @@ void SctDocumentController::closeDocument(const core::AssetLocator& locator) {
 }
 
 void SctDocumentController::closeAll() {
+    if (publicationWatcher_.isRunning()) publicationStop_.request_stop();
     if (busy()) {
         stopSource_.request_stop();
         ++generation_;
@@ -153,6 +162,7 @@ void SctDocumentController::closeAll() {
 
 void SctDocumentController::cancel() {
     if (busy()) stopSource_.request_stop();
+    if (publicationWatcher_.isRunning()) publicationStop_.request_stop();
     for (auto& [key, state] : documents_)
         if (state.checkpointWatcher) state.checkpointStop.request_stop();
 }
@@ -241,8 +251,11 @@ std::shared_ptr<const core::SctDocumentSnapshot> SctDocumentController::snapshot
 std::vector<core::SctPipelineDiagnostic> SctDocumentController::currentDiagnostics(
     const core::AssetLocator& locator) const {
     const auto* state = findState(locator);
-    return state != nullptr ? state->session->currentDiagnostics()
-                            : std::vector<core::SctPipelineDiagnostic>{};
+    if (state == nullptr) return {};
+    auto result = state->session->currentDiagnostics();
+    result.insert(result.end(), state->publicationDiagnostics.begin(),
+        state->publicationDiagnostics.end());
+    return result;
 }
 
 std::shared_ptr<const core::SctSemanticEditorProjection>
@@ -267,9 +280,25 @@ bool SctDocumentController::isDirty(const core::AssetLocator& locator) const {
     return state != nullptr && state->session->isDirty();
 }
 
+core::RevisionId SctDocumentController::workingRevision(
+    const core::AssetLocator& locator) const {
+    const auto* state = findState(locator);
+    return state == nullptr ? core::RevisionId{} : state->session->workingRevision();
+}
+
 bool SctDocumentController::isSaving(const core::AssetLocator& locator) const {
     const auto* state = findState(locator);
     return state != nullptr && state->checkpointWatcher != nullptr;
+}
+
+bool SctDocumentController::isPublishing() const noexcept {
+    return publicationWatcher_.isRunning();
+}
+
+std::optional<core::SctPublicationReceipt> SctDocumentController::lastPublication(
+    const core::AssetLocator& locator) const {
+    const auto* state = findState(locator);
+    return state == nullptr ? std::nullopt : state->lastPublication;
 }
 
 bool SctDocumentController::patchConflict(const core::AssetLocator& locator) const {
@@ -627,6 +656,7 @@ bool SctDocumentController::redo(const core::AssetLocator& locator) {
 bool SctDocumentController::saveDocument(const core::AssetLocator& locator) {
     auto* state = findState(locator);
     if (state == nullptr || workspace_ == nullptr || state->patchConflict
+        || state->status != SourceStatus::Current
         || state->checkpointWatcher != nullptr) return false;
     const auto generation = ++nextCheckpointGeneration_;
     auto request = state->session->checkpointRequest(generation);
@@ -652,6 +682,44 @@ bool SctDocumentController::saveDocument(const core::AssetLocator& locator) {
         SctDocumentUpdateKind::SourceStatus,
         state->session->currentSnapshot(), std::nullopt,
         state->session->semanticProjection()});
+    return true;
+}
+
+bool SctDocumentController::exportDocument(
+    core::LocalGameProject project,
+    const core::AssetLocator& locator,
+    core::SctPublicationOptions options,
+    std::filesystem::path destination,
+    const bool allowSourceReplacement) {
+    auto* state = findState(locator);
+    if (state == nullptr || busy() || publicationWatcher_.isRunning()
+        || state->editBlocked) return false;
+    const auto snapshot = state->session->currentSnapshot();
+    if (!snapshot || !snapshot->provenance || !snapshot->provenance->inspection)
+        return false;
+    const auto generation = ++nextPublicationGeneration_;
+    auto captured = state->session->capturePublicationRevision(generation);
+    if (!captured) return false;
+
+    state->publicationDiagnostics.clear();
+    failureDiagnostics_.clear();
+    failurePipelineDiagnostics_.clear();
+    core::SctPublicationRequest request{
+        locator,
+        snapshot->provenance->inspection->sourceDatasetFingerprint,
+        snapshot->provenance->source().descriptor.revision,
+        std::move(*captured),
+        options,
+        std::move(destination),
+        allowSourceReplacement,
+    };
+    publicationStop_ = std::stop_source{};
+    const auto token = publicationStop_.get_token();
+    publicationLocator_ = locator;
+    publicationWatcher_.setFuture(QtConcurrent::run(
+        [project = std::move(project), request = std::move(request), token] {
+            return core::SctPublicationService::publish(project, request, token);
+        }));
     return true;
 }
 
@@ -686,6 +754,7 @@ bool SctDocumentController::applyEditResult(
         emit editCompleted(key, false, message);
         return false;
     }
+    state.publicationDiagnostics.clear();
     failurePipelineDiagnostics_.clear();
     assert(result.transition.has_value());
     QElapsedTimer notificationTimer;
@@ -860,6 +929,47 @@ void SctDocumentController::finishCheckpoint(
                 : QString::fromStdString(result.diagnostics.front().message);
     emit checkpointCompleted(QString::fromStdString(identityKey),
         result.saved, result.cancelled, message);
+}
+
+void SctDocumentController::finishPublication() {
+    auto result = publicationWatcher_.result();
+    const auto locator = publicationLocator_;
+    publicationLocator_.reset();
+    if (!locator) return;
+    auto* state = findState(*locator);
+    const auto identityKey = identity(*locator);
+    bool replacedSource = false;
+    bool newerEdits = false;
+    if (state != nullptr) {
+        state->publicationDiagnostics = result.diagnostics;
+        if (result.receipt) {
+            replacedSource = result.receipt->replacedSource;
+            newerEdits = state->session->workingRevision() != result.receipt->revision;
+            state->lastPublication = result.receipt;
+            if (replacedSource) state->status = SourceStatus::Changed;
+        }
+        emit documentChanged(identityKey, SctDocumentUpdate{
+            SctDocumentUpdateKind::SourceStatus,
+            state->session->currentSnapshot(), std::nullopt,
+            state->session->semanticProjection()});
+    }
+    failureDiagnostics_ = result.infrastructureDiagnostics;
+    failurePipelineDiagnostics_.clear();
+    const auto message = result.succeeded()
+        ? (newerEdits
+            ? tr("SCT revision %1 exported; newer edits remain unpublished.")
+                .arg(result.receipt->revision.value)
+            : tr("SCT revision %1 exported successfully.")
+                .arg(result.receipt->revision.value))
+        : result.cancelled
+            ? tr("SCT export cancelled.")
+            : !result.infrastructureDiagnostics.empty()
+                ? QString::fromStdString(result.infrastructureDiagnostics.front().message)
+                : !result.diagnostics.empty()
+                    ? QString::fromStdString(result.diagnostics.front().message)
+                    : tr("The SCT document could not be exported.");
+    emit publicationCompleted(identityKey, result.succeeded(), result.cancelled,
+        message, replacedSource);
 }
 
 void SctDocumentController::retireCheckpoint(DocumentState& state) {

@@ -5,12 +5,14 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
+#include "SalsaCore/Sct/SctPublication.h"
 
 #include <QFutureWatcher>
 #include <QObject>
 #include <QString>
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <stop_token>
@@ -136,6 +138,12 @@ public:
     [[nodiscard]] bool undo(const core::AssetLocator& locator);
     [[nodiscard]] bool redo(const core::AssetLocator& locator);
     [[nodiscard]] bool saveDocument(const core::AssetLocator& locator);
+    [[nodiscard]] bool exportDocument(
+        core::LocalGameProject project,
+        const core::AssetLocator& locator,
+        core::SctPublicationOptions options,
+        std::filesystem::path destination,
+        bool allowSourceReplacement);
     void setWorkspace(std::shared_ptr<const core::LocalSalsaWorkspace> workspace);
     void synchronizeCatalog(const core::AssetCatalogSnapshot& catalog);
     void closeDocument(const core::AssetLocator& locator);
@@ -175,7 +183,12 @@ public:
     [[nodiscard]] SourceStatus sourceStatus(const core::AssetLocator& locator) const;
     [[nodiscard]] bool structurallyValid(const core::AssetLocator& locator) const;
     [[nodiscard]] bool isDirty(const core::AssetLocator& locator) const;
+    [[nodiscard]] core::RevisionId workingRevision(
+        const core::AssetLocator& locator) const;
     [[nodiscard]] bool isSaving(const core::AssetLocator& locator) const;
+    [[nodiscard]] bool isPublishing() const noexcept;
+    [[nodiscard]] std::optional<core::SctPublicationReceipt> lastPublication(
+        const core::AssetLocator& locator) const;
     [[nodiscard]] bool patchConflict(const core::AssetLocator& locator) const;
     [[nodiscard]] bool hasWorkspace() const noexcept;
     [[nodiscard]] bool canUndo(const core::AssetLocator& locator) const;
@@ -199,6 +212,9 @@ signals:
     void editCompleted(const QString& identityKey, bool success, const QString& message);
     void checkpointCompleted(
         const QString& identityKey, bool success, bool cancelled, const QString& message);
+    void publicationCompleted(
+        const QString& identityKey, bool success, bool cancelled,
+        const QString& message, bool replacedSource);
     void selectionRequested(const QString& identityKey, int kind, qulonglong id);
 
 private:
@@ -217,6 +233,8 @@ private:
         std::uint64_t checkpointGeneration = 0;
         bool patchConflict = false;
         bool editBlocked = false;
+        std::vector<core::SctPipelineDiagnostic> publicationDiagnostics{};
+        std::optional<core::SctPublicationReceipt> lastPublication{};
     };
 
     void begin(Operation operation, const core::AssetLocator& locator);
@@ -233,6 +251,7 @@ private:
     void retireMaterialization(DocumentState& state);
     void finishCheckpoint(const std::string& identityKey, std::uint64_t generation);
     void retireCheckpoint(DocumentState& state);
+    void finishPublication();
 
     QFutureWatcher<core::SctPatchedLoadResult> watcher_{};
     std::unordered_map<std::string, DocumentState> documents_{};
@@ -244,12 +263,16 @@ private:
     std::uint64_t runningGeneration_ = 0;
     std::uint64_t nextMaterializationGeneration_ = 0;
     std::uint64_t nextCheckpointGeneration_ = 0;
+    std::uint64_t nextPublicationGeneration_ = 0;
     std::vector<std::unique_ptr<QFutureWatcher<core::SctMaterializationResult>>>
         retiredMaterializations_{};
     std::vector<std::unique_ptr<QFutureWatcher<core::SctCheckpointResult>>>
         retiredCheckpoints_{};
     std::vector<core::Diagnostic> failureDiagnostics_{};
     std::vector<core::SctPipelineDiagnostic> failurePipelineDiagnostics_{};
+    QFutureWatcher<core::SctPublicationResult> publicationWatcher_{};
+    std::stop_source publicationStop_{};
+    std::optional<core::AssetLocator> publicationLocator_{};
     bool editTimingsEnabled_ = false;
     bool structureTimingsEnabled_ = false;
 };

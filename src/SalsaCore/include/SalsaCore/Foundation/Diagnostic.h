@@ -45,6 +45,10 @@ enum class DiagnosticCode {
     SctPatchSourceMismatch,
     SctPatchApplyFailed,
     SctPatchVerificationFailed,
+    SctExportFailed,
+    PublicationSourceChanged,
+    PublicationSourceReplacementNotConfirmed,
+    PublicationWriteFailed,
 };
 
 struct Diagnostic {

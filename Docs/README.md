@@ -6,6 +6,7 @@ describes the editing workflows that are currently available.
 ## Editing
 
 - [Parameters and SCPT expressions](Parameters.md)
+- [Exporting SCT documents](Exporting.md)
 
-More guides will be added as publication, localization, and workspace-wide
-tools become available.
+More guides will be added as localization and workspace-wide tools become
+available.

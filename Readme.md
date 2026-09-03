@@ -4,7 +4,7 @@ SALSA is being rewritten as a C++20 and Qt 6 desktop editor for Skies of Arcadia
 
 The new implementation is organized as a Qt-free `SalsaCore` static library, a Qt Widgets `SalsaQt` application, and a GoogleTest-based `SalsaTests` executable. It consumes the frozen SpiceSCT document API through a pinned SPICE submodule.
 
-SALSA can inspect extracted datasets, decode SCT files, edit scripts through document-local history, and checkpoint deterministic semantic patches in a separate workspace. The editable model remains platform- and region-agnostic; publication targets and compatibility checks are later concerns.
+SALSA can inspect extracted datasets, decode and edit SCT files through document-local history, checkpoint deterministic semantic patches in a separate workspace, and export the active script to an explicit publication target. The editable model remains platform- and region-agnostic; target platform and encoding choices are supplied only when exporting.
 
 The original Python application is preserved under `legacy/python` as a behavioral and domain-knowledge reference. It is not a dependency of the new application.
 
