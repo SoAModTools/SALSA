@@ -362,9 +362,7 @@ void SctStructuredOutlineModel::appendArm(Node& parent,
     if (destination->children.empty()) {
         auto empty = std::make_unique<Node>();
         empty->parent = destination;
-        empty->label = arm.kind == SctStructuredArmKind::Then
-            ? tr("Empty Then") : arm.kind == SctStructuredArmKind::LoopBody
-                ? tr("Empty Body") : tr("Empty arm");
+        empty->label = tr("[Empty]");
         empty->secondary = tr("Semantic placeholder");
         empty->editContext = context;
         destination->children.push_back(std::move(empty));
@@ -440,7 +438,7 @@ void SctStructuredOutlineModel::appendAuthoredArms() {
         if (projected.visibleMembers.empty()) {
             auto placeholder = std::make_unique<Node>();
             placeholder->parent = node.get();
-            placeholder->label = tr("Empty arm");
+            placeholder->label = tr("[Empty]");
             placeholder->secondary = projected.status == core::SctSemanticArmStatus::NeedsValue
                 ? tr("Set a case value before inserting")
                 : tr("Insert an instruction to realize");

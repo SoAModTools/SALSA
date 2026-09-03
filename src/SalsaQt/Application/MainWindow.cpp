@@ -25,6 +25,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QIcon>
 #include <QItemSelectionModel>
 #include <QInputDialog>
 #include <QKeySequence>
@@ -39,6 +40,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTableView>
 #include <QTableWidget>
 #include <QTabBar>
@@ -323,8 +325,12 @@ void MainWindow::buildUi() {
     auto* editMenu = menuBar()->addMenu(tr("&Edit"));
     undoAction_ = editMenu->addAction(tr("&Undo"));
     undoAction_->setShortcut(QKeySequence::Undo);
+    undoAction_->setIcon(QIcon::fromTheme(QStringLiteral("edit-undo"),
+        style()->standardIcon(QStyle::SP_ArrowBack)));
     redoAction_ = editMenu->addAction(tr("&Redo"));
     redoAction_->setShortcut(QKeySequence::Redo);
+    redoAction_->setIcon(QIcon::fromTheme(QStringLiteral("edit-redo"),
+        style()->standardIcon(QStyle::SP_ArrowForward)));
     editMenu->addSeparator();
     editMessageAction_ = editMenu->addAction(tr("Edit &Text"));
     editMenu->addSeparator();
@@ -339,13 +345,9 @@ void MainWindow::buildUi() {
 
     auto* editToolbar = addToolBar(tr("Editing"));
     editToolbar->setObjectName(QStringLiteral("EditingToolbar"));
+    editToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     editToolbar->addAction(undoAction_);
     editToolbar->addAction(redoAction_);
-    editToolbar->addSeparator();
-    editToolbar->addAction(insertInstructionAction_);
-    editToolbar->addAction(deleteInstructionAction_);
-    editToolbar->addAction(moveInstructionUpAction_);
-    editToolbar->addAction(moveInstructionDownAction_);
 
     auto* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(projectDock_->toggleViewAction());
@@ -942,9 +944,11 @@ void MainWindow::syncEditActions() {
         ? documentController_->redoDescription(widget->locator()) : std::nullopt;
     undoAction_->setEnabled(available && documentController_->canUndo(widget->locator()));
     redoAction_->setEnabled(available && documentController_->canRedo(widget->locator()));
-    undoAction_->setText(undoDescription.has_value()
+    undoAction_->setText(tr("&Undo"));
+    redoAction_->setText(tr("&Redo"));
+    undoAction_->setToolTip(undoDescription.has_value()
         ? tr("Undo %1").arg(QString::fromStdString(*undoDescription)) : tr("Undo"));
-    redoAction_->setText(redoDescription.has_value()
+    redoAction_->setToolTip(redoDescription.has_value()
         ? tr("Redo %1").arg(QString::fromStdString(*redoDescription)) : tr("Redo"));
     editMessageAction_->setEnabled(editable && widget->canEditSelectedMessage());
     createScriptSectionAction_->setEnabled(editable);

@@ -22,6 +22,7 @@ class QLabel;
 class QPushButton;
 class QTextEdit;
 class QTabWidget;
+class QToolButton;
 class QTreeView;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -127,6 +128,12 @@ private:
     void rebuildOutline();
     void rebuildStructuredOutline(bool initialLoad);
     void markStructuredOutlinePending();
+    void recordNavigation(core::SctNavigationTarget target);
+    void pruneNavigationHistory();
+    void navigateBack();
+    void navigateForward();
+    void syncDocumentButtons();
+    [[nodiscard]] QString navigationLabel(core::SctNavigationTarget target) const;
     void showTarget(core::SctNavigationTarget target);
     void updateSourceBanner(int sourceStatus);
     void showParameterTable(spice::sct::SctInstructionId instruction,
@@ -152,6 +159,15 @@ private:
     QLabel* structuredBanner_ = nullptr;
     QTreeView* structuredOutline_ = nullptr;
     SctStructuredOutlineModel* structuredOutlineModel_ = nullptr;
+    QToolButton* navigationBackButton_ = nullptr;
+    QToolButton* navigationForwardButton_ = nullptr;
+    QToolButton* insertInstructionButton_ = nullptr;
+    QToolButton* deleteInstructionButton_ = nullptr;
+    QToolButton* moveInstructionUpButton_ = nullptr;
+    QToolButton* moveInstructionDownButton_ = nullptr;
+    std::vector<core::SctNavigationTarget> navigationHistory_{};
+    std::size_t navigationHistoryIndex_ = 0;
+    bool replayingNavigation_ = false;
     bool structuredOutlinePending_ = false;
     bool showStructuredBasicBlocks_ = false;
     bool showRejectedStructureEvidence_ = false;

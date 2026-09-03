@@ -3,6 +3,7 @@
 #include <QEvent>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QPalette>
 #include <QPersistentModelIndex>
 #include <QToolTip>
 
@@ -305,6 +306,13 @@ QWidget* SctParameterItemDelegate::createEditor(QWidget* parent,
     const QStyleOptionViewItem&, const QModelIndex& index) const {
     if ((index.flags() & Qt::ItemIsEditable) == 0) return nullptr;
     auto* editor = new QLineEdit(parent);
+    auto palette = editor->palette();
+    palette.setBrush(QPalette::Window, palette.brush(QPalette::Base));
+    editor->setPalette(palette);
+    editor->setAutoFillBackground(true);
+    editor->setAttribute(Qt::WA_OpaquePaintEvent);
+    editor->setStyleSheet(QStringLiteral(
+        "QLineEdit { background-color: palette(base); color: palette(text); }"));
     editor->setProperty("salsaParameterIndex",
         QVariant::fromValue(QPersistentModelIndex(index)));
     editor->installEventFilter(const_cast<SctParameterItemDelegate*>(this));
@@ -337,7 +345,9 @@ bool SctParameterItemDelegate::eventFilter(QObject* watched, QEvent* event) {
                 ? std::optional{tr("Parameter editor is unavailable.")}
                 : model->commit(index, qobject_cast<QLineEdit*>(editor)->text());
             if (error) {
-                editor->setStyleSheet(QStringLiteral("QLineEdit { border: 1px solid #c44; }"));
+                editor->setStyleSheet(QStringLiteral(
+                    "QLineEdit { background-color: palette(base); color: palette(text); "
+                    "border: 1px solid #c44; }"));
                 editor->setToolTip(*error);
                 QToolTip::showText(editor->mapToGlobal(editor->rect().bottomLeft()),
                     *error, editor);

@@ -11,9 +11,14 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
+#include <QIcon>
+#include <QKeySequence>
 #include <QLabel>
 #include <QMenu>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
+#include <QStyle>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -21,6 +26,7 @@
 #include <QTextEdit>
 #include <QTextFormat>
 #include <QTabWidget>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeView>
 #include <QVBoxLayout>
@@ -60,6 +66,33 @@ void expandAncestors(QTreeWidgetItem* item) {
         parent != nullptr; parent = parent->parent()) {
         parent->setExpanded(true);
     }
+}
+
+QIcon themedIcon(const QString& name, QWidget& widget,
+    const QStyle::StandardPixmap fallback) {
+    return QIcon::fromTheme(name, widget.style()->standardIcon(fallback));
+}
+
+QIcon addIcon(QWidget& widget) {
+    QPixmap pixmap(20, 20);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPen pen(widget.palette().color(QPalette::ButtonText), 2.0,
+        Qt::SolidLine, Qt::RoundCap);
+    painter.setPen(pen);
+    painter.drawLine(QPointF(4.0, 10.0), QPointF(16.0, 10.0));
+    painter.drawLine(QPointF(10.0, 4.0), QPointF(10.0, 16.0));
+    return QIcon::fromTheme(QStringLiteral("list-add"), QIcon(pixmap));
+}
+
+void configureIconButton(QToolButton& button, const QIcon& icon,
+    const QString& tooltip) {
+    button.setIcon(icon);
+    button.setToolTip(tooltip);
+    button.setAccessibleName(tooltip);
+    button.setAutoRaise(true);
+    button.setToolButtonStyle(Qt::ToolButtonIconOnly);
 }
 
 }  // namespace
@@ -133,6 +166,44 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     outlineTabs_->addTab(structuredTab, tr("Semantic"));
     outlineLayout->addWidget(outlineTabs_);
 
+    auto* documentButtons = new QHBoxLayout;
+    documentButtons->setContentsMargins(2, 0, 2, 0);
+    navigationBackButton_ = new QToolButton(outlinePane);
+    navigationForwardButton_ = new QToolButton(outlinePane);
+    insertInstructionButton_ = new QToolButton(outlinePane);
+    deleteInstructionButton_ = new QToolButton(outlinePane);
+    moveInstructionUpButton_ = new QToolButton(outlinePane);
+    moveInstructionDownButton_ = new QToolButton(outlinePane);
+    configureIconButton(*navigationBackButton_,
+        themedIcon(QStringLiteral("go-previous"), *this, QStyle::SP_ArrowBack),
+        tr("Back (Alt+Left)"));
+    configureIconButton(*navigationForwardButton_,
+        themedIcon(QStringLiteral("go-next"), *this, QStyle::SP_ArrowForward),
+        tr("Forward (Alt+Right)"));
+    configureIconButton(*insertInstructionButton_,
+        addIcon(*this),
+        tr("Insert Instruction... (Insert)"));
+    configureIconButton(*deleteInstructionButton_,
+        themedIcon(QStringLiteral("edit-delete"), *this, QStyle::SP_TrashIcon),
+        tr("Delete Instruction (Delete)"));
+    configureIconButton(*moveInstructionUpButton_,
+        themedIcon(QStringLiteral("go-up"), *this, QStyle::SP_ArrowUp),
+        tr("Move Instruction Up (Alt+Up)"));
+    configureIconButton(*moveInstructionDownButton_,
+        themedIcon(QStringLiteral("go-down"), *this, QStyle::SP_ArrowDown),
+        tr("Move Instruction Down (Alt+Down)"));
+    navigationBackButton_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Left));
+    navigationForwardButton_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Right));
+    documentButtons->addWidget(navigationBackButton_);
+    documentButtons->addWidget(navigationForwardButton_);
+    documentButtons->addSpacing(12);
+    documentButtons->addWidget(insertInstructionButton_);
+    documentButtons->addWidget(deleteInstructionButton_);
+    documentButtons->addWidget(moveInstructionUpButton_);
+    documentButtons->addWidget(moveInstructionDownButton_);
+    documentButtons->addStretch(1);
+    outlineLayout->addLayout(documentButtons);
+
     auto* details = new QWidget(splitter);
     auto* detailsLayout = new QVBoxLayout(details);
     title_ = new QLabel(details);
@@ -190,6 +261,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             const auto target = outlineModel_->target(current);
             if (!target.has_value()) return;
             currentTarget_ = *target;
+            recordNavigation(*target);
             showTarget(*currentTarget_);
             emit becameActive(QString::fromStdString(locator_.identityKey()));
             emit editContextChanged();
@@ -199,6 +271,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             const auto target = structuredOutlineModel_->target(current);
             if (!target) return;
             currentTarget_ = *target;
+            recordNavigation(*target);
             showTarget(*target);
             const auto physical = outlineModel_->indexForTarget(*target);
             if (physical.isValid()) {
@@ -208,6 +281,24 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             emit becameActive(QString::fromStdString(locator_.identityKey()));
             emit editContextChanged();
         });
+    connect(navigationBackButton_, &QToolButton::clicked,
+        this, &SctDocumentWidget::navigateBack);
+    connect(navigationForwardButton_, &QToolButton::clicked,
+        this, &SctDocumentWidget::navigateForward);
+    connect(insertInstructionButton_, &QToolButton::clicked, this, [this] {
+        emit insertInstructionRequested(QString::fromStdString(locator_.identityKey()));
+    });
+    connect(deleteInstructionButton_, &QToolButton::clicked, this, [this] {
+        emit deleteInstructionRequested(QString::fromStdString(locator_.identityKey()));
+    });
+    connect(moveInstructionUpButton_, &QToolButton::clicked, this, [this] {
+        emit moveInstructionRequested(QString::fromStdString(locator_.identityKey()),
+            static_cast<int>(core::SctInstructionMoveDirection::Up));
+    });
+    connect(moveInstructionDownButton_, &QToolButton::clicked, this, [this] {
+        emit moveInstructionRequested(QString::fromStdString(locator_.identityKey()),
+            static_cast<int>(core::SctInstructionMoveDirection::Down));
+    });
     connect(structuredOutline_, &QTreeView::activated, this,
         [this](const QModelIndex& current) {
             const auto target = structuredOutlineModel_->target(current);
@@ -460,6 +551,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
         });
     connect(outlineTabs_, &QTabWidget::currentChanged, this, [this](const int index) {
         if (!currentTarget_) {
+            syncDocumentButtons();
             emit editContextChanged();
             return;
         }
@@ -472,6 +564,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             view->setCurrentIndex(found);
             view->scrollTo(found);
         }
+        syncDocumentButtons();
         emit editContextChanged();
     });
     connect(outline_, &QTreeView::activated, this,
@@ -617,6 +710,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
         });
         menu.exec(outline_->viewport()->mapToGlobal(position));
     });
+    syncDocumentButtons();
 }
 
 const core::AssetLocator& SctDocumentWidget::locator() const noexcept { return locator_; }
@@ -725,6 +819,7 @@ bool SctDocumentWidget::applyInstructionChanges(
         outlineReconciliationPending_ = true;
         return false;
     }
+    pruneNavigationHistory();
     if (core::hasInvalidation(changes.invalidations,
             core::SctDerivedAnalysisInvalidation::StructuredControlFlow)) {
         markStructuredOutlinePending();
@@ -753,6 +848,7 @@ bool SctDocumentWidget::applyInstructionChanges(
         parameterTable_->hide();
         properties_->show();
     }
+    syncDocumentButtons();
     return true;
 }
 
@@ -798,6 +894,7 @@ bool SctDocumentWidget::selectLocation(
 void SctDocumentWidget::setEditingEnabled(const bool enabled) {
     if (editingEnabled_ == enabled) return;
     editingEnabled_ = enabled;
+    syncDocumentButtons();
     emit editContextChanged();
 }
 
@@ -910,6 +1007,7 @@ void SctDocumentWidget::rebuildOutline() {
     if (!snapshot_ || !snapshot_->document) return;
     outlineModel_->resetFrom(core::SctPresentationService::outline(*snapshot_),
         *snapshot_->document);
+    pruneNavigationHistory();
     outline_->collapseAll();
     auto selected = retained.has_value()
         ? outlineModel_->indexForTarget(*retained) : QModelIndex{};
@@ -922,6 +1020,99 @@ void SctDocumentWidget::rebuildOutline() {
     } else {
         currentTarget_.reset();
     }
+    syncDocumentButtons();
+}
+
+void SctDocumentWidget::recordNavigation(const core::SctNavigationTarget target) {
+    if (replayingNavigation_) return;
+    pruneNavigationHistory();
+    if (!navigationHistory_.empty()
+        && navigationHistory_[navigationHistoryIndex_] == target) {
+        syncDocumentButtons();
+        return;
+    }
+    if (!navigationHistory_.empty()
+        && navigationHistoryIndex_ + 1u < navigationHistory_.size()) {
+        navigationHistory_.erase(
+            navigationHistory_.begin() + static_cast<std::ptrdiff_t>(
+                navigationHistoryIndex_ + 1u),
+            navigationHistory_.end());
+    }
+    navigationHistory_.push_back(target);
+    navigationHistoryIndex_ = navigationHistory_.size() - 1u;
+    syncDocumentButtons();
+}
+
+void SctDocumentWidget::pruneNavigationHistory() {
+    if (navigationHistory_.empty()) return;
+    std::vector<core::SctNavigationTarget> retained;
+    retained.reserve(navigationHistory_.size());
+    std::size_t retainedThroughCurrent = 0;
+    for (std::size_t index = 0; index < navigationHistory_.size(); ++index) {
+        if (!outlineModel_->indexForTarget(navigationHistory_[index]).isValid()) continue;
+        retained.push_back(navigationHistory_[index]);
+        if (index <= navigationHistoryIndex_) retainedThroughCurrent = retained.size();
+    }
+    navigationHistory_ = std::move(retained);
+    if (navigationHistory_.empty()) {
+        navigationHistoryIndex_ = 0;
+    } else {
+        navigationHistoryIndex_ = retainedThroughCurrent == 0
+            ? 0 : std::min(retainedThroughCurrent - 1u,
+                navigationHistory_.size() - 1u);
+    }
+}
+
+void SctDocumentWidget::navigateBack() {
+    pruneNavigationHistory();
+    if (navigationHistory_.empty() || navigationHistoryIndex_ == 0) return;
+    --navigationHistoryIndex_;
+    replayingNavigation_ = true;
+    selectTarget(navigationHistory_[navigationHistoryIndex_]);
+    replayingNavigation_ = false;
+    syncDocumentButtons();
+}
+
+void SctDocumentWidget::navigateForward() {
+    pruneNavigationHistory();
+    if (navigationHistory_.empty()
+        || navigationHistoryIndex_ + 1u >= navigationHistory_.size()) return;
+    ++navigationHistoryIndex_;
+    replayingNavigation_ = true;
+    selectTarget(navigationHistory_[navigationHistoryIndex_]);
+    replayingNavigation_ = false;
+    syncDocumentButtons();
+}
+
+QString SctDocumentWidget::navigationLabel(
+    const core::SctNavigationTarget target) const {
+    const auto index = outlineModel_->indexForTarget(target);
+    return index.isValid() ? index.data(Qt::DisplayRole).toString() : QString{};
+}
+
+void SctDocumentWidget::syncDocumentButtons() {
+    const bool hasHistory = !navigationHistory_.empty();
+    navigationBackButton_->setEnabled(hasHistory && navigationHistoryIndex_ > 0u);
+    navigationForwardButton_->setEnabled(hasHistory
+        && navigationHistoryIndex_ + 1u < navigationHistory_.size());
+    navigationBackButton_->setToolTip(navigationBackButton_->isEnabled()
+        ? tr("Back to %1 (Alt+Left)").arg(
+            navigationLabel(navigationHistory_[navigationHistoryIndex_ - 1u]))
+        : tr("Back (Alt+Left)"));
+    navigationForwardButton_->setToolTip(navigationForwardButton_->isEnabled()
+        ? tr("Forward to %1 (Alt+Right)").arg(
+            navigationLabel(navigationHistory_[navigationHistoryIndex_ + 1u]))
+        : tr("Forward (Alt+Right)"));
+
+    const bool physical = outlineTabs_->currentIndex() == 0;
+    insertInstructionButton_->setEnabled(
+        editingEnabled_ && physical && insertionContext().has_value());
+    deleteInstructionButton_->setEnabled(
+        editingEnabled_ && physical && canDeleteSelected());
+    moveInstructionUpButton_->setEnabled(editingEnabled_ && physical
+        && canMoveSelected(core::SctInstructionMoveDirection::Up));
+    moveInstructionDownButton_->setEnabled(editingEnabled_ && physical
+        && canMoveSelected(core::SctInstructionMoveDirection::Down));
 }
 
 void SctDocumentWidget::rebuildStructuredOutline(const bool initialLoad) {
