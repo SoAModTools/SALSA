@@ -238,6 +238,13 @@ std::shared_ptr<const core::SctDocumentSnapshot> SctDocumentController::snapshot
     return state == nullptr ? nullptr : state->session->currentSnapshot();
 }
 
+std::vector<core::SctPipelineDiagnostic> SctDocumentController::currentDiagnostics(
+    const core::AssetLocator& locator) const {
+    const auto* state = findState(locator);
+    return state != nullptr ? state->session->currentDiagnostics()
+                            : std::vector<core::SctPipelineDiagnostic>{};
+}
+
 std::shared_ptr<const core::SctSemanticEditorProjection>
 SctDocumentController::semanticProjection(const core::AssetLocator& locator) const {
     const auto* state = findState(locator);

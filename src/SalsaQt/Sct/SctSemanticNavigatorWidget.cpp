@@ -1,4 +1,5 @@
 #include "Sct/SctSemanticNavigatorWidget.h"
+#include "Ui/UiConstants.h"
 
 #include "SpiceSCT/SctDocumentAnalysis.h"
 #include "SpiceSCT/SctOpcodeMetadata.h"
@@ -248,6 +249,7 @@ void configureTree(QTreeWidget& tree, const QStringList& headers) {
     tree.setHeaderLabels(headers);
     tree.setAlternatingRowColors(true);
     tree.setSelectionMode(QAbstractItemView::SingleSelection);
+    tree.setIndentation(ui::TreeIndentation);
     tree.header()->setSectionResizeMode(QHeaderView::Interactive);
     tree.header()->setStretchLastSection(false);
     for (int column = 0; column < headers.size(); ++column)

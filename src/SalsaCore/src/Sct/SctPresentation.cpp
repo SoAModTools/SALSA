@@ -65,9 +65,9 @@ template <typename Range>
     case InlineValue: return "Inline value";
     case FloatLiteral: return "Float literal";
     case DecimalLiteral: return "Decimal literal";
-    case DirectIntVariable: return "Integer variable";
-    case NegatedIntVariable: return "Negated integer variable";
-    case NegatedIntVariableLow16Comparison: return "Negated integer variable (low-16 comparison)";
+    case FloatBackedIntegerVariable: return "Float-backed integer variable";
+    case IntegerVariable: return "Integer variable";
+    case IntegerVariableLow16Comparison: return "Integer variable (low-16 comparison)";
     case FloatVariable: return "Float variable";
     case BitVariable: return "Bit variable";
     case ByteVariable: return "Byte variable";
@@ -143,9 +143,9 @@ template <typename Range>
                     std::numeric_limits<double>::max_digits10);
                 break;
             }
-            case DirectIntVariable:
-            case NegatedIntVariable:
-            case NegatedIntVariableLow16Comparison:
+            case FloatBackedIntegerVariable:
+            case IntegerVariable:
+            case IntegerVariableLow16Comparison:
             case FloatVariable:
             case BitVariable:
             case ByteVariable:

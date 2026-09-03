@@ -64,14 +64,18 @@ Variable forms identify both the variable kind and index:
 - `ByteVar[87]`
 - `BitVar[4]`
 - `FloatVar[12]`
-- `IntVar[24]`
-- `NegatedIntVar[87]`
+- `IntVar[87]`
+- `FloatBackedIntVar[24]`
 - `Low16IntVar[15]`
 - `IntInput[87]`
 
-`IntInput` lets the SpiceSCT factory select the confirmed integer-input form
-for that index. The more specific forms require the index to belong to that
-exact encoded kind.
+`IntInput` lets the SpiceSCT factory select the encoded integer-input form used
+by the game for that index. `IntVar` converts a signed integer slot to a float,
+while `FloatBackedIntVar` reads the same storage as float bits. The low-16 form
+also selects the interpreter's low-16 comparison mode. The confirmed encoding
+uses `FloatBackedIntVar` for indexes 24 through 32 and `Low16IntVar` for index
+15; other integer-variable indexes use `IntVar` except indexes reserved for
+named secondary values. Invalid form/index combinations are rejected.
 
 Known runtime values use names such as:
 
@@ -101,8 +105,8 @@ is no general unary-expression syntax.
 Examples:
 
 - `ByteVar[87] == 3`
-- `(IntVar[24] + 2) * 4`
-- `IntVar[24] == 1 && ByteVar[87] != 0`
+- `(FloatBackedIntVar[24] + 2) * 4`
+- `IntVar[87] == 1 && ByteVar[87] != 0`
 
 Long expressions scroll horizontally while editing. Hover the cell to see the
 complete expression and its exact encoded words.

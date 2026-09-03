@@ -8,6 +8,8 @@
 #include "Sct/SctMessageEditorWidget.h"
 #include "Sct/SctScptEditorWidget.h"
 #include "Sct/SctSemanticNavigatorWidget.h"
+#include "Ui/UiConstants.h"
+#include "Workspace/DiagnosticJournalModel.h"
 #include "Workspace/DiagnosticsModel.h"
 #include "Workspace/WorkspaceDetailsWidget.h"
 #include "Workspace/WorkspaceModel.h"
@@ -187,6 +189,7 @@ MainWindow::MainWindow(QWidget* parent)
     syncDiagnostics();
     syncSemanticNavigator();
     syncActions();
+    recordActiveNavigation();
     statusBar()->showMessage(tr("Ready"));
     QTimer::singleShot(0, this, &MainWindow::attemptRestoreDataset);
 }
@@ -208,6 +211,7 @@ void MainWindow::buildUi() {
     documentController_ = new SctDocumentController(this);
     workspaceModel_ = new WorkspaceModel(this);
     diagnosticsModel_ = new DiagnosticsModel(this);
+    diagnosticJournalModel_ = new DiagnosticJournalModel(this);
     details_ = new WorkspaceDetailsWidget(this);
     tabs_ = new QTabWidget(this);
     tabs_->setTabsClosable(true);
@@ -218,6 +222,7 @@ void MainWindow::buildUi() {
 
     projectTree_ = new QTreeView(this);
     projectTree_->setModel(workspaceModel_);
+    projectTree_->setIndentation(ui::TreeIndentation);
     projectTree_->setAlternatingRowColors(true);
     projectTree_->setSelectionMode(QAbstractItemView::SingleSelection);
     projectTree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -243,6 +248,26 @@ void MainWindow::buildUi() {
     diagnosticsDock_->setObjectName(QStringLiteral("DiagnosticsDock"));
     diagnosticsDock_->setWidget(diagnosticsView_);
     addDockWidget(Qt::BottomDockWidgetArea, diagnosticsDock_);
+
+    activityLogView_ = new QTableView(this);
+    activityLogView_->setModel(diagnosticJournalModel_);
+    activityLogView_->setAlternatingRowColors(true);
+    activityLogView_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    activityLogView_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    activityLogView_->horizontalHeader()->setStretchLastSection(false);
+    activityLogView_->horizontalHeader()->resizeSection(0, 110);
+    activityLogView_->horizontalHeader()->resizeSection(1, 90);
+    activityLogView_->horizontalHeader()->resizeSection(2, 100);
+    activityLogView_->horizontalHeader()->resizeSection(3, 180);
+    activityLogView_->horizontalHeader()->resizeSection(4, 500);
+    activityLogView_->horizontalHeader()->resizeSection(5, 320);
+    activityLogDock_ = new QDockWidget(tr("Activity Log"), this);
+    activityLogDock_->setObjectName(QStringLiteral("ActivityLogDock"));
+    activityLogDock_->setWidget(activityLogView_);
+    addDockWidget(Qt::BottomDockWidgetArea, activityLogDock_);
+    tabifyDockWidget(diagnosticsDock_, activityLogDock_);
+    diagnosticsDock_->raise();
+    activityLogDock_->hide();
 
     semanticNavigator_ = new SctSemanticNavigatorWidget(this);
     semanticNavigatorDock_ = new QDockWidget(tr("Semantic Navigator"), this);
@@ -323,6 +348,15 @@ void MainWindow::buildUi() {
     deleteTextAction_ = projectMenu->addAction(tr("Delete Text Entity"));
 
     auto* editMenu = menuBar()->addMenu(tr("&Edit"));
+    navigationBackAction_ = editMenu->addAction(tr("&Back"));
+    navigationBackAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Left));
+    navigationBackAction_->setIcon(QIcon::fromTheme(QStringLiteral("go-previous"),
+        style()->standardIcon(QStyle::SP_ArrowBack)));
+    navigationForwardAction_ = editMenu->addAction(tr("&Forward"));
+    navigationForwardAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Right));
+    navigationForwardAction_->setIcon(QIcon::fromTheme(QStringLiteral("go-next"),
+        style()->standardIcon(QStyle::SP_ArrowForward)));
+    editMenu->addSeparator();
     undoAction_ = editMenu->addAction(tr("&Undo"));
     undoAction_->setShortcut(QKeySequence::Undo);
     undoAction_->setIcon(QIcon::fromTheme(QStringLiteral("edit-undo"),
@@ -346,12 +380,16 @@ void MainWindow::buildUi() {
     auto* editToolbar = addToolBar(tr("Editing"));
     editToolbar->setObjectName(QStringLiteral("EditingToolbar"));
     editToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    editToolbar->addAction(navigationBackAction_);
+    editToolbar->addAction(navigationForwardAction_);
+    editToolbar->addSeparator();
     editToolbar->addAction(undoAction_);
     editToolbar->addAction(redoAction_);
 
     auto* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(projectDock_->toggleViewAction());
     viewMenu->addAction(diagnosticsDock_->toggleViewAction());
+    viewMenu->addAction(activityLogDock_->toggleViewAction());
     viewMenu->addAction(semanticNavigatorDock_->toggleViewAction());
     viewMenu->addAction(messageEditorDock_->toggleViewAction());
     viewMenu->addAction(scptEditorDock_->toggleViewAction());
@@ -476,6 +514,8 @@ void MainWindow::buildUi() {
     connect(exitAction, &QAction::triggered, this, &QWidget::close);
     connect(undoAction_, &QAction::triggered, this, &MainWindow::undoActiveDocument);
     connect(redoAction_, &QAction::triggered, this, &MainWindow::redoActiveDocument);
+    connect(navigationBackAction_, &QAction::triggered, this, &MainWindow::navigateBack);
+    connect(navigationForwardAction_, &QAction::triggered, this, &MainWindow::navigateForward);
     connect(editMessageAction_, &QAction::triggered, this, &MainWindow::editSelectedMessage);
     connect(createScriptSectionAction_, &QAction::triggered,
         this, &MainWindow::createScriptSection);
@@ -537,18 +577,23 @@ void MainWindow::buildUi() {
         syncDiagnostics();
         syncSemanticNavigator();
         syncEditActions();
+        recordActiveNavigation();
     });
     connect(diagnosticsView_, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
         const auto* row = diagnosticsModel_->rowAt(index.row());
         if (row == nullptr || !row->locator.has_value()) return;
+        replayingNavigation_ = true;
         focusDocument(QString::fromStdString(row->locator->identityKey()));
         if (row->inspectionLocation.has_value()) {
             if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->currentWidget()))
                 (void)widget->selectLocation(*row->inspectionLocation);
         }
+        replayingNavigation_ = false;
+        recordActiveNavigation();
     });
     connect(semanticNavigator_, &SctSemanticNavigatorWidget::navigationRequested,
         this, [this](const QString& identityKey, const core::SctInspectionLocation location) {
+            replayingNavigation_ = true;
             focusDocument(identityKey);
             if (auto* widget = activeDocumentWidget();
                 widget == nullptr || !widget->selectLocation(location)) {
@@ -556,6 +601,8 @@ void MainWindow::buildUi() {
                     tr("That semantic location is not present in the current document revision."),
                     8000);
             }
+            replayingNavigation_ = false;
+            recordActiveNavigation();
         });
     connect(semanticNavigator_, &SctSemanticNavigatorWidget::statusMessageRequested,
         this, [this](const QString& message) { statusBar()->showMessage(message, 8000); });
@@ -662,12 +709,14 @@ void MainWindow::connectWorkspace() {
                 }
             }
             rebuildDocumentTabTitles();
+            pruneNavigationHistory();
             syncDiagnostics();
             syncSemanticNavigator();
             syncActions();
         });
     connect(documentController_, &SctDocumentController::operationCompleted,
-        this, [this](const QString&, bool success, bool cancelled, const QString& message) {
+        this, [this](const QString& identityKey, bool success, bool cancelled,
+                const QString& message) {
             if (!controller_->busy()) {
                 progressBar_->hide();
                 cancelButton_->hide();
@@ -677,6 +726,11 @@ void MainWindow::connectWorkspace() {
                 diagnosticsDock_->show();
                 diagnosticsDock_->raise();
             }
+            diagnosticJournalModel_->appendActivity(
+                cancelled ? QStringLiteral("SctOperationCancelled")
+                    : success ? QStringLiteral("SctOperationCompleted")
+                        : QStringLiteral("SctOperationFailed"),
+                message, identityKey);
             syncDiagnostics();
             syncActions();
         });
@@ -692,6 +746,11 @@ void MainWindow::connectWorkspace() {
     connect(documentController_, &SctDocumentController::checkpointCompleted,
         this, [this](const QString& identityKey, const bool success, const bool cancelled,
             const QString& message) {
+            diagnosticJournalModel_->appendActivity(
+                cancelled ? QStringLiteral("CheckpointCancelled")
+                    : success ? QStringLiteral("CheckpointCompleted")
+                        : QStringLiteral("CheckpointFailed"),
+                message, identityKey);
             statusBar()->showMessage(message, 8000);
             if (!success && !cancelled) {
                 diagnosticsDock_->show();
@@ -862,13 +921,31 @@ void MainWindow::syncDiagnostics() {
     workspaceDiagnostics.insert(workspaceDiagnostics.end(),
         documentController_->failureDiagnostics().begin(),
         documentController_->failureDiagnostics().end());
-    auto documentDiagnostics = documentController_->failurePipelineDiagnostics();
+    std::vector<core::SctPipelineDiagnostic> documentDiagnostics;
     if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->currentWidget())) {
-        if (const auto snapshot = documentController_->snapshot(widget->locator()))
-            documentDiagnostics.insert(documentDiagnostics.end(),
-                snapshot->diagnostics.begin(), snapshot->diagnostics.end());
+        for (const auto& failure : documentController_->failurePipelineDiagnostics()) {
+            if (!failure.locator || *failure.locator == widget->locator())
+                documentDiagnostics.push_back(failure);
+        }
+        auto current = documentController_->currentDiagnostics(widget->locator());
+        documentDiagnostics.insert(documentDiagnostics.end(),
+            std::make_move_iterator(current.begin()),
+            std::make_move_iterator(current.end()));
+    } else {
+        for (const auto& failure : documentController_->failurePipelineDiagnostics())
+            if (!failure.locator) documentDiagnostics.push_back(failure);
     }
     diagnosticsModel_->setCombinedDiagnostics(workspaceDiagnostics, documentDiagnostics);
+
+    auto globalDocumentDiagnostics = documentController_->failurePipelineDiagnostics();
+    for (const auto& locator : documentController_->openLocators()) {
+        auto current = documentController_->currentDiagnostics(locator);
+        globalDocumentDiagnostics.insert(globalDocumentDiagnostics.end(),
+            std::make_move_iterator(current.begin()),
+            std::make_move_iterator(current.end()));
+    }
+    diagnosticJournalModel_->observe(DiagnosticsModel::rowsFor(
+        workspaceDiagnostics, globalDocumentDiagnostics));
 }
 
 void MainWindow::queueDiagnosticsSync() {
@@ -921,6 +998,136 @@ SctDocumentWidget* MainWindow::activeDocumentWidget() const {
     return qobject_cast<SctDocumentWidget*>(tabs_->currentWidget());
 }
 
+void MainWindow::recordActiveNavigation() {
+    if (replayingNavigation_) return;
+    if (tabs_->currentIndex() == 0) {
+        recordNavigation({});
+    } else if (auto* widget = activeDocumentWidget(); widget != nullptr) {
+        if (const auto target = widget->currentTarget())
+            recordNavigation({widget->locator(), *target});
+    }
+}
+
+void MainWindow::recordNavigation(NavigationEntry entry) {
+    if (replayingNavigation_ || !navigationEntryAvailable(entry)) return;
+    pruneNavigationHistory();
+    if (!navigationHistory_.empty()
+        && navigationHistory_[navigationHistoryIndex_] == entry) {
+        syncNavigationActions();
+        return;
+    }
+    if (!navigationHistory_.empty()
+        && navigationHistoryIndex_ + 1u < navigationHistory_.size()) {
+        navigationHistory_.erase(
+            navigationHistory_.begin() + static_cast<std::ptrdiff_t>(
+                navigationHistoryIndex_ + 1u), navigationHistory_.end());
+    }
+    navigationHistory_.push_back(std::move(entry));
+    navigationHistoryIndex_ = navigationHistory_.size() - 1u;
+    syncNavigationActions();
+}
+
+bool MainWindow::navigationEntryAvailable(const NavigationEntry& entry) const {
+    if (!entry.locator) return !entry.target;
+    for (int index = 1; index < tabs_->count(); ++index) {
+        const auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index));
+        if (widget != nullptr && widget->locator() == *entry.locator)
+            return entry.target && widget->containsTarget(*entry.target);
+    }
+    return false;
+}
+
+void MainWindow::pruneNavigationHistory() {
+    if (navigationHistory_.empty()) {
+        syncNavigationActions();
+        return;
+    }
+    std::vector<NavigationEntry> retained;
+    retained.reserve(navigationHistory_.size());
+    std::size_t retainedThroughCurrent = 0;
+    for (std::size_t index = 0; index < navigationHistory_.size(); ++index) {
+        if (!navigationEntryAvailable(navigationHistory_[index])) continue;
+        retained.push_back(navigationHistory_[index]);
+        if (index <= navigationHistoryIndex_) retainedThroughCurrent = retained.size();
+    }
+    navigationHistory_ = std::move(retained);
+    if (navigationHistory_.empty()) navigationHistoryIndex_ = 0;
+    else navigationHistoryIndex_ = retainedThroughCurrent == 0 ? 0
+        : std::min(retainedThroughCurrent - 1u, navigationHistory_.size() - 1u);
+    syncNavigationActions();
+}
+
+bool MainWindow::navigateTo(const NavigationEntry& entry) {
+    if (!navigationEntryAvailable(entry)) return false;
+    replayingNavigation_ = true;
+    if (!entry.locator) {
+        tabs_->setCurrentIndex(0);
+    } else {
+        focusDocument(QString::fromStdString(entry.locator->identityKey()));
+        auto* widget = activeDocumentWidget();
+        if (widget == nullptr || widget->locator() != *entry.locator
+            || !entry.target || !widget->selectLocation(*entry.target)) {
+            replayingNavigation_ = false;
+            return false;
+        }
+    }
+    replayingNavigation_ = false;
+    syncNavigationActions();
+    return true;
+}
+
+void MainWindow::navigateBack() {
+    pruneNavigationHistory();
+    while (!navigationHistory_.empty() && navigationHistoryIndex_ > 0u) {
+        --navigationHistoryIndex_;
+        if (navigateTo(navigationHistory_[navigationHistoryIndex_])) return;
+    }
+    syncNavigationActions();
+}
+
+void MainWindow::navigateForward() {
+    pruneNavigationHistory();
+    while (!navigationHistory_.empty()
+        && navigationHistoryIndex_ + 1u < navigationHistory_.size()) {
+        ++navigationHistoryIndex_;
+        if (navigateTo(navigationHistory_[navigationHistoryIndex_])) return;
+    }
+    syncNavigationActions();
+}
+
+QString MainWindow::navigationEntryLabel(const NavigationEntry& entry) const {
+    if (!entry.locator) return tr("Dataset Overview");
+    auto label = QString::fromStdWString(entry.locator->path().filename().wstring());
+    if (entry.target) {
+        for (int index = 1; index < tabs_->count(); ++index) {
+            const auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index));
+            if (widget == nullptr || widget->locator() != *entry.locator) continue;
+            const auto target = widget->targetLabel(*entry.target);
+            label += target.isEmpty() ? tr(" — item %1").arg(entry.target->id)
+                                      : QStringLiteral(" — ") + target;
+            break;
+        }
+    }
+    return label;
+}
+
+void MainWindow::syncNavigationActions() {
+    if (navigationBackAction_ == nullptr || navigationForwardAction_ == nullptr) return;
+    const bool canBack = !navigationHistory_.empty() && navigationHistoryIndex_ > 0u;
+    const bool canForward = !navigationHistory_.empty()
+        && navigationHistoryIndex_ + 1u < navigationHistory_.size();
+    navigationBackAction_->setEnabled(canBack);
+    navigationForwardAction_->setEnabled(canForward);
+    navigationBackAction_->setToolTip(canBack
+        ? tr("Back to %1 (Alt+Left)").arg(
+            navigationEntryLabel(navigationHistory_[navigationHistoryIndex_ - 1u]))
+        : tr("Back (Alt+Left)"));
+    navigationForwardAction_->setToolTip(canForward
+        ? tr("Forward to %1 (Alt+Right)").arg(
+            navigationEntryLabel(navigationHistory_[navigationHistoryIndex_ + 1u]))
+        : tr("Forward (Alt+Right)"));
+}
+
 void MainWindow::syncEditActions() {
     auto* widget = activeDocumentWidget();
     const bool available = widget != nullptr
@@ -966,6 +1173,7 @@ void MainWindow::syncEditActions() {
         && widget->canMoveSelected(core::SctInstructionMoveDirection::Up));
     moveInstructionDownAction_->setEnabled(editable
         && widget->canMoveSelected(core::SctInstructionMoveDirection::Down));
+    syncNavigationActions();
 }
 
 std::optional<core::SctInstructionAuthoringDraft>
@@ -1775,6 +1983,11 @@ void MainWindow::syncDocument(
             });
         connect(widget, &SctDocumentWidget::becameActive, this,
             [this](const QString&) { syncDiagnostics(); syncEditActions(); });
+        connect(widget, &SctDocumentWidget::navigationChanged, this,
+            [this, widget](const QString&, const int kind, const qulonglong id) {
+                recordNavigation({widget->locator(), core::SctNavigationTarget{
+                    static_cast<core::SctNavigationKind>(kind), id}});
+            });
         connect(widget, &SctDocumentWidget::editContextChanged,
             this, &MainWindow::syncEditActions);
         connect(widget, &SctDocumentWidget::insertInstructionRequested,
@@ -2046,6 +2259,7 @@ void MainWindow::syncDocument(
             syncSemanticNavigator();
         }
     }
+    pruneNavigationHistory();
     syncEditActions();
 }
 
@@ -2219,6 +2433,11 @@ void MainWindow::handleOperationCompleted(
     progressBar_->hide();
     cancelButton_->hide();
     statusBar()->showMessage(message, 8000);
+    diagnosticJournalModel_->appendActivity(
+        cancelled ? QStringLiteral("DatasetOperationCancelled")
+            : success ? QStringLiteral("DatasetOperationCompleted")
+                : QStringLiteral("DatasetOperationFailed"),
+        message);
     syncActions();
 
     if (!success && !cancelled) {

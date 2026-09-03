@@ -390,14 +390,14 @@ TEST(SctPresentation, DisplaysSemanticExpressionValuesWithRawEncodingEvidence) {
         0x08000380u, {}};
     SctScptValueOperation variable{SctScptValueKind::BitVariable,
         0x2000002au, {}};
-    SctScptValueOperation negated{SctScptValueKind::NegatedIntVariable,
+    SctScptValueOperation integerVariable{SctScptValueKind::IntegerVariable,
         0x5000002bu, {}};
-    SctScptValueOperation low16{SctScptValueKind::NegatedIntVariableLow16Comparison,
+    SctScptValueOperation low16{SctScptValueKind::IntegerVariableLow16Comparison,
         0x5000002cu, {}};
     SctScptBinaryOperation add{SctScptBinaryOperationKind::Arithmetic, 0x0eu};
 
     const auto presentation = expressionPresentation(
-        {positiveFloat, negativeFloat, decimal, variable, negated, low16, add});
+        {positiveFloat, negativeFloat, decimal, variable, integerVariable, low16, add});
     const auto floats = orderedOperationPropertiesNamed(presentation, "Float literal");
     ASSERT_EQ(floats.size(), 2u);
     EXPECT_EQ(floats[0]->value, "1.5");
@@ -413,12 +413,12 @@ TEST(SctPresentation, DisplaysSemanticExpressionValuesWithRawEncodingEvidence) {
     ASSERT_EQ(variables.size(), 1u);
     EXPECT_EQ(variables.front()->value, "42");
     EXPECT_NE(variables.front()->notes.find("0x2000002A"), std::string::npos);
-    const auto negatedVariables = orderedOperationPropertiesNamed(
-        presentation, "Negated integer variable");
-    ASSERT_EQ(negatedVariables.size(), 1u);
-    EXPECT_EQ(negatedVariables.front()->value, "43");
+    const auto integerVariables = orderedOperationPropertiesNamed(
+        presentation, "Integer variable");
+    ASSERT_EQ(integerVariables.size(), 1u);
+    EXPECT_EQ(integerVariables.front()->value, "43");
     const auto low16Variables = orderedOperationPropertiesNamed(
-        presentation, "Negated integer variable (low-16 comparison)");
+        presentation, "Integer variable (low-16 comparison)");
     ASSERT_EQ(low16Variables.size(), 1u);
     EXPECT_EQ(low16Variables.front()->value, "44");
     const auto operators = orderedOperationPropertiesNamed(presentation, "Arithmetic");
@@ -497,7 +497,7 @@ TEST(SctPresentation, AttachesExactParameterAndExpressionInspectionLocations) {
         document->sections.front().content).instructions.front();
 
     instruction.scheduledExpression = SctCanonicalExpression{SctTypedScptProgram{{
-        SctScptValueOperation{SctScptValueKind::DirectIntVariable,
+        SctScptValueOperation{SctScptValueKind::FloatBackedIntegerVariable,
             0x10000011u, {}}}}, SctExpressionTermination::InlineValue};
     instruction.fixedParameters.push_back({ 20u, SctCanonicalExpression{
         SctTypedScptProgram{{SctScptValueOperation{SctScptValueKind::FloatVariable,
@@ -525,7 +525,7 @@ TEST(SctPresentation, AttachesExactParameterAndExpressionInspectionLocations) {
         { SctNavigationKind::Instruction, instruction.id.value() });
 
     const auto scheduled = orderedOperationPropertiesNamed(
-        presentation, "Integer variable");
+        presentation, "Float-backed integer variable");
     ASSERT_EQ(scheduled.size(), 1u);
     ASSERT_TRUE(scheduled.front()->location.has_value());
     const auto* scheduledSite = std::get_if<SctExpressionOperationSite>(

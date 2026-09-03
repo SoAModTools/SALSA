@@ -74,6 +74,8 @@ public:
         bool showBasicBlocks, bool showRejectedEvidence,
         bool showControlFlowInstructions = false);
     [[nodiscard]] std::optional<core::SctNavigationTarget> currentTarget() const noexcept;
+    [[nodiscard]] bool containsTarget(core::SctNavigationTarget target) const;
+    [[nodiscard]] QString targetLabel(core::SctNavigationTarget target) const;
     [[nodiscard]] std::optional<InstructionInsertionContext> insertionContext() const;
     [[nodiscard]] std::optional<spice::sct::SctInstructionId> selectedInstruction() const;
     [[nodiscard]] std::optional<core::SctMessageTarget> selectedMessageTarget() const;
@@ -123,17 +125,13 @@ signals:
         qulonglong instruction, quint32 ordinal);
     void moveRepeatedGroupRequested(const QString& identityKey,
         qulonglong instruction, quint32 ordinal, int direction);
+    void navigationChanged(const QString& identityKey, int kind, qulonglong id);
 
 private:
     void rebuildOutline();
     void rebuildStructuredOutline(bool initialLoad);
     void markStructuredOutlinePending();
-    void recordNavigation(core::SctNavigationTarget target);
-    void pruneNavigationHistory();
-    void navigateBack();
-    void navigateForward();
     void syncDocumentButtons();
-    [[nodiscard]] QString navigationLabel(core::SctNavigationTarget target) const;
     void showTarget(core::SctNavigationTarget target);
     void updateSourceBanner(int sourceStatus);
     void showParameterTable(spice::sct::SctInstructionId instruction,
@@ -159,15 +157,10 @@ private:
     QLabel* structuredBanner_ = nullptr;
     QTreeView* structuredOutline_ = nullptr;
     SctStructuredOutlineModel* structuredOutlineModel_ = nullptr;
-    QToolButton* navigationBackButton_ = nullptr;
-    QToolButton* navigationForwardButton_ = nullptr;
     QToolButton* insertInstructionButton_ = nullptr;
     QToolButton* deleteInstructionButton_ = nullptr;
     QToolButton* moveInstructionUpButton_ = nullptr;
     QToolButton* moveInstructionDownButton_ = nullptr;
-    std::vector<core::SctNavigationTarget> navigationHistory_{};
-    std::size_t navigationHistoryIndex_ = 0;
-    bool replayingNavigation_ = false;
     bool structuredOutlinePending_ = false;
     bool showStructuredBasicBlocks_ = false;
     bool showRejectedStructureEvidence_ = false;

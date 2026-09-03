@@ -148,6 +148,8 @@ public:
     [[nodiscard]] bool contains(const core::AssetLocator& locator) const;
     [[nodiscard]] std::shared_ptr<const core::SctDocumentSnapshot> snapshot(
         const core::AssetLocator& locator) const;
+    [[nodiscard]] std::vector<core::SctPipelineDiagnostic> currentDiagnostics(
+        const core::AssetLocator& locator) const;
     [[nodiscard]] std::shared_ptr<const core::SctSemanticEditorProjection>
         semanticProjection(const core::AssetLocator& locator) const;
     [[nodiscard]] std::optional<spice::sct::SctMessage> workingMessage(

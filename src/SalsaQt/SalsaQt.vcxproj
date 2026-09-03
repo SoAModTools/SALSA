@@ -65,6 +65,7 @@
     <ClCompile Include="Sct\SctScptEditorWidget.cpp" />
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp" />
     <ClCompile Include="Workspace\DiagnosticsModel.cpp" />
+    <ClCompile Include="Workspace\DiagnosticJournalModel.cpp" />
     <ClCompile Include="Workspace\WorkspaceController.cpp" />
     <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp" />
     <ClCompile Include="Workspace\WorkspaceModel.cpp" />
@@ -81,6 +82,8 @@
   <ItemGroup>
     <ClInclude Include="Application\MainWindow.h" />
     <ClInclude Include="Workspace\DiagnosticsModel.h" />
+    <ClInclude Include="Workspace\DiagnosticJournalModel.h" />
+    <ClInclude Include="Ui\UiConstants.h" />
     <ClInclude Include="Workspace\WorkspaceDetailsWidget.h" />
     <ClInclude Include="Workspace\WorkspaceModel.h" />
   </ItemGroup>

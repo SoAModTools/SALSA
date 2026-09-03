@@ -94,6 +94,12 @@ void DiagnosticsModel::setRows(std::vector<DiagnosticRow> rows) {
 void DiagnosticsModel::setCombinedDiagnostics(
     const std::vector<core::Diagnostic>& workspace,
     const std::vector<core::SctPipelineDiagnostic>& document) {
+    setRows(rowsFor(workspace, document));
+}
+
+std::vector<DiagnosticRow> DiagnosticsModel::rowsFor(
+    const std::vector<core::Diagnostic>& workspace,
+    const std::vector<core::SctPipelineDiagnostic>& document) {
     std::vector<DiagnosticRow> rows;
     rows.reserve(workspace.size() + document.size());
     for (const auto& diagnostic : workspace) {
@@ -123,7 +129,7 @@ void DiagnosticsModel::setCombinedDiagnostics(
             std::move(tooltip),
             diagnostic.locator, inspectionLocation(diagnostic) });
     }
-    setRows(std::move(rows));
+    return rows;
 }
 
 void DiagnosticsModel::clear() {

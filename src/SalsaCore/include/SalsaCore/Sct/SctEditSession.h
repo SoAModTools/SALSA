@@ -180,6 +180,7 @@ public:
     [[nodiscard]] bool canUndo() const noexcept;
     [[nodiscard]] bool canRedo() const noexcept;
     [[nodiscard]] bool isDirty() const noexcept;
+    [[nodiscard]] std::vector<SctPipelineDiagnostic> currentDiagnostics() const;
     [[nodiscard]] std::optional<std::string_view> undoDescription() const noexcept;
     [[nodiscard]] std::optional<std::string_view> redoDescription() const noexcept;
     [[nodiscard]] std::optional<std::shared_ptr<const spice::sct::SctDocument>>

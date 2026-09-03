@@ -23,6 +23,7 @@ class QTreeView;
 namespace salsa::qt {
 
 class DiagnosticsModel;
+class DiagnosticJournalModel;
 class SctDocumentController;
 struct SctDocumentUpdate;
 class SctDocumentWidget;
@@ -41,6 +42,11 @@ protected:
 
 private:
     enum class PendingLifecycle { None, CloseDocument, CloseDataset, Exit };
+    struct NavigationEntry final {
+        std::optional<core::AssetLocator> locator{};
+        std::optional<core::SctNavigationTarget> target{};
+        bool operator==(const NavigationEntry&) const = default;
+    };
 
     void buildUi();
     void connectWorkspace();
@@ -64,6 +70,15 @@ private:
     void closeDocumentTab(int index);
     void rebuildDocumentTabTitles();
     void syncEditActions();
+    void recordActiveNavigation();
+    void recordNavigation(NavigationEntry entry);
+    void pruneNavigationHistory();
+    void navigateBack();
+    void navigateForward();
+    [[nodiscard]] bool navigateTo(const NavigationEntry& entry);
+    [[nodiscard]] bool navigationEntryAvailable(const NavigationEntry& entry) const;
+    [[nodiscard]] QString navigationEntryLabel(const NavigationEntry& entry) const;
+    void syncNavigationActions();
     void insertInstruction();
     void deleteInstruction();
     void moveInstruction(core::SctInstructionMoveDirection direction);
@@ -111,12 +126,15 @@ private:
     SctDocumentController* documentController_ = nullptr;
     WorkspaceModel* workspaceModel_ = nullptr;
     DiagnosticsModel* diagnosticsModel_ = nullptr;
+    DiagnosticJournalModel* diagnosticJournalModel_ = nullptr;
     WorkspaceDetailsWidget* details_ = nullptr;
     QTabWidget* tabs_ = nullptr;
     QTreeView* projectTree_ = nullptr;
     QTableView* diagnosticsView_ = nullptr;
+    QTableView* activityLogView_ = nullptr;
     QDockWidget* projectDock_ = nullptr;
     QDockWidget* diagnosticsDock_ = nullptr;
+    QDockWidget* activityLogDock_ = nullptr;
     QDockWidget* semanticNavigatorDock_ = nullptr;
     QDockWidget* messageEditorDock_ = nullptr;
     QDockWidget* scptEditorDock_ = nullptr;
@@ -133,6 +151,8 @@ private:
     QAction* disconnectPatchWorkspaceAction_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
+    QAction* navigationBackAction_ = nullptr;
+    QAction* navigationForwardAction_ = nullptr;
     QAction* editMessageAction_ = nullptr;
     QAction* createScriptSectionAction_ = nullptr;
     QAction* createIndexedStringAction_ = nullptr;
@@ -165,6 +185,9 @@ private:
     bool showSemanticControlFlowInstructions_ = false;
     bool structureAnalysisTimingsEnabled_ = false;
     bool restoringTabAfterCommitFailure_ = false;
+    bool replayingNavigation_ = false;
+    std::vector<NavigationEntry> navigationHistory_{};
+    std::size_t navigationHistoryIndex_ = 0;
     PendingLifecycle pendingLifecycle_ = PendingLifecycle::None;
     std::optional<core::AssetLocator> pendingLifecycleDocument_{};
     std::vector<core::AssetLocator> pendingLifecycleSaves_{};

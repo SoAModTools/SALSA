@@ -885,6 +885,37 @@ TEST(SctEditSession, ReplacesOpaqueTextWithOneSemanticRepairRevision) {
     EXPECT_TRUE(session.workingState().textRepairProvenance(target).has_value());
 }
 
+TEST(SctEditSession, CurrentDiagnosticsTrackAmbiguousTextRepairAndUndo) {
+    auto document = makeMessageDocument();
+    document.footerEntries.front().value = SctOpaqueText{{'H', 'i', 0}};
+    auto snapshot = std::make_shared<SctDocumentSnapshot>(
+        *snapshotWith(loadedSnapshot(), std::move(document)));
+    const auto footer = snapshot->document->footerEntries.front().id;
+    SctPipelineDiagnostic warning;
+    warning.severity = DiagnosticSeverity::Warning;
+    warning.stage = SctPipelineStage::Import;
+    warning.code = "AmbiguousString";
+    warning.message = "The source text is ambiguous.";
+    warning.primaryLocation = SctDiagnosticLocation{
+        SctDocumentEntityId{footer}};
+    snapshot->diagnostics.push_back(warning);
+
+    SctEditSession session(snapshot);
+    const SctTextTarget target{footer};
+    const auto ambiguousCount = [&session] {
+        return std::ranges::count_if(session.currentDiagnostics(), [](const auto& diagnostic) {
+            return diagnostic.code == "AmbiguousString";
+        });
+    };
+    ASSERT_EQ(ambiguousCount(), 1);
+    ASSERT_TRUE(session.replaceTextValue(target, SctPlainText{"Hi"}).committed);
+    EXPECT_EQ(ambiguousCount(), 0);
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_EQ(ambiguousCount(), 1);
+    ASSERT_TRUE(session.redo().has_value());
+    EXPECT_EQ(ambiguousCount(), 0);
+}
+
 TEST(SctGlyphCatalog, PreservesLegacyMembershipAndSearchEvidence) {
     const auto& catalog = SctGlyphCatalog::legacySupportedSet();
     EXPECT_GT(catalog.entries().size(), 300u);
@@ -1134,16 +1165,16 @@ TEST(SctParameterAuthoring, PreservesVariableKindsAndConstrainsSimpleChoices) {
     instruction.id = SctInstructionId(1);
     instruction.opcode = 16u;
     instruction.fixedParameters = {
-        {0u, SctExpressionFactory::negatedIntegerVariable(8).expression.value()},
+        {0u, SctExpressionFactory::integerVariable(8).expression.value()},
     };
     const SctParameterSite site{instruction.id, {0u, std::nullopt}};
     const auto variable = SctParameterAuthoringService::parseInline(
-        instruction, site, "NegatedIntVar[1193046]");
+        instruction, site, "IntVar[1193046]");
     ASSERT_TRUE(variable.succeeded());
     const auto& variableExpression = std::get<SctCanonicalExpression>(*variable.value);
     const auto& variableOperation = std::get<SctScptValueOperation>(
         std::get<SctTypedScptProgram>(variableExpression.body).operations.front());
-    EXPECT_EQ(variableOperation.kind, SctScptValueKind::NegatedIntVariable);
+    EXPECT_EQ(variableOperation.kind, SctScptValueKind::IntegerVariable);
     EXPECT_EQ(variableOperation.encodingWord & 0x00ffffffu, 0x123456u);
     EXPECT_FALSE(SctParameterAuthoringService::parseInline(
         instruction, site, "0x1000000").succeeded());

@@ -42,9 +42,9 @@ QString valueKindName(const spice::sct::SctScptValueKind kind) {
     case ByteVariable: return QObject::tr("Byte variable");
     case BitVariable: return QObject::tr("Bit variable");
     case FloatVariable: return QObject::tr("Float variable");
-    case DirectIntVariable: return QObject::tr("Integer variable");
-    case NegatedIntVariable: return QObject::tr("Negated integer input");
-    case NegatedIntVariableLow16Comparison: return QObject::tr("Low-16 comparison input");
+    case FloatBackedIntegerVariable: return QObject::tr("Float-backed integer variable");
+    case IntegerVariable: return QObject::tr("Integer variable");
+    case IntegerVariableLow16Comparison: return QObject::tr("Low-16 comparison input");
     case SecondaryValue: return QObject::tr("Named runtime value");
     }
     return QObject::tr("Value");
@@ -385,7 +385,8 @@ void SctScptEditorWidget::editSelected() {
         using enum spice::sct::SctScptValueKind;
         if (value->kind == DecimalLiteral) kind = 0;
         else if (value->kind == FloatLiteral) kind = 1;
-        else if (value->kind == DirectIntVariable) kind = 2;
+        else if (value->kind == FloatBackedIntegerVariable
+            || value->kind == IntegerVariable) kind = 2;
         else if (value->kind == FloatVariable) kind = 3;
         else if (value->kind == BitVariable) kind = 4;
         else if (value->kind == ByteVariable) kind = 5;
@@ -416,13 +417,13 @@ void SctScptEditorWidget::addOperation(const int kind) {
     if (!site_) return;
     if (kind == 0) {
         const QStringList kinds{tr("Fixed decimal"), tr("Float literal"),
-            tr("Integer input (factory-selected form)"), tr("Direct integer variable"),
-            tr("Negated integer input"), tr("Low-16 comparison input"),
+            tr("Integer input (factory-selected form)"), tr("Integer variable"),
+            tr("Float-backed integer variable"), tr("Low-16 comparison input"),
             tr("Float variable"), tr("Bit variable"), tr("Byte variable"),
             tr("Named runtime value"), tr("Inline constant")};
         const QStringList examples{QStringLiteral("0"), QStringLiteral("0f"),
-            QStringLiteral("IntInput[24]"), QStringLiteral("IntVar[24]"),
-            QStringLiteral("NegatedIntVar[87]"), QStringLiteral("Low16IntVar[15]"),
+            QStringLiteral("IntInput[24]"), QStringLiteral("IntVar[87]"),
+            QStringLiteral("FloatBackedIntVar[24]"), QStringLiteral("Low16IntVar[15]"),
             QStringLiteral("FloatVar[0]"), QStringLiteral("BitVar[0]"),
             QStringLiteral("ByteVar[0]"), QStringLiteral("Gold"),
             QStringLiteral("InlineValue[0x7F7FFFFF]")};

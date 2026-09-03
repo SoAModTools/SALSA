@@ -1,5 +1,6 @@
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
+#include "SalsaCore/Sct/SctInspectionLocation.h"
 
 #include "SpiceSCT/SctDocumentIndex.h"
 #include "SpiceSCT/SctDocumentEntityFactory.h"
@@ -1735,6 +1736,33 @@ bool SctEditSession::markPatchCheckpoint(const RevisionId revision,
     if (historyStateToken == nullptr) return false;
     return history_.markCheckpoint(revision,
         std::static_pointer_cast<const RevisionDelta>(std::move(historyStateToken)));
+}
+
+std::vector<SctPipelineDiagnostic> SctEditSession::currentDiagnostics() const {
+    std::vector<SctPipelineDiagnostic> result;
+    result.reserve(currentSnapshot_->diagnostics.size());
+    for (const auto& diagnostic : currentSnapshot_->diagnostics) {
+        if (diagnostic.code == "AmbiguousString" && diagnostic.primaryLocation) {
+            const auto location = inspectionLocationForDiagnostic(
+                *diagnostic.primaryLocation);
+            if (location) {
+                const auto target = owningNavigationTarget(*location);
+                if (target.kind == SctNavigationKind::String
+                    || target.kind == SctNavigationKind::FooterEntry) {
+                    const SctTextTarget textTarget = target.kind == SctNavigationKind::String
+                        ? SctTextTarget{spice::sct::SctStringId(target.id)}
+                        : SctTextTarget{spice::sct::SctFooterEntryId(target.id)};
+                    const auto* value = workingState_.textValue(textTarget);
+                    if (value == nullptr
+                        || !std::holds_alternative<spice::sct::SctOpaqueText>(*value)) {
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push_back(diagnostic);
+    }
+    return result;
 }
 
 bool SctEditSession::installVerifiedMaterialization(

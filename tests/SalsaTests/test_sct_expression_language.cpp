@@ -35,16 +35,16 @@ TEST(SctExpressionLanguage, ParsesEveryDocumentedExpression) {
         std::string_view{"ByteVar[87]"},
         std::string_view{"BitVar[4]"},
         std::string_view{"FloatVar[12]"},
-        std::string_view{"IntVar[24]"},
-        std::string_view{"NegatedIntVar[87]"},
+        std::string_view{"IntVar[87]"},
+        std::string_view{"FloatBackedIntVar[24]"},
         std::string_view{"Low16IntVar[15]"},
         std::string_view{"IntInput[87]"},
         std::string_view{"Gold"},
         std::string_view{"VyseCurrentHP"},
         std::string_view{"InlineValue[0x7F7FFFFF]"},
         std::string_view{"ByteVar[87] == 3"},
-        std::string_view{"(IntVar[24] + 2) * 4"},
-        std::string_view{"IntVar[24] == 1 && ByteVar[87] != 0"},
+        std::string_view{"(FloatBackedIntVar[24] + 2) * 4"},
+        std::string_view{"IntVar[87] == 1 && ByteVar[87] != 0"},
     };
     for (const auto example : examples) {
         const auto parsed = SctExpressionLanguage::parse(std::string(example));
@@ -55,12 +55,12 @@ TEST(SctExpressionLanguage, ParsesEveryDocumentedExpression) {
 
 TEST(SctExpressionLanguage, AppliesCStylePrecedenceAndLeftAssociativity) {
     const auto parsed = SctExpressionLanguage::parse(
-        "IntVar[24] + 2 * 3 == 7 && ByteVar[87] != 0");
+        "FloatBackedIntVar[24] + 2 * 3 == 7 && ByteVar[87] != 0");
     ASSERT_TRUE(parsed.succeeded());
     const auto projected = SctExpressionLanguage::project(*parsed.expression);
     ASSERT_EQ(projected.availability, SctExpressionTextAvailability::Editable);
     EXPECT_EQ(projected.text,
-        "IntVar[24] + 2 * 3 == 7 && ByteVar[87] != 0");
+        "FloatBackedIntVar[24] + 2 * 3 == 7 && ByteVar[87] != 0");
 
     const auto grouped = SctExpressionLanguage::parse("8 - (4 - 2)");
     ASSERT_TRUE(grouped.succeeded());
@@ -89,8 +89,15 @@ TEST(SctExpressionLanguage, UsesEachFactorySpecificVariableDomain) {
     EXPECT_FALSE(SctExpressionLanguage::parse("FloatVar[268435456]").succeeded());
     EXPECT_TRUE(SctExpressionLanguage::parse("BitVar[536870911]").succeeded());
     EXPECT_FALSE(SctExpressionLanguage::parse("BitVar[536870912]").succeeded());
-    EXPECT_TRUE(SctExpressionLanguage::parse("NegatedIntVar[87]").succeeded());
-    EXPECT_FALSE(SctExpressionLanguage::parse("NegatedIntVar[24]").succeeded());
+    EXPECT_TRUE(SctExpressionLanguage::parse("IntVar[87]").succeeded());
+    EXPECT_TRUE(SctExpressionLanguage::parse("FloatBackedIntVar[24]").succeeded());
+    EXPECT_FALSE(SctExpressionLanguage::parse("NegatedIntVar[87]").succeeded());
+    EXPECT_TRUE(SctExpressionLanguage::parse("IntVar[16777215]").succeeded());
+    EXPECT_FALSE(SctExpressionLanguage::parse("IntVar[16777216]").succeeded());
+    EXPECT_FALSE(SctExpressionLanguage::parse("IntVar[24]").succeeded());
+    EXPECT_FALSE(SctExpressionLanguage::parse("FloatBackedIntVar[23]").succeeded());
+    EXPECT_TRUE(SctExpressionLanguage::parse("Low16IntVar[15]").succeeded());
+    EXPECT_FALSE(SctExpressionLanguage::parse("Low16IntVar[14]").succeeded());
     EXPECT_TRUE(SctExpressionLanguage::parse("IntInput[24]").succeeded());
     EXPECT_TRUE(SctExpressionLanguage::parse("IntInput[87]").succeeded());
 }

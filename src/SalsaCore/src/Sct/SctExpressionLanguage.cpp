@@ -175,8 +175,8 @@ std::optional<Node> valueNode(const SctScptValueOperation& operation) {
         result.kind = NodeKind::Variable;
         result.value = operation.encodingWord & 0x0fffffffu;
         return result;
-    case DirectIntVariable: case NegatedIntVariable:
-    case NegatedIntVariableLow16Comparison:
+    case FloatBackedIntegerVariable: case IntegerVariable:
+    case IntegerVariableLow16Comparison:
         result.kind = NodeKind::Variable;
         result.value = operation.encodingWord & 0x00ffffffu;
         return result;
@@ -255,9 +255,9 @@ std::string nodeText(const Node& node, const int parentPrecedence = 0,
         case ByteVariable: name = "ByteVar"; break;
         case BitVariable: name = "BitVar"; break;
         case FloatVariable: name = "FloatVar"; break;
-        case DirectIntVariable: name = "IntVar"; break;
-        case NegatedIntVariable: name = "NegatedIntVar"; break;
-        case NegatedIntVariableLow16Comparison: name = "Low16IntVar"; break;
+        case FloatBackedIntegerVariable: name = "FloatBackedIntVar"; break;
+        case IntegerVariable: name = "IntVar"; break;
+        case IntegerVariableLow16Comparison: name = "Low16IntVar"; break;
         default: name = "Value"; break;
         }
         return name + "[" + std::to_string(node.value) + "]";
@@ -560,9 +560,9 @@ private:
             if (name == "bytevar") node->valueKind = spice::sct::SctScptValueKind::ByteVariable;
             else if (name == "bitvar") node->valueKind = spice::sct::SctScptValueKind::BitVariable;
             else if (name == "floatvar") node->valueKind = spice::sct::SctScptValueKind::FloatVariable;
-            else if (name == "intvar") node->valueKind = spice::sct::SctScptValueKind::DirectIntVariable;
-            else if (name == "negatedintvar") node->valueKind = spice::sct::SctScptValueKind::NegatedIntVariable;
-            else if (name == "low16intvar") node->valueKind = spice::sct::SctScptValueKind::NegatedIntVariableLow16Comparison;
+            else if (name == "floatbackedintvar") node->valueKind = spice::sct::SctScptValueKind::FloatBackedIntegerVariable;
+            else if (name == "intvar") node->valueKind = spice::sct::SctScptValueKind::IntegerVariable;
+            else if (name == "low16intvar") node->valueKind = spice::sct::SctScptValueKind::IntegerVariableLow16Comparison;
             else { issue(identifier, "Unknown SCPT variable kind."); return nullptr; }
         }
         return node;
@@ -611,9 +611,9 @@ private:
             case ByteVariable: return spice::sct::SctExpressionFactory::byteVariable(node.value);
             case BitVariable: return spice::sct::SctExpressionFactory::bitVariable(node.value);
             case FloatVariable: return spice::sct::SctExpressionFactory::floatVariable(node.value);
-            case DirectIntVariable: return spice::sct::SctExpressionFactory::directIntegerVariable(node.value);
-            case NegatedIntVariable: return spice::sct::SctExpressionFactory::negatedIntegerVariable(node.value);
-            case NegatedIntVariableLow16Comparison:
+            case FloatBackedIntegerVariable: return spice::sct::SctExpressionFactory::floatBackedIntegerVariable(node.value);
+            case IntegerVariable: return spice::sct::SctExpressionFactory::integerVariable(node.value);
+            case IntegerVariableLow16Comparison:
                 return spice::sct::SctExpressionFactory::low16ComparisonIntegerVariable(node.value);
             default: return {};
             }

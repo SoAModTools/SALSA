@@ -30,6 +30,9 @@ public:
     void setCombinedDiagnostics(
         const std::vector<core::Diagnostic>& workspace,
         const std::vector<core::SctPipelineDiagnostic>& document);
+    [[nodiscard]] static std::vector<DiagnosticRow> rowsFor(
+        const std::vector<core::Diagnostic>& workspace,
+        const std::vector<core::SctPipelineDiagnostic>& document);
     void setRows(std::vector<DiagnosticRow> rows);
     void clear();
     [[nodiscard]] const DiagnosticRow* rowAt(int row) const noexcept;
