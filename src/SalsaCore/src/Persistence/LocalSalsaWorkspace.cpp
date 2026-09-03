@@ -756,4 +756,20 @@ Result<void> LocalSalsaWorkspace::retainBaseline(
         .retainBaseline(revision, bytes);
 }
 
+Result<std::optional<SctReconciliationDecisionArtifact>>
+LocalSalsaWorkspace::loadReconciliationDecisions(
+    const std::string_view decisionScopeId,
+    const std::string_view targetScopeKey) const {
+    return DirectorySctReconciliationDecisionStore(
+        componentPath(descriptor_.components.importState) / L"reconciliation")
+        .loadReconciliationDecisions(decisionScopeId, targetScopeKey);
+}
+
+Result<void> LocalSalsaWorkspace::checkpointReconciliationDecisions(
+    const SctReconciliationDecisionArtifact& artifact) const {
+    return DirectorySctReconciliationDecisionStore(
+        componentPath(descriptor_.components.importState) / L"reconciliation")
+        .checkpointReconciliationDecisions(artifact);
+}
+
 }  // namespace salsa::core

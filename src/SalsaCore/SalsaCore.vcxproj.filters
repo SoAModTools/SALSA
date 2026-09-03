@@ -27,6 +27,7 @@
     <ClInclude Include="include\SalsaCore\History\RevisionHistory.h"><Filter>History</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\LocalSalsaWorkspace.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\SctBaselineStore.h"><Filter>Project</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Persistence\SctReconciliationDecisionStore.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\SctScriptPatch.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\WorkspaceSession.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Project\AssetCatalogDiff.h"><Filter>Project</Filter></ClInclude>
@@ -44,6 +45,7 @@
     <ClInclude Include="include\SalsaCore\Sct\SctParameterAuthoring.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctExpressionLanguage.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Sct\SctReconciliation.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctPublication.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctSemanticOperation.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctStructuredAuthoring.h"><Filter>SCT</Filter></ClInclude>
@@ -56,6 +58,7 @@
     <ClCompile Include="src\Foundation\Hashing.cpp"><Filter>Foundation</Filter></ClCompile>
     <ClCompile Include="src\Persistence\LocalSalsaWorkspace.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Persistence\SctBaselineStore.cpp"><Filter>Project</Filter></ClCompile>
+    <ClCompile Include="src\Persistence\SctReconciliationDecisionStore.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Persistence\SctScriptPatch.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Persistence\WorkspaceSession.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Project\AssetCatalogDiff.cpp"><Filter>Project</Filter></ClCompile>
@@ -70,6 +73,7 @@
     <ClCompile Include="src\Sct\SctParameterAuthoring.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctExpressionLanguage.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctPresentation.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="src\Sct\SctReconciliation.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctPublication.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctSemanticOperation.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctStructuredAuthoring.cpp"><Filter>SCT</Filter></ClCompile>

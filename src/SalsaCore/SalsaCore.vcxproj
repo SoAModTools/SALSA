@@ -56,6 +56,7 @@
     <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelopeFileStore.h" />
     <ClInclude Include="include\SalsaCore\Persistence\LocalSalsaWorkspace.h" />
     <ClInclude Include="include\SalsaCore\Persistence\SctBaselineStore.h" />
+    <ClInclude Include="include\SalsaCore\Persistence\SctReconciliationDecisionStore.h" />
     <ClInclude Include="include\SalsaCore\Persistence\SctScriptPatch.h" />
     <ClInclude Include="include\SalsaCore\Persistence\WorkspaceSession.h" />
     <ClInclude Include="include\SalsaCore\Project\AssetCatalogDiff.h" />
@@ -73,6 +74,7 @@
     <ClInclude Include="include\SalsaCore\Sct\SctParameterAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctExpressionLanguage.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctReconciliation.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctPublication.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctSemanticOperation.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctStructuredAuthoring.h" />
@@ -86,6 +88,7 @@
     <ClCompile Include="src\Persistence\PatchEnvelopeFileStore.cpp" />
     <ClCompile Include="src\Persistence\LocalSalsaWorkspace.cpp" />
     <ClCompile Include="src\Persistence\SctBaselineStore.cpp" />
+    <ClCompile Include="src\Persistence\SctReconciliationDecisionStore.cpp" />
     <ClCompile Include="src\Persistence\SctScriptPatch.cpp" />
     <ClCompile Include="src\Persistence\WorkspaceSession.cpp" />
     <ClCompile Include="src\Project\AssetCatalogDiff.cpp" />
@@ -100,6 +103,7 @@
     <ClCompile Include="src\Sct\SctParameterAuthoring.cpp" />
     <ClCompile Include="src\Sct\SctExpressionLanguage.cpp" />
     <ClCompile Include="src\Sct\SctPresentation.cpp" />
+    <ClCompile Include="src\Sct\SctReconciliation.cpp" />
     <ClCompile Include="src\Sct\SctPublication.cpp" />
     <ClCompile Include="src\Sct\SctSemanticOperation.cpp" />
     <ClCompile Include="src\Sct\SctStructuredAuthoring.cpp" />

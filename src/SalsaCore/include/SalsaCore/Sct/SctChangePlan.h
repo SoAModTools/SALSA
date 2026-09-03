@@ -36,6 +36,35 @@ enum class SctChangeEntityKind {
     OpaquePreservation,
 };
 
+enum class SctIdentityMatchStatus {
+    Exact,
+    Strong,
+    Ambiguous,
+    Unmatched,
+    Contradictory,
+};
+
+enum class SctIdentityMatchProvenance {
+    Automatic,
+    CurrentUserDecision,
+    PersistedUserDecision,
+};
+
+struct SctIdentityEvidence final {
+    std::string code{};
+    std::string detail{};
+    auto operator<=>(const SctIdentityEvidence&) const = default;
+};
+
+struct SctChangeIdentity final {
+    SctIdentityMatchStatus status = SctIdentityMatchStatus::Unmatched;
+    SctIdentityMatchProvenance provenance =
+        SctIdentityMatchProvenance::Automatic;
+    std::optional<SctNavigationTarget> baselineTarget{};
+    std::optional<SctNavigationTarget> incomingTarget{};
+    std::vector<SctIdentityEvidence> evidence{};
+};
+
 struct SctChangeDiagnostic final {
     SctChangeDisposition disposition = SctChangeDisposition::Informational;
     std::string code{};
@@ -54,6 +83,7 @@ struct SctChangeUnit final {
     std::vector<std::string> details{};
     std::vector<std::string> coupledUnitIds{};
     std::optional<SctNavigationTarget> target{};
+    std::optional<SctChangeIdentity> identity{};
     bool selectable = true;
     bool acknowledgementRequired = false;
     bool affectsOrder = false;

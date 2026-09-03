@@ -2,6 +2,7 @@
 
 #include "SalsaCore/Persistence/PatchEnvelopeFileStore.h"
 #include "SalsaCore/Persistence/SctBaselineStore.h"
+#include "SalsaCore/Persistence/SctReconciliationDecisionStore.h"
 #include "SalsaCore/Persistence/SctScriptPatch.h"
 #include "SalsaCore/Project/ProjectTypes.h"
 
@@ -67,7 +68,9 @@ public:
         const AssetLocator& locator, const PatchEnvelope& envelope) const = 0;
 };
 
-class LocalSalsaWorkspace final : public SctPatchStore, public SctBaselineStore {
+class LocalSalsaWorkspace final : public SctPatchStore,
+                                  public SctBaselineStore,
+                                  public SctReconciliationDecisionStore {
 public:
     static constexpr std::uint32_t SchemaVersion = 2;
 
@@ -92,6 +95,11 @@ public:
         const SourceRevision& revision) const override;
     [[nodiscard]] Result<void> retainBaseline(
         const SourceRevision& revision, std::span<const std::byte> bytes) const override;
+    [[nodiscard]] Result<std::optional<SctReconciliationDecisionArtifact>>
+        loadReconciliationDecisions(std::string_view decisionScopeId,
+            std::string_view targetScopeKey) const override;
+    [[nodiscard]] Result<void> checkpointReconciliationDecisions(
+        const SctReconciliationDecisionArtifact& artifact) const override;
 
 private:
     explicit LocalSalsaWorkspace(SalsaWorkspaceDescriptor descriptor);

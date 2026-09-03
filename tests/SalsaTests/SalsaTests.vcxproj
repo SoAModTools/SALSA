@@ -63,6 +63,7 @@
     <ClCompile Include="test_sct_document_inspection.cpp" />
     <ClCompile Include="test_sct_message_authoring.cpp" />
     <ClCompile Include="test_sct_publication.cpp" />
+    <ClCompile Include="test_sct_reconciliation.cpp" />
     <ClCompile Include="test_sct_baseline_store.cpp" />
     <ClCompile Include="test_sct_change_plan.cpp" />
     <ClCompile Include="test_sct_script_patch.cpp" />
