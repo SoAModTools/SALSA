@@ -1,17 +1,22 @@
 #include "Application/MainWindow.h"
 
 #include "SalsaCore/Application/ApplicationInfo.h"
+#include "SalsaCore/Sct/SctExpressionLanguage.h"
+#include "SalsaCore/Sct/SctParameterAuthoring.h"
 #include "Sct/SctDocumentController.h"
 #include "Sct/SctDocumentWidget.h"
 #include "Sct/SctMessageEditorWidget.h"
+#include "Sct/SctScptEditorWidget.h"
 #include "Sct/SctSemanticNavigatorWidget.h"
 #include "Workspace/DiagnosticsModel.h"
 #include "Workspace/WorkspaceDetailsWidget.h"
 #include "Workspace/WorkspaceModel.h"
+#include "SpiceSCT/SctInstructionFactory.h"
 
 #include <QAction>
 #include <QCloseEvent>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QDialog>
@@ -35,6 +40,7 @@
 #include <QSettings>
 #include <QStatusBar>
 #include <QTableView>
+#include <QTableWidget>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
@@ -48,12 +54,69 @@
 #include <optional>
 #include <ranges>
 #include <type_traits>
+#include <sstream>
 
 namespace salsa::qt {
 namespace {
 
 constexpr int SettingsStateVersion = 1;
 constexpr qsizetype MaximumRecentDatasets = 10;
+
+[[nodiscard]] QString draftWord(const std::uint32_t value) {
+    return QStringLiteral("0x%1").arg(value, 8, 16, QLatin1Char('0')).toUpper();
+}
+
+[[nodiscard]] QString draftValueText(
+    const spice::sct::SctDocumentParameterValue& value,
+    const std::optional<std::uint32_t> managedTerminator = std::nullopt) {
+    return std::visit([managedTerminator](const auto& typed) -> QString {
+        using T = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<T, spice::sct::SctEncodedWordValue>) {
+            return draftWord(typed.value);
+        } else if constexpr (std::is_same_v<T, spice::sct::SctCanonicalExpression>) {
+            const auto projected = core::SctExpressionLanguage::project(typed);
+            return projected.text.empty()
+                ? QObject::tr("Advanced SCPT program")
+                : QString::fromStdString(projected.text);
+        } else if constexpr (std::is_same_v<T,
+                spice::sct::SctTerminatedWordSequenceValue>) {
+            QStringList words;
+            auto displayEnd = typed.words.end();
+            if (managedTerminator && !typed.words.empty()
+                && typed.words.back() == *managedTerminator)
+                --displayEnd;
+            for (auto word = typed.words.begin(); word != displayEnd; ++word)
+                words.push_back(draftWord(*word));
+            return words.join(QLatin1Char(' '));
+        } else if constexpr (std::is_same_v<T, spice::sct::SctInstructionReference>) {
+            return QObject::tr("Instruction %1").arg(typed.target.value());
+        } else if constexpr (std::is_same_v<T, spice::sct::SctStringReference>) {
+            return QObject::tr("Indexed string %1").arg(typed.target.value());
+        } else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryReference>) {
+            return QObject::tr("Footer entry %1").arg(typed.target.value());
+        } else if constexpr (std::is_same_v<T,
+                spice::sct::SctUnresolvedReferenceValue>) {
+            return QObject::tr("Choose a compatible target");
+        } else {
+            QStringList words;
+            for (const auto word : typed.words) words.push_back(draftWord(word));
+            return words.join(QLatin1Char(' '));
+        }
+    }, value);
+}
+
+[[nodiscard]] spice::sct::SctDocumentParameterValue referenceValue(
+    const spice::sct::SctDocumentReferenceTarget& target) {
+    return std::visit([](const auto id) -> spice::sct::SctDocumentParameterValue {
+        using T = std::decay_t<decltype(id)>;
+        if constexpr (std::is_same_v<T, spice::sct::SctInstructionId>)
+            return spice::sct::SctInstructionReference{id};
+        else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
+            return spice::sct::SctStringReference{id};
+        else
+            return spice::sct::SctFooterEntryReference{id};
+    }, target);
+}
 
 [[nodiscard]] QString normalizedRecentDatasetPath(const QString& path) {
     const auto cleanedInput = QDir::cleanPath(QDir::fromNativeSeparators(path.trimmed()));
@@ -127,7 +190,7 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    if (!flushMessageEditor() || !confirmDiscardAll(
+    if (!prepareScptEditor() || !flushMessageEditor() || !confirmDiscardAll(
             tr("exit SALSA"), PendingLifecycle::Exit)) {
         event->ignore();
         return;
@@ -214,6 +277,19 @@ void MainWindow::buildUi() {
     semanticNavigatorDock_->raise();
     messageEditorDock_->hide();
 
+    scptEditor_ = new SctScptEditorWidget(this);
+    scptEditor_->setCommitHandler([this](const core::AssetLocator& locator,
+            const spice::sct::SctParameterSite& site,
+            const spice::sct::SctCanonicalExpression& expression) {
+        return documentController_->replaceParameterValue(locator, site, expression);
+    });
+    scptEditorDock_ = new QDockWidget(tr("Advanced SCPT Editor"), this);
+    scptEditorDock_->setObjectName(QStringLiteral("AdvancedScptEditorDock"));
+    scptEditorDock_->setWidget(scptEditor_);
+    addDockWidget(Qt::RightDockWidgetArea, scptEditorDock_);
+    tabifyDockWidget(semanticNavigatorDock_, scptEditorDock_);
+    scptEditorDock_->hide();
+
     auto* fileMenu = menuBar()->addMenu(tr("&File"));
     openAction_ = fileMenu->addAction(tr("&Open Dataset..."));
     openAction_->setShortcut(QKeySequence::Open);
@@ -242,7 +318,6 @@ void MainWindow::buildUi() {
     moveSectionDownAction_ = projectMenu->addAction(tr("Move Section Down"));
     projectMenu->addSeparator();
     createFooterMessageAction_ = projectMenu->addAction(tr("New Footer Message"));
-    createFooterPlainTextAction_ = projectMenu->addAction(tr("New Footer Plain Text"));
     deleteTextAction_ = projectMenu->addAction(tr("Delete Text Entity"));
 
     auto* editMenu = menuBar()->addMenu(tr("&Edit"));
@@ -277,6 +352,7 @@ void MainWindow::buildUi() {
     viewMenu->addAction(diagnosticsDock_->toggleViewAction());
     viewMenu->addAction(semanticNavigatorDock_->toggleViewAction());
     viewMenu->addAction(messageEditorDock_->toggleViewAction());
+    viewMenu->addAction(scptEditorDock_->toggleViewAction());
     viewMenu->addAction(editToolbar->toggleViewAction());
 
 #if defined(_DEBUG)
@@ -375,8 +451,9 @@ void MainWindow::buildUi() {
     connect(disconnectPatchWorkspaceAction_, &QAction::triggered,
         this, &MainWindow::disconnectPatchWorkspace);
     connect(closeWorkspaceAction_, &QAction::triggered, this, [this]() {
-        if (!flushMessageEditor() || !confirmDiscardAll(
+        if (!prepareScptEditor() || !flushMessageEditor() || !confirmDiscardAll(
                 tr("close the dataset"), PendingLifecycle::CloseDataset)) return;
+        scptEditor_->clear();
         messageEditor_->clear();
         documentController_->closeAll();
         documentController_->setWorkspace(nullptr);
@@ -414,9 +491,6 @@ void MainWindow::buildUi() {
     });
     connect(createFooterMessageAction_, &QAction::triggered, this, [this]() {
         createFooterText(core::SctCreatedFooterTextKind::Message);
-    });
-    connect(createFooterPlainTextAction_, &QAction::triggered, this, [this]() {
-        createFooterText(core::SctCreatedFooterTextKind::PlainText);
     });
     connect(deleteTextAction_, &QAction::triggered, this, &MainWindow::deleteSelectedText);
     connect(insertInstructionAction_, &QAction::triggered, this, &MainWindow::insertInstruction);
@@ -573,6 +647,9 @@ void MainWindow::connectWorkspace() {
             if (messageEditor_->boundLocator().has_value()
                 && QString::fromStdString(messageEditor_->boundLocator()->identityKey()) == identityKey)
                 messageEditor_->clear();
+            if (scptEditor_->boundLocator().has_value()
+                && QString::fromStdString(scptEditor_->boundLocator()->identityKey()) == identityKey)
+                scptEditor_->clear();
             for (int i = 1; i < tabs_->count(); ++i) {
                 auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(i));
                 if (widget != nullptr
@@ -646,7 +723,9 @@ void MainWindow::chooseDataset() {
 }
 
 void MainWindow::openDataset(const QString& rootPath) {
-    if (!flushMessageEditor() || !confirmDiscardAll(tr("open another dataset"))) return;
+    if (!prepareScptEditor() || !flushMessageEditor()
+        || !confirmDiscardAll(tr("open another dataset"))) return;
+    scptEditor_->clear();
     if (controller_->openDataset(rootPath)) {
         statusBar()->showMessage(tr("Inspecting dataset..."));
     }
@@ -876,7 +955,6 @@ void MainWindow::syncEditActions() {
     moveSectionUpAction_->setEnabled(sectionSelected);
     moveSectionDownAction_->setEnabled(sectionSelected);
     createFooterMessageAction_->setEnabled(editable);
-    createFooterPlainTextAction_->setEnabled(editable);
     deleteTextAction_->setEnabled(editable && widget->selectedTextTarget().has_value());
     insertInstructionAction_->setEnabled(editable && widget->insertionContext().has_value());
     deleteInstructionAction_->setEnabled(editable && widget->canDeleteSelected());
@@ -886,22 +964,42 @@ void MainWindow::syncEditActions() {
         && widget->canMoveSelected(core::SctInstructionMoveDirection::Down));
 }
 
-std::optional<std::uint16_t> MainWindow::chooseInsertableOpcode(const bool allowReturn) {
+std::optional<core::SctInstructionAuthoringDraft>
+MainWindow::chooseInstructionDraft(
+    const core::AssetLocator& locator, const bool allowReturn) {
     QDialog dialog(this);
-    dialog.setWindowTitle(tr("Insert Instruction"));
+    dialog.setWindowTitle(tr("New Instruction"));
     dialog.resize(460, 520);
     auto* layout = new QVBoxLayout(&dialog);
-    layout->addWidget(new QLabel(tr("Choose an opcode that can be created without parameter input."), &dialog));
+    layout->addWidget(new QLabel(tr("Choose an opcode. Required parameters are configured next."), &dialog));
     auto* filter = new QLineEdit(&dialog);
     filter->setPlaceholderText(tr("Filter by opcode or mnemonic"));
     layout->addWidget(filter);
     auto* list = new QListWidget(&dialog);
-    for (const auto& choice : core::SctEditSession::insertableOpcodes()) {
-        if (choice.opcode == 12u && !allowReturn) continue;
+    int firstEnabled = -1;
+    for (const auto& schema : spice::sct::sctOpcodeSchemas()) {
+        if (schema.opcode == 9u
+            || schema.documentRole == spice::sct::SctOpcodeDocumentRole::FoldedModifier)
+            continue;
+        const auto mnemonic = schema.semantic.mnemonic.empty()
+            ? tr("Opcode %1").arg(schema.opcode)
+            : QString::fromUtf8(schema.semantic.mnemonic.data(),
+                static_cast<qsizetype>(schema.semantic.mnemonic.size()));
         auto* item = new QListWidgetItem(
-            QStringLiteral("%1  %2").arg(choice.opcode, 3, 10, QLatin1Char('0'))
-                .arg(QString::fromStdString(choice.mnemonic)), list);
-        item->setData(Qt::UserRole, choice.opcode);
+            QStringLiteral("%1  %2").arg(schema.opcode, 3, 10, QLatin1Char('0'))
+                .arg(mnemonic), list);
+        item->setData(Qt::UserRole, schema.opcode);
+        const auto draft = documentController_->createInstructionDraft(locator, schema.opcode);
+        if ((schema.opcode == 12u && !allowReturn) || !draft.draft) {
+            item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+            item->setToolTip(schema.opcode == 12u && !allowReturn
+                ? tr("Return can only be inserted at the end of a section.")
+                : draft.diagnostics.empty()
+                    ? tr("The frozen schema cannot safely construct this instruction.")
+                    : QString::fromStdString(draft.diagnostics.front().message));
+        } else if (firstEnabled < 0) {
+            firstEnabled = list->count() - 1;
+        }
     }
     layout->addWidget(list, 1);
     auto* buttons = new QDialogButtonBox(
@@ -914,18 +1012,238 @@ std::optional<std::uint16_t> MainWindow::chooseInsertableOpcode(const bool allow
     });
     connect(list, &QListWidget::currentItemChanged, &dialog,
         [buttons](QListWidgetItem* current) {
-            buttons->button(QDialogButtonBox::Ok)->setEnabled(current != nullptr && !current->isHidden());
+            buttons->button(QDialogButtonBox::Ok)->setEnabled(current != nullptr
+                && !current->isHidden() && (current->flags() & Qt::ItemIsEnabled));
         });
-    connect(list, &QListWidget::itemDoubleClicked, &dialog, [&dialog](QListWidgetItem*) {
-        dialog.accept();
+    connect(list, &QListWidget::itemDoubleClicked, &dialog,
+        [&dialog](QListWidgetItem* item) {
+            if (item != nullptr && (item->flags() & Qt::ItemIsEnabled))
+                dialog.accept();
     });
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (list->count() > 0) list->setCurrentRow(0);
+    if (firstEnabled >= 0) list->setCurrentRow(firstEnabled);
     filter->setFocus();
     if (dialog.exec() != QDialog::Accepted || list->currentItem() == nullptr
-        || list->currentItem()->isHidden()) return std::nullopt;
-    return static_cast<std::uint16_t>(list->currentItem()->data(Qt::UserRole).toUInt());
+        || list->currentItem()->isHidden()
+        || !(list->currentItem()->flags() & Qt::ItemIsEnabled)) return std::nullopt;
+    const auto opcode = static_cast<std::uint16_t>(
+        list->currentItem()->data(Qt::UserRole).toUInt());
+    auto created = documentController_->createInstructionDraft(locator, opcode);
+    if (!created.draft) {
+        const auto message = created.diagnostics.empty()
+            ? tr("This opcode cannot be authored safely.")
+            : QString::fromStdString(created.diagnostics.front().message);
+        QMessageBox::warning(this, tr("New Instruction"), message);
+        return std::nullopt;
+    }
+    auto draft = std::move(*created.draft);
+
+    struct DraftEditorRow final {
+        std::size_t parameterIndex = 0;
+        std::optional<std::size_t> ownedTextIndex{};
+        QLineEdit* line = nullptr;
+        QComboBox* choices = nullptr;
+        QCheckBox* acceptSuggestion = nullptr;
+        std::vector<core::SctReferenceCandidate> candidates{};
+        bool newFooterMessageChoice = false;
+        QString initialText{};
+    };
+
+    QDialog editor(this);
+    const auto* selectedSchema = spice::sct::findSctOpcodeSchema(opcode);
+    const auto selectedName = selectedSchema != nullptr
+            && !selectedSchema->semantic.mnemonic.empty()
+        ? QString::fromUtf8(selectedSchema->semantic.mnemonic.data(),
+            static_cast<qsizetype>(selectedSchema->semantic.mnemonic.size()))
+        : tr("Opcode %1").arg(opcode);
+    editor.setWindowTitle(tr("Configure %1").arg(selectedName));
+    editor.resize(820, 480);
+    auto* editorLayout = new QVBoxLayout(&editor);
+    auto* help = new QLabel(tr(
+        "Resolve every required value. Suggested values must be explicitly accepted or replaced."),
+        &editor);
+    help->setWordWrap(true);
+    editorLayout->addWidget(help);
+    auto* table = new QTableWidget(
+        static_cast<int>(draft.instruction.parameters.size()), 3, &editor);
+    table->setHorizontalHeaderLabels({tr("Parameter"), tr("Value"), tr("Notes")});
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    table->horizontalHeader()->resizeSection(0, 210);
+    table->horizontalHeader()->resizeSection(1, 360);
+    table->horizontalHeader()->resizeSection(2, 210);
+    table->verticalHeader()->hide();
+    std::vector<DraftEditorRow> rows;
+    rows.reserve(draft.instruction.parameters.size());
+    const auto* opcodeSchema = spice::sct::findSctOpcodeSchema(opcode);
+    for (std::size_t i = 0; i < draft.instruction.parameters.size(); ++i) {
+        auto& parameter = draft.instruction.parameters[i];
+        DraftEditorRow row;
+        row.parameterIndex = i;
+        const auto* parameterSchema = opcodeSchema == nullptr ? nullptr
+            : spice::sct::sctOpcodeParameterSchema(
+                *opcodeSchema, parameter.address.schemaIndex);
+        auto role = parameterSchema != nullptr && !parameterSchema->role.empty()
+            ? QString::fromUtf8(parameterSchema->role.data(),
+                static_cast<qsizetype>(parameterSchema->role.size()))
+            : tr("Parameter %1").arg(parameter.address.schemaIndex);
+        if (parameter.address.repeatedGroupOrdinal)
+            role += tr(" (group %1)").arg(*parameter.address.repeatedGroupOrdinal + 1u);
+        table->setItem(static_cast<int>(i), 0, new QTableWidgetItem(role));
+
+        const auto owned = std::ranges::find(draft.ownedFooterText,
+            parameter.address, &core::SctOwnedFooterTextDraft::parameter);
+        if (owned != draft.ownedFooterText.end()) {
+            row.ownedTextIndex = static_cast<std::size_t>(
+                std::distance(draft.ownedFooterText.begin(), owned));
+            if (owned->kind == spice::sct::SctTextKind::PlainString) {
+                row.line = new QLineEdit(&editor);
+                row.line->setPlaceholderText(tr("Instruction-owned footer text"));
+                if (const auto* plain = std::get_if<spice::sct::SctPlainText>(&owned->value))
+                    row.line->setText(QString::fromStdString(plain->utf8));
+                row.initialText = row.line->text();
+                table->setCellWidget(static_cast<int>(i), 1, row.line);
+                table->setItem(static_cast<int>(i), 2,
+                    new QTableWidgetItem(tr("A private footer entry is created with the instruction.")));
+            } else {
+                row.choices = new QComboBox(&editor);
+                row.choices->addItem(tr("Create a new default footer message"));
+                row.candidates = documentController_->draftReferenceCandidates(
+                    locator, opcode, parameter.address);
+                for (const auto& candidate : row.candidates)
+                    row.choices->addItem(QString::fromStdString(candidate.label));
+                row.newFooterMessageChoice = true;
+                table->setCellWidget(static_cast<int>(i), 1, row.choices);
+                table->setItem(static_cast<int>(i), 2,
+                    new QTableWidgetItem(tr("Choose an existing message or create a new default one.")));
+            }
+        } else {
+            const auto* effective = parameter.value ? &*parameter.value
+                : parameter.suggestedValue ? &*parameter.suggestedValue : nullptr;
+            const bool reference = parameterSchema != nullptr
+                && parameterSchema->referenceKind
+                    != spice::sct::SctOpcodeReferenceKind::None;
+            if (reference) {
+                row.choices = new QComboBox(&editor);
+                row.candidates = documentController_->draftReferenceCandidates(
+                    locator, opcode, parameter.address);
+                for (const auto& candidate : row.candidates)
+                    row.choices->addItem(QString::fromStdString(candidate.label));
+                if (effective != nullptr) {
+                    const auto target = std::visit([](const auto& typed)
+                            -> std::optional<spice::sct::SctDocumentReferenceTarget> {
+                        using T = std::decay_t<decltype(typed)>;
+                        if constexpr (std::is_same_v<T, spice::sct::SctInstructionReference>
+                            || std::is_same_v<T, spice::sct::SctStringReference>
+                            || std::is_same_v<T, spice::sct::SctFooterEntryReference>)
+                            return typed.target;
+                        return std::nullopt;
+                    }, *effective);
+                    if (target) {
+                        const auto found = std::ranges::find(row.candidates, *target,
+                            &core::SctReferenceCandidate::target);
+                        if (found != row.candidates.end()) row.choices->setCurrentIndex(
+                            static_cast<int>(std::distance(row.candidates.begin(), found)));
+                    }
+                }
+                table->setCellWidget(static_cast<int>(i), 1, row.choices);
+            } else if (effective != nullptr) {
+                const auto terminator = parameterSchema != nullptr
+                        && parameterSchema->terminator
+                    ? std::optional{parameterSchema->terminator->encodedWord}
+                    : std::nullopt;
+                row.line = new QLineEdit(
+                    draftValueText(*effective, terminator), &editor);
+                row.initialText = row.line->text();
+                table->setCellWidget(static_cast<int>(i), 1, row.line);
+            } else {
+                auto* unavailable = new QTableWidgetItem(tr("No safe authoring value available"));
+                unavailable->setFlags(unavailable->flags() & ~Qt::ItemIsEditable);
+                table->setItem(static_cast<int>(i), 1, unavailable);
+            }
+            if (!parameter.value && parameter.suggestedValue) {
+                row.acceptSuggestion = new QCheckBox(tr("Accept suggested value"), &editor);
+                table->setCellWidget(static_cast<int>(i), 2, row.acceptSuggestion);
+            } else {
+                table->setItem(static_cast<int>(i), 2, new QTableWidgetItem(
+                    effective == nullptr ? tr("Required value") : tr("Factory default")));
+            }
+        }
+        rows.push_back(std::move(row));
+    }
+    editorLayout->addWidget(table, 1);
+    auto* editorButtons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &editor);
+    editorButtons->button(QDialogButtonBox::Ok)->setText(tr("Create"));
+    editorLayout->addWidget(editorButtons);
+    connect(editorButtons, &QDialogButtonBox::accepted, &editor, &QDialog::accept);
+    connect(editorButtons, &QDialogButtonBox::rejected, &editor, &QDialog::reject);
+
+    while (editor.exec() == QDialog::Accepted) {
+        auto candidate = draft;
+        std::vector<std::size_t> removeOwned;
+        QString error;
+        for (const auto& row : rows) {
+            auto& parameter = candidate.instruction.parameters[row.parameterIndex];
+            if (row.ownedTextIndex) {
+                auto& ownedText = candidate.ownedFooterText[*row.ownedTextIndex];
+                if (ownedText.kind == spice::sct::SctTextKind::PlainString) {
+                    ownedText.value = spice::sct::SctPlainText{
+                        row.line->text().toStdString()};
+                } else if (row.choices->currentIndex() > 0) {
+                    const auto selected = static_cast<std::size_t>(
+                        row.choices->currentIndex() - 1);
+                    parameter.value = referenceValue(row.candidates[selected].target);
+                    removeOwned.push_back(*row.ownedTextIndex);
+                }
+                continue;
+            }
+            if (row.choices != nullptr) {
+                if (row.choices->currentIndex() < 0 || row.candidates.empty()) {
+                    error = tr("%1 requires a compatible reference target.")
+                        .arg(table->item(static_cast<int>(row.parameterIndex), 0)->text());
+                    break;
+                }
+                parameter.value = referenceValue(row.candidates[
+                    static_cast<std::size_t>(row.choices->currentIndex())].target);
+                continue;
+            }
+            const auto* current = parameter.value ? &*parameter.value
+                : parameter.suggestedValue ? &*parameter.suggestedValue : nullptr;
+            if (current == nullptr || row.line == nullptr) {
+                error = tr("%1 has no safe value yet.")
+                    .arg(table->item(static_cast<int>(row.parameterIndex), 0)->text());
+                break;
+            }
+            const bool changed = row.line->text() != row.initialText;
+            if (!parameter.value && parameter.suggestedValue
+                && !changed && (row.acceptSuggestion == nullptr
+                    || !row.acceptSuggestion->isChecked())) {
+                error = tr("Explicitly accept or replace the suggested value for %1.")
+                    .arg(table->item(static_cast<int>(row.parameterIndex), 0)->text());
+                break;
+            }
+            if (changed) {
+                const auto parsed = core::SctParameterAuthoringService::parseDraftValue(
+                    opcode, parameter.address, *current, row.line->text().toStdString());
+                if (!parsed.succeeded()) {
+                    error = QString::fromStdString(parsed.error);
+                    break;
+                }
+                parameter.value = *parsed.value;
+            } else {
+                parameter.value = *current;
+            }
+        }
+        if (error.isEmpty()) {
+            std::ranges::sort(removeOwned, std::greater{});
+            for (const auto index : removeOwned)
+                candidate.ownedFooterText.erase(candidate.ownedFooterText.begin() + index);
+            return candidate;
+        }
+        QMessageBox::warning(&editor, tr("Incomplete Instruction Draft"), error);
+    }
+    return std::nullopt;
 }
 
 void MainWindow::insertInstruction() {
@@ -933,10 +1251,167 @@ void MainWindow::insertInstruction() {
     if (widget == nullptr) return;
     const auto context = widget->insertionContext();
     if (!context.has_value()) return;
-    const auto opcode = chooseInsertableOpcode(context->allowReturn);
-    if (!opcode.has_value()) return;
-    (void)documentController_->insertInstructionAfter(
-        widget->locator(), context->anchor, *opcode);
+    auto draft = chooseInstructionDraft(widget->locator(), context->allowReturn);
+    if (!draft.has_value()) return;
+    (void)documentController_->createInstructionAfter(
+        widget->locator(), context->anchor, std::move(*draft));
+}
+
+std::optional<std::uint16_t> MainWindow::chooseSemanticArmOpcode() {
+    QStringList choices;
+    std::vector<std::uint16_t> opcodes;
+    for (const auto& choice : core::SctEditSession::insertableOpcodes()) {
+        if (choice.opcode == 12u) continue;
+        choices.push_back(QStringLiteral("%1  %2")
+            .arg(choice.opcode, 3, 10, QLatin1Char('0'))
+            .arg(QString::fromStdString(choice.mnemonic)));
+        opcodes.push_back(choice.opcode);
+    }
+    bool accepted = false;
+    const auto selected = QInputDialog::getItem(this,
+        tr("First Semantic-Arm Instruction"),
+        tr("Opcode (only instructions requiring no parameter draft are available here):"),
+        choices, 0, false, &accepted);
+    const auto index = choices.indexOf(selected);
+    return accepted && index >= 0
+        ? std::optional{opcodes[static_cast<std::size_t>(index)]}
+        : std::nullopt;
+}
+
+std::optional<spice::sct::SctDocumentRepeatedParameterGroup>
+MainWindow::configureRepeatedGroupDraft(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId instruction,
+    spice::sct::SctRepeatedParameterGroupDraft draft) {
+    struct Row final {
+        std::size_t parameterIndex = 0;
+        QLineEdit* line = nullptr;
+        QComboBox* choices = nullptr;
+        QCheckBox* acceptSuggestion = nullptr;
+        QString initialText;
+        std::vector<core::SctReferenceCandidate> candidates;
+    };
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("New Repeated Group — Instruction %1")
+        .arg(instruction.value()));
+    dialog.resize(760, 380);
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(tr(
+        "Resolve required values and explicitly accept or replace provisional suggestions."),
+        &dialog));
+    auto* table = new QTableWidget(static_cast<int>(draft.parameters.size()), 3, &dialog);
+    table->setHorizontalHeaderLabels({tr("Parameter"), tr("Value"), tr("Notes")});
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    table->horizontalHeader()->resizeSection(0, 190);
+    table->horizontalHeader()->resizeSection(1, 350);
+    table->horizontalHeader()->resizeSection(2, 190);
+    table->verticalHeader()->hide();
+    const auto* opcodeSchema = spice::sct::findSctOpcodeSchema(draft.opcode);
+    std::vector<Row> rows;
+    for (std::size_t i = 0; i < draft.parameters.size(); ++i) {
+        auto& parameter = draft.parameters[i];
+        Row row;
+        row.parameterIndex = i;
+        const spice::sct::SctParameterAddress address{parameter.schemaIndex, 0u};
+        const auto* schema = opcodeSchema == nullptr ? nullptr
+            : spice::sct::sctOpcodeParameterSchema(*opcodeSchema, parameter.schemaIndex);
+        const auto role = schema != nullptr && !schema->role.empty()
+            ? QString::fromUtf8(schema->role.data(),
+                static_cast<qsizetype>(schema->role.size()))
+            : tr("Parameter %1").arg(parameter.schemaIndex);
+        table->setItem(static_cast<int>(i), 0, new QTableWidgetItem(role));
+        const auto* effective = parameter.value ? &*parameter.value
+            : parameter.suggestedValue ? &*parameter.suggestedValue : nullptr;
+        const bool reference = schema != nullptr
+            && schema->referenceKind != spice::sct::SctOpcodeReferenceKind::None;
+        if (reference) {
+            row.choices = new QComboBox(&dialog);
+            row.candidates = documentController_->draftReferenceCandidates(
+                locator, draft.opcode, address);
+            for (const auto& candidate : row.candidates)
+                row.choices->addItem(QString::fromStdString(candidate.label));
+            table->setCellWidget(static_cast<int>(i), 1, row.choices);
+        } else if (effective != nullptr) {
+            const auto terminator = schema != nullptr && schema->terminator
+                ? std::optional{schema->terminator->encodedWord}
+                : std::nullopt;
+            row.line = new QLineEdit(
+                draftValueText(*effective, terminator), &dialog);
+            row.initialText = row.line->text();
+            table->setCellWidget(static_cast<int>(i), 1, row.line);
+        } else {
+            table->setItem(static_cast<int>(i), 1,
+                new QTableWidgetItem(tr("No safe value available")));
+        }
+        if (!parameter.value && parameter.suggestedValue) {
+            row.acceptSuggestion = new QCheckBox(tr("Accept suggested value"), &dialog);
+            table->setCellWidget(static_cast<int>(i), 2, row.acceptSuggestion);
+        } else {
+            table->setItem(static_cast<int>(i), 2, new QTableWidgetItem(
+                effective == nullptr ? tr("Required value") : tr("Factory default")));
+        }
+        rows.push_back(std::move(row));
+    }
+    layout->addWidget(table, 1);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Create"));
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    while (dialog.exec() == QDialog::Accepted) {
+        auto candidate = draft;
+        QString error;
+        for (const auto& row : rows) {
+            auto& parameter = candidate.parameters[row.parameterIndex];
+            const spice::sct::SctParameterAddress address{parameter.schemaIndex, 0u};
+            if (row.choices != nullptr) {
+                if (row.choices->currentIndex() < 0 || row.candidates.empty()) {
+                    error = tr("%1 requires a compatible reference target.")
+                        .arg(table->item(static_cast<int>(row.parameterIndex), 0)->text());
+                    break;
+                }
+                parameter.value = referenceValue(row.candidates[
+                    static_cast<std::size_t>(row.choices->currentIndex())].target);
+                continue;
+            }
+            const auto* current = parameter.value ? &*parameter.value
+                : parameter.suggestedValue ? &*parameter.suggestedValue : nullptr;
+            if (current == nullptr || row.line == nullptr) {
+                error = tr("%1 is unresolved.")
+                    .arg(table->item(static_cast<int>(row.parameterIndex), 0)->text());
+                break;
+            }
+            const bool changed = row.line->text() != row.initialText;
+            if (!parameter.value && parameter.suggestedValue && !changed
+                && (row.acceptSuggestion == nullptr
+                    || !row.acceptSuggestion->isChecked())) {
+                error = tr("Explicitly accept or replace the suggested value for %1.")
+                    .arg(table->item(static_cast<int>(row.parameterIndex), 0)->text());
+                break;
+            }
+            if (changed) {
+                const auto parsed = core::SctParameterAuthoringService::parseDraftValue(
+                    candidate.opcode, address, *current,
+                    row.line->text().toStdString());
+                if (!parsed.succeeded()) {
+                    error = QString::fromStdString(parsed.error);
+                    break;
+                }
+                parameter.value = *parsed.value;
+            } else parameter.value = *current;
+        }
+        if (error.isEmpty()) {
+            const auto materialized =
+                spice::sct::SctInstructionFactory::materializeRepeatedGroup(candidate);
+            if (materialized.group) return *materialized.group;
+            error = materialized.diagnostics.empty()
+                ? tr("The repeated group is incomplete.")
+                : QString::fromStdString(materialized.diagnostics.front().message);
+        }
+        QMessageBox::warning(&dialog, tr("Incomplete Repeated Group"), error);
+    }
+    return std::nullopt;
 }
 
 void MainWindow::deleteInstruction() {
@@ -1081,6 +1556,13 @@ bool MainWindow::flushMessageEditor() {
     return messageEditor_ == nullptr || messageEditor_->flushPending();
 }
 
+bool MainWindow::prepareScptEditor(
+    const std::optional<core::AssetLocator>& locator) {
+    if (scptEditor_ == nullptr || !scptEditor_->boundLocator()) return true;
+    if (locator && *scptEditor_->boundLocator() != *locator) return true;
+    return scptEditor_->prepareToClear();
+}
+
 void MainWindow::undoActiveDocument() {
     if (!flushMessageEditor()) return;
     if (auto* widget = activeDocumentWidget())
@@ -1215,6 +1697,7 @@ void MainWindow::continuePendingLifecycle(
     if (action == PendingLifecycle::CloseDocument && document.has_value()) {
         documentController_->closeDocument(*document);
     } else if (action == PendingLifecycle::CloseDataset) {
+        scptEditor_->clear();
         messageEditor_->clear();
         documentController_->closeAll();
         documentController_->setWorkspace(nullptr);
@@ -1255,22 +1738,33 @@ void MainWindow::syncDocument(
     const bool createdWidget = widget == nullptr;
     if (createdWidget) {
         widget = new SctDocumentWidget(*found, tabs_);
+        widget->setParameterPresentationProvider([this, widget](const auto instruction) {
+            return documentController_->parameterPresentation(
+                widget->locator(), instruction);
+        });
+        widget->setParameterCommitHandler([this, widget](const auto& site,
+                std::string text) {
+            return documentController_->editParameterText(
+                widget->locator(), site, std::move(text));
+        });
         widget->setStructuredDeveloperOptions(
             showStructuredBasicBlocks_, showRejectedStructureEvidence_,
             showSemanticControlFlowInstructions_);
         tabs_->addTab(widget, QString::fromStdWString(found->path().filename().wstring()));
         connect(widget, &SctDocumentWidget::textConventionRequested, this,
             [this, widget](const QString&, const int convention) {
-                if (!flushMessageEditor()
+                if (!prepareScptEditor(widget->locator()) || !flushMessageEditor()
                     || !confirmDiscardDocument(widget->locator(), tr("change text interpretation"))) return;
+                scptEditor_->clear();
                 messageEditor_->clear();
                 (void)documentController_->selectTextConvention(widget->locator(),
                     static_cast<spice::sct::SctKnownTextConvention>(convention));
             });
         connect(widget, &SctDocumentWidget::reloadRequested, this,
             [this, widget](const QString&) {
-                if (!flushMessageEditor()
+                if (!prepareScptEditor(widget->locator()) || !flushMessageEditor()
                     || !confirmDiscardDocument(widget->locator(), tr("reload the document"))) return;
+                scptEditor_->clear();
                 messageEditor_->clear();
                 if (const auto project = controller_->projectSnapshot(); project.has_value())
                     (void)documentController_->reloadDocument(*project, widget->locator());
@@ -1289,6 +1783,134 @@ void MainWindow::syncDocument(
             });
         connect(widget, &SctDocumentWidget::editMessageRequested,
             this, [this](const QString&) { editSelectedMessage(); });
+        connect(widget, &SctDocumentWidget::parameterNavigationRequested,
+            this, [this, widget](const QString&, const int kind, const qulonglong id) {
+                const core::SctNavigationTarget target{
+                    static_cast<core::SctNavigationKind>(kind), id};
+                widget->selectTarget(target);
+                if (target.kind == core::SctNavigationKind::String
+                    || target.kind == core::SctNavigationKind::FooterEntry)
+                    editSelectedMessage();
+            });
+        connect(widget, &SctDocumentWidget::advancedScptRequested,
+            this, [this, widget](const QString&, const qulonglong instruction,
+                    const quint32 schemaIndex, const int repeatedOrdinal) {
+                spice::sct::SctParameterSite site{
+                    spice::sct::SctInstructionId(instruction),
+                    {schemaIndex, repeatedOrdinal < 0
+                        ? std::optional<std::uint32_t>{}
+                        : std::optional{static_cast<std::uint32_t>(repeatedOrdinal)}}};
+                const auto expression = documentController_->workingParameterExpression(
+                    widget->locator(), site);
+                if (!expression) return;
+                if (scptEditor_->bind(widget->locator(), site, *expression)) {
+                    scptEditorDock_->show();
+                    scptEditorDock_->raise();
+                }
+            });
+        connect(widget, &SctDocumentWidget::changeParameterReferenceRequested,
+            this, [this, widget](const QString&, const qulonglong instruction,
+                    const quint32 schemaIndex, const int repeatedOrdinal) {
+                const spice::sct::SctParameterSite site{
+                    spice::sct::SctInstructionId(instruction),
+                    {schemaIndex, repeatedOrdinal < 0
+                        ? std::optional<std::uint32_t>{}
+                        : std::optional{static_cast<std::uint32_t>(repeatedOrdinal)}}};
+                const auto candidates = documentController_->referenceCandidates(
+                    widget->locator(), site);
+                QStringList labels;
+                for (const auto& candidate : candidates)
+                    labels.push_back(QString::fromStdString(candidate.label));
+                bool accepted = false;
+                const auto choice = QInputDialog::getItem(this,
+                    tr("Select Reference Target"), tr("Compatible target:"),
+                    labels, 0, false, &accepted);
+                const auto selected = labels.indexOf(choice);
+                if (accepted && selected >= 0)
+                    (void)documentController_->retargetParameter(
+                        widget->locator(), site,
+                        candidates[static_cast<std::size_t>(selected)].target);
+            });
+        connect(widget, &SctDocumentWidget::replaceOpaqueParameterRequested,
+            this, [this, widget](const QString&, const qulonglong instruction,
+                    const quint32 schemaIndex, const int repeatedOrdinal,
+                    const int editorKind) {
+                const spice::sct::SctParameterSite site{
+                    spice::sct::SctInstructionId(instruction),
+                    {schemaIndex, repeatedOrdinal < 0
+                        ? std::optional<std::uint32_t>{}
+                        : std::optional{static_cast<std::uint32_t>(repeatedOrdinal)}}};
+                const auto kind = static_cast<core::SctInlineParameterEditorKind>(
+                    editorKind);
+                if (kind == core::SctInlineParameterEditorKind::Reference) {
+                    const auto candidates = documentController_->referenceCandidates(
+                        widget->locator(), site);
+                    QStringList labels;
+                    for (const auto& candidate : candidates)
+                        labels.push_back(QString::fromStdString(candidate.label));
+                    bool accepted = false;
+                    const auto choice = QInputDialog::getItem(this,
+                        tr("Replace With Typed Reference"), tr("Compatible target:"),
+                        labels, 0, false, &accepted);
+                    const auto selected = labels.indexOf(choice);
+                    if (accepted && selected >= 0)
+                        (void)documentController_->retargetParameter(
+                            widget->locator(), site,
+                            candidates[static_cast<std::size_t>(selected)].target);
+                    return;
+                }
+                if (kind == core::SctInlineParameterEditorKind::AdvancedScpt) {
+                    const auto expression =
+                        spice::sct::SctExpressionFactory::encodedDecimalLiteral(0);
+                    if (scptEditor_->bind(widget->locator(), site, expression)) {
+                        scptEditorDock_->show();
+                        scptEditorDock_->raise();
+                    }
+                    return;
+                }
+                bool accepted = false;
+                const auto text = QInputDialog::getText(this,
+                    tr("Replace With Typed Value"),
+                    kind == core::SctInlineParameterEditorKind::TerminatedWords
+                        ? tr("Word list (the terminator is managed automatically):")
+                        : tr("32-bit value:"),
+                    QLineEdit::Normal, {}, &accepted);
+                if (accepted)
+                    (void)documentController_->editParameterText(
+                        widget->locator(), site, text.toStdString());
+            });
+        connect(widget, &SctDocumentWidget::addRepeatedGroupRequested,
+            this, [this, widget](const QString&, const qulonglong instructionId,
+                    const quint32 ordinal) {
+                const auto instruction = documentController_->workingInstruction(
+                    widget->locator(), spice::sct::SctInstructionId(instructionId));
+                if (!instruction) return;
+                auto draftResult = spice::sct::SctInstructionFactory::createRepeatedGroupDraft(
+                    instruction->opcode);
+                if (!draftResult.draft) {
+                    QMessageBox::warning(this, tr("Add Repeated Group"),
+                        tr("The opcode schema cannot construct a repeated group draft."));
+                    return;
+                }
+                const auto group = configureRepeatedGroupDraft(widget->locator(),
+                    instruction->id, std::move(*draftResult.draft));
+                if (!group) return;
+                (void)documentController_->insertRepeatedGroup(widget->locator(),
+                    instruction->id, ordinal, *group);
+            });
+        connect(widget, &SctDocumentWidget::deleteRepeatedGroupRequested,
+            this, [this, widget](const QString&, const qulonglong instruction,
+                    const quint32 ordinal) {
+                (void)documentController_->deleteRepeatedGroup(widget->locator(),
+                    spice::sct::SctInstructionId(instruction), ordinal);
+            });
+        connect(widget, &SctDocumentWidget::moveRepeatedGroupRequested,
+            this, [this, widget](const QString&, const qulonglong instruction,
+                    const quint32 ordinal, const int direction) {
+                (void)documentController_->moveRepeatedGroup(widget->locator(),
+                    spice::sct::SctInstructionId(instruction), ordinal,
+                    static_cast<core::SctRepeatedGroupMoveDirection>(direction));
+            });
         connect(widget, &SctDocumentWidget::createScriptSectionRequested,
             this, [this](const QString&) { createScriptSection(); });
         connect(widget, &SctDocumentWidget::createIndexedStringRequested,
@@ -1336,7 +1958,7 @@ void MainWindow::syncDocument(
             });
         connect(widget, &SctDocumentWidget::insertIntoSemanticArmRequested,
             this, [this, widget](const QString&, const qulonglong arm) {
-                const auto opcode = chooseInsertableOpcode(false);
+                const auto opcode = chooseSemanticArmOpcode();
                 if (opcode) {
                     (void)documentController_->insertInstructionIntoAuthoredArm(
                         widget->locator(), core::SctAuthoredArmId{arm}, *opcode);
@@ -1345,7 +1967,7 @@ void MainWindow::syncDocument(
         connect(widget, &SctDocumentWidget::insertIntoStructuredArmRequested,
             this, [this, widget](const QString&, const qulonglong controller,
                 const int armKind) {
-                const auto opcode = chooseInsertableOpcode(false);
+                const auto opcode = chooseSemanticArmOpcode();
                 if (opcode) {
                     (void)documentController_->insertInstructionIntoStructuredArm(
                         widget->locator(), spice::sct::SctInstructionId(controller),
@@ -1399,6 +2021,12 @@ void MainWindow::syncDocument(
             (void)messageEditor_->refreshText(*text);
         }
     }
+    if (update.transition && scptEditor_->boundLocator()
+        && *scptEditor_->boundLocator() == *found && scptEditor_->boundSite()) {
+        scptEditor_->refreshOrMarkStale(*found, update.transition->changes,
+            documentController_->workingParameterExpression(
+                *found, *scptEditor_->boundSite()));
+    }
     rebuildDocumentTabTitles();
     queueDiagnosticsSync();
     if (widget == activeDocumentWidget()
@@ -1431,6 +2059,9 @@ void MainWindow::focusDocument(const QString& identityKey) {
 void MainWindow::closeDocumentTab(const int index) {
     if (index <= 0 || index >= tabs_->count()) return;
     if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index))) {
+        if (scptEditor_->boundLocator().has_value()
+            && *scptEditor_->boundLocator() == widget->locator()
+            && !scptEditor_->prepareToClear()) return;
         if (!flushMessageEditor()
             || !confirmDiscardDocument(widget->locator(), tr("close the document"),
                 PendingLifecycle::CloseDocument)) return;
@@ -1524,6 +2155,7 @@ void MainWindow::restoreApplicationSettings() {
         restoreState(state, SettingsStateVersion);
     }
     messageEditorDock_->hide();
+    scptEditorDock_->hide();
 
     const auto stored = settings.value(QStringLiteral("workspace/recentDatasets")).toStringList();
     const auto storedLastDataset = settings.value(

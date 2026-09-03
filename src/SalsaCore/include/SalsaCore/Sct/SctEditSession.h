@@ -11,6 +11,7 @@
 
 #include "SpiceSCT/SctDocument.h"
 #include "SpiceSCT/SctDocumentValidator.h"
+#include "SpiceSCT/SctInstructionFactory.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +26,7 @@ namespace salsa::core {
 enum class SctInstructionMoveDirection { Up, Down };
 enum class SctSectionMoveDirection { Up, Down };
 enum class SctCreatedFooterTextKind { Message, PlainText };
+enum class SctRepeatedGroupMoveDirection { Up, Down };
 
 enum class SctRevisionTransitionKind {
     Commit,
@@ -68,6 +70,23 @@ struct SctInsertableOpcode final {
     auto operator<=>(const SctInsertableOpcode&) const = default;
 };
 
+struct SctOwnedFooterTextDraft final {
+    spice::sct::SctParameterAddress parameter;
+    spice::sct::SctTextKind kind = spice::sct::SctTextKind::PlainString;
+    spice::sct::SctTextValue value = spice::sct::SctPlainText{};
+};
+
+struct SctInstructionAuthoringDraft final {
+    RevisionId baseRevision{};
+    spice::sct::SctInstructionDraft instruction;
+    std::vector<SctOwnedFooterTextDraft> ownedFooterText;
+};
+
+struct SctInstructionAuthoringDraftResult final {
+    std::optional<SctInstructionAuthoringDraft> draft;
+    std::vector<SctPipelineDiagnostic> diagnostics;
+};
+
 class SctEditSession final {
 public:
     explicit SctEditSession(std::shared_ptr<const SctDocumentSnapshot> initialSnapshot);
@@ -85,6 +104,11 @@ public:
     [[nodiscard]] SctEditResult insertInstructionAfter(
         spice::sct::SctInstructionId anchorInstruction,
         std::uint16_t opcode);
+    [[nodiscard]] SctInstructionAuthoringDraftResult createInstructionDraft(
+        std::uint16_t opcode) const;
+    [[nodiscard]] SctEditResult createInstructionAfter(
+        spice::sct::SctInstructionId anchorInstruction,
+        SctInstructionAuthoringDraft draft);
     [[nodiscard]] SctEditResult deleteInstruction(
         spice::sct::SctInstructionId instruction);
     [[nodiscard]] SctEditResult moveInstruction(
@@ -100,6 +124,21 @@ public:
         const SctTextTarget& target, spice::sct::SctTextValue value,
         std::string description = "Repair text interpretation",
         std::optional<SctTextRepairProvenance> repairProvenance = std::nullopt);
+    [[nodiscard]] SctEditResult replaceParameterValue(
+        const spice::sct::SctParameterSite& site,
+        spice::sct::SctDocumentParameterValue value);
+    [[nodiscard]] SctEditResult editParameterText(
+        const spice::sct::SctParameterSite& site, std::string text);
+    [[nodiscard]] SctEditResult insertRepeatedGroup(
+        spice::sct::SctInstructionId instruction, std::uint32_t ordinal,
+        spice::sct::SctDocumentRepeatedParameterGroup group);
+    [[nodiscard]] SctEditResult deleteRepeatedGroup(
+        spice::sct::SctInstructionId instruction, std::uint32_t ordinal);
+    [[nodiscard]] SctEditResult moveRepeatedGroup(
+        spice::sct::SctInstructionId instruction, std::uint32_t ordinal,
+        SctRepeatedGroupMoveDirection direction);
+    [[nodiscard]] SctEditResult editReferencedFooterText(
+        const spice::sct::SctParameterSite& site, std::string utf8);
     [[nodiscard]] SctEditResult createScriptSection(
         std::string name, std::optional<spice::sct::SctSectionId> after,
         bool includeReturn = true);
@@ -164,6 +203,7 @@ public:
         semanticProjection() const noexcept;
 
     [[nodiscard]] static const std::vector<SctInsertableOpcode>& insertableOpcodes();
+    [[nodiscard]] static const std::vector<SctInsertableOpcode>& authorableOpcodes();
 
 private:
     struct SelectionHints final {
@@ -188,6 +228,8 @@ private:
     };
 
     [[nodiscard]] SctEditResult failure(std::vector<SctPipelineDiagnostic> diagnostics) const;
+    void appendOrphanedFooterPlainTextCleanup(
+        SctSemanticOperationBatch& operation) const;
     [[nodiscard]] SctEditResult commit(
         SctSemanticOperationBatch operation,
         SctStructuredAuthoringOperationBatch authoringOperation,

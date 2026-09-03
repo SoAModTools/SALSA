@@ -1,5 +1,7 @@
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctGlyphCatalog.h"
+#include "SalsaCore/Sct/SctParameterAuthoring.h"
+#include "SpiceSCT/SctScptEncoding.h"
 #include "SpiceSCT/SctTextBuilder.h"
 
 #include "SpiceSCT/SctDocumentBuilder.h"
@@ -828,13 +830,15 @@ TEST(SctEditSession, CreatesEditsAndDeletesIndexedAndFooterText) {
     ASSERT_NE(session.workingState().message(stringTarget), nullptr);
 
     const auto createdFooter = session.createFooterText(
-        SctCreatedFooterTextKind::PlainText, std::nullopt);
+        SctCreatedFooterTextKind::Message, std::nullopt);
     ASSERT_TRUE(createdFooter.committed);
     const SctTextTarget footerTarget{SctFooterEntryId(createdFooter.suggestedSelection->id)};
-    ASSERT_TRUE(session.replacePlainText(footerTarget, "Unicode Ω text").committed);
-    const auto* plain = std::get_if<SctPlainText>(session.workingState().textValue(footerTarget));
-    ASSERT_NE(plain, nullptr);
-    EXPECT_EQ(plain->utf8, "Unicode Ω text");
+    ASSERT_NE(session.workingState().message(footerTarget), nullptr);
+
+    const auto rejectedPlain = session.createFooterText(
+        SctCreatedFooterTextKind::PlainText, std::nullopt);
+    EXPECT_FALSE(rejectedPlain.committed);
+    EXPECT_TRUE(hasCode(rejectedPlain, "StandaloneFooterPlainTextUnsupported"));
 
     ASSERT_TRUE(session.deleteTextEntity(stringTarget).committed);
     EXPECT_EQ(session.workingState().textValue(stringTarget), nullptr);
@@ -847,7 +851,7 @@ TEST(SctEditSession, MaterializesCombinedSectionAndTextLifecycleJournal) {
     ASSERT_TRUE(session.createScriptSection("SECOND", std::nullopt, true).committed);
     ASSERT_TRUE(session.createIndexedString("MS_NEW", std::nullopt).committed);
     ASSERT_TRUE(session.createFooterText(
-        SctCreatedFooterTextKind::PlainText, std::nullopt).committed);
+        SctCreatedFooterTextKind::Message, std::nullopt).committed);
     const auto request = session.materializationRequest(41);
     ASSERT_TRUE(request.has_value());
     const auto materialized = SctDocumentMaterializer::materialize(*request);
@@ -903,4 +907,480 @@ TEST(SctWorkingState, FailedSectionRelocationIsAtomic) {
     EXPECT_FALSE(applied.succeeded());
     EXPECT_EQ(std::vector<SctSectionId>(state.sectionOrder().begin(),
         state.sectionOrder().end()), before);
+}
+
+TEST(SctParameterEditing, ReplacesConventionalScptByStableSiteAndPreservesOutlineScope) {
+    auto document = makeScriptDocument();
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    SctInstructionFactoryRequest request;
+    request.opcode = 16u;
+    request.parameterOverrides.push_back({{0u, std::nullopt},
+        SctExpressionFactory::encodedDecimalLiteral(1)});
+    const auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    const auto built = SctInstructionFactory::materialize(document, *draft.draft);
+    ASSERT_TRUE(built.instruction.has_value());
+    instructions.insert(std::prev(instructions.end()), *built.instruction);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
+
+    SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
+    const SctParameterSite site{built.instruction->id, {0u, std::nullopt}};
+    const auto presentation = SctParameterAuthoringService::project(
+        session.workingState(), site.instruction);
+    ASSERT_EQ(presentation.fixedParameters.size(), 1u);
+    EXPECT_EQ(presentation.fixedParameters.front().editor,
+        SctInlineParameterEditorKind::ConventionalScpt);
+
+    const auto edited = session.editParameterText(site, "2.5");
+    ASSERT_TRUE(edited.committed);
+    ASSERT_EQ(edited.changes.parameters.size(), 1u);
+    ASSERT_EQ(edited.changes.instructions.size(), 1u);
+    EXPECT_EQ(edited.changes.instructions.front().before,
+        edited.changes.instructions.front().after);
+    EXPECT_FALSE(hasInvalidation(edited.changes.invalidations,
+        SctDerivedAnalysisInvalidation::StructuredControlFlow));
+    const auto* parameter = session.workingState().parameter(site);
+    ASSERT_NE(parameter, nullptr);
+    const auto* expression = std::get_if<SctCanonicalExpression>(&parameter->value);
+    ASSERT_NE(expression, nullptr);
+    EXPECT_EQ(encodeSctCanonicalExpressionWords(*expression),
+        encodeSctCanonicalExpressionWords(
+            SctExpressionFactory::encodedDecimalLiteral(2, 128)));
+    const auto revision = session.currentRevision();
+    const auto noOp = session.editParameterText(site, "2.5");
+    EXPECT_FALSE(noOp.committed);
+    EXPECT_TRUE(noOp.diagnostics.empty());
+    EXPECT_EQ(session.currentRevision(), revision);
+    ASSERT_TRUE(session.undo().has_value());
+    ASSERT_TRUE(session.redo().has_value());
+    const auto requestAfterEdit = session.materializationRequest(301u);
+    ASSERT_TRUE(requestAfterEdit.has_value());
+    const auto materialized = SctDocumentMaterializer::materialize(*requestAfterEdit);
+    ASSERT_TRUE(materialized.succeeded());
+    const auto index = SctDocumentIndex::build(*materialized.document);
+    const auto* materializedInstruction = index.find(
+        *materialized.document, site.instruction);
+    ASSERT_NE(materializedInstruction, nullptr);
+    const auto materializedParameter = std::ranges::find(
+        materializedInstruction->fixedParameters, site.parameter.schemaIndex,
+        &SctDocumentParameter::schemaIndex);
+    ASSERT_NE(materializedParameter, materializedInstruction->fixedParameters.end());
+    EXPECT_EQ(encodeSctCanonicalExpressionWords(
+        std::get<SctCanonicalExpression>(materializedParameter->value)),
+        encodeSctCanonicalExpressionWords(
+            SctExpressionFactory::encodedDecimalLiteral(2, 128)));
+}
+
+TEST(SctParameterEditing, RepeatedGroupLifecycleUsesExactReversibleChanges) {
+    auto document = makeScriptDocument();
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    SctInstructionFactoryRequest request;
+    request.opcode = 42u;
+    request.repeatedGroupCount = 1u;
+    request.parameterOverrides = {
+        {{0u, std::nullopt}, SctExpressionFactory::encodedDecimalLiteral(0)},
+        {{2u, 0u}, SctExpressionFactory::encodedDecimalLiteral(1)},
+    };
+    const auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    const auto built = SctInstructionFactory::materialize(document, *draft.draft);
+    ASSERT_TRUE(built.instruction.has_value());
+    instructions.insert(std::prev(instructions.end()), *built.instruction);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
+
+    SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
+    auto groupDraft = SctInstructionFactory::createRepeatedGroupDraft(42u, {
+        {2u, SctExpressionFactory::encodedDecimalLiteral(7)}});
+    ASSERT_TRUE(groupDraft.draft.has_value());
+    const auto group = SctInstructionFactory::materializeRepeatedGroup(*groupDraft.draft);
+    ASSERT_TRUE(group.group.has_value());
+    const auto inserted = session.insertRepeatedGroup(
+        built.instruction->id, 1u, *group.group);
+    ASSERT_TRUE(inserted.committed);
+    ASSERT_EQ(inserted.changes.repeatedGroups.size(), 1u);
+    EXPECT_FALSE(inserted.changes.repeatedGroups.front().beforeOrdinal.has_value());
+    EXPECT_EQ(inserted.changes.repeatedGroups.front().afterOrdinal, 1u);
+    ASSERT_EQ(session.workingState().instruction(built.instruction->id)
+        ->repeatedParameterGroups.size(), 2u);
+
+    const auto moved = session.moveRepeatedGroup(built.instruction->id, 1u,
+        SctRepeatedGroupMoveDirection::Up);
+    ASSERT_TRUE(moved.committed);
+    EXPECT_EQ(moved.changes.repeatedGroups.front().beforeOrdinal, 1u);
+    EXPECT_EQ(moved.changes.repeatedGroups.front().afterOrdinal, 0u);
+    ASSERT_TRUE(session.undo().has_value());
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_EQ(session.workingState().instruction(built.instruction->id)
+        ->repeatedParameterGroups.size(), 1u);
+    const auto minimum = session.deleteRepeatedGroup(built.instruction->id, 0u);
+    EXPECT_FALSE(minimum.committed);
+    EXPECT_TRUE(hasCode(minimum, "RepeatedGroupMinimum"));
+}
+
+TEST(SctParameterEditing, SharedFooterPlainTextUsesAtomicCopyOnWrite) {
+    auto document = makeScriptDocument();
+    const auto footer = document.allocateFooterEntryId();
+    document.footerEntries.push_back({footer, SctTextKind::PlainString,
+        SctPlainText{"shared"}});
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    const auto makeReference = [&]() {
+        SctInstructionFactoryRequest request;
+        request.opcode = 110u;
+        request.parameterOverrides.push_back({{0u, std::nullopt},
+            SctFooterEntryReference{footer}});
+        const auto draft = SctInstructionFactory::createDraft(request);
+        EXPECT_TRUE(draft.draft.has_value());
+        const auto built = SctInstructionFactory::materialize(document, *draft.draft);
+        EXPECT_TRUE(built.instruction.has_value());
+        return *built.instruction;
+    };
+    const auto first = makeReference();
+    const auto second = makeReference();
+    instructions.insert(std::prev(instructions.end()), first);
+    instructions.insert(std::prev(instructions.end()), second);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
+
+    SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
+    const SctParameterSite site{first.id, {0u, std::nullopt}};
+    const auto beforeFooterCount = session.workingState().footerEntryOrder().size();
+    const auto edited = session.editReferencedFooterText(site, "private");
+    ASSERT_TRUE(edited.committed);
+    EXPECT_EQ(session.workingState().footerEntryOrder().size(), beforeFooterCount + 1u);
+    const auto* parameter = session.workingState().parameter(site);
+    ASSERT_NE(parameter, nullptr);
+    const auto privateReference = std::get<SctFooterEntryReference>(parameter->value).target;
+    EXPECT_NE(privateReference, footer);
+    EXPECT_EQ(session.workingState().footerEntryOrder().back(), privateReference);
+    EXPECT_EQ(std::get<SctPlainText>(
+        session.workingState().footerEntry(privateReference)->value).utf8, "private");
+    EXPECT_EQ(std::get<SctFooterEntryReference>(
+        session.workingState().parameter({second.id, {0u, std::nullopt}})->value).target,
+        footer);
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_EQ(session.workingState().footerEntryOrder().size(), beforeFooterCount);
+    EXPECT_EQ(std::get<SctFooterEntryReference>(
+        session.workingState().parameter(site)->value).target, footer);
+    ASSERT_TRUE(session.redo().has_value());
+    EXPECT_EQ(session.workingState().footerEntryOrder().back(), privateReference);
+}
+
+TEST(SctParameterAuthoring, EnforcesConfirmedMasksAndExactConventionalScptDomains) {
+    SctDocumentInstruction variableWord;
+    variableWord.id = SctInstructionId(1);
+    variableWord.opcode = 5u;
+    variableWord.fixedParameters = {
+        {0u, SctEncodedWordValue{0x10000001u}},
+        {1u, SctExpressionFactory::encodedDecimalLiteral(1)},
+    };
+
+    const SctParameterSite wordSite{variableWord.id, {0u, std::nullopt}};
+    const auto badMask = SctParameterAuthoringService::parseInline(
+        variableWord, wordSite, "0x00000001");
+    EXPECT_FALSE(badMask.succeeded());
+    EXPECT_FALSE(badMask.error.empty());
+    const auto goodMask = SctParameterAuthoringService::parseInline(
+        variableWord, wordSite, "0x10001234");
+    ASSERT_TRUE(goodMask.succeeded());
+    EXPECT_EQ(std::get<SctEncodedWordValue>(*goodMask.value).value, 0x10001234u);
+
+    const SctParameterSite expressionSite{variableWord.id, {1u, std::nullopt}};
+    const auto exact = SctParameterAuthoringService::parseInline(
+        variableWord, expressionSite, "-12.5");
+    ASSERT_TRUE(exact.succeeded());
+    EXPECT_EQ(encodeSctCanonicalExpressionWords(
+        std::get<SctCanonicalExpression>(*exact.value)),
+        encodeSctCanonicalExpressionWords(
+            SctExpressionFactory::scaledDecimalLiteral(-3200).expression.value()));
+    EXPECT_FALSE(SctParameterAuthoringService::parseInline(
+        variableWord, expressionSite, "0.1").succeeded());
+    EXPECT_FALSE(SctParameterAuthoringService::parseInline(
+        variableWord, expressionSite, "32768").succeeded());
+}
+
+TEST(SctParameterEditing, RejectsStaleAndWrongVariantTargetsWithoutHistory) {
+    auto document = makeScriptDocument();
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    SctInstructionFactoryRequest request;
+    request.opcode = 16u;
+    request.parameterOverrides.push_back({{0u, std::nullopt},
+        SctExpressionFactory::encodedDecimalLiteral(1)});
+    const auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    const auto built = SctInstructionFactory::materialize(document, *draft.draft);
+    ASSERT_TRUE(built.instruction.has_value());
+    instructions.insert(std::prev(instructions.end()), *built.instruction);
+    SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
+    const auto revision = session.currentRevision();
+
+    const auto wrongKind = session.replaceParameterValue(
+        {built.instruction->id, {0u, std::nullopt}}, SctEncodedWordValue{1u});
+    EXPECT_FALSE(wrongKind.committed);
+    EXPECT_TRUE(hasCode(wrongKind, "ParameterValueKindMismatch"));
+    const auto stale = session.replaceParameterValue(
+        {built.instruction->id, {0u, 3u}},
+        SctExpressionFactory::encodedDecimalLiteral(2));
+    EXPECT_FALSE(stale.committed);
+    EXPECT_TRUE(hasCode(stale, "ParameterTargetStale"));
+    EXPECT_EQ(session.currentRevision(), revision);
+    EXPECT_FALSE(session.canUndo());
+}
+
+TEST(SctParameterAuthoring, PreservesVariableKindsAndConstrainsSimpleChoices) {
+    SctDocumentInstruction instruction;
+    instruction.id = SctInstructionId(1);
+    instruction.opcode = 16u;
+    instruction.fixedParameters = {
+        {0u, SctExpressionFactory::negatedIntegerVariable(8).expression.value()},
+    };
+    const SctParameterSite site{instruction.id, {0u, std::nullopt}};
+    const auto variable = SctParameterAuthoringService::parseInline(
+        instruction, site, "NegatedIntVar[1193046]");
+    ASSERT_TRUE(variable.succeeded());
+    const auto& variableExpression = std::get<SctCanonicalExpression>(*variable.value);
+    const auto& variableOperation = std::get<SctScptValueOperation>(
+        std::get<SctTypedScptProgram>(variableExpression.body).operations.front());
+    EXPECT_EQ(variableOperation.kind, SctScptValueKind::NegatedIntVariable);
+    EXPECT_EQ(variableOperation.encodingWord & 0x00ffffffu, 0x123456u);
+    EXPECT_FALSE(SctParameterAuthoringService::parseInline(
+        instruction, site, "0x1000000").succeeded());
+
+    instruction.fixedParameters.front().value =
+        SctExpressionFactory::secondaryValue(SctExpressionSecondaryValue::Gold);
+    const auto secondary = SctParameterAuthoringService::parseInline(
+        instruction, site, "VyseLevel");
+    ASSERT_TRUE(secondary.succeeded());
+    const auto& secondaryOperation = std::get<SctScptValueOperation>(
+        std::get<SctTypedScptProgram>(
+            std::get<SctCanonicalExpression>(*secondary.value).body).operations.front());
+    EXPECT_EQ(secondaryOperation.kind, SctScptValueKind::SecondaryValue);
+    EXPECT_EQ(secondaryOperation.encodingWord & 0x00ffffffu, 0x4au);
+    EXPECT_FALSE(SctParameterAuthoringService::parseInline(
+        instruction, site, "invented state").succeeded());
+}
+
+TEST(SctParameterAuthoring, ReplacesOpaqueSequenceOnlyThroughSchemaTypedParsing) {
+    SctDocumentInstruction instruction;
+    instruction.id = SctInstructionId(1);
+    instruction.opcode = 9u;
+    instruction.fixedParameters = {
+        {0u, SctOpaqueParameterValue{{0xaaaaaaaau}}},
+    };
+    const SctParameterSite site{instruction.id, {0u, std::nullopt}};
+    const auto parsed = SctParameterAuthoringService::parseInline(
+        instruction, site, "1 0x00000002");
+    ASSERT_TRUE(parsed.succeeded());
+    const auto& sequence = std::get<SctTerminatedWordSequenceValue>(*parsed.value);
+    EXPECT_EQ(sequence.words,
+        (std::vector<std::uint32_t>{1u, 2u, 0x1du}));
+}
+
+TEST(SctParameterAuthoring, ReferenceCandidatesHonorStorageAndTextKind) {
+    auto document = makeScriptDocument();
+    const auto sctString = document.allocateStringId();
+    document.sections.push_back({document.allocateSectionId(), "MS0000001",
+        SctStringSectionContent{SctDocumentString{sctString,
+            SctMessage{std::nullopt, {}}, SctTextKind::SctString}}});
+    const auto plainString = document.allocateStringId();
+    document.sections.push_back({document.allocateSectionId(), "PLAIN",
+        SctStringSectionContent{SctDocumentString{plainString,
+            SctPlainText{"plain"}, SctTextKind::PlainString}}});
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    SctInstructionFactoryRequest request;
+    request.opcode = 144u;
+    request.parameterOverrides.push_back({{0u, std::nullopt},
+        SctStringReference{sctString}});
+    request.parameterOverrides.push_back({{1u, std::nullopt},
+        SctExpressionFactory::encodedDecimalLiteral(0)});
+    const auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    const auto built = SctInstructionFactory::materialize(document, *draft.draft);
+    ASSERT_TRUE(built.instruction.has_value());
+    instructions.insert(std::prev(instructions.end()), *built.instruction);
+
+    SctWorkingState state(std::make_shared<const SctDocument>(std::move(document)));
+    const SctParameterSite site{built.instruction->id, {0u, std::nullopt}};
+    const auto candidates = SctParameterAuthoringService::referenceCandidates(state, site);
+    ASSERT_EQ(candidates.size(), 1u);
+    EXPECT_EQ(std::get<SctStringId>(candidates.front().target), sctString);
+    EXPECT_NE(candidates.front().label.find("MS0000001"), std::string::npos);
+
+    const auto presentation = SctParameterAuthoringService::project(
+        state, built.instruction->id);
+    ASSERT_EQ(presentation.fixedParameters.size(), 2u);
+    EXPECT_NE(presentation.fixedParameters.front().value.find("MS0000001"),
+        std::string::npos);
+    EXPECT_EQ(presentation.fixedParameters.front().navigation,
+        (SctNavigationTarget{SctNavigationKind::String, sctString.value()}));
+}
+
+TEST(SctInstructionDraft, CreatesOwnedFooterTextAndInstructionAtomically) {
+    SctEditSession session(loadedSnapshot());
+    auto created = session.createInstructionDraft(110u);
+    ASSERT_TRUE(created.draft.has_value());
+    ASSERT_EQ(created.draft->ownedFooterText.size(), 1u);
+    EXPECT_EQ(created.draft->ownedFooterText.front().kind, SctTextKind::PlainString);
+    created.draft->ownedFooterText.front().value = SctPlainText{"owned text"};
+    const auto section = session.workingState().sectionOrder().front();
+    const auto anchor = session.workingState().instructionOrder(section).front();
+    const auto beforeFooter = session.workingState().footerEntryOrder().size();
+
+    const auto inserted = session.createInstructionAfter(anchor, *created.draft);
+    ASSERT_TRUE(inserted.committed) << (inserted.diagnostics.empty()
+        ? std::string{} : inserted.diagnostics.front().message);
+    ASSERT_EQ(inserted.changes.instructions.size(), 1u);
+    ASSERT_EQ(inserted.changes.footerEntries.size(), 1u);
+    const auto instruction = inserted.changes.instructions.front().instruction;
+    const auto* value = session.workingState().parameter({instruction, {0u, std::nullopt}});
+    ASSERT_NE(value, nullptr);
+    const auto footer = std::get<SctFooterEntryReference>(value->value).target;
+    ASSERT_EQ(session.workingState().footerEntryOrder().size(), beforeFooter + 1u);
+    EXPECT_EQ(std::get<SctPlainText>(session.workingState().footerEntry(footer)->value).utf8,
+        "owned text");
+
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_EQ(session.workingState().instruction(instruction), nullptr);
+    EXPECT_EQ(session.workingState().footerEntry(footer), nullptr);
+    ASSERT_TRUE(session.redo().has_value());
+    EXPECT_NE(session.workingState().instruction(instruction), nullptr);
+    EXPECT_NE(session.workingState().footerEntry(footer), nullptr);
+}
+
+TEST(SctInstructionDraft, CreatesDefaultOwnedFooterMessageWhenRequired) {
+    SctEditSession session(loadedSnapshot());
+    auto created = session.createInstructionDraft(24u);
+    ASSERT_TRUE(created.draft.has_value());
+    ASSERT_EQ(created.draft->ownedFooterText.size(), 1u);
+    EXPECT_EQ(created.draft->ownedFooterText.front().kind, SctTextKind::SctString);
+    EXPECT_TRUE(std::holds_alternative<SctMessage>(
+        created.draft->ownedFooterText.front().value));
+
+    const auto section = session.workingState().sectionOrder().front();
+    const auto anchor = session.workingState().instructionOrder(section).front();
+    const auto inserted = session.createInstructionAfter(anchor, *created.draft);
+    ASSERT_TRUE(inserted.committed) << (inserted.diagnostics.empty()
+        ? std::string{} : inserted.diagnostics.front().message);
+    const auto instruction = inserted.changes.instructions.front().instruction;
+    const auto* value = session.workingState().parameter(
+        {instruction, {0u, std::nullopt}});
+    ASSERT_NE(value, nullptr);
+    const auto footer = std::get<SctFooterEntryReference>(value->value).target;
+    const auto* entry = session.workingState().footerEntry(footer);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->kind, SctTextKind::SctString);
+    EXPECT_TRUE(std::holds_alternative<SctMessage>(entry->value));
+}
+
+TEST(SctInstructionDraft, RejectsStaleAndUnresolvedDraftsWithoutPartialCreation) {
+    SctEditSession session(loadedSnapshot());
+    auto draft = session.createInstructionDraft(110u);
+    ASSERT_TRUE(draft.draft.has_value());
+    const auto section = session.workingState().sectionOrder().front();
+    const auto anchor = session.workingState().instructionOrder(section).front();
+    const auto beforeFooter = session.workingState().footerEntryOrder().size();
+
+    ASSERT_TRUE(session.insertInstructionAfter(anchor, 125u).committed);
+    const auto stale = session.createInstructionAfter(anchor, *draft.draft);
+    EXPECT_FALSE(stale.committed);
+    EXPECT_TRUE(hasCode(stale, "InstructionDraftStale"));
+    EXPECT_EQ(session.workingState().footerEntryOrder().size(), beforeFooter);
+
+    auto unresolved = session.createInstructionDraft(110u);
+    ASSERT_TRUE(unresolved.draft.has_value());
+    unresolved.draft->ownedFooterText.clear();
+    const auto rejected = session.createInstructionAfter(anchor, *unresolved.draft);
+    EXPECT_FALSE(rejected.committed);
+    EXPECT_TRUE(hasCode(rejected, "InstructionDraftUnresolved"));
+    EXPECT_EQ(session.workingState().footerEntryOrder().size(), beforeFooter);
+}
+
+TEST(SctFooterOwnership, DeletesOnlyNewlyOrphanedUnprotectedPlainText) {
+    auto document = makeScriptDocument();
+    const auto footer = document.allocateFooterEntryId();
+    document.footerEntries.push_back({footer, SctTextKind::PlainString,
+        SctPlainText{"owned"}});
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    SctInstructionFactoryRequest request;
+    request.opcode = 110u;
+    request.parameterOverrides.push_back({{0u, std::nullopt},
+        SctFooterEntryReference{footer}});
+    const auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    const auto built = SctInstructionFactory::materialize(document, *draft.draft);
+    ASSERT_TRUE(built.instruction.has_value());
+    instructions.insert(std::prev(instructions.end()), *built.instruction);
+    SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
+
+    const auto removed = session.deleteInstruction(built.instruction->id);
+    ASSERT_TRUE(removed.committed);
+    EXPECT_EQ(session.workingState().footerEntry(footer), nullptr);
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_NE(session.workingState().footerEntry(footer), nullptr);
+    EXPECT_NE(session.workingState().instruction(built.instruction->id), nullptr);
+}
+
+TEST(SctFooterOwnership, RetargetingCleansOldTargetButPreservesImportedOrphans) {
+    auto document = makeScriptDocument();
+    const auto oldFooter = document.allocateFooterEntryId();
+    const auto newFooter = document.allocateFooterEntryId();
+    const auto importedOrphan = document.allocateFooterEntryId();
+    document.footerEntries = {
+        {oldFooter, SctTextKind::PlainString, SctPlainText{"old"}},
+        {newFooter, SctTextKind::PlainString, SctPlainText{"new"}},
+        {importedOrphan, SctTextKind::PlainString, SctPlainText{"orphan"}},
+    };
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    SctInstructionFactoryRequest request;
+    request.opcode = 110u;
+    request.parameterOverrides.push_back({{0u, std::nullopt},
+        SctFooterEntryReference{oldFooter}});
+    const auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    const auto built = SctInstructionFactory::materialize(document, *draft.draft);
+    ASSERT_TRUE(built.instruction.has_value());
+    instructions.insert(std::prev(instructions.end()), *built.instruction);
+    SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
+
+    const auto changed = session.replaceParameterValue(
+        {built.instruction->id, {0u, std::nullopt}},
+        SctFooterEntryReference{newFooter});
+    ASSERT_TRUE(changed.committed);
+    EXPECT_EQ(session.workingState().footerEntry(oldFooter), nullptr);
+    EXPECT_NE(session.workingState().footerEntry(newFooter), nullptr);
+    EXPECT_NE(session.workingState().footerEntry(importedOrphan), nullptr);
+}
+
+TEST(SctFooterOwnership, OpaqueAnchorsProtectNewlyOrphanedPlainText) {
+    auto document = makeScriptDocument();
+    const auto footer = document.allocateFooterEntryId();
+    document.footerEntries.push_back({footer, SctTextKind::PlainString,
+        SctPlainText{"protected"}});
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    SctInstructionFactoryRequest request;
+    request.opcode = 110u;
+    request.parameterOverrides.push_back({{0u, std::nullopt},
+        SctFooterEntryReference{footer}});
+    const auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    const auto built = SctInstructionFactory::materialize(document, *draft.draft);
+    ASSERT_TRUE(built.instruction.has_value());
+    instructions.insert(std::prev(instructions.end()), *built.instruction);
+    SctOpaqueAttachment attachment;
+    attachment.id = document.allocateOpaqueAttachmentId();
+    attachment.bytes = {0xaa};
+    attachment.anchor = footer;
+    attachment.placement = SctOpaquePlacement::After;
+    attachment.relocation = SctOpaqueRelocationSupport::Relocatable;
+    document.opaqueAttachments.push_back(std::move(attachment));
+    SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
+
+    ASSERT_TRUE(session.deleteInstruction(built.instruction->id).committed);
+    EXPECT_NE(session.workingState().footerEntry(footer), nullptr);
 }

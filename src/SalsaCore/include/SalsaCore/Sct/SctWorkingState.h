@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -34,6 +35,8 @@ public:
 
     [[nodiscard]] const spice::sct::SctDocumentInstruction* instruction(
         spice::sct::SctInstructionId id) const noexcept;
+    [[nodiscard]] const spice::sct::SctDocumentParameter* parameter(
+        const spice::sct::SctParameterSite& site) const noexcept;
     [[nodiscard]] const spice::sct::SctDocumentSection* section(
         spice::sct::SctSectionId id) const noexcept;
     [[nodiscard]] std::span<const spice::sct::SctSectionId> sectionOrder() const noexcept;
@@ -55,6 +58,10 @@ public:
         opaqueAttachments(spice::sct::SctInstructionId id) const noexcept;
     [[nodiscard]] const spice::sct::SctTextValue* textValue(
         const SctTextTarget& target) const noexcept;
+    [[nodiscard]] std::optional<spice::sct::SctTextKind> stringKind(
+        spice::sct::SctStringId id) const noexcept;
+    [[nodiscard]] std::optional<std::string_view> stringSectionName(
+        spice::sct::SctStringId id) const noexcept;
     [[nodiscard]] std::optional<SctTextRepairProvenance> textRepairProvenance(
         const SctTextTarget& target) const;
     [[nodiscard]] std::vector<SctTextRepairRecord> textRepairProvenances() const;
@@ -65,6 +72,8 @@ public:
     [[nodiscard]] std::span<const spice::sct::SctFooterEntryId> footerEntryOrder() const noexcept;
     [[nodiscard]] std::vector<spice::sct::SctInstructionId> inboundReferenceSources(
         const spice::sct::SctDocumentReferenceTarget& target) const;
+    [[nodiscard]] std::size_t referenceOccurrenceCount(
+        const spice::sct::SctDocumentReferenceTarget& target) const noexcept;
     [[nodiscard]] std::vector<spice::sct::SctOpaqueAttachmentId> opaqueAttachments(
         const spice::sct::SctOpaqueAnchor& anchor) const;
     [[nodiscard]] std::uint64_t nextSectionIdValue() const noexcept;
@@ -100,6 +109,7 @@ private:
     std::unordered_map<spice::sct::SctInstructionId,
         std::vector<spice::sct::SctOpaqueAttachmentId>> opaqueAttachments_{};
     std::unordered_map<spice::sct::SctStringId, spice::sct::SctTextValue> stringValues_{};
+    std::unordered_map<spice::sct::SctStringId, spice::sct::SctTextKind> stringKinds_{};
     std::unordered_map<spice::sct::SctFooterEntryId, spice::sct::SctDocumentFooterEntry> footerEntries_{};
     std::vector<spice::sct::SctFooterEntryId> footerOrder_{};
     std::unordered_map<std::string, SctTextRepairProvenance> textRepairProvenance_{};

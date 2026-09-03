@@ -27,6 +27,7 @@ class SctDocumentController;
 struct SctDocumentUpdate;
 class SctDocumentWidget;
 class SctMessageEditorWidget;
+class SctScptEditorWidget;
 class SctSemanticNavigatorWidget;
 class WorkspaceDetailsWidget;
 class WorkspaceModel;
@@ -75,10 +76,19 @@ private:
     void createFooterText(core::SctCreatedFooterTextKind kind);
     void deleteSelectedText();
     [[nodiscard]] bool flushMessageEditor();
+    [[nodiscard]] bool prepareScptEditor(
+        const std::optional<core::AssetLocator>& locator = std::nullopt);
     void undoActiveDocument();
     void redoActiveDocument();
     [[nodiscard]] SctDocumentWidget* activeDocumentWidget() const;
-    [[nodiscard]] std::optional<std::uint16_t> chooseInsertableOpcode(bool allowReturn);
+    [[nodiscard]] std::optional<core::SctInstructionAuthoringDraft>
+        chooseInstructionDraft(const core::AssetLocator& locator, bool allowReturn);
+    [[nodiscard]] std::optional<std::uint16_t> chooseSemanticArmOpcode();
+    [[nodiscard]] std::optional<spice::sct::SctDocumentRepeatedParameterGroup>
+        configureRepeatedGroupDraft(
+            const core::AssetLocator& locator,
+            spice::sct::SctInstructionId instruction,
+            spice::sct::SctRepeatedParameterGroupDraft draft);
     [[nodiscard]] bool confirmDiscardDocument(
         const core::AssetLocator& locator, const QString& action,
         PendingLifecycle pending = PendingLifecycle::None);
@@ -109,8 +119,10 @@ private:
     QDockWidget* diagnosticsDock_ = nullptr;
     QDockWidget* semanticNavigatorDock_ = nullptr;
     QDockWidget* messageEditorDock_ = nullptr;
+    QDockWidget* scptEditorDock_ = nullptr;
     SctSemanticNavigatorWidget* semanticNavigator_ = nullptr;
     SctMessageEditorWidget* messageEditor_ = nullptr;
+    SctScptEditorWidget* scptEditor_ = nullptr;
     QProgressBar* progressBar_ = nullptr;
     QToolButton* cancelButton_ = nullptr;
     QAction* openAction_ = nullptr;
@@ -129,7 +141,6 @@ private:
     QAction* moveSectionUpAction_ = nullptr;
     QAction* moveSectionDownAction_ = nullptr;
     QAction* createFooterMessageAction_ = nullptr;
-    QAction* createFooterPlainTextAction_ = nullptr;
     QAction* deleteTextAction_ = nullptr;
     QAction* insertInstructionAction_ = nullptr;
     QAction* deleteInstructionAction_ = nullptr;

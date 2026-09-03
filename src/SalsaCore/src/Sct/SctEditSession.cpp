@@ -1,4 +1,5 @@
 #include "SalsaCore/Sct/SctEditSession.h"
+#include "SalsaCore/Sct/SctParameterAuthoring.h"
 
 #include "SpiceSCT/SctDocumentIndex.h"
 #include "SpiceSCT/SctDocumentEntityFactory.h"
@@ -11,6 +12,7 @@
 #include <chrono>
 #include <ranges>
 #include <regex>
+#include <unordered_map>
 #include <unordered_set>
 #include <type_traits>
 #include <utility>
@@ -38,6 +40,14 @@ using EditClock = std::chrono::steady_clock;
     result.message = std::move(message);
     result.locator = locator;
     result.target = target;
+    return result;
+}
+
+[[nodiscard]] SctPipelineDiagnostic editWarning(
+    const AssetLocator& locator, std::string code, std::string message,
+    std::optional<SctNavigationTarget> target = std::nullopt) {
+    auto result = editError(locator, std::move(code), std::move(message), target);
+    result.severity = DiagnosticSeverity::Warning;
     return result;
 }
 
@@ -102,6 +112,10 @@ void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
         source.sections.begin(), source.sections.end());
     target.instructions.insert(target.instructions.end(),
         source.instructions.begin(), source.instructions.end());
+    target.parameters.insert(target.parameters.end(),
+        source.parameters.begin(), source.parameters.end());
+    target.repeatedGroups.insert(target.repeatedGroups.end(),
+        source.repeatedGroups.begin(), source.repeatedGroups.end());
     target.footerEntries.insert(target.footerEntries.end(),
         source.footerEntries.begin(), source.footerEntries.end());
     target.textValues.insert(target.textValues.end(),
@@ -143,6 +157,27 @@ void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
                 && *leftProjection.draft == *rightProjection.draft;
         }
     }, left);
+}
+
+[[nodiscard]] bool parameterValueMatches(
+    const spice::sct::SctOpcodeParameterSchema& schema,
+    const spice::sct::SctDocumentParameterValue& value) {
+    if (std::holds_alternative<spice::sct::SctOpaqueParameterValue>(value)
+        || std::holds_alternative<spice::sct::SctUnresolvedReferenceValue>(value))
+        return false;
+    if (schema.referenceKind == spice::sct::SctOpcodeReferenceKind::Instruction)
+        return std::holds_alternative<spice::sct::SctInstructionReference>(value);
+    if (schema.referenceKind == spice::sct::SctOpcodeReferenceKind::Text) {
+        return schema.textReference
+            && (schema.textReference->storage == spice::sct::SctTextStorage::IndexedSection
+                ? std::holds_alternative<spice::sct::SctStringReference>(value)
+                : std::holds_alternative<spice::sct::SctFooterEntryReference>(value));
+    }
+    if (schema.encoding == spice::sct::SctOpcodeParameterEncoding::ScptExpression)
+        return std::holds_alternative<spice::sct::SctCanonicalExpression>(value);
+    if (schema.encoding == spice::sct::SctOpcodeParameterEncoding::RawWordsUntilSentinel)
+        return std::holds_alternative<spice::sct::SctTerminatedWordSequenceValue>(value);
+    return std::holds_alternative<spice::sct::SctEncodedWordValue>(value);
 }
 
 [[nodiscard]] const spice::sct::SctStructuredRegion* verifiedRegion(
@@ -299,6 +334,185 @@ SctEditResult SctEditSession::insertInstructionAfter(
         "Insert " + opcodeName(opcode),
         SelectionHints{ SctNavigationTarget{ SctNavigationKind::Instruction,
             anchorInstruction.value() }, inserted },
+        elapsedMicroseconds(preflightStart));
+}
+
+SctInstructionAuthoringDraftResult SctEditSession::createInstructionDraft(
+    const std::uint16_t opcode) const {
+    SctInstructionAuthoringDraftResult result;
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (opcode == 9u) {
+        result.diagnostics.push_back(editError(locator, "LabelInsertionReserved",
+            "LabelOrStringPrefix is created only as part of section creation."));
+        return result;
+    }
+    spice::sct::SctInstructionFactoryRequest request;
+    request.opcode = opcode;
+    auto created = spice::sct::SctInstructionFactory::createDraft(request);
+    for (const auto& diagnostic : created.diagnostics)
+        result.diagnostics.push_back(convertSctDiagnostic(
+            diagnostic, SctPipelineStage::Edit, locator));
+    if (!created.draft) return result;
+
+    SctInstructionAuthoringDraft draft;
+    draft.baseRevision = workingRevision();
+    draft.instruction = std::move(*created.draft);
+    const auto* schema = spice::sct::findSctOpcodeSchema(opcode);
+    if (schema != nullptr) {
+        for (const auto& parameter : draft.instruction.parameters) {
+            if (parameter.value) continue;
+            const auto rule = spice::sct::sctOpcodeTextReference(
+                *schema, parameter.address.schemaIndex);
+            if (!rule || rule->storage != spice::sct::SctTextStorage::Footer)
+                continue;
+            if (rule->kind == spice::sct::SctTextKind::PlainString) {
+                draft.ownedFooterText.push_back({parameter.address,
+                    spice::sct::SctTextKind::PlainString,
+                    spice::sct::SctPlainText{}});
+            } else {
+                const auto message = SctMessageAuthoringProfile::materialize(
+                    SctMessageDraft{});
+                if (message.message) {
+                    draft.ownedFooterText.push_back({parameter.address,
+                        spice::sct::SctTextKind::SctString, *message.message});
+                }
+            }
+        }
+    }
+    result.draft = std::move(draft);
+    return result;
+}
+
+SctEditResult SctEditSession::createInstructionAfter(
+    const spice::sct::SctInstructionId anchorInstruction,
+    SctInstructionAuthoringDraft draft) {
+    const auto preflightStart = EditClock::now();
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (draft.baseRevision != workingRevision())
+        return failure({editError(locator, "InstructionDraftStale",
+            "The instruction draft was created from an older document revision.")});
+    if (draft.instruction.opcode == 9u)
+        return failure({editError(locator, "LabelInsertionReserved",
+            "LabelOrStringPrefix is created only as part of section creation.")});
+    const auto placement = workingState_.placement(anchorInstruction);
+    const auto* anchor = workingState_.instruction(anchorInstruction);
+    if (!placement || anchor == nullptr)
+        return failure({editError(locator, "InstructionNotFound",
+            "The insertion anchor no longer exists.")});
+    if (anchor->opcode == 12u)
+        return failure({editError(locator, "InstructionInsertionAfterReturn",
+            "An instruction cannot be inserted after Return.")});
+    if (draft.instruction.opcode == 12u
+        && workingState_.instructionAfter(anchorInstruction))
+        return failure({editError(locator, "ReturnMustTerminateSection",
+            "Return can only be inserted as the final instruction in a section.")});
+
+    SctSemanticOperationBatch batch;
+    auto nextFooterId = workingState_.nextFooterEntryIdValue();
+    std::optional<spice::sct::SctFooterEntryId> footerAnchor;
+    if (!workingState_.footerEntryOrder().empty())
+        footerAnchor = workingState_.footerEntryOrder().back();
+    std::unordered_set<std::string> ownedAddresses;
+    const auto addressKey = [](const spice::sct::SctParameterAddress& address) {
+        return std::to_string(address.schemaIndex) + ":"
+            + (address.repeatedGroupOrdinal
+                ? std::to_string(*address.repeatedGroupOrdinal) : "fixed");
+    };
+    const auto* instructionSchema =
+        spice::sct::findSctOpcodeSchema(draft.instruction.opcode);
+    for (const auto& owned : draft.ownedFooterText) {
+        if (!ownedAddresses.insert(addressKey(owned.parameter)).second)
+            return failure({editError(locator, "InstructionDraftDuplicateOwnedText",
+                "The instruction draft contains duplicate owned text for one parameter.")});
+        const auto found = std::ranges::find(draft.instruction.parameters,
+            owned.parameter, &spice::sct::SctInstructionDraftParameter::address);
+        if (found == draft.instruction.parameters.end() || found->value)
+            return failure({editError(locator, "InstructionDraftOwnedTextMismatch",
+                "Owned footer text does not match an unresolved draft parameter.")});
+        const auto textRule = instructionSchema == nullptr ? std::nullopt
+            : spice::sct::sctOpcodeTextReference(
+                *instructionSchema, owned.parameter.schemaIndex);
+        const bool valueMatches = owned.kind == spice::sct::SctTextKind::PlainString
+            ? std::holds_alternative<spice::sct::SctPlainText>(owned.value)
+            : std::holds_alternative<spice::sct::SctMessage>(owned.value);
+        if (!textRule || textRule->storage != spice::sct::SctTextStorage::Footer
+            || textRule->kind != owned.kind || !valueMatches) {
+            return failure({editError(locator, "InstructionDraftOwnedTextMismatch",
+                "Owned footer text does not match the parameter's text contract.")});
+        }
+        const auto id = spice::sct::SctFooterEntryId(nextFooterId++);
+        spice::sct::SctDocumentFooterEntry entry{id, owned.kind, owned.value};
+        batch.operations.push_back(SctInsertFooterEntryAfterOperation{footerAnchor, entry});
+        footerAnchor = id;
+        found->value = spice::sct::SctFooterEntryReference{id};
+    }
+    if (std::ranges::any_of(draft.instruction.parameters,
+            [](const auto& parameter) { return !parameter.value.has_value(); })) {
+        return failure({editError(locator, "InstructionDraftUnresolved",
+            "Resolve every required or provisional parameter before creating the instruction.")});
+    }
+
+    spice::sct::SctDocument context;
+    std::vector<spice::sct::SctDocumentInstruction> referencedInstructions;
+    std::uint64_t contextSectionId = 1;
+    for (const auto& parameter : draft.instruction.parameters) {
+        std::visit([&](const auto& value) {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, spice::sct::SctInstructionReference>) {
+                if (const auto* target = workingState_.instruction(value.target))
+                    referencedInstructions.push_back(*target);
+            } else if constexpr (std::is_same_v<T, spice::sct::SctStringReference>) {
+                const auto* text = workingState_.textValue(SctTextTarget{value.target});
+                const auto kind = workingState_.stringKind(value.target);
+                if (text != nullptr && kind) {
+                    context.sections.push_back({spice::sct::SctSectionId(contextSectionId++),
+                        std::string(workingState_.stringSectionName(value.target)
+                            .value_or("DRAFT_STRING")),
+                        spice::sct::SctStringSectionContent{{value.target, *text, *kind}}});
+                }
+            } else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryReference>) {
+                if (const auto* target = workingState_.footerEntry(value.target))
+                    context.footerEntries.push_back(*target);
+                else {
+                    const auto inserted = std::ranges::find_if(batch.operations,
+                        [&](const auto& primitive) {
+                            const auto* insertedValue = std::get_if<SctInsertFooterEntryAfterOperation>(
+                                &primitive);
+                            return insertedValue != nullptr
+                                && insertedValue->entry.id == value.target;
+                        });
+                    if (inserted != batch.operations.end())
+                        context.footerEntries.push_back(
+                            std::get<SctInsertFooterEntryAfterOperation>(*inserted).entry);
+                }
+            }
+        }, *parameter.value);
+    }
+    if (!referencedInstructions.empty())
+        context.sections.push_back({spice::sct::SctSectionId(contextSectionId++),
+            "DRAFT_REFERENCES", spice::sct::SctScriptSectionContent{
+                std::move(referencedInstructions)}});
+
+    const auto materialized = spice::sct::SctInstructionFactory::materialize(
+        context, draft.instruction);
+    if (!materialized.instruction) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : materialized.diagnostics)
+            diagnostics.push_back(convertSctDiagnostic(
+                diagnostic, SctPipelineStage::Edit, locator));
+        return failure(std::move(diagnostics));
+    }
+    auto instruction = *materialized.instruction;
+    instruction.id = spice::sct::SctInstructionId(
+        workingState_.nextInstructionIdValue());
+    const auto inserted = instruction.id;
+    batch.operations.push_back(SctInsertInstructionAfterOperation{
+        anchorInstruction, std::move(instruction)});
+    return commit(std::move(batch), {},
+        "Insert " + opcodeName(draft.instruction.opcode),
+        SelectionHints{SctNavigationTarget{SctNavigationKind::Instruction,
+            anchorInstruction.value()},
+            SctNavigationTarget{SctNavigationKind::Instruction, inserted.value()}},
         elapsedMicroseconds(preflightStart));
 }
 
@@ -476,6 +690,256 @@ SctEditResult SctEditSession::replaceTextValue(
     return commit(SctSemanticOperationBatch{{SctReplaceTextValueOperation{
             target, std::move(value), recordsRepair, std::move(repairProvenance)}}}, {}, std::move(description),
         SelectionHints{navigation, navigation});
+}
+
+SctEditResult SctEditSession::replaceParameterValue(
+    const spice::sct::SctParameterSite& site,
+    spice::sct::SctDocumentParameterValue value) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const SctNavigationTarget target{SctNavigationKind::Instruction,
+        site.instruction.value()};
+    if (!structurallyValid_) return failure({editError(locator,
+        "DocumentNotStructurallyValid",
+        "Parameter editing is unavailable until the document is structurally valid.", target)});
+    const auto* instruction = workingState_.instruction(site.instruction);
+    const auto* current = workingState_.parameter(site);
+    const auto* schema = instruction == nullptr ? nullptr
+        : spice::sct::findSctOpcodeSchema(instruction->opcode);
+    const auto* parameterSchema = schema == nullptr ? nullptr
+        : spice::sct::sctOpcodeParameterSchema(*schema, site.parameter.schemaIndex);
+    if (instruction == nullptr || current == nullptr || parameterSchema == nullptr
+        || parameterSchema->belongsToRepeatedGroup
+            != site.parameter.repeatedGroupOrdinal.has_value()) {
+        return failure({editError(locator, "ParameterTargetStale",
+            "The parameter address no longer identifies the selected opcode slot.", target)});
+    }
+    if (parameterSchema->defaultKind
+        == spice::sct::SctOpcodeDefaultKind::DerivedRepeatedGroupCount) {
+        return failure({editError(locator, "DerivedParameterReadOnly",
+            "Repeated-group counts are derived and cannot be edited directly.", target)});
+    }
+    if (!parameterValueMatches(*parameterSchema, value)) {
+        return failure({editError(locator, "ParameterValueKindMismatch",
+            "The replacement value does not match the opcode parameter contract.", target)});
+    }
+    const bool targetExists = std::visit([&](const auto& typed) {
+        using T = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<T, spice::sct::SctInstructionReference>)
+            return workingState_.instruction(typed.target) != nullptr;
+        else if constexpr (std::is_same_v<T, spice::sct::SctStringReference>) {
+            const auto kind = workingState_.stringKind(typed.target);
+            return kind && parameterSchema->textReference
+                && *kind == parameterSchema->textReference->kind;
+        } else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryReference>) {
+            const auto* entry = workingState_.footerEntry(typed.target);
+            return entry != nullptr && parameterSchema->textReference
+                && entry->kind == parameterSchema->textReference->kind;
+        } else return true;
+    }, value);
+    if (!targetExists) return failure({editError(locator,
+        "ParameterReferenceTargetInvalid",
+        "The selected reference target is missing or has the wrong storage or text kind.", target)});
+    if (SctParameterAuthoringService::equivalent(current->value, value)) {
+        SctEditResult result;
+        result.revision = history_.currentRevision().id;
+        result.snapshot = currentSnapshot_;
+        result.suggestedSelection = target;
+        return result;
+    }
+    return commit(SctSemanticOperationBatch{{SctReplaceParameterValueOperation{
+        site, std::move(value)}}}, {}, "Edit instruction parameter",
+        SelectionHints{target, target});
+}
+
+SctEditResult SctEditSession::editParameterText(
+    const spice::sct::SctParameterSite& site, std::string text) {
+    const auto* instruction = workingState_.instruction(site.instruction);
+    if (instruction == nullptr) return failure({editError(
+        baselineSnapshot_->provenance->source().descriptor.locator,
+        "InstructionNotFound", "The parameter's instruction no longer exists.",
+        SctNavigationTarget{SctNavigationKind::Instruction, site.instruction.value()})});
+    const auto projection = SctParameterAuthoringService::project(
+        workingState_, site.instruction);
+    const SctParameterRowPresentation* row = nullptr;
+    for (const auto& candidate : projection.fixedParameters)
+        if (candidate.site == site) row = &candidate;
+    for (const auto& group : projection.repeatedGroups)
+        for (const auto& candidate : group.parameters)
+            if (candidate.site == site) row = &candidate;
+    if (row != nullptr
+        && row->editor == SctInlineParameterEditorKind::PlainFooterText)
+        return editReferencedFooterText(site, std::move(text));
+    const auto parsed = SctParameterAuthoringService::parseInline(
+        *instruction, site, std::move(text));
+    if (!parsed.succeeded()) return failure({editError(
+        baselineSnapshot_->provenance->source().descriptor.locator,
+        "ParameterInputInvalid", parsed.error,
+        SctNavigationTarget{SctNavigationKind::Instruction, site.instruction.value()})});
+    auto result = replaceParameterValue(site, *parsed.value);
+    for (const auto& warning : parsed.warnings) {
+        result.diagnostics.push_back(editWarning(
+            baselineSnapshot_->provenance->source().descriptor.locator,
+            "ProvisionalParameterConstraint", warning,
+            SctNavigationTarget{SctNavigationKind::Instruction,
+                site.instruction.value()}));
+    }
+    return result;
+}
+
+SctEditResult SctEditSession::insertRepeatedGroup(
+    const spice::sct::SctInstructionId instructionId, const std::uint32_t ordinal,
+    spice::sct::SctDocumentRepeatedParameterGroup group) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const SctNavigationTarget target{SctNavigationKind::Instruction, instructionId.value()};
+    const auto* instruction = workingState_.instruction(instructionId);
+    const auto* schema = instruction == nullptr ? nullptr
+        : spice::sct::findSctOpcodeSchema(instruction->opcode);
+    const auto repeated = schema == nullptr
+        ? std::nullopt : spice::sct::sctOpcodeRepeatedGroup(*schema);
+    if (!structurallyValid_ || instruction == nullptr || !repeated
+        || ordinal > instruction->repeatedParameterGroups.size()) {
+        return failure({editError(locator, "RepeatedGroupInsertionInvalid",
+            "The repeated-group insertion target is unavailable or stale.", target)});
+    }
+    if (schema->semantic.controlRole == spice::sct::SctOpcodeControlRole::Switch
+        && std::ranges::any_of(structuredAuthoring_.arms(), [&](const auto& arm) {
+            return arm.controller.instruction == instructionId;
+        })) {
+        return failure({editError(locator, "RepeatedGroupManagedBySemanticEditor",
+            "Switch case groups managed by the Semantic Outline cannot be edited as raw groups.", target)});
+    }
+    std::vector<spice::sct::SctRepeatedParameterOverride> overrides;
+    for (auto& parameter : group.parameters)
+        overrides.push_back({parameter.schemaIndex, std::move(parameter.value)});
+    auto draft = spice::sct::SctInstructionFactory::createRepeatedGroupDraft(
+        instruction->opcode, overrides);
+    if (!draft.draft) return failure({editError(locator,
+        "RepeatedGroupDraftInvalid", "The repeated group does not match the opcode schema.", target)});
+    const auto materialized = spice::sct::SctInstructionFactory::materializeRepeatedGroup(
+        *draft.draft);
+    if (!materialized.group) return failure({editError(locator,
+        "RepeatedGroupDraftIncomplete",
+        "Required or provisional repeated parameters must be resolved before creation.", target)});
+    return commit(SctSemanticOperationBatch{{SctInsertRepeatedGroupOperation{
+        instructionId, ordinal, *materialized.group}}}, {}, "Add repeated parameter group",
+        SelectionHints{target, target});
+}
+
+SctEditResult SctEditSession::deleteRepeatedGroup(
+    const spice::sct::SctInstructionId instructionId, const std::uint32_t ordinal) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const SctNavigationTarget target{SctNavigationKind::Instruction, instructionId.value()};
+    const auto* instruction = workingState_.instruction(instructionId);
+    const auto* schema = instruction == nullptr ? nullptr
+        : spice::sct::findSctOpcodeSchema(instruction->opcode);
+    const auto repeated = schema == nullptr
+        ? std::nullopt : spice::sct::sctOpcodeRepeatedGroup(*schema);
+    const auto minimum = repeated && repeated->firstParameter < schema->parameters.paramCount
+        ? 1u : 0u;
+    if (!structurallyValid_ || instruction == nullptr || !repeated
+        || ordinal >= instruction->repeatedParameterGroups.size()) {
+        return failure({editError(locator, "RepeatedGroupDeletionInvalid",
+            "The repeated group no longer exists.", target)});
+    }
+    if (instruction->repeatedParameterGroups.size() <= minimum) {
+        return failure({editError(locator, "RepeatedGroupMinimum",
+            "The opcode schema requires at least one repeated parameter group.", target)});
+    }
+    if (schema->semantic.controlRole == spice::sct::SctOpcodeControlRole::Switch
+        && std::ranges::any_of(structuredAuthoring_.arms(), [&](const auto& arm) {
+            return arm.controller.instruction == instructionId;
+        })) {
+        return failure({editError(locator, "RepeatedGroupManagedBySemanticEditor",
+            "Switch case groups managed by the Semantic Outline cannot be edited as raw groups.", target)});
+    }
+    return commit(SctSemanticOperationBatch{{SctDeleteRepeatedGroupOperation{
+        instructionId, ordinal}}}, {}, "Delete repeated parameter group",
+        SelectionHints{target, target});
+}
+
+SctEditResult SctEditSession::moveRepeatedGroup(
+    const spice::sct::SctInstructionId instructionId, const std::uint32_t ordinal,
+    const SctRepeatedGroupMoveDirection direction) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const SctNavigationTarget target{SctNavigationKind::Instruction, instructionId.value()};
+    const auto* instruction = workingState_.instruction(instructionId);
+    const auto* schema = instruction == nullptr ? nullptr
+        : spice::sct::findSctOpcodeSchema(instruction->opcode);
+    if (!structurallyValid_ || instruction == nullptr
+        || ordinal >= instruction->repeatedParameterGroups.size()) {
+        return failure({editError(locator, "RepeatedGroupMoveInvalid",
+            "The repeated group no longer exists.", target)});
+    }
+    if ((direction == SctRepeatedGroupMoveDirection::Up && ordinal == 0u)
+        || (direction == SctRepeatedGroupMoveDirection::Down
+            && ordinal + 1u >= instruction->repeatedParameterGroups.size())) {
+        return failure({editError(locator, "RepeatedGroupMoveAtBoundary",
+            "The repeated group is already at that boundary.", target)});
+    }
+    if (schema != nullptr
+        && schema->semantic.controlRole == spice::sct::SctOpcodeControlRole::Switch
+        && std::ranges::any_of(structuredAuthoring_.arms(), [&](const auto& arm) {
+            return arm.controller.instruction == instructionId;
+        })) {
+        return failure({editError(locator, "RepeatedGroupManagedBySemanticEditor",
+            "Switch case groups managed by the Semantic Outline cannot be edited as raw groups.", target)});
+    }
+    const auto destination = direction == SctRepeatedGroupMoveDirection::Up
+        ? ordinal - 1u : ordinal + 1u;
+    return commit(SctSemanticOperationBatch{{SctRelocateRepeatedGroupOperation{
+        instructionId, ordinal, destination}}}, {}, "Move repeated parameter group",
+        SelectionHints{target, target});
+}
+
+SctEditResult SctEditSession::editReferencedFooterText(
+    const spice::sct::SctParameterSite& site, std::string utf8) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const SctNavigationTarget instructionTarget{SctNavigationKind::Instruction,
+        site.instruction.value()};
+    const auto* parameter = workingState_.parameter(site);
+    const auto* reference = parameter == nullptr ? nullptr
+        : std::get_if<spice::sct::SctFooterEntryReference>(&parameter->value);
+    const auto* entry = reference == nullptr ? nullptr
+        : workingState_.footerEntry(reference->target);
+    const auto* plain = entry == nullptr ? nullptr
+        : std::get_if<spice::sct::SctPlainText>(&entry->value);
+    if (!structurallyValid_ || reference == nullptr || entry == nullptr
+        || entry->kind != spice::sct::SctTextKind::PlainString || plain == nullptr
+        || plain->utf8.find('\n') != std::string::npos || utf8.find('\n') != std::string::npos) {
+        return failure({editError(locator, "InlineFooterTextUnavailable",
+            "This parameter does not reference an inline-editable single-line footer string.",
+            instructionTarget)});
+    }
+    if (plain->utf8 == utf8) {
+        SctEditResult result;
+        result.revision = history_.currentRevision().id;
+        result.snapshot = currentSnapshot_;
+        result.suggestedSelection = instructionTarget;
+        return result;
+    }
+    const auto occurrences = workingState_.referenceOccurrenceCount(
+        spice::sct::SctDocumentReferenceTarget{reference->target});
+    if (occurrences <= 1u) {
+        return commit(SctSemanticOperationBatch{{SctReplaceTextValueOperation{
+            SctTextTarget{reference->target}, spice::sct::SctPlainText{std::move(utf8)}}}},
+            {}, "Edit referenced footer text",
+            SelectionHints{instructionTarget, instructionTarget});
+    }
+    const auto newId = spice::sct::SctFooterEntryId(
+        workingState_.nextFooterEntryIdValue());
+    auto copy = *entry;
+    copy.id = newId;
+    copy.value = spice::sct::SctPlainText{std::move(utf8)};
+    const auto order = workingState_.footerEntryOrder();
+    const auto anchor = order.empty()
+        ? std::optional<spice::sct::SctFooterEntryId>{}
+        : std::optional{order.back()};
+    SctSemanticOperationBatch batch;
+    batch.operations.push_back(SctInsertFooterEntryAfterOperation{anchor, copy});
+    batch.operations.push_back(SctReplaceParameterValueOperation{
+        site, spice::sct::SctFooterEntryReference{newId}});
+    return commit(std::move(batch), {}, "Make private footer text copy",
+        SelectionHints{instructionTarget, instructionTarget});
 }
 
 SctEditResult SctEditSession::createScriptSection(
@@ -659,6 +1123,10 @@ SctEditResult SctEditSession::createFooterText(
     const SctCreatedFooterTextKind kind,
     const std::optional<spice::sct::SctFooterEntryId> after) {
     const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (kind == SctCreatedFooterTextKind::PlainText) {
+        return failure({editError(locator, "StandaloneFooterPlainTextUnsupported",
+            "Plain footer text is created as an instruction-owned parameter.")});
+    }
     spice::sct::SctTextKind textKind = spice::sct::SctTextKind::PlainString;
     spice::sct::SctTextValue value = spice::sct::SctPlainText{};
     if (kind == SctCreatedFooterTextKind::Message) {
@@ -1409,6 +1877,27 @@ const std::vector<SctInsertableOpcode>& SctEditSession::insertableOpcodes() {
     return choices;
 }
 
+const std::vector<SctInsertableOpcode>& SctEditSession::authorableOpcodes() {
+    static const auto choices = [] {
+        std::vector<SctInsertableOpcode> result;
+        for (const auto& schema : spice::sct::sctOpcodeSchemas()) {
+            if (schema.opcode == 9u
+                || schema.documentRole == spice::sct::SctOpcodeDocumentRole::FoldedModifier)
+                continue;
+            spice::sct::SctInstructionFactoryRequest request;
+            request.opcode = schema.opcode;
+            const auto draft = spice::sct::SctInstructionFactory::createDraft(request);
+            if (!draft.draft.has_value()) continue;
+            result.push_back({schema.opcode,
+                schema.semantic.mnemonic.empty()
+                    ? "Opcode " + std::to_string(schema.opcode)
+                    : std::string(schema.semantic.mnemonic)});
+        }
+        return result;
+    }();
+    return choices;
+}
+
 SctEditResult SctEditSession::failure(
     std::vector<SctPipelineDiagnostic> diagnostics) const {
     SctEditResult result;
@@ -1416,6 +1905,86 @@ SctEditResult SctEditSession::failure(
     result.snapshot = currentSnapshot_;
     result.diagnostics = std::move(diagnostics);
     return result;
+}
+
+void SctEditSession::appendOrphanedFooterPlainTextCleanup(
+    SctSemanticOperationBatch& operation) const {
+    using DeltaMap = std::unordered_map<spice::sct::SctFooterEntryId, std::int64_t>;
+    DeltaMap deltas;
+    const auto addValue = [&](const spice::sct::SctDocumentParameterValue& value,
+                              const std::int64_t amount) {
+        if (const auto* reference =
+                std::get_if<spice::sct::SctFooterEntryReference>(&value))
+            deltas[reference->target] += amount;
+    };
+    const auto addInstruction = [&](const spice::sct::SctDocumentInstruction& instruction,
+                                    const std::int64_t amount) {
+        for (const auto& parameter : instruction.fixedParameters)
+            addValue(parameter.value, amount);
+        for (const auto& group : instruction.repeatedParameterGroups)
+            for (const auto& parameter : group.parameters)
+                addValue(parameter.value, amount);
+    };
+    const auto addGroup = [&](const spice::sct::SctDocumentRepeatedParameterGroup& group,
+                              const std::int64_t amount) {
+        for (const auto& parameter : group.parameters) addValue(parameter.value, amount);
+    };
+
+    for (const auto& primitive : operation.operations) {
+        std::visit([&](const auto& typed) {
+            using T = std::decay_t<decltype(typed)>;
+            if constexpr (std::is_same_v<T, SctInsertInstructionAfterOperation>) {
+                addInstruction(typed.instruction, 1);
+            } else if constexpr (std::is_same_v<T, SctDeleteInstructionOperation>) {
+                if (const auto* current = workingState_.instruction(typed.instruction))
+                    addInstruction(*current, -1);
+            } else if constexpr (std::is_same_v<T, SctReplaceInstructionOperation>) {
+                if (const auto* current = workingState_.instruction(typed.instruction))
+                    addInstruction(*current, -1);
+                addInstruction(typed.replacement, 1);
+            } else if constexpr (std::is_same_v<T, SctReplaceParameterValueOperation>) {
+                if (const auto* current = workingState_.parameter(typed.site))
+                    addValue(current->value, -1);
+                addValue(typed.value, 1);
+            } else if constexpr (std::is_same_v<T, SctInsertRepeatedGroupOperation>) {
+                addGroup(typed.group, 1);
+            } else if constexpr (std::is_same_v<T, SctDeleteRepeatedGroupOperation>) {
+                if (const auto* instruction = workingState_.instruction(typed.instruction);
+                    instruction != nullptr
+                    && typed.ordinal < instruction->repeatedParameterGroups.size())
+                    addGroup(instruction->repeatedParameterGroups[typed.ordinal], -1);
+            } else if constexpr (std::is_same_v<T, SctDeleteSectionOperation>) {
+                for (const auto instruction : workingState_.instructionOrder(typed.section))
+                    if (const auto* current = workingState_.instruction(instruction))
+                        addInstruction(*current, -1);
+            } else if constexpr (std::is_same_v<T, SctInsertSectionAfterOperation>) {
+                if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(
+                        &typed.section.content))
+                    for (const auto& instruction : script->instructions)
+                        addInstruction(instruction, 1);
+            }
+        }, primitive);
+    }
+
+    std::unordered_set<spice::sct::SctFooterEntryId> alreadyDeleted;
+    for (const auto& primitive : operation.operations)
+        if (const auto* deletion = std::get_if<SctDeleteFooterEntryOperation>(&primitive))
+            alreadyDeleted.insert(deletion->entry);
+
+    for (const auto id : workingState_.footerEntryOrder()) {
+        const auto delta = deltas.contains(id) ? deltas.at(id) : 0;
+        if (delta >= 0 || alreadyDeleted.contains(id)) continue;
+        const auto current = static_cast<std::int64_t>(
+            workingState_.referenceOccurrenceCount(
+                spice::sct::SctDocumentReferenceTarget{id}));
+        if (current <= 0 || current + delta != 0) continue;
+        const auto* entry = workingState_.footerEntry(id);
+        if (entry == nullptr || entry->kind != spice::sct::SctTextKind::PlainString)
+            continue;
+        if (!workingState_.opaqueAttachments(spice::sct::SctOpaqueAnchor{id}).empty())
+            continue;
+        operation.operations.push_back(SctDeleteFooterEntryOperation{id});
+    }
 }
 
 SctEditResult SctEditSession::commit(
@@ -1429,6 +1998,8 @@ SctEditResult SctEditSession::commit(
         return failure({editError(
             baselineSnapshot_->provenance->source().descriptor.locator,
             "EmptyEdit", "An edit must contain a document or semantic authoring operation.")});
+
+    appendOrphanedFooterPlainTextCleanup(operation);
 
     std::optional<SctStructuredAuthoringApplication> authoringApplication;
     if (!authoringOperation.operations.empty())

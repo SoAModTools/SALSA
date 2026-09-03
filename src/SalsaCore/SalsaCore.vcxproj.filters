@@ -38,6 +38,8 @@
     <ClInclude Include="include\SalsaCore\Sct\SctInspectionLocation.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctGlyphCatalog.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctMessageAuthoring.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Sct\SctParameterAuthoring.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Sct\SctExpressionLanguage.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctPresentation.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctSemanticOperation.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctStructuredAuthoring.h"><Filter>SCT</Filter></ClInclude>
@@ -58,6 +60,8 @@
     <ClCompile Include="src\Sct\SctEditSession.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctGlyphCatalog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctMessageAuthoring.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="src\Sct\SctParameterAuthoring.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="src\Sct\SctExpressionLanguage.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctPresentation.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctSemanticOperation.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctStructuredAuthoring.cpp"><Filter>SCT</Filter></ClCompile>

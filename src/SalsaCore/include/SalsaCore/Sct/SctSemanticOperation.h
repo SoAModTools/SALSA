@@ -76,6 +76,20 @@ struct SctInstructionStructuralChange final {
     spice::sct::SctInstructionSemanticContribution afterSemantics{};
 };
 
+struct SctParameterValueChange final {
+    spice::sct::SctParameterSite site;
+    spice::sct::SctDocumentParameterValue beforeValue;
+    spice::sct::SctDocumentParameterValue afterValue;
+};
+
+struct SctRepeatedGroupStructuralChange final {
+    spice::sct::SctInstructionId instruction;
+    std::optional<std::uint32_t> beforeOrdinal{};
+    std::optional<std::uint32_t> afterOrdinal{};
+    std::optional<spice::sct::SctDocumentRepeatedParameterGroup> beforeValue{};
+    std::optional<spice::sct::SctDocumentRepeatedParameterGroup> afterValue{};
+};
+
 enum class SctDerivedAnalysisInvalidation : std::uint32_t {
     None = 0,
     StructuredControlFlow = 1u << 0u,
@@ -97,6 +111,8 @@ enum class SctDerivedAnalysisInvalidation : std::uint32_t {
 struct SctEditChangeSet final {
     std::vector<SctSectionStructuralChange> sections{};
     std::vector<SctInstructionStructuralChange> instructions{};
+    std::vector<SctParameterValueChange> parameters{};
+    std::vector<SctRepeatedGroupStructuralChange> repeatedGroups{};
     std::vector<SctFooterEntryStructuralChange> footerEntries{};
     std::vector<SctTextValueChange> textValues{};
     std::vector<SctNavigationTarget> modified{};
@@ -164,6 +180,28 @@ struct SctReplaceInstructionOperation final {
     spice::sct::SctDocumentInstruction replacement;
 };
 
+struct SctReplaceParameterValueOperation final {
+    spice::sct::SctParameterSite site;
+    spice::sct::SctDocumentParameterValue value;
+};
+
+struct SctInsertRepeatedGroupOperation final {
+    spice::sct::SctInstructionId instruction;
+    std::uint32_t ordinal = 0;
+    spice::sct::SctDocumentRepeatedParameterGroup group;
+};
+
+struct SctDeleteRepeatedGroupOperation final {
+    spice::sct::SctInstructionId instruction;
+    std::uint32_t ordinal = 0;
+};
+
+struct SctRelocateRepeatedGroupOperation final {
+    spice::sct::SctInstructionId instruction;
+    std::uint32_t fromOrdinal = 0;
+    std::uint32_t toOrdinal = 0;
+};
+
 using SctPrimitiveOperation = std::variant<
     SctInsertSectionAfterOperation,
     SctDeleteSectionOperation,
@@ -173,6 +211,10 @@ using SctPrimitiveOperation = std::variant<
     SctDeleteInstructionOperation,
     SctRelocateInstructionAfterOperation,
     SctReplaceInstructionOperation,
+    SctReplaceParameterValueOperation,
+    SctInsertRepeatedGroupOperation,
+    SctDeleteRepeatedGroupOperation,
+    SctRelocateRepeatedGroupOperation,
     SctReplaceTextValueOperation,
     SctInsertFooterEntryAfterOperation,
     SctDeleteFooterEntryOperation>;

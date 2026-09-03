@@ -1,5 +1,7 @@
 #include "SalsaCore/Sct/SctWorkingState.h"
 
+#include "SpiceSCT/SctOpcodeMetadata.h"
+
 #include <algorithm>
 #include <iterator>
 #include <ranges>
@@ -45,6 +47,12 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     target.instructions.insert(target.instructions.end(),
         std::make_move_iterator(source.instructions.begin()),
         std::make_move_iterator(source.instructions.end()));
+    target.parameters.insert(target.parameters.end(),
+        std::make_move_iterator(source.parameters.begin()),
+        std::make_move_iterator(source.parameters.end()));
+    target.repeatedGroups.insert(target.repeatedGroups.end(),
+        std::make_move_iterator(source.repeatedGroups.begin()),
+        std::make_move_iterator(source.repeatedGroups.end()));
     target.footerEntries.insert(target.footerEntries.end(),
         std::make_move_iterator(source.footerEntries.begin()),
         std::make_move_iterator(source.footerEntries.end()));
@@ -98,6 +106,85 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     return result;
 }
 
+[[nodiscard]] spice::sct::SctDocumentParameter* findParameter(
+    spice::sct::SctDocumentInstruction& instruction,
+    const spice::sct::SctParameterAddress& address) {
+    if (!address.repeatedGroupOrdinal) {
+        const auto found = std::ranges::find(
+            instruction.fixedParameters, address.schemaIndex,
+            &spice::sct::SctDocumentParameter::schemaIndex);
+        return found == instruction.fixedParameters.end() ? nullptr : &*found;
+    }
+    if (*address.repeatedGroupOrdinal >= instruction.repeatedParameterGroups.size())
+        return nullptr;
+    auto& parameters = instruction.repeatedParameterGroups[
+        *address.repeatedGroupOrdinal].parameters;
+    const auto found = std::ranges::find(parameters, address.schemaIndex,
+        &spice::sct::SctDocumentParameter::schemaIndex);
+    return found == parameters.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] const spice::sct::SctDocumentParameter* findParameter(
+    const spice::sct::SctDocumentInstruction& instruction,
+    const spice::sct::SctParameterAddress& address) {
+    if (!address.repeatedGroupOrdinal) {
+        const auto found = std::ranges::find(
+            instruction.fixedParameters, address.schemaIndex,
+            &spice::sct::SctDocumentParameter::schemaIndex);
+        return found == instruction.fixedParameters.end() ? nullptr : &*found;
+    }
+    if (*address.repeatedGroupOrdinal >= instruction.repeatedParameterGroups.size())
+        return nullptr;
+    const auto& parameters = instruction.repeatedParameterGroups[
+        *address.repeatedGroupOrdinal].parameters;
+    const auto found = std::ranges::find(parameters, address.schemaIndex,
+        &spice::sct::SctDocumentParameter::schemaIndex);
+    return found == parameters.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] SctRepeatedGroupStructuralChange reversed(
+    const SctRepeatedGroupStructuralChange& source) {
+    return {source.instruction, source.afterOrdinal, source.beforeOrdinal,
+        source.afterValue, source.beforeValue};
+}
+
+void synchronizeRepeatedCount(spice::sct::SctDocumentInstruction& instruction) {
+    const auto* schema = spice::sct::findSctOpcodeSchema(instruction.opcode);
+    const auto repeated = schema == nullptr
+        ? std::nullopt : spice::sct::sctOpcodeRepeatedGroup(*schema);
+    if (!repeated) return;
+    const auto parameter = std::ranges::find(
+        instruction.fixedParameters, repeated->iterationCountParameter,
+        &spice::sct::SctDocumentParameter::schemaIndex);
+    if (parameter != instruction.fixedParameters.end()) {
+        parameter->value = spice::sct::SctEncodedWordValue{
+            static_cast<std::uint32_t>(instruction.repeatedParameterGroups.size())};
+    }
+}
+
+void replaceInstructionInSection(
+    std::unordered_map<spice::sct::SctSectionId,
+        spice::sct::SctDocumentSection>& sections,
+    const spice::sct::SctSectionId sectionId,
+    const spice::sct::SctDocumentInstruction& replacement) {
+    const auto section = sections.find(sectionId);
+    if (section == sections.end()) return;
+    auto* script = std::get_if<spice::sct::SctScriptSectionContent>(
+        &section->second.content);
+    if (script == nullptr) return;
+    const auto value = std::ranges::find(script->instructions, replacement.id,
+        &spice::sct::SctDocumentInstruction::id);
+    if (value != script->instructions.end()) *value = replacement;
+}
+
+bool isControlParameter(const spice::sct::SctOpcodeSchema& schema,
+    const std::uint32_t index) {
+    return (schema.semantic.controlRole == spice::sct::SctOpcodeControlRole::CallSubscript
+            && index == 0u)
+        || static_cast<int>(index) == schema.parameters.jumpParam
+        || static_cast<int>(index) == schema.parameters.switchJumpParam;
+}
+
 }  // namespace
 
 SctWorkingState::SctWorkingState(
@@ -126,6 +213,7 @@ SctWorkingState::SctWorkingState(
         } else if (const auto* strings = std::get_if<spice::sct::SctStringSectionContent>(
                 &section.content)) {
             stringValues_.emplace(strings->string.id, strings->string.value);
+            stringKinds_.emplace(strings->string.id, strings->string.kind);
         }
     }
     for (const auto& entry : checkpoint_->footerEntries) {
@@ -165,6 +253,13 @@ const spice::sct::SctDocumentInstruction* SctWorkingState::instruction(
     const spice::sct::SctInstructionId id) const noexcept {
     const auto found = instructions_.find(id);
     return found == instructions_.end() ? nullptr : &found->second.value;
+}
+
+const spice::sct::SctDocumentParameter* SctWorkingState::parameter(
+    const spice::sct::SctParameterSite& site) const noexcept {
+    const auto found = instructions_.find(site.instruction);
+    if (found == instructions_.end()) return nullptr;
+    return findParameter(found->second.value, site.parameter);
 }
 
 std::optional<SctInstructionPlacement> SctWorkingState::placement(
@@ -238,6 +333,26 @@ const spice::sct::SctTextValue* SctWorkingState::textValue(
     }, target);
 }
 
+std::optional<spice::sct::SctTextKind> SctWorkingState::stringKind(
+    const spice::sct::SctStringId id) const noexcept {
+    const auto found = stringKinds_.find(id);
+    return found == stringKinds_.end() ? std::nullopt
+        : std::optional{found->second};
+}
+
+std::optional<std::string_view> SctWorkingState::stringSectionName(
+    const spice::sct::SctStringId id) const noexcept {
+    for (const auto sectionId : physicalSectionOrder_) {
+        const auto found = sections_.find(sectionId);
+        if (found == sections_.end()) continue;
+        const auto* content = std::get_if<spice::sct::SctStringSectionContent>(
+            &found->second.content);
+        if (content != nullptr && content->string.id == id)
+            return found->second.nameBytes;
+    }
+    return std::nullopt;
+}
+
 const spice::sct::SctMessage* SctWorkingState::message(
     const SctMessageTarget& target) const noexcept {
     const auto* value = textValue(target);
@@ -292,6 +407,18 @@ std::vector<spice::sct::SctInstructionId> SctWorkingState::inboundReferenceSourc
                 if (reference.target == target) result.push_back(instructionId);
             }
         }
+    }
+    return result;
+}
+
+std::size_t SctWorkingState::referenceOccurrenceCount(
+    const spice::sct::SctDocumentReferenceTarget& target) const noexcept {
+    std::size_t result = 0;
+    for (const auto& [id, instruction] : instructions_) {
+        (void)id;
+        result += static_cast<std::size_t>(std::ranges::count_if(
+            instruction.semantics.references,
+            [&](const auto& reference) { return reference.target == target; }));
     }
     return result;
 }
@@ -405,6 +532,7 @@ std::optional<SctOperationIssue> SctWorkingState::applyPrimitive(
             } else if (const auto* strings = std::get_if<spice::sct::SctStringSectionContent>(
                     &typed.section.content)) {
                 stringValues_.emplace(strings->string.id, strings->string.value);
+                stringKinds_.emplace(strings->string.id, strings->string.kind);
                 nextStringId_ = std::max(nextStringId_, strings->string.id.value() + 1u);
             }
             SctSectionStructuralChange change;
@@ -445,6 +573,7 @@ std::optional<SctOperationIssue> SctWorkingState::applyPrimitive(
                 const auto value = stringValues_.find(strings->string.id);
                 if (value != stringValues_.end()) strings->string.value = value->second;
                 stringValues_.erase(strings->string.id);
+                stringKinds_.erase(strings->string.id);
             }
             std::erase(physicalSectionOrder_, typed.section);
             sections_.erase(found);
@@ -678,6 +807,116 @@ std::optional<SctOperationIssue> SctWorkingState::applyPrimitive(
             forward.documentChanged = true;
             reverseChanges.documentChanged = true;
             inverse = SctReplaceInstructionOperation{typed.instruction, std::move(previous)};
+            return std::nullopt;
+        } else if constexpr (std::is_same_v<T, SctReplaceParameterValueOperation>) {
+            const auto found = instructions_.find(typed.site.instruction);
+            if (found == instructions_.end())
+                return issue("InstructionNotFound", "The parameter's instruction does not exist.",
+                    instructionTarget(typed.site.instruction));
+            auto* current = findParameter(found->second.value, typed.site.parameter);
+            if (current == nullptr)
+                return issue("ParameterNotFound", "The parameter address is stale or missing.",
+                    instructionTarget(typed.site.instruction));
+            auto previous = current->value;
+            const auto beforeInstruction = found->second.value;
+            const auto beforeSemantics = found->second.semantics;
+            current->value = typed.value;
+            const auto afterInstruction = found->second.value;
+            const auto afterSemantics = spice::sct::SctInstructionSemanticAnalyzer::build(
+                afterInstruction);
+            removeContribution(beforeSemantics);
+            found->second.semantics = afterSemantics;
+            addContribution(afterSemantics);
+            replaceInstructionInSection(sections_, found->second.section, afterInstruction);
+
+            forward.parameters.push_back({typed.site, previous, typed.value});
+            reverseChanges.parameters.push_back({typed.site, typed.value, previous});
+            SctInstructionStructuralChange instructionChange{typed.site.instruction,
+                placement(typed.site.instruction), placement(typed.site.instruction),
+                beforeInstruction, afterInstruction, beforeSemantics, afterSemantics};
+            forward.instructions.push_back(instructionChange);
+            reverseChanges.instructions.push_back(reversed(instructionChange));
+            const auto target = instructionTarget(typed.site.instruction);
+            forward.modified.push_back(target);
+            reverseChanges.modified.push_back(target);
+            const auto* schema = spice::sct::findSctOpcodeSchema(afterInstruction.opcode);
+            if (schema != nullptr && isControlParameter(
+                    *schema, typed.site.parameter.schemaIndex)) {
+                forward.invalidations = reverseChanges.invalidations =
+                    SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            }
+            forward.documentChanged = reverseChanges.documentChanged = true;
+            inverse = SctReplaceParameterValueOperation{typed.site, std::move(previous)};
+            return std::nullopt;
+        } else if constexpr (std::is_same_v<T, SctInsertRepeatedGroupOperation>
+            || std::is_same_v<T, SctDeleteRepeatedGroupOperation>
+            || std::is_same_v<T, SctRelocateRepeatedGroupOperation>) {
+            const auto found = instructions_.find(typed.instruction);
+            if (found == instructions_.end())
+                return issue("InstructionNotFound", "The repeated group's instruction does not exist.",
+                    instructionTarget(typed.instruction));
+            auto& groups = found->second.value.repeatedParameterGroups;
+            const auto beforeInstruction = found->second.value;
+            const auto beforeSemantics = found->second.semantics;
+            SctRepeatedGroupStructuralChange groupChange;
+            groupChange.instruction = typed.instruction;
+            if constexpr (std::is_same_v<T, SctInsertRepeatedGroupOperation>) {
+                if (typed.ordinal > groups.size())
+                    return issue("RepeatedGroupOrdinalInvalid", "The repeated-group insertion position is stale.",
+                        instructionTarget(typed.instruction));
+                groups.insert(groups.begin() + typed.ordinal, typed.group);
+                groupChange.afterOrdinal = typed.ordinal;
+                groupChange.afterValue = typed.group;
+                inverse = SctDeleteRepeatedGroupOperation{typed.instruction, typed.ordinal};
+            } else if constexpr (std::is_same_v<T, SctDeleteRepeatedGroupOperation>) {
+                if (typed.ordinal >= groups.size())
+                    return issue("RepeatedGroupOrdinalInvalid", "The repeated group no longer exists.",
+                        instructionTarget(typed.instruction));
+                auto removed = groups[typed.ordinal];
+                groups.erase(groups.begin() + typed.ordinal);
+                groupChange.beforeOrdinal = typed.ordinal;
+                groupChange.beforeValue = removed;
+                inverse = SctInsertRepeatedGroupOperation{typed.instruction, typed.ordinal,
+                    std::move(removed)};
+            } else {
+                if (typed.fromOrdinal >= groups.size() || typed.toOrdinal >= groups.size())
+                    return issue("RepeatedGroupOrdinalInvalid", "The repeated-group move position is stale.",
+                        instructionTarget(typed.instruction));
+                if (typed.fromOrdinal == typed.toOrdinal)
+                    return issue("RepeatedGroupMoveNoChange", "The repeated group is already at that position.",
+                        instructionTarget(typed.instruction));
+                auto moved = std::move(groups[typed.fromOrdinal]);
+                groups.erase(groups.begin() + typed.fromOrdinal);
+                groups.insert(groups.begin() + typed.toOrdinal, std::move(moved));
+                groupChange.beforeOrdinal = typed.fromOrdinal;
+                groupChange.afterOrdinal = typed.toOrdinal;
+                inverse = SctRelocateRepeatedGroupOperation{typed.instruction,
+                    typed.toOrdinal, typed.fromOrdinal};
+            }
+            synchronizeRepeatedCount(found->second.value);
+            const auto afterInstruction = found->second.value;
+            const auto afterSemantics = spice::sct::SctInstructionSemanticAnalyzer::build(
+                afterInstruction);
+            removeContribution(beforeSemantics);
+            found->second.semantics = afterSemantics;
+            addContribution(afterSemantics);
+            replaceInstructionInSection(sections_, found->second.section, afterInstruction);
+            forward.repeatedGroups.push_back(groupChange);
+            reverseChanges.repeatedGroups.push_back(reversed(groupChange));
+            SctInstructionStructuralChange instructionChange{typed.instruction,
+                placement(typed.instruction), placement(typed.instruction),
+                beforeInstruction, afterInstruction, beforeSemantics, afterSemantics};
+            forward.instructions.push_back(instructionChange);
+            reverseChanges.instructions.push_back(reversed(instructionChange));
+            forward.modified.push_back(instructionTarget(typed.instruction));
+            reverseChanges.modified.push_back(instructionTarget(typed.instruction));
+            const auto* schema = spice::sct::findSctOpcodeSchema(afterInstruction.opcode);
+            if (schema != nullptr && schema->semantic.controlRole
+                    == spice::sct::SctOpcodeControlRole::Switch) {
+                forward.invalidations = reverseChanges.invalidations =
+                    SctDerivedAnalysisInvalidation::StructuredControlFlow;
+            }
+            forward.documentChanged = reverseChanges.documentChanged = true;
             return std::nullopt;
         } else if constexpr (std::is_same_v<T, SctReplaceTextValueOperation>) {
             auto* current = const_cast<spice::sct::SctTextValue*>(textValue(typed.target));

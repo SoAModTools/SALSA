@@ -149,6 +149,27 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     properties_->header()->resizeSection(0, 180);
     properties_->header()->resizeSection(1, 240);
     properties_->header()->resizeSection(2, 280);
+    parameterTable_ = new QTreeView(details);
+    parameterTableModel_ = new SctParameterTableModel(parameterTable_);
+    parameterTable_->setModel(parameterTableModel_);
+    parameterTable_->setItemDelegate(new SctParameterItemDelegate(parameterTable_));
+    parameterTable_->setContextMenuPolicy(Qt::CustomContextMenu);
+    parameterTable_->setEditTriggers(QAbstractItemView::DoubleClicked
+        | QAbstractItemView::EditKeyPressed);
+    parameterTable_->header()->setSectionResizeMode(QHeaderView::Interactive);
+    parameterTable_->header()->setStretchLastSection(false);
+    parameterTable_->header()->resizeSection(0, 220);
+    parameterTable_->header()->resizeSection(1, 260);
+    parameterTable_->header()->resizeSection(2, 360);
+    parameterTable_->hide();
+    parameterTableModel_->setCommitHandler([this](const auto& row,
+            const QString& text) -> std::optional<QString> {
+        if (!editingEnabled_ || !parameterCommitHandler_)
+            return tr("Parameter editing is currently unavailable.");
+        return parameterCommitHandler_(row.site, text.toStdString())
+            ? std::nullopt : std::optional{tr(
+                "The edit was rejected. See Diagnostics for details.")};
+    });
     preview_ = new QTextEdit(details);
     preview_->setReadOnly(true);
     preview_->setPlaceholderText(tr("No visual text preview is available for this entity."));
@@ -156,6 +177,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     detailsLayout->addWidget(title_);
     detailsLayout->addWidget(subtitle_);
     detailsLayout->addWidget(properties_, 1);
+    detailsLayout->addWidget(parameterTable_, 1);
     detailsLayout->addWidget(preview_);
     splitter->addWidget(outlinePane);
     splitter->addWidget(details);
@@ -305,6 +327,137 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             }
             menu.exec(structuredOutline_->viewport()->mapToGlobal(position));
         });
+    connect(parameterTable_, &QTreeView::activated, this,
+        [this](const QModelIndex& index) {
+            const auto* row = parameterTableModel_->parameter(index);
+            if (row == nullptr) return;
+            if (row->navigation) {
+                emit parameterNavigationRequested(
+                    QString::fromStdString(locator_.identityKey()),
+                    static_cast<int>(row->navigation->kind), row->navigation->id);
+            } else if (row->editor == core::SctInlineParameterEditorKind::AdvancedScpt) {
+                emit advancedScptRequested(
+                    QString::fromStdString(locator_.identityKey()),
+                    row->site.instruction.value(), row->site.parameter.schemaIndex,
+                    row->site.parameter.repeatedGroupOrdinal
+                        ? static_cast<int>(*row->site.parameter.repeatedGroupOrdinal) : -1);
+            }
+        });
+    connect(parameterTable_, &QTreeView::customContextMenuRequested, this,
+        [this](const QPoint& position) {
+            const auto index = parameterTable_->indexAt(position);
+            const auto* row = parameterTableModel_->parameter(index);
+            const auto group = parameterTableModel_->groupOrdinal(index);
+            const auto& presentation = parameterTableModel_->presentation();
+            QMenu menu(this);
+            if (row != nullptr && row->navigation) {
+                auto* open = menu.addAction(row->navigation->kind
+                        == core::SctNavigationKind::Instruction
+                    ? tr("Go to Target") : tr("Open in Text Editor"));
+                connect(open, &QAction::triggered, this, [this, navigation = *row->navigation] {
+                    emit parameterNavigationRequested(
+                        QString::fromStdString(locator_.identityKey()),
+                        static_cast<int>(navigation.kind), navigation.id);
+                });
+            }
+            if (row != nullptr
+                && row->editor == core::SctInlineParameterEditorKind::Reference) {
+                auto* changeReference = menu.addAction(
+                    row->value.starts_with("0x")
+                        ? tr("Repair Reference...") : tr("Change Reference..."));
+                changeReference->setEnabled(editingEnabled_);
+                connect(changeReference, &QAction::triggered, this,
+                    [this, site = row->site] {
+                        emit changeParameterReferenceRequested(
+                            QString::fromStdString(locator_.identityKey()),
+                            site.instruction.value(), site.parameter.schemaIndex,
+                            site.parameter.repeatedGroupOrdinal
+                                ? static_cast<int>(*site.parameter.repeatedGroupOrdinal) : -1);
+                    });
+            }
+            if (row != nullptr && row->replacementEditor) {
+                auto* replace = menu.addAction(tr("Replace With Typed Value..."));
+                replace->setEnabled(editingEnabled_);
+                connect(replace, &QAction::triggered, this,
+                    [this, site = row->site, kind = *row->replacementEditor] {
+                        emit replaceOpaqueParameterRequested(
+                            QString::fromStdString(locator_.identityKey()),
+                            site.instruction.value(), site.parameter.schemaIndex,
+                            site.parameter.repeatedGroupOrdinal
+                                ? static_cast<int>(*site.parameter.repeatedGroupOrdinal) : -1,
+                            static_cast<int>(kind));
+                    });
+            }
+            if (row != nullptr
+                && (row->editor == core::SctInlineParameterEditorKind::AdvancedScpt
+                    || row->editor == core::SctInlineParameterEditorKind::ConventionalScpt)) {
+                auto* advanced = menu.addAction(tr("Open Advanced SCPT Editor"));
+                advanced->setEnabled(true);
+                connect(advanced, &QAction::triggered, this, [this, site = row->site] {
+                    emit advancedScptRequested(
+                        QString::fromStdString(locator_.identityKey()),
+                        site.instruction.value(), site.parameter.schemaIndex,
+                        site.parameter.repeatedGroupOrdinal
+                            ? static_cast<int>(*site.parameter.repeatedGroupOrdinal) : -1);
+                });
+            }
+            if (presentation.supportsRepeatedGroups) {
+                if (!menu.isEmpty()) menu.addSeparator();
+                const auto insertion = group.value_or(
+                    static_cast<std::uint32_t>(presentation.repeatedGroups.size()));
+                auto* addAbove = menu.addAction(tr("Add Group Above"));
+                auto* addBelow = menu.addAction(tr("Add Group Below"));
+                addAbove->setEnabled(editingEnabled_
+                    && !presentation.repeatedGroupsManagedBySemanticEditor);
+                addBelow->setEnabled(addAbove->isEnabled());
+                connect(addAbove, &QAction::triggered, this,
+                    [this, instruction = presentation.instruction, insertion] {
+                        emit addRepeatedGroupRequested(
+                            QString::fromStdString(locator_.identityKey()),
+                            instruction.value(), insertion);
+                    });
+                connect(addBelow, &QAction::triggered, this,
+                    [this, instruction = presentation.instruction, insertion, group] {
+                        emit addRepeatedGroupRequested(
+                            QString::fromStdString(locator_.identityKey()),
+                            instruction.value(), insertion + (group ? 1u : 0u));
+                    });
+                if (group) {
+                    auto* remove = menu.addAction(tr("Remove Group"));
+                    auto* moveUp = menu.addAction(tr("Move Group Up"));
+                    auto* moveDown = menu.addAction(tr("Move Group Down"));
+                    const bool manageable = editingEnabled_
+                        && !presentation.repeatedGroupsManagedBySemanticEditor;
+                    remove->setEnabled(manageable
+                        && presentation.repeatedGroups.size()
+                            > presentation.minimumRepeatedGroups);
+                    moveUp->setEnabled(manageable && *group > 0u);
+                    moveDown->setEnabled(manageable
+                        && *group + 1u < presentation.repeatedGroups.size());
+                    connect(remove, &QAction::triggered, this,
+                        [this, instruction = presentation.instruction, ordinal = *group] {
+                            emit deleteRepeatedGroupRequested(
+                                QString::fromStdString(locator_.identityKey()),
+                                instruction.value(), ordinal);
+                        });
+                    connect(moveUp, &QAction::triggered, this,
+                        [this, instruction = presentation.instruction, ordinal = *group] {
+                            emit moveRepeatedGroupRequested(
+                                QString::fromStdString(locator_.identityKey()),
+                                instruction.value(), ordinal,
+                                static_cast<int>(core::SctRepeatedGroupMoveDirection::Up));
+                        });
+                    connect(moveDown, &QAction::triggered, this,
+                        [this, instruction = presentation.instruction, ordinal = *group] {
+                            emit moveRepeatedGroupRequested(
+                                QString::fromStdString(locator_.identityKey()),
+                                instruction.value(), ordinal,
+                                static_cast<int>(core::SctRepeatedGroupMoveDirection::Down));
+                        });
+                }
+            }
+            if (!menu.isEmpty()) menu.exec(parameterTable_->viewport()->mapToGlobal(position));
+        });
     connect(outlineTabs_, &QTabWidget::currentChanged, this, [this](const int index) {
         if (!currentTarget_) {
             emit editContextChanged();
@@ -395,7 +548,6 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
         auto* moveSectionUp = menu.addAction(tr("Move Section Up"));
         auto* moveSectionDown = menu.addAction(tr("Move Section Down"));
         auto* createFooterMessage = menu.addAction(tr("New Footer Message"));
-        auto* createFooterPlain = menu.addAction(tr("New Footer Plain Text"));
         auto* deleteText = menu.addAction(tr("Delete Text Entity"));
         const bool hasSection = selectedSection().has_value();
         const bool hasText = selectedTextTarget().has_value();
@@ -406,7 +558,6 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
         moveSectionUp->setEnabled(editingEnabled_ && hasSection);
         moveSectionDown->setEnabled(editingEnabled_ && hasSection);
         createFooterMessage->setEnabled(editingEnabled_);
-        createFooterPlain->setEnabled(editingEnabled_);
         deleteText->setEnabled(editingEnabled_ && hasText);
         menu.addSeparator();
         auto* insert = menu.addAction(tr("Insert Instruction..."));
@@ -447,10 +598,6 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             emit createFooterTextRequested(QString::fromStdString(locator_.identityKey()),
                 static_cast<int>(core::SctCreatedFooterTextKind::Message));
         });
-        connect(createFooterPlain, &QAction::triggered, this, [this]() {
-            emit createFooterTextRequested(QString::fromStdString(locator_.identityKey()),
-                static_cast<int>(core::SctCreatedFooterTextKind::PlainText));
-        });
         connect(deleteText, &QAction::triggered, this, [this]() {
             emit deleteTextRequested(QString::fromStdString(locator_.identityKey()));
         });
@@ -473,6 +620,16 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
 }
 
 const core::AssetLocator& SctDocumentWidget::locator() const noexcept { return locator_; }
+
+void SctDocumentWidget::setParameterPresentationProvider(
+    ParameterPresentationProvider provider) {
+    parameterPresentationProvider_ = std::move(provider);
+}
+
+void SctDocumentWidget::setParameterCommitHandler(
+    ParameterCommitHandler handler) {
+    parameterCommitHandler_ = std::move(handler);
+}
 
 void SctDocumentWidget::setSnapshot(
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
@@ -543,6 +700,10 @@ void SctDocumentWidget::applyTextOnlySnapshot(
             core::SctDerivedAnalysisInvalidation::StructuredControlFlow)) {
         markStructuredOutlinePending();
     }
+    if (currentTarget_ && currentTarget_->kind == core::SctNavigationKind::Instruction
+        && !changes.textValues.empty()) {
+        showParameterTable(spice::sct::SctInstructionId(currentTarget_->id), &changes);
+    }
     if (!currentTarget_.has_value()) return;
     const bool selectedChanged = std::ranges::any_of(
         changes.modified, [this](const auto target) {
@@ -574,6 +735,13 @@ bool SctDocumentWidget::applyInstructionChanges(
     if (selected.isValid()) {
         currentTarget_ = *retained;
         outline_->setCurrentIndex(selected);
+        if (currentTarget_->kind == core::SctNavigationKind::Instruction
+            && std::ranges::any_of(changes.instructions, [this](const auto& change) {
+                return change.instruction.value() == currentTarget_->id;
+            })) {
+            showParameterTable(
+                spice::sct::SctInstructionId(currentTarget_->id), &changes);
+        }
     } else {
         currentTarget_.reset();
         title_->clear();
@@ -582,6 +750,8 @@ bool SctDocumentWidget::applyInstructionChanges(
         properties_->clear();
         preview_->clear();
         preview_->hide();
+        parameterTable_->hide();
+        properties_->show();
     }
     return true;
 }
@@ -789,9 +959,12 @@ void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
             subtitle_->setText(tr("Pending background verification"));
             propertyLocations_.clear();
             properties_->clear();
+            properties_->show();
             auto* opcode = new QTreeWidgetItem(properties_);
             opcode->setText(0, tr("Opcode"));
             opcode->setText(1, QString::number(instruction->opcode));
+            parameterTable_->show();
+            showParameterTable(instruction->id);
             preview_->clear();
             preview_->hide();
             return;
@@ -804,7 +977,16 @@ void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
     subtitle_->setText(QString::fromStdString(presentation.subtitle));
     propertyLocations_.clear();
     properties_->clear();
-    for (const auto& property : presentation.properties) addPropertyItem(nullptr, property);
+    const bool instruction = target.kind == core::SctNavigationKind::Instruction;
+    for (const auto& property : presentation.properties) {
+        if (instruction && (property.name == "Fixed parameters"
+                || property.name == "Repeated groups")) continue;
+        addPropertyItem(nullptr, property);
+    }
+    properties_->show();
+    parameterTable_->setVisible(instruction);
+    if (instruction) showParameterTable(
+        spice::sct::SctInstructionId(target.id));
     properties_->collapseAll();
     preview_->clear();
     QTextCursor cursor(preview_->document());
@@ -815,6 +997,19 @@ void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
         cursor.insertText(QString::fromStdString(run.text), format);
     }
     preview_->setVisible(!presentation.preview.empty());
+}
+
+void SctDocumentWidget::showParameterTable(
+    const spice::sct::SctInstructionId instruction,
+    const core::SctEditChangeSet* changes) {
+    if (!parameterPresentationProvider_) return;
+    auto presentation = parameterPresentationProvider_(instruction);
+    const core::SctEditChangeSet noChanges;
+    if (parameterTableModel_->presentation().instruction == instruction
+        && parameterTableModel_->apply(presentation,
+            changes == nullptr ? noChanges : *changes)) return;
+    parameterTableModel_->resetFrom(std::move(presentation));
+    parameterTable_->collapseAll();
 }
 
 void SctDocumentWidget::updateSourceBanner(const int sourceStatus) {

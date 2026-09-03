@@ -4,6 +4,7 @@
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctPresentation.h"
 #include "Sct/SctOutlineModel.h"
+#include "Sct/SctParameterTableModel.h"
 #include "Sct/SctStructuredOutlineModel.h"
 #include "SpiceSCT/SctDocumentIndex.h"
 
@@ -14,6 +15,7 @@
 #include <optional>
 #include <utility>
 #include <vector>
+#include <functional>
 
 class QComboBox;
 class QLabel;
@@ -36,6 +38,13 @@ public:
     };
 
     explicit SctDocumentWidget(core::AssetLocator locator, QWidget* parent = nullptr);
+
+    using ParameterPresentationProvider = std::function<
+        core::SctParameterTablePresentation(spice::sct::SctInstructionId)>;
+    using ParameterCommitHandler = std::function<bool(
+        const spice::sct::SctParameterSite&, std::string)>;
+    void setParameterPresentationProvider(ParameterPresentationProvider provider);
+    void setParameterCommitHandler(ParameterCommitHandler handler);
 
     [[nodiscard]] const core::AssetLocator& locator() const noexcept;
     void setSnapshot(
@@ -98,6 +107,21 @@ signals:
         const QString& identityKey, qulonglong controller, int armKind);
     void returnSemanticArmToEmptyRequested(
         const QString& identityKey, qulonglong arm, qulonglong instruction);
+    void parameterNavigationRequested(
+        const QString& identityKey, int kind, qulonglong id);
+    void advancedScptRequested(const QString& identityKey,
+        qulonglong instruction, quint32 schemaIndex, int repeatedOrdinal);
+    void changeParameterReferenceRequested(const QString& identityKey,
+        qulonglong instruction, quint32 schemaIndex, int repeatedOrdinal);
+    void replaceOpaqueParameterRequested(const QString& identityKey,
+        qulonglong instruction, quint32 schemaIndex, int repeatedOrdinal,
+        int editorKind);
+    void addRepeatedGroupRequested(const QString& identityKey,
+        qulonglong instruction, quint32 ordinal);
+    void deleteRepeatedGroupRequested(const QString& identityKey,
+        qulonglong instruction, quint32 ordinal);
+    void moveRepeatedGroupRequested(const QString& identityKey,
+        qulonglong instruction, quint32 ordinal, int direction);
 
 private:
     void rebuildOutline();
@@ -105,6 +129,8 @@ private:
     void markStructuredOutlinePending();
     void showTarget(core::SctNavigationTarget target);
     void updateSourceBanner(int sourceStatus);
+    void showParameterTable(spice::sct::SctInstructionId instruction,
+        const core::SctEditChangeSet* changes = nullptr);
     QTreeWidgetItem* addPropertyItem(
         QTreeWidgetItem* parent,
         const core::SctPropertyItem& property);
@@ -134,6 +160,10 @@ private:
     QLabel* title_ = nullptr;
     QLabel* subtitle_ = nullptr;
     QTreeWidget* properties_ = nullptr;
+    QTreeView* parameterTable_ = nullptr;
+    SctParameterTableModel* parameterTableModel_ = nullptr;
+    ParameterPresentationProvider parameterPresentationProvider_{};
+    ParameterCommitHandler parameterCommitHandler_{};
     QTextEdit* preview_ = nullptr;
     std::vector<std::pair<QTreeWidgetItem*, core::SctInspectionLocation>>
         propertyLocations_{};

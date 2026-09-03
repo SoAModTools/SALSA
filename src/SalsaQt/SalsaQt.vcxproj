@@ -61,6 +61,8 @@
     <ClCompile Include="Sct\SctOutlineModel.cpp" />
     <ClCompile Include="Sct\SctStructuredOutlineModel.cpp" />
     <ClCompile Include="Sct\SctMessageEditorWidget.cpp" />
+    <ClCompile Include="Sct\SctParameterTableModel.cpp" />
+    <ClCompile Include="Sct\SctScptEditorWidget.cpp" />
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp" />
     <ClCompile Include="Workspace\DiagnosticsModel.cpp" />
     <ClCompile Include="Workspace\WorkspaceController.cpp" />
@@ -72,6 +74,8 @@
     <QtMoc Include="Sct\SctOutlineModel.h" />
     <QtMoc Include="Sct\SctStructuredOutlineModel.h" />
     <QtMoc Include="Sct\SctMessageEditorWidget.h" />
+    <QtMoc Include="Sct\SctParameterTableModel.h" />
+    <QtMoc Include="Sct\SctScptEditorWidget.h" />
     <QtMoc Include="Sct\SctSemanticNavigatorWidget.h" />
   </ItemGroup>
   <ItemGroup>

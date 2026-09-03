@@ -25,6 +25,8 @@
     <ClCompile Include="Sct\SctOutlineModel.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctStructuredOutlineModel.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctMessageEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="Sct\SctParameterTableModel.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="Sct\SctScptEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <QtMoc Include="Workspace\WorkspaceController.h"><Filter>Workspace</Filter></QtMoc>
     <QtMoc Include="Sct\SctDocumentController.h"><Filter>SCT</Filter></QtMoc>
@@ -32,6 +34,8 @@
     <QtMoc Include="Sct\SctOutlineModel.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctStructuredOutlineModel.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctMessageEditorWidget.h"><Filter>SCT</Filter></QtMoc>
+    <QtMoc Include="Sct\SctParameterTableModel.h"><Filter>SCT</Filter></QtMoc>
+    <QtMoc Include="Sct\SctScptEditorWidget.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctSemanticNavigatorWidget.h"><Filter>SCT</Filter></QtMoc>
   </ItemGroup>
   <ItemGroup>

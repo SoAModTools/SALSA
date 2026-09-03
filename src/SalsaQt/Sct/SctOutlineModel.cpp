@@ -246,6 +246,21 @@ bool SctOutlineModel::applyOne(
                 change.after->section.value()});
             if (node == nullptr || node->parent == nullptr || destination == nullptr)
                 return false;
+            if (change.before == change.after) {
+                if (!change.afterValue) return false;
+                instructionValues_[change.instruction.value()] = *change.afterValue;
+                const auto* schema = spice::sct::findSctOpcodeSchema(
+                    change.afterValue->opcode);
+                const auto mnemonic = schema != nullptr
+                        && !schema->semantic.mnemonic.empty()
+                    ? QString::fromUtf8(schema->semantic.mnemonic.data(),
+                        static_cast<qsizetype>(schema->semantic.mnemonic.size()))
+                    : QStringLiteral("Opcode");
+                node->label = mnemonic + QStringLiteral(" (")
+                    + QString::number(change.afterValue->opcode) + QLatin1Char(')');
+                emit dataChanged(indexForNode(node), indexForNode(node, 1));
+                return true;
+            }
             auto* source = node->parent;
             const auto sourceRow = rowOf(node);
             const auto finalRow = insertionRow(*destination, *change.after);

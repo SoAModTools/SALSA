@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <ranges>
+#include <type_traits>
 #include <utility>
 
 namespace salsa::qt {
@@ -179,6 +180,58 @@ std::optional<spice::sct::SctTextValue> SctDocumentController::workingText(
     return value == nullptr ? std::nullopt : std::optional{*value};
 }
 
+core::SctParameterTablePresentation SctDocumentController::parameterPresentation(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId instruction) const {
+    const auto* state = findState(locator);
+    return state == nullptr ? core::SctParameterTablePresentation{}
+        : core::SctParameterAuthoringService::project(
+            state->session->workingState(), instruction);
+}
+
+std::vector<core::SctReferenceCandidate>
+SctDocumentController::referenceCandidates(
+    const core::AssetLocator& locator,
+    const spice::sct::SctParameterSite& site) const {
+    const auto* state = findState(locator);
+    return state == nullptr ? std::vector<core::SctReferenceCandidate>{}
+        : core::SctParameterAuthoringService::referenceCandidates(
+            state->session->workingState(), site);
+}
+
+std::vector<core::SctReferenceCandidate>
+SctDocumentController::draftReferenceCandidates(
+    const core::AssetLocator& locator, const std::uint16_t opcode,
+    const spice::sct::SctParameterAddress& address) const {
+    const auto* state = findState(locator);
+    return state == nullptr ? std::vector<core::SctReferenceCandidate>{}
+        : core::SctParameterAuthoringService::referenceCandidates(
+            state->session->workingState(), opcode, address);
+}
+
+std::optional<spice::sct::SctCanonicalExpression>
+SctDocumentController::workingParameterExpression(
+    const core::AssetLocator& locator,
+    const spice::sct::SctParameterSite& site) const {
+    const auto* state = findState(locator);
+    if (state == nullptr) return std::nullopt;
+    const auto* parameter = state->session->workingState().parameter(site);
+    if (parameter == nullptr) return std::nullopt;
+    const auto* expression = std::get_if<spice::sct::SctCanonicalExpression>(
+        &parameter->value);
+    return expression == nullptr ? std::nullopt : std::optional{*expression};
+}
+
+std::optional<spice::sct::SctDocumentInstruction>
+SctDocumentController::workingInstruction(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId instruction) const {
+    const auto* state = findState(locator);
+    if (state == nullptr) return std::nullopt;
+    const auto* value = state->session->workingState().instruction(instruction);
+    return value == nullptr ? std::nullopt : std::optional{*value};
+}
+
 std::shared_ptr<const core::SctDocumentSnapshot> SctDocumentController::snapshot(
     const core::AssetLocator& locator) const {
     const auto* state = findState(locator);
@@ -293,6 +346,24 @@ bool SctDocumentController::insertInstructionAfter(
         tr("Instruction inserted."));
 }
 
+core::SctInstructionAuthoringDraftResult
+SctDocumentController::createInstructionDraft(
+    const core::AssetLocator& locator, const std::uint16_t opcode) const {
+    const auto* state = findState(locator);
+    if (state == nullptr || busy() || state->editBlocked) return {};
+    return state->session->createInstructionDraft(opcode);
+}
+
+bool SctDocumentController::createInstructionAfter(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId anchorInstruction,
+    core::SctInstructionAuthoringDraft draft) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->createInstructionAfter(
+            anchorInstruction, std::move(draft)), tr("Instruction inserted."));
+}
+
 bool SctDocumentController::deleteInstruction(
     const core::AssetLocator& locator,
     const spice::sct::SctInstructionId instruction) {
@@ -345,6 +416,70 @@ bool SctDocumentController::replaceTextValue(
         target, std::move(value), std::move(description), std::move(repairProvenance));
     if (!result.committed && result.diagnostics.empty()) return true;
     return applyEditResult(*state, std::move(result), tr("Text repaired."));
+}
+
+bool SctDocumentController::editParameterText(
+    const core::AssetLocator& locator, const spice::sct::SctParameterSite& site,
+    std::string text) {
+    auto* state = findState(locator);
+    if (state == nullptr || busy() || state->editBlocked) return false;
+    auto result = state->session->editParameterText(site, std::move(text));
+    if (!result.committed && result.diagnostics.empty()) return true;
+    return applyEditResult(*state, std::move(result), tr("Parameter edited."));
+}
+
+bool SctDocumentController::replaceParameterValue(
+    const core::AssetLocator& locator, const spice::sct::SctParameterSite& site,
+    spice::sct::SctDocumentParameterValue value) {
+    auto* state = findState(locator);
+    if (state == nullptr || busy() || state->editBlocked) return false;
+    auto result = state->session->replaceParameterValue(site, std::move(value));
+    if (!result.committed && result.diagnostics.empty()) return true;
+    return applyEditResult(*state, std::move(result), tr("Parameter edited."));
+}
+
+bool SctDocumentController::retargetParameter(
+    const core::AssetLocator& locator, const spice::sct::SctParameterSite& site,
+    const spice::sct::SctDocumentReferenceTarget& target) {
+    auto value = std::visit([](const auto id)
+            -> spice::sct::SctDocumentParameterValue {
+        using T = std::decay_t<decltype(id)>;
+        if constexpr (std::is_same_v<T, spice::sct::SctInstructionId>)
+            return spice::sct::SctInstructionReference{id};
+        else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
+            return spice::sct::SctStringReference{id};
+        else return spice::sct::SctFooterEntryReference{id};
+    }, target);
+    return replaceParameterValue(locator, site, std::move(value));
+}
+
+bool SctDocumentController::insertRepeatedGroup(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId instruction, const std::uint32_t ordinal,
+    spice::sct::SctDocumentRepeatedParameterGroup group) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->insertRepeatedGroup(
+            instruction, ordinal, std::move(group)), tr("Repeated group added."));
+}
+
+bool SctDocumentController::deleteRepeatedGroup(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId instruction, const std::uint32_t ordinal) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->deleteRepeatedGroup(
+            instruction, ordinal), tr("Repeated group deleted."));
+}
+
+bool SctDocumentController::moveRepeatedGroup(
+    const core::AssetLocator& locator,
+    const spice::sct::SctInstructionId instruction, const std::uint32_t ordinal,
+    const core::SctRepeatedGroupMoveDirection direction) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->moveRepeatedGroup(
+            instruction, ordinal, direction), tr("Repeated group moved."));
 }
 
 bool SctDocumentController::createScriptSection(

@@ -4,6 +4,7 @@
 #include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
+#include "SalsaCore/Sct/SctParameterAuthoring.h"
 
 #include <QFutureWatcher>
 #include <QObject>
@@ -53,6 +54,12 @@ public:
         const core::AssetLocator& locator,
         spice::sct::SctInstructionId anchorInstruction,
         std::uint16_t opcode);
+    [[nodiscard]] core::SctInstructionAuthoringDraftResult createInstructionDraft(
+        const core::AssetLocator& locator, std::uint16_t opcode) const;
+    [[nodiscard]] bool createInstructionAfter(
+        const core::AssetLocator& locator,
+        spice::sct::SctInstructionId anchorInstruction,
+        core::SctInstructionAuthoringDraft draft);
     [[nodiscard]] bool deleteInstruction(
         const core::AssetLocator& locator,
         spice::sct::SctInstructionId instruction);
@@ -71,6 +78,22 @@ public:
         const core::SctTextTarget& target, spice::sct::SctTextValue value,
         std::string description,
         std::optional<core::SctTextRepairProvenance> repairProvenance = std::nullopt);
+    [[nodiscard]] bool editParameterText(const core::AssetLocator& locator,
+        const spice::sct::SctParameterSite& site, std::string text);
+    [[nodiscard]] bool replaceParameterValue(const core::AssetLocator& locator,
+        const spice::sct::SctParameterSite& site,
+        spice::sct::SctDocumentParameterValue value);
+    [[nodiscard]] bool retargetParameter(const core::AssetLocator& locator,
+        const spice::sct::SctParameterSite& site,
+        const spice::sct::SctDocumentReferenceTarget& target);
+    [[nodiscard]] bool insertRepeatedGroup(const core::AssetLocator& locator,
+        spice::sct::SctInstructionId instruction, std::uint32_t ordinal,
+        spice::sct::SctDocumentRepeatedParameterGroup group);
+    [[nodiscard]] bool deleteRepeatedGroup(const core::AssetLocator& locator,
+        spice::sct::SctInstructionId instruction, std::uint32_t ordinal);
+    [[nodiscard]] bool moveRepeatedGroup(const core::AssetLocator& locator,
+        spice::sct::SctInstructionId instruction, std::uint32_t ordinal,
+        core::SctRepeatedGroupMoveDirection direction);
     [[nodiscard]] bool createScriptSection(const core::AssetLocator& locator,
         std::string name, std::optional<spice::sct::SctSectionId> after,
         bool includeReturn);
@@ -132,6 +155,21 @@ public:
         const core::SctMessageTarget& target) const;
     [[nodiscard]] std::optional<spice::sct::SctTextValue> workingText(
         const core::AssetLocator& locator, const core::SctTextTarget& target) const;
+    [[nodiscard]] core::SctParameterTablePresentation parameterPresentation(
+        const core::AssetLocator& locator,
+        spice::sct::SctInstructionId instruction) const;
+    [[nodiscard]] std::vector<core::SctReferenceCandidate> referenceCandidates(
+        const core::AssetLocator& locator,
+        const spice::sct::SctParameterSite& site) const;
+    [[nodiscard]] std::vector<core::SctReferenceCandidate> draftReferenceCandidates(
+        const core::AssetLocator& locator, std::uint16_t opcode,
+        const spice::sct::SctParameterAddress& address) const;
+    [[nodiscard]] std::optional<spice::sct::SctCanonicalExpression>
+        workingParameterExpression(const core::AssetLocator& locator,
+            const spice::sct::SctParameterSite& site) const;
+    [[nodiscard]] std::optional<spice::sct::SctDocumentInstruction>
+        workingInstruction(const core::AssetLocator& locator,
+            spice::sct::SctInstructionId instruction) const;
     [[nodiscard]] SourceStatus sourceStatus(const core::AssetLocator& locator) const;
     [[nodiscard]] bool structurallyValid(const core::AssetLocator& locator) const;
     [[nodiscard]] bool isDirty(const core::AssetLocator& locator) const;
