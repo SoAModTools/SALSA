@@ -49,6 +49,12 @@ struct LegacyCapsuleSource final {
     bool originalRetained = false;
 };
 
+struct LegacyProjectDiagnostic final {
+    std::string code{};
+    std::string path{};
+    std::string message{};
+};
+
 struct LegacyCapsuleSummary final {
     std::filesystem::path root{};
     std::string capsuleId{};
@@ -56,6 +62,7 @@ struct LegacyCapsuleSummary final {
     LegacyCapsuleStatus status = LegacyCapsuleStatus::Ready;
     LegacyCapsuleSource source{};
     std::uint64_t normalizationCount = 0;
+    std::vector<LegacyProjectDiagnostic> projectDiagnostics{};
     std::vector<LegacyScriptSummary> scripts{};
 };
 

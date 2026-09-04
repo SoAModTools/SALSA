@@ -54,6 +54,7 @@
     <ClInclude Include="include\SalsaCore\Legacy\LegacyCapsule.h" />
     <ClInclude Include="include\SalsaCore\Legacy\LegacyConversionService.h" />
     <ClInclude Include="include\SalsaCore\Legacy\LegacyFreshImport.h" />
+    <ClInclude Include="include\SalsaCore\Legacy\LegacyMetadataPromotion.h" />
     <ClInclude Include="include\SalsaCore\Persistence\AtomicFile.h" />
     <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelope.h" />
     <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelopeCodec.h" />
@@ -96,6 +97,8 @@
     <ClCompile Include="src\Legacy\LegacyCapsule.cpp" />
     <ClCompile Include="src\Legacy\LegacyConversionService.cpp" />
     <ClCompile Include="src\Legacy\LegacyFreshImport.cpp" />
+    <ClCompile Include="src\Legacy\LegacyFreshImportCommit.cpp" />
+    <ClCompile Include="src\Legacy\LegacyMetadataPromotion.cpp" />
     <ClCompile Include="src\Persistence\AtomicFile.cpp" />
     <ClCompile Include="src\Persistence\PatchEnvelopeCodec.cpp" />
     <ClCompile Include="src\Persistence\PatchEnvelopeFileStore.cpp" />

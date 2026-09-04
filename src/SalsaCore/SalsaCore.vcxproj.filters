@@ -32,6 +32,7 @@
     <ClInclude Include="include\SalsaCore\Legacy\LegacyCapsule.h"><Filter>Legacy</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Legacy\LegacyConversionService.h"><Filter>Legacy</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Legacy\LegacyFreshImport.h"><Filter>Legacy</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Legacy\LegacyMetadataPromotion.h"><Filter>Legacy</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\LocalSalsaWorkspace.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\SctBaselineStore.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\SctReconciliationDecisionStore.h"><Filter>Project</Filter></ClInclude>
@@ -68,6 +69,8 @@
     <ClCompile Include="src\Legacy\LegacyCapsule.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="src\Legacy\LegacyConversionService.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="src\Legacy\LegacyFreshImport.cpp"><Filter>Legacy</Filter></ClCompile>
+    <ClCompile Include="src\Legacy\LegacyFreshImportCommit.cpp"><Filter>Legacy</Filter></ClCompile>
+    <ClCompile Include="src\Legacy\LegacyMetadataPromotion.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="src\Persistence\LocalSalsaWorkspace.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Persistence\SctBaselineStore.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Persistence\SctReconciliationDecisionStore.cpp"><Filter>Project</Filter></ClCompile>

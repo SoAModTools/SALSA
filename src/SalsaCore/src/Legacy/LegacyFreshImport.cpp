@@ -1,9 +1,12 @@
 #include "SalsaCore/Legacy/LegacyFreshImport.h"
 
+#include "SalsaCore/Persistence/AtomicFile.h"
+
 #include "SpiceSCT/SctDocumentExporter.h"
 #include "SpiceSCT/SctDocumentWorkflow.h"
 #include "SpiceSCT/SctOpcodeMetadata.h"
 #include "SpiceSCT/SctParser.h"
+#include "SpiceSCT/SctScptEncoding.h"
 #include "SpiceSCT/SctSemanticComparer.h"
 
 #include <Windows.h>
@@ -63,6 +66,33 @@ void report(const FreshLegacyImportObserver& observer,
             && child[parent.size()] == L'\\';
     };
     return left == right || nested(left, right) || nested(right, left);
+}
+
+[[nodiscard]] std::optional<std::filesystem::path> volumeRoot(
+    std::filesystem::path path) {
+    std::error_code error;
+    path = std::filesystem::absolute(path, error);
+    if (error) return std::nullopt;
+    while (!path.empty() && !std::filesystem::exists(path, error)) {
+        error.clear();
+        const auto parent = path.parent_path();
+        if (parent == path) break;
+        path = parent;
+    }
+    if (path.empty() || error) return std::nullopt;
+    std::array<wchar_t, MAX_PATH + 1> buffer{};
+    if (!GetVolumePathNameW(path.c_str(), buffer.data(),
+            static_cast<DWORD>(buffer.size()))) return std::nullopt;
+    auto folded = std::filesystem::path(buffer.data()).lexically_normal().wstring();
+    std::ranges::transform(folded, folded.begin(), towlower);
+    return std::filesystem::path(folded);
+}
+
+[[nodiscard]] bool sameVolume(const std::filesystem::path& lhs,
+    const std::filesystem::path& rhs) {
+    const auto left = volumeRoot(lhs);
+    const auto right = volumeRoot(rhs);
+    return left && right && *left == *right;
 }
 
 [[nodiscard]] LegacyImportDestinationInspection inspectDestination(
@@ -300,15 +330,24 @@ private:
 };
 
 [[nodiscard]] std::optional<std::vector<std::uint32_t>> wordsFromBytes(
-    const std::vector<std::uint8_t>& bytes) {
+    const std::vector<std::uint8_t>& bytes,
+    const spice::sct::SctDocumentOutputByteOrder byteOrder =
+        spice::sct::SctDocumentOutputByteOrder::BigEndian) {
     if (bytes.empty() || bytes.size() % 4u != 0u) return std::nullopt;
     std::vector<std::uint32_t> words;
     words.reserve(bytes.size() / 4u);
     for (std::size_t offset = 0; offset < bytes.size(); offset += 4u) {
-        words.push_back((static_cast<std::uint32_t>(bytes[offset]) << 24u)
-            | (static_cast<std::uint32_t>(bytes[offset + 1u]) << 16u)
-            | (static_cast<std::uint32_t>(bytes[offset + 2u]) << 8u)
-            | static_cast<std::uint32_t>(bytes[offset + 3u]));
+        if (byteOrder == spice::sct::SctDocumentOutputByteOrder::BigEndian) {
+            words.push_back((static_cast<std::uint32_t>(bytes[offset]) << 24u)
+                | (static_cast<std::uint32_t>(bytes[offset + 1u]) << 16u)
+                | (static_cast<std::uint32_t>(bytes[offset + 2u]) << 8u)
+                | static_cast<std::uint32_t>(bytes[offset + 3u]));
+        } else {
+            words.push_back(static_cast<std::uint32_t>(bytes[offset])
+                | (static_cast<std::uint32_t>(bytes[offset + 1u]) << 8u)
+                | (static_cast<std::uint32_t>(bytes[offset + 2u]) << 16u)
+                | (static_cast<std::uint32_t>(bytes[offset + 3u]) << 24u));
+        }
     }
     return words;
 }
@@ -339,7 +378,12 @@ private:
     };
     const auto preferred = encoding.characters == spice::sct::SctCharacterEncoding::ShiftJis
         ? 932u : 1252u;
-    return encode(preferred);
+    if (auto result = encode(preferred)) return result;
+    // Final legacy SALSA selected its European encoding per string, and v7 did
+    // not persist the original byte encoding. Preserve that mixed corpus
+    // losslessly by trying the other supported legacy encoding only when the
+    // selected preference cannot represent the retained Unicode text.
+    return encode(preferred == 932u ? 1252u : 932u);
 }
 
 struct TranslationState final {
@@ -347,10 +391,16 @@ struct TranslationState final {
     const Json& ir;
     const SctPublicationOptions& publication;
     spice::sct::SctDocument document{};
+    std::unordered_map<std::string, spice::sct::SctSectionId> sectionIds{};
     std::unordered_map<std::string, spice::sct::SctInstructionId> instructionIds{};
     std::unordered_map<std::string, spice::sct::SctStringId> stringIds{};
     std::set<std::string, std::less<>> footerStringNames{};
     std::vector<std::string> reasons{};
+};
+
+struct TranslatedLegacyDocument final {
+    spice::sct::SctDocument document{};
+    std::vector<LegacyEntityMapping> mappings{};
 };
 
 [[nodiscard]] std::optional<std::string> fieldString(const LegacyGraphView& graph,
@@ -360,13 +410,14 @@ struct TranslationState final {
 }
 
 [[nodiscard]] std::optional<std::vector<std::uint32_t>> parameterWords(
-    const LegacyGraphView& graph, const Json& parameter) {
+    const LegacyGraphView& graph, const Json& parameter,
+    const spice::sct::SctDocumentOutputByteOrder sourceByteOrder) {
     const auto* raw = graph.objectField(parameter, 5u, 6u);
     if (raw != nullptr) if (auto bytes = graph.bytes(*raw); bytes && !bytes->empty())
         return wordsFromBytes(*bytes);
     const auto* overrideValue = graph.objectField(parameter, 5u, 8u);
     if (overrideValue != nullptr) if (auto bytes = graph.bytes(*overrideValue); bytes && !bytes->empty())
-        return wordsFromBytes(*bytes);
+        return wordsFromBytes(*bytes, sourceByteOrder);
     const auto* value = graph.objectField(parameter, 5u, 5u);
     if (value == nullptr) return std::nullopt;
     const auto* typeValue = graph.objectField(parameter, 5u, 1u);
@@ -516,7 +567,7 @@ struct TranslationState final {
         result.value = SctFooterEntryReference{state.document.footerEntries.back().id};
         return result;
     }
-    const auto words = parameterWords(state.graph, parameter);
+    const auto words = parameterWords(state.graph, parameter, state.publication.byteOrder);
     if (!words) {
         const auto* typeValue = state.graph.objectField(parameter, 5u, 1u);
         const auto type = typeValue == nullptr ? std::nullopt : state.graph.string(*typeValue);
@@ -529,6 +580,17 @@ struct TranslationState final {
     }
     if (parameterSchema->encoding == SctOpcodeParameterEncoding::ScptExpression) {
         auto expressionWords = *words;
+        const auto scan = scanSctScptWords(expressionWords);
+        if (!scan.complete || scan.wordCount != expressionWords.size()) {
+            state.reasons.push_back("Opcode " + std::to_string(schema.opcode) + " parameter "
+                + std::to_string(schemaIndex) + " has "
+                + std::to_string(expressionWords.size()) + " retained SCPT words, but the first "
+                + std::to_string(scan.wordCount) + " words do not form exactly one expression"
+                + (expressionWords.empty() ? std::string{"."}
+                    : "; first word is " + std::to_string(expressionWords.front())
+                        + " and last word is " + std::to_string(expressionWords.back()) + "."));
+            return std::nullopt;
+        }
         const auto terminated = !expressionWords.empty() && expressionWords.back() == 0x0000001du;
         result.value = SctCanonicalExpression{SctOpaqueExpression{std::move(expressionWords)},
             terminated ? SctExpressionTermination::StopCode
@@ -575,7 +637,8 @@ struct TranslationState final {
         result.skipRefresh = state.graph.boolean(*skip).value_or(false);
     if (const auto* delay = state.graph.objectField(legacy, 4u, 3u);
         delay != nullptr && !state.graph.isNull(*delay)) {
-        const auto words = parameterWords(state.graph, *delay);
+        const auto words = parameterWords(
+            state.graph, *delay, state.publication.byteOrder);
         if (!words) {
             state.reasons.push_back("A scheduled instruction has no complete delay expression words.");
             return std::nullopt;
@@ -630,7 +693,7 @@ struct TranslationState final {
     return result;
 }
 
-[[nodiscard]] std::optional<spice::sct::SctDocument> translateDocument(
+[[nodiscard]] std::optional<TranslatedLegacyDocument> translateDocument(
     const Json& record, const SctPublicationOptions& publication,
     std::vector<std::string>& reasons) {
     using namespace spice::sct;
@@ -650,7 +713,8 @@ struct TranslationState final {
     const auto& sectionsValue = ir.at("sections");
     const auto* sectionEntries = graph.dictionary(sectionsValue);
     if (sectionEntries == nullptr) {
-        if (graph.isNull(sectionsValue)) return std::move(state.document);
+        if (graph.isNull(sectionsValue)) return TranslatedLegacyDocument{
+            std::move(state.document), {}};
         reasons.push_back("The legacy script section dictionary is malformed.");
         return std::nullopt;
     }
@@ -735,6 +799,7 @@ struct TranslationState final {
         string.value = SctOpaqueText{*encoded};
         SctDocumentSection stringSection;
         stringSection.id = state.document.allocateSectionId();
+        state.sectionIds.emplace(stringName, stringSection.id);
         stringSection.nameBytes = stringName;
         stringSection.content = SctStringSectionContent{std::move(string)};
         state.document.sections.push_back(std::move(stringSection));
@@ -746,13 +811,15 @@ struct TranslationState final {
         if (found == sections.end()) continue;
         const auto type = fieldString(graph, *found->second, 3u, 10u);
         if (!type) continue;
-        SctDocumentSection section;
-        section.id = state.document.allocateSectionId();
-        section.nameBytes = name;
         if (*type == "String") {
             appendStringSection(name);
             continue;
-        } else if (*type == "Label") {
+        }
+        SctDocumentSection section;
+        section.id = state.document.allocateSectionId();
+        state.sectionIds.emplace(name, section.id);
+        section.nameBytes = name;
+        if (*type == "Label") {
             section.content = SctStringGroupMarkerSectionContent{};
         } else if (*type == "Script" || type->empty()) {
             SctScriptSectionContent content;
@@ -804,37 +871,106 @@ struct TranslationState final {
                 + " is not assigned to an ordered legacy string group.");
     reasons.insert(reasons.end(), state.reasons.begin(), state.reasons.end());
     if (!state.reasons.empty()) return std::nullopt;
-    return std::move(state.document);
+    std::vector<LegacyEntityMapping> mappings;
+    mappings.reserve(state.sectionIds.size() + state.instructionIds.size()
+        + state.stringIds.size());
+    for (const auto& [identity, id] : state.sectionIds)
+        mappings.push_back({LegacyEntityKind::Section, identity, id.value()});
+    for (const auto& [identity, id] : state.instructionIds)
+        mappings.push_back({LegacyEntityKind::Instruction, identity, id.value()});
+    for (const auto& [identity, id] : state.stringIds)
+        mappings.push_back({LegacyEntityKind::String, identity, id.value()});
+    std::ranges::sort(mappings, [](const auto& left, const auto& right) {
+        if (left.kind != right.kind) return left.kind < right.kind;
+        return left.legacyIdentity < right.legacyIdentity;
+    });
+    return TranslatedLegacyDocument{std::move(state.document), std::move(mappings)};
 }
 
-void addMetadataPlan(FreshLegacyImportPlan& plan, std::uint32_t scriptCount,
-    const bool discardUnsupported) {
-    const auto unsupportedDisposition = discardUnsupported
-        ? LegacyMetadataDisposition::DroppedByUser
-        : LegacyMetadataDisposition::Pending;
-    const auto unsupportedReason = discardUnsupported
-        ? "Explicitly discarded for this import; the immutable capsule remains unchanged."
-        : "Retained in the immutable capsule for a typed future promotion adapter.";
-    plan.metadata.push_back({std::nullopt, "SCTProject", "version",
-        LegacyMetadataDisposition::Contract, "Validated as the official final version-7 contract."});
-    plan.metadata.push_back({std::nullopt, "SCTProject", "global_variables",
-        unsupportedDisposition, unsupportedReason});
-    plan.metadata.push_back({std::nullopt, "SCTProject", "inst_id_colors",
-        unsupportedDisposition, unsupportedReason});
+[[nodiscard]] std::string metadataRecordId(const FreshLegacyImportPlan& plan,
+    const std::optional<std::uint32_t> ordinal, const std::string_view field) {
+    std::string material = plan.capsuleId;
+    material.push_back('\0');
+    material += ordinal ? std::to_string(*ordinal) : "project";
+    material.push_back('\0');
+    material += field;
+    const auto digest = sha256(std::as_bytes(std::span{material.data(), material.size()}));
+    return digest ? digest.value().toHex() : std::string{};
+}
+
+void addMetadataPlan(FreshLegacyImportPlan& plan, const FreshLegacyImportRequest& request,
+    const std::uint32_t scriptCount,
+    const std::span<const LegacyProjectDiagnostic> projectDiagnostics) {
+    const auto append = [&](const std::optional<std::uint32_t> ordinal,
+        const LegacyMetadataKind kind, const std::string_view owner,
+        const std::string_view field, LegacyMetadataDisposition disposition,
+        std::string reason) {
+        const auto recordId = metadataRecordId(plan, ordinal, field);
+        const auto decision = std::ranges::find(request.metadataDecisions, recordId,
+            &LegacyMetadataDecision::recordId);
+        if (decision != request.metadataDecisions.end()
+            && decision->action == LegacyMetadataDecisionAction::Drop
+            && disposition != LegacyMetadataDisposition::Contract
+            && disposition != LegacyMetadataDisposition::Recomputed) {
+            disposition = LegacyMetadataDisposition::DroppedByUser;
+            reason = "Explicitly discarded for this import; the immutable capsule remains unchanged.";
+        }
+        plan.metadata.push_back({recordId, kind, ordinal, std::string(owner),
+            std::string(field), disposition, std::move(reason)});
+    };
+    const std::string pendingReason =
+        "Retained in the immutable capsule for a typed future promotion adapter.";
+    const auto projectDisposition = [&](const std::string_view code) {
+        const auto diagnostic = std::ranges::find(projectDiagnostics, code,
+            &LegacyProjectDiagnostic::code);
+        return diagnostic == projectDiagnostics.end()
+            ? std::pair{LegacyMetadataDisposition::Pending, pendingReason}
+            : std::pair{LegacyMetadataDisposition::Invalid, diagnostic->message};
+    };
+    append(std::nullopt, LegacyMetadataKind::RecomputedState, "SCTProject", "version",
+        LegacyMetadataDisposition::Contract,
+        "Validated as the official final version-7 contract.");
+    const auto globals = projectDisposition("invalid-global-variables");
+    append(std::nullopt, LegacyMetadataKind::ProjectVariableAliases, "SCTProject",
+        "global_variables", globals.first, globals.second);
+    const auto colors = projectDisposition("invalid-instruction-colors");
+    append(std::nullopt, LegacyMetadataKind::OpcodeColors, "SCTProject",
+        "inst_id_colors", colors.first, colors.second);
     static constexpr std::array pendingFields{"folded_sects", "sect_tree", "string_groups",
         "string_garbage", "unused_sections", "errors", "error_sections", "variables",
         "instruction_labels", "instruction_grouping", "suppressed_instructions"};
     static constexpr std::array recomputedFields{"index", "sect_list", "instruction_locations",
         "string_locations", "section_offsets", "instruction_offsets"};
     for (std::uint32_t ordinal = 0; ordinal < scriptCount; ++ordinal) {
-        for (const auto* field : pendingFields)
-            plan.metadata.push_back({ordinal, "SCTScript", field,
-                unsupportedDisposition, unsupportedReason});
+        for (const auto* field : pendingFields) {
+            LegacyMetadataKind kind = LegacyMetadataKind::PreservedEvidence;
+            if (std::string_view(field) == "folded_sects") kind = LegacyMetadataKind::FoldedSections;
+            else if (std::string_view(field) == "sect_tree") kind = LegacyMetadataKind::SectionGroups;
+            else if (std::string_view(field) == "string_groups") kind = LegacyMetadataKind::StringGroups;
+            else if (std::string_view(field) == "variables") kind = LegacyMetadataKind::ScriptVariableAliases;
+            else if (std::string_view(field) == "instruction_labels") kind = LegacyMetadataKind::InstructionLabels;
+            else if (std::string_view(field) == "instruction_grouping") kind = LegacyMetadataKind::InstructionGroups;
+            else if (std::string_view(field) == "suppressed_instructions") kind = LegacyMetadataKind::SuppressedInstructions;
+            else if (std::string_view(field) == "errors" || std::string_view(field) == "error_sections"
+                || std::string_view(field) == "unused_sections") kind = LegacyMetadataKind::AdvisoryDiagnostics;
+            append(ordinal, kind, "SCTScript", field,
+                LegacyMetadataDisposition::Pending, pendingReason);
+        }
         for (const auto* field : recomputedFields)
-            plan.metadata.push_back({ordinal, "SCTScript", field,
+            append(ordinal, LegacyMetadataKind::RecomputedState, "SCTScript", field,
                 LegacyMetadataDisposition::Recomputed,
-                "Recomputed by SpiceSCT layout and current SALSA indexing."});
+                "Recomputed by SpiceSCT layout and current SALSA indexing.");
     }
+}
+
+[[nodiscard]] std::string regionName(const LegacyImportRegion region) {
+    switch (region) {
+    case LegacyImportRegion::NorthAmerica: return "north-america";
+    case LegacyImportRegion::Europe: return "europe";
+    case LegacyImportRegion::Japan: return "japan";
+    case LegacyImportRegion::Unknown: return "unknown";
+    }
+    return "unknown";
 }
 
 [[nodiscard]] std::string scopeName(LegacyImportTargetScope scope) {
@@ -870,14 +1006,20 @@ bool FreshLegacyImportPlan::ready() const noexcept {
         })
         && std::ranges::none_of(scripts, [](const FreshLegacyScriptPlan& script) {
             return script.status == FreshLegacyScriptPlanStatus::Blocked;
+        })
+        && std::ranges::none_of(metadata, [](const LegacyMetadataPlanRecord& record) {
+            return record.disposition == LegacyMetadataDisposition::Blocked
+                || record.disposition == LegacyMetadataDisposition::Unsupported
+                || record.disposition == LegacyMetadataDisposition::Invalid;
         });
 }
 
-Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
+static Result<FreshLegacyImportPlan> buildFreshLegacyImportPlan(
     const FreshLegacyImportRequest& request,
     const LegacyCapsuleValidationLimits& limits,
     const std::stop_token stopToken,
-    const FreshLegacyImportObserver& observer) {
+    const FreshLegacyImportObserver& observer,
+    const std::filesystem::path* stagedSourceDirectory) {
     report(observer, FreshLegacyImportPhase::ValidatingCapsule, 0, 1);
     if (request.capsuleRoot.empty() || request.sourceDirectory.empty()
         || request.workspaceDirectory.empty())
@@ -901,6 +1043,10 @@ Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
         return Result<FreshLegacyImportPlan>::failure(importError(
             DiagnosticCode::LegacyImportInvalidRequest,
             "Fresh source and workspace destinations must be distinct and non-overlapping."));
+    if (!sameVolume(request.sourceDirectory, request.workspaceDirectory))
+        return Result<FreshLegacyImportPlan>::failure(importError(
+            DiagnosticCode::LegacyImportInvalidRequest,
+            "Fresh source and workspace destinations must share one filesystem volume."));
     if (stopToken.stop_requested())
         return Result<FreshLegacyImportPlan>::failure(importError(
             DiagnosticCode::Cancelled, "Fresh legacy import planning was cancelled."));
@@ -928,6 +1074,7 @@ Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
     plan.capsuleId = capsule.value().capsuleId;
     plan.converterContractId = capsule.value().converterContractId;
     plan.targetScope = request.targetScope;
+    plan.region = request.region;
     plan.customTargetName = request.customTargetName;
     plan.sourceDestination = inspectDestination(request.sourceDirectory);
     report(observer, FreshLegacyImportPhase::InspectingDestinations, 1, 2);
@@ -981,7 +1128,8 @@ Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
                     const spice::sct::SctDocumentExportOptions options{
                         script.publication.platform, script.publication.textEncoding,
                         script.publication.byteOrder, script.publication.wrapper};
-                    auto encoded = spice::sct::SctDocumentExporter::exportDocument(*document, options);
+                    auto encoded = spice::sct::SctDocumentExporter::exportDocument(
+                        document->document, options);
                     if (!encoded.success) {
                         for (const auto& diagnostic : encoded.diagnostics)
                             if (diagnostic.severity == spice::sct::SctDiagnosticSeverity::Error)
@@ -1006,10 +1154,25 @@ Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
                             const auto reparsed = reencoded.success
                                 ? parser.parse(reencoded.bytes, script.outputStem + ".sct")
                                 : spice::sct::SctParseResult{};
-                            const auto comparison = reparsed.parseOk
+                            auto comparison = reparsed.parseOk
                                 ? spice::sct::SctSemanticComparer{}.compare(parsed, reparsed)
                                 : spice::sct::SctSemanticCompareResult{false,
                                     {"The canonical re-encoding did not parse."}};
+                            if (!reparsed.parseOk) {
+                                for (const auto& diagnostic : reencoded.diagnostics) {
+                                    if (diagnostic.severity
+                                        == spice::sct::SctDiagnosticSeverity::Error)
+                                        comparison.differences.push_back(
+                                            "Canonical re-encoding: " + diagnostic.message);
+                                }
+                                for (const auto& diagnostic : reparsed.diagnostics) {
+                                    comparison.differences.push_back("Reparse byte "
+                                        + std::to_string(diagnostic.offset)
+                                        + (diagnostic.section.empty() ? std::string{}
+                                            : " in section " + diagnostic.section)
+                                        + ": " + diagnostic.message);
+                                }
+                            }
                             if (!comparison.equivalent) {
                                 script.reasons.push_back("The generated SCT failed canonical reparse semantic equivalence.");
                                 script.reasons.insert(script.reasons.end(), comparison.differences.begin(),
@@ -1020,11 +1183,29 @@ Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
                                 if (!digest) {
                                     script.reasons.push_back("The generated SCT could not be hashed.");
                                 } else {
-                                    script.status = FreshLegacyScriptPlanStatus::Ready;
-                                    script.outputDigest = digest.value();
-                                    script.outputSize = encoded.outputSize;
-                                    script.decodedPayloadSize = encoded.decodedPayloadSize;
-                                    script.reparseEquivalent = true;
+                                    bool staged = true;
+                                    if (stagedSourceDirectory != nullptr) {
+                                        report(observer, FreshLegacyImportPhase::StagingArtifacts,
+                                            plan.scripts.size(), capsule.value().scripts.size(),
+                                            summary.key);
+                                        const auto destination = *stagedSourceDirectory
+                                            / script.outputRelativePath;
+                                        const auto written = replaceFileAtomically(destination,
+                                            std::as_bytes(std::span{encoded.bytes}));
+                                        if (!written) {
+                                            staged = false;
+                                            script.reasons.push_back(
+                                                written.diagnostics().front().message);
+                                        }
+                                    }
+                                    if (staged) {
+                                        script.status = FreshLegacyScriptPlanStatus::Ready;
+                                        script.outputDigest = digest.value();
+                                        script.outputSize = encoded.outputSize;
+                                        script.decodedPayloadSize = encoded.decodedPayloadSize;
+                                        script.reparseEquivalent = true;
+                                        script.entityMappings = std::move(document->mappings);
+                                    }
                                 }
                             }
                         }
@@ -1037,12 +1218,24 @@ Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
             plan.scripts.size(), capsule.value().scripts.size(), summary.key);
     }
 
-    addMetadataPlan(plan, static_cast<std::uint32_t>(plan.scripts.size()),
-        request.discardUnsupportedMetadata);
+    addMetadataPlan(plan, request, static_cast<std::uint32_t>(plan.scripts.size()),
+        capsule.value().projectDiagnostics);
+    std::set<std::string, std::less<>> metadataIds;
+    for (const auto& decision : request.metadataDecisions) {
+        if (!metadataIds.insert(decision.recordId).second
+            || std::ranges::none_of(plan.metadata, [&](const auto& record) {
+                return record.recordId == decision.recordId
+                    && record.disposition == LegacyMetadataDisposition::DroppedByUser;
+            }))
+            return Result<FreshLegacyImportPlan>::failure(importError(
+                DiagnosticCode::LegacyImportInvalidRequest,
+                "Metadata decisions must uniquely identify droppable capsule records."));
+    }
     report(observer, FreshLegacyImportPhase::FinalizingPlan, 0, 1);
     std::string identity;
     appendIdentityField(identity, plan.capsuleId);
     appendIdentityField(identity, scopeName(plan.targetScope));
+    appendIdentityField(identity, regionName(plan.region));
     appendIdentityField(identity, plan.customTargetName);
     const auto sourceIdentity = pathIdentity(plan.sourceDestination.path);
     const auto workspaceIdentity = pathIdentity(plan.workspaceDestination.path);
@@ -1057,6 +1250,11 @@ Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
         appendIdentityField(identity, profileIdentity(script.publication));
         appendIdentityField(identity, script.outputDigest
             ? script.outputDigest->toHex() : std::string{});
+        for (const auto& mapping : script.entityMappings) {
+            appendIdentityField(identity, std::to_string(static_cast<int>(mapping.kind)));
+            appendIdentityField(identity, mapping.legacyIdentity);
+            appendIdentityField(identity, std::to_string(mapping.currentId));
+        }
         for (const auto& reason : script.reasons) appendIdentityField(identity, reason);
     }
     for (const auto& metadata : plan.metadata) {
@@ -1073,6 +1271,53 @@ Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
     plan.planId = digest.value().toHex();
     report(observer, FreshLegacyImportPhase::FinalizingPlan, 1, 1);
     return Result<FreshLegacyImportPlan>::success(std::move(plan));
+}
+
+Result<FreshLegacyImportPlan> LegacyFreshImportPlanner::plan(
+    const FreshLegacyImportRequest& request,
+    const LegacyCapsuleValidationLimits& limits,
+    const std::stop_token stopToken,
+    const FreshLegacyImportObserver& observer) {
+    return buildFreshLegacyImportPlan(request, limits, stopToken, observer, nullptr);
+}
+
+Result<FreshLegacyImportPreparation> LegacyFreshImportPreparer::prepare(
+    const FreshLegacyImportRequest& request,
+    const std::filesystem::path& stagedSourceDirectory,
+    const LegacyCapsuleValidationLimits& limits,
+    const std::stop_token stopToken,
+    const FreshLegacyImportObserver& observer) {
+    if (stagedSourceDirectory.empty()
+        || nestedPaths(stagedSourceDirectory, request.sourceDirectory)
+        || nestedPaths(stagedSourceDirectory, request.workspaceDirectory)
+        || nestedPaths(stagedSourceDirectory, request.capsuleRoot))
+        return Result<FreshLegacyImportPreparation>::failure(importError(
+            DiagnosticCode::LegacyImportInvalidRequest,
+            "The private staging directory must be distinct from all import inputs and destinations.",
+            stagedSourceDirectory));
+    if (!sameVolume(stagedSourceDirectory, request.sourceDirectory))
+        return Result<FreshLegacyImportPreparation>::failure(importError(
+            DiagnosticCode::LegacyImportInvalidRequest,
+            "The private staging directory must share the destination filesystem volume.",
+            stagedSourceDirectory));
+    std::error_code error;
+    if (std::filesystem::exists(stagedSourceDirectory, error) || error)
+        return Result<FreshLegacyImportPreparation>::failure(importError(
+            DiagnosticCode::LegacyImportInvalidRequest,
+            "The private staging directory must not already exist.", stagedSourceDirectory));
+    if (!std::filesystem::create_directories(stagedSourceDirectory, error) || error)
+        return Result<FreshLegacyImportPreparation>::failure(importError(
+            DiagnosticCode::PersistenceWriteFailed,
+            "The private import staging directory could not be created.",
+            stagedSourceDirectory));
+    auto planned = buildFreshLegacyImportPlan(
+        request, limits, stopToken, observer, &stagedSourceDirectory);
+    if (!planned) {
+        std::filesystem::remove_all(stagedSourceDirectory, error);
+        return Result<FreshLegacyImportPreparation>::failure(planned.diagnostics());
+    }
+    return Result<FreshLegacyImportPreparation>::success(
+        {request, std::move(planned).takeValue(), stagedSourceDirectory});
 }
 
 }  // namespace salsa::core

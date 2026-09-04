@@ -273,6 +273,13 @@ using namespace std::string_view_literals;
     auto fields = validateInertGraphs(fieldRoots, root / L"project.cbor",
         limits.maxNodesPerRecord);
     if (!fields) return Result<Json>::failure(fields.diagnostics());
+    for (const auto& diagnostic : record.at("diagnostics"))
+        if (!hasExactKeys(diagnostic, {"code", "path", "message"})
+            || !diagnostic.at("code").is_string()
+            || !diagnostic.at("path").is_string()
+            || !diagnostic.at("message").is_string())
+            return Result<Json>::failure(capsuleError(
+                "A capsule project diagnostic is malformed.", root / L"project.cbor"));
     return parsed;
 }
 
@@ -752,6 +759,10 @@ Result<LegacyCapsuleSummary> LegacyCapsuleReader::validate(
         source.at("pickleProtocol").get<std::uint32_t>(),
         source.at("projectVersion").get<std::uint32_t>(),
         source.at("originalRetained").get<bool>()};
+    for (const auto& diagnostic : projectRecord.value().at("diagnostics"))
+        summary.projectDiagnostics.push_back({diagnostic.at("code").get<std::string>(),
+            diagnostic.at("path").get<std::string>(),
+            diagnostic.at("message").get<std::string>()});
     std::uint32_t expectedOrdinal = 0;
     std::set<std::string> names{};
     bool actionRequired = !projectRecord.value().at("diagnostics").empty();

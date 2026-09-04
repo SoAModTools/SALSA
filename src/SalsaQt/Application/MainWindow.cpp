@@ -2,6 +2,7 @@
 #include "Application/ExclusiveOperationCoordinator.h"
 
 #include "SalsaCore/Application/ApplicationInfo.h"
+#include "SalsaCore/Legacy/LegacyFreshImport.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
 #include "Sct/SctDocumentController.h"
@@ -47,6 +48,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTableView>
@@ -201,8 +203,19 @@ MainWindow::MainWindow(const Mode mode, QWidget* parent)
     syncActions();
     recordActiveNavigation();
     statusBar()->showMessage(tr("Ready"));
-    if (mode_ == Mode::Application)
+    if (mode_ == Mode::Application) {
+        const auto registry = std::filesystem::path(QDir(
+            QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(
+            QStringLiteral("migration-transactions")).toStdWString());
+        const auto recoveries = core::LegacyFreshImportRecoveryService::recoverAll(registry);
+        const auto blocked = std::ranges::count_if(recoveries, [](const auto& result) {
+            return result.status == core::FreshLegacyImportCommitStatus::RecoveryBlocked;
+        });
+        if (blocked != 0) statusBar()->showMessage(tr(
+            "%1 interrupted legacy import transaction(s) require attention.").arg(blocked),
+            15000);
         QTimer::singleShot(0, this, &MainWindow::attemptRestoreDataset);
+    }
 }
 
 bool MainWindow::installSemanticCandidate(
@@ -360,7 +373,7 @@ void MainWindow::buildUi() {
     openAction_->setShortcut(QKeySequence::Open);
     recentMenu_ = fileMenu->addMenu(tr("Open &Recent"));
     convertLegacyProjectAction_ = fileMenu->addAction(
-        tr("Convert &Legacy Project to Capsule..."));
+        tr("Import &Legacy Project..."));
     fileMenu->addSeparator();
     saveAction_ = fileMenu->addAction(tr("&Save Document"));
     saveAction_->setShortcut(QKeySequence::Save);
@@ -877,8 +890,11 @@ void MainWindow::connectWorkspace() {
 
 void MainWindow::convertLegacyProject() {
     if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
-    (void)exclusiveOperations_->open(
-        std::make_unique<LegacyConversionController>(), this);
+    (void)exclusiveOperations_->open(std::make_unique<LegacyImportController>(
+        [this](const QString source, const QString workspace) {
+            rememberPatchWorkspaceAssociation(source, workspace);
+            QTimer::singleShot(0, this, [this, source] { openDataset(source); });
+        }), this);
 }
 
 void MainWindow::chooseDataset() {

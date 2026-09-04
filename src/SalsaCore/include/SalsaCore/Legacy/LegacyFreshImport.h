@@ -3,6 +3,7 @@
 #include "SalsaCore/Foundation/Hashing.h"
 #include "SalsaCore/Foundation/Result.h"
 #include "SalsaCore/Legacy/LegacyCapsule.h"
+#include "SalsaCore/Project/ProjectTypes.h"
 #include "SalsaCore/Sct/SctPublication.h"
 
 #include <cstdint>
@@ -20,6 +21,13 @@ enum class LegacyImportTargetScope {
     DreamcastDisc1,
     DreamcastDisc2,
     UnknownCustom,
+};
+
+enum class LegacyImportRegion {
+    NorthAmerica,
+    Europe,
+    Japan,
+    Unknown,
 };
 
 enum class LegacyImportDestinationState {
@@ -48,14 +56,43 @@ enum class LegacyMetadataDisposition {
     Contract,
     DroppedByUser,
     Blocked,
+    Unsupported,
+    Invalid,
+};
+
+enum class LegacyMetadataKind {
+    ProjectVariableAliases,
+    OpcodeColors,
+    FoldedSections,
+    SectionGroups,
+    StringGroups,
+    ScriptVariableAliases,
+    InstructionLabels,
+    InstructionGroups,
+    SuppressedInstructions,
+    PreservedEvidence,
+    AdvisoryDiagnostics,
+    RecomputedState,
 };
 
 struct LegacyMetadataPlanRecord final {
+    std::string recordId{};
+    LegacyMetadataKind kind = LegacyMetadataKind::PreservedEvidence;
     std::optional<std::uint32_t> scriptOrdinal{};
     std::string owner{};
     std::string field{};
     LegacyMetadataDisposition disposition = LegacyMetadataDisposition::Pending;
     std::string reason{};
+};
+
+enum class LegacyMetadataDecisionAction {
+    Retain,
+    Drop,
+};
+
+struct LegacyMetadataDecision final {
+    std::string recordId{};
+    LegacyMetadataDecisionAction action = LegacyMetadataDecisionAction::Retain;
 };
 
 struct FreshLegacyScriptDecision final {
@@ -65,15 +102,28 @@ struct FreshLegacyScriptDecision final {
     std::optional<SctPublicationOptions> publicationOverride{};
 };
 
+enum class LegacyEntityKind {
+    Section,
+    Instruction,
+    String,
+};
+
+struct LegacyEntityMapping final {
+    LegacyEntityKind kind = LegacyEntityKind::Section;
+    std::string legacyIdentity{};
+    std::uint64_t currentId = 0;
+};
+
 struct FreshLegacyImportRequest final {
     std::filesystem::path capsuleRoot{};
     std::filesystem::path sourceDirectory{};
     std::filesystem::path workspaceDirectory{};
     LegacyImportTargetScope targetScope = LegacyImportTargetScope::UnknownCustom;
+    LegacyImportRegion region = LegacyImportRegion::Unknown;
     std::string customTargetName{};
     SctPublicationOptions publication{};
     std::vector<FreshLegacyScriptDecision> scriptDecisions{};
-    bool discardUnsupportedMetadata = false;
+    std::vector<LegacyMetadataDecision> metadataDecisions{};
 };
 
 enum class FreshLegacyScriptPlanStatus {
@@ -94,6 +144,7 @@ struct FreshLegacyScriptPlan final {
     std::uint64_t outputSize = 0;
     std::uint32_t decodedPayloadSize = 0;
     bool reparseEquivalent = false;
+    std::vector<LegacyEntityMapping> entityMappings{};
     std::vector<std::string> reasons{};
 };
 
@@ -102,6 +153,10 @@ enum class FreshLegacyImportPhase {
     InspectingDestinations,
     ConvertingScripts,
     FinalizingPlan,
+    StagingArtifacts,
+    CreatingWorkspace,
+    PublishingDestinations,
+    VerifyingCommit,
 };
 
 struct FreshLegacyImportProgress final {
@@ -118,6 +173,7 @@ struct FreshLegacyImportPlan final {
     std::string capsuleId{};
     std::string converterContractId{};
     LegacyImportTargetScope targetScope = LegacyImportTargetScope::UnknownCustom;
+    LegacyImportRegion region = LegacyImportRegion::Unknown;
     std::string customTargetName{};
     LegacyImportDestinationInspection sourceDestination{};
     LegacyImportDestinationInspection workspaceDestination{};
@@ -134,6 +190,67 @@ public:
         const LegacyCapsuleValidationLimits& limits = {},
         std::stop_token stopToken = {},
         const FreshLegacyImportObserver& observer = {});
+};
+
+struct FreshLegacyImportPreparation final {
+    FreshLegacyImportRequest request{};
+    FreshLegacyImportPlan plan{};
+    std::filesystem::path stagedSourceDirectory{};
+};
+
+class LegacyFreshImportPreparer final {
+public:
+    [[nodiscard]] static Result<FreshLegacyImportPreparation> prepare(
+        const FreshLegacyImportRequest& request,
+        const std::filesystem::path& stagedSourceDirectory,
+        const LegacyCapsuleValidationLimits& limits = {},
+        std::stop_token stopToken = {},
+        const FreshLegacyImportObserver& observer = {});
+};
+
+struct FreshLegacyImportCommitHooks final {
+    // Tests use this to simulate process loss after a destination is published.
+    std::function<bool(std::size_t publishedDestinations)> continueAfterPublication{};
+};
+
+enum class FreshLegacyImportCommitStatus {
+    Committed,
+    RolledBack,
+    Interrupted,
+    RecoveryBlocked,
+};
+
+struct FreshLegacyImportCommitRequest final {
+    FreshLegacyImportPreparation preparation{};
+    std::filesystem::path originalProject{};
+    std::filesystem::path stagedWorkspaceDirectory{};
+    std::filesystem::path recoveryRegistryDirectory{};
+};
+
+struct FreshLegacyImportCommitResult final {
+    FreshLegacyImportCommitStatus status =
+        FreshLegacyImportCommitStatus::RecoveryBlocked;
+    std::optional<DatasetContext> dataset{};
+    std::filesystem::path workspaceDirectory{};
+    std::vector<Diagnostic> diagnostics{};
+
+    [[nodiscard]] bool succeeded() const noexcept {
+        return status == FreshLegacyImportCommitStatus::Committed;
+    }
+};
+
+class LegacyFreshImportCommitService final {
+public:
+    [[nodiscard]] static FreshLegacyImportCommitResult commit(
+        const FreshLegacyImportCommitRequest& request,
+        const FreshLegacyImportCommitHooks& hooks = {},
+        const FreshLegacyImportObserver& observer = {});
+};
+
+class LegacyFreshImportRecoveryService final {
+public:
+    [[nodiscard]] static std::vector<FreshLegacyImportCommitResult> recoverAll(
+        const std::filesystem::path& recoveryRegistryDirectory);
 };
 
 }  // namespace salsa::core

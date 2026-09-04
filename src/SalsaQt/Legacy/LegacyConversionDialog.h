@@ -2,9 +2,12 @@
 
 #include "Application/ExclusiveOperationController.h"
 #include "SalsaCore/Legacy/LegacyConversionService.h"
+#include "SalsaCore/Legacy/LegacyFreshImport.h"
 
 #include <QFutureWatcher>
 
+#include <filesystem>
+#include <functional>
 #include <optional>
 #include <stop_token>
 
@@ -17,12 +20,14 @@ class QWidget;
 
 namespace salsa::qt {
 
-class LegacyConversionController final : public ExclusiveOperationController {
+class LegacyImportController final : public ExclusiveOperationController {
     Q_OBJECT
 
 public:
-    explicit LegacyConversionController(QObject* parent = nullptr);
-    ~LegacyConversionController() override;
+    using Completion = std::function<void(QString source, QString workspace)>;
+
+    explicit LegacyImportController(Completion completion = {}, QObject* parent = nullptr);
+    ~LegacyImportController() override;
 
     [[nodiscard]] QString title() const override;
     [[nodiscard]] core::ExclusiveOperationFlowDefinition flowDefinition() const override;
@@ -36,28 +41,61 @@ public:
 private:
     QWidget* createConfigurationPage(QWidget* parent);
     QWidget* createProcessingPage(QWidget* parent);
+    QWidget* createReviewPage(QWidget* parent);
+    QWidget* createCommitPage(QWidget* parent);
     QWidget* createSummaryPage(QWidget* parent);
     void chooseSource();
-    void chooseDestinationParent();
+    void chooseSourceDestination();
+    void chooseWorkspaceDestination();
     void startConversion();
-    void updateProgress(const core::LegacyConversionProgress& progress);
     void finishConversion();
-    void populateSummary();
+    void populateReview();
+    void startPreparation();
+    void finishPreparation();
+    void populateCommitReview();
+    void startCommit();
+    void finishCommit();
+    void cleanupTransientArtifacts();
+    [[nodiscard]] core::FreshLegacyImportRequest importRequest() const;
+    [[nodiscard]] QString diagnosticText(
+        const std::vector<core::Diagnostic>& diagnostics) const;
 
     QLineEdit* source_ = nullptr;
-    QLineEdit* destination_ = nullptr;
+    QLineEdit* sourceDestination_ = nullptr;
+    QLineEdit* workspaceDestination_ = nullptr;
+    QLineEdit* customTarget_ = nullptr;
     QCheckBox* trusted_ = nullptr;
     QCheckBox* retainOriginal_ = nullptr;
     QCheckBox* disableLimits_ = nullptr;
     QCheckBox* disableLimitsConfirmed_ = nullptr;
     QComboBox* scriptWorkers_ = nullptr;
+    QComboBox* target_ = nullptr;
+    QComboBox* platform_ = nullptr;
+    QComboBox* region_ = nullptr;
+    QComboBox* characterEncoding_ = nullptr;
+    QComboBox* messageSpace_ = nullptr;
+    QComboBox* byteOrder_ = nullptr;
+    QComboBox* wrapper_ = nullptr;
     QLabel* configurationStatus_ = nullptr;
     QLabel* processingStatus_ = nullptr;
+    QLabel* reviewStatus_ = nullptr;
+    QLabel* commitStatus_ = nullptr;
     QLabel* summaryStatus_ = nullptr;
     QTableWidget* scripts_ = nullptr;
-    QFutureWatcher<core::LegacyConversionResult> watcher_{};
+    QTableWidget* metadata_ = nullptr;
+
+    QFutureWatcher<core::LegacyConversionResult> conversionWatcher_{};
+    QFutureWatcher<core::Result<core::FreshLegacyImportPreparation>> preparationWatcher_{};
+    QFutureWatcher<core::FreshLegacyImportCommitResult> commitWatcher_{};
     std::stop_source stopSource_{};
-    std::optional<core::LegacyConversionResult> result_{};
+    std::optional<core::LegacyConversionResult> conversion_{};
+    std::optional<core::FreshLegacyImportPreparation> preparation_{};
+    std::optional<core::FreshLegacyImportCommitResult> commit_{};
+    std::filesystem::path capsuleStage_{};
+    std::filesystem::path sourceStage_{};
+    std::filesystem::path workspaceStage_{};
+    std::filesystem::path recoveryRegistry_{};
+    Completion completion_{};
 };
 
 }  // namespace salsa::qt
