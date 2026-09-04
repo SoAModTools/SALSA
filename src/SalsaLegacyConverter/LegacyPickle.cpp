@@ -5,6 +5,7 @@
 #include <bit>
 #include <fstream>
 #include <limits>
+#include <cstring>
 #include <ranges>
 #include <stdexcept>
 #include <unordered_map>
@@ -34,12 +35,13 @@ template <typename T>
 class ValueStore::Impl final {
 public:
     struct Node final {
-        ValueKind kind = ValueKind::Null;
         // Primitive scalar, payload offset, or container mutation head.
         std::uint64_t data = 0;
         // Payload size or admitted object-class code.
         std::uint64_t auxiliary = 0;
+        ValueKind kind = ValueKind::Null;
     };
+    static_assert(sizeof(Node) == 24);
 
     explicit Impl(std::filesystem::path spoolPath) : path(std::move(spoolPath)) {
         std::error_code error;
@@ -49,7 +51,9 @@ public:
         if (!writer) { failure = "pickle spool could not be created"; return; }
         // Offset zero terminates mutation chains.
         writer.put('\0');
-        writer.flush();
+        writerOffset = 1;
+        dirty = true;
+        syncForRead();
         reader.open(path, std::ios::binary);
         if (!reader) failure = "pickle spool could not be opened for reading";
     }
@@ -87,34 +91,34 @@ public:
 
     [[nodiscard]] std::uint64_t appendPayload(const void* data,
         const std::uint64_t size) {
-        writer.seekp(0, std::ios::end);
-        const auto position = writer.tellp();
-        if (position < 0) throw std::runtime_error("pickle spool seek failed");
+        ensureWritable();
+        const auto position = writerOffset;
         if (size != 0) writer.write(static_cast<const char*>(data),
             static_cast<std::streamsize>(size));
         if (!writer) throw std::runtime_error("pickle spool write failed");
-        return static_cast<std::uint64_t>(position);
+        writerOffset += size; dirty = true;
+        return position;
     }
 
     [[nodiscard]] std::uint64_t appendItemBlock(const std::uint64_t previous,
         const std::vector<ValueId>& items) {
-        writer.seekp(0, std::ios::end);
-        const auto position = writer.tellp();
-        if (position < 0) throw std::runtime_error("pickle spool seek failed");
+        ensureWritable();
+        const auto position = writerOffset;
         writePod(writer, previous);
         const auto count = static_cast<std::uint64_t>(items.size());
         writePod(writer, count);
         if (!items.empty()) writer.write(reinterpret_cast<const char*>(items.data()),
             static_cast<std::streamsize>(items.size() * sizeof(ValueId)));
         if (!writer) throw std::runtime_error("pickle spool write failed");
-        return static_cast<std::uint64_t>(position);
+        writerOffset += sizeof(previous) + sizeof(count)
+            + items.size() * sizeof(ValueId);
+        dirty = true; return position;
     }
 
     [[nodiscard]] std::uint64_t appendEntryBlock(const std::uint64_t previous,
         const std::vector<std::pair<ValueId, ValueId>>& entries) {
-        writer.seekp(0, std::ios::end);
-        const auto position = writer.tellp();
-        if (position < 0) throw std::runtime_error("pickle spool seek failed");
+        ensureWritable();
+        const auto position = writerOffset;
         writePod(writer, previous);
         const auto count = static_cast<std::uint64_t>(entries.size());
         writePod(writer, count);
@@ -123,12 +127,31 @@ public:
             writePod(writer, value);
         }
         if (!writer) throw std::runtime_error("pickle spool write failed");
-        return static_cast<std::uint64_t>(position);
+        writerOffset += sizeof(previous) + sizeof(count)
+            + entries.size() * sizeof(ValueId) * 2u;
+        dirty = true; return position;
+    }
+
+    void ensureWritable() const {
+        if (sealed) throw std::runtime_error("pickle spool is sealed");
+    }
+
+    void syncForRead() const {
+        if (!dirty) return;
+        writer.flush();
+        if (!writer) throw std::runtime_error("pickle spool flush failed");
+        dirty = false;
+    }
+
+    void seal() {
+        syncForRead();
+        writer.close();
+        sealed = true;
     }
 
     [[nodiscard]] std::vector<std::byte> readPayload(const std::uint64_t offset,
         const std::uint64_t size) const {
-        writer.flush();
+        syncForRead();
         reader.clear();
         reader.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
         if (!reader || size > std::numeric_limits<std::size_t>::max())
@@ -142,7 +165,7 @@ public:
 
     [[nodiscard]] std::vector<std::vector<ValueId>> readItemBlocks(
         std::uint64_t offset) const {
-        writer.flush();
+        syncForRead();
         std::vector<std::vector<ValueId>> blocks;
         while (offset != 0) {
             reader.clear(); reader.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
@@ -161,7 +184,7 @@ public:
 
     [[nodiscard]] std::vector<std::vector<std::pair<ValueId, ValueId>>>
     readEntryBlocks(std::uint64_t offset) const {
-        writer.flush();
+        syncForRead();
         std::vector<std::vector<std::pair<ValueId, ValueId>>> blocks;
         while (offset != 0) {
             reader.clear(); reader.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
@@ -222,6 +245,9 @@ public:
     std::filesystem::path path{};
     mutable std::ifstream reader{};
     mutable std::ofstream writer{};
+    std::uint64_t writerOffset = 0;
+    mutable bool dirty = false;
+    bool sealed = false;
     static constexpr std::uint64_t NodesPerBlock = 65'536;
     std::vector<std::unique_ptr<Node[]>> nodeBlocks{};
     std::uint64_t nodeCount = 0;
@@ -236,6 +262,7 @@ bool ValueStore::valid() const noexcept { return impl_ && impl_->failure.empty()
 const std::string& ValueStore::error() const noexcept { return impl_->failure; }
 const std::filesystem::path& ValueStore::path() const noexcept { return impl_->path; }
 std::uint64_t ValueStore::nodeCount() const noexcept { return impl_->nodeCount; }
+void ValueStore::seal() { impl_->seal(); }
 
 ValueId ValueStore::create(const ValueKind kind) {
     return impl_->appendNode(kind);
@@ -264,18 +291,23 @@ ValueId ValueStore::createObject(const std::string_view className) {
 void ValueStore::appendItems(const ValueId target, const std::vector<ValueId>& items) {
     if (items.empty()) return; auto& node = impl_->node(target);
     node.data = impl_->appendItemBlock(node.data, items);
+    node.auxiliary += items.size();
 }
 void ValueStore::appendEntries(const ValueId target,
     const std::vector<std::pair<ValueId, ValueId>>& entries) {
     if (entries.empty()) return; auto& node = impl_->node(target);
     node.data = impl_->appendEntryBlock(node.data, entries);
+    if (node.kind != ValueKind::Object) node.auxiliary += entries.size();
 }
 void ValueStore::replaceItems(const ValueId target, const std::vector<ValueId>& items) {
-    impl_->node(target).data = 0; appendItems(target, items);
+    auto& node = impl_->node(target); node.data = 0; node.auxiliary = 0;
+    appendItems(target, items);
 }
 void ValueStore::replaceEntries(const ValueId target,
     const std::vector<std::pair<ValueId, ValueId>>& entries) {
-    impl_->node(target).data = 0; appendEntries(target, entries);
+    auto& node = impl_->node(target); node.data = 0;
+    if (node.kind != ValueKind::Object) node.auxiliary = 0;
+    appendEntries(target, entries);
 }
 void ValueStore::replaceText(const ValueId target, const std::string_view value) {
     auto& node = impl_->node(target);
@@ -317,6 +349,169 @@ StoredObject ValueStore::object(const ValueId value) const {
         result.attributes.emplace_back(impl_->fieldName(key), child);
     return result;
 }
+std::string_view ValueStore::objectClassName(const ValueId value) const {
+    return Impl::className(impl_->node(value).auxiliary);
+}
+ValueId ValueStore::objectAttribute(const ValueId value, const std::string_view key) const {
+    const auto& descriptor = impl_->node(value);
+    if (descriptor.kind != ValueKind::Object) return InvalidValueId;
+    const auto blocks = impl_->readEntryBlocks(descriptor.data);
+    for (const auto& block : blocks)
+        for (const auto& [candidate, child] : block)
+            if (impl_->fieldName(candidate) == key) return child;
+    return InvalidValueId;
+}
+std::uint64_t ValueStore::containerSize(const ValueId value) const {
+    if (value == InvalidValueId) return 0;
+    const auto& node = impl_->node(value);
+    return node.kind == ValueKind::List || node.kind == ValueKind::Tuple
+        || node.kind == ValueKind::Set || node.kind == ValueKind::FrozenSet
+        || node.kind == ValueKind::Dictionary ? node.auxiliary : 0;
+}
+
+class ValueStore::ReadSession::Impl final {
+public:
+    explicit Impl(const ValueStore& valueStore) : store(*valueStore.impl_) {
+        if (!store.sealed) throw std::logic_error("pickle spool is not sealed");
+        reader.open(store.path, std::ios::binary);
+        if (!reader) throw std::runtime_error("pickle spool read session could not be opened");
+    }
+
+    [[nodiscard]] std::vector<std::byte> readPayload(const std::uint64_t offset,
+        const std::uint64_t size) const {
+        reader.clear(); reader.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+        if (!reader || size > std::numeric_limits<std::size_t>::max())
+            throw std::runtime_error("pickle spool read seek failed");
+        std::vector<std::byte> result(static_cast<std::size_t>(size));
+        if (!result.empty()) reader.read(reinterpret_cast<char*>(result.data()),
+            static_cast<std::streamsize>(result.size()));
+        if (!reader) throw std::runtime_error("pickle spool read failed");
+        return result;
+    }
+
+    [[nodiscard]] std::vector<std::vector<ValueId>> readItemBlocks(
+        std::uint64_t offset) const {
+        std::vector<std::vector<ValueId>> blocks;
+        while (offset != 0) {
+            reader.clear(); reader.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+            std::uint64_t previous = 0, count = 0;
+            if (!readPod(reader, previous) || !readPod(reader, count)
+                || count > std::numeric_limits<std::size_t>::max())
+                throw std::runtime_error("pickle spool item block is malformed");
+            std::vector<ValueId> block(static_cast<std::size_t>(count));
+            if (!block.empty()) reader.read(reinterpret_cast<char*>(block.data()),
+                static_cast<std::streamsize>(block.size() * sizeof(ValueId)));
+            if (!reader) throw std::runtime_error("pickle spool item block is truncated");
+            blocks.push_back(std::move(block)); offset = previous;
+        }
+        return blocks;
+    }
+
+    [[nodiscard]] std::vector<std::vector<std::pair<ValueId, ValueId>>>
+    readEntryBlocks(std::uint64_t offset) const {
+        std::vector<std::vector<std::pair<ValueId, ValueId>>> blocks;
+        while (offset != 0) {
+            reader.clear(); reader.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+            std::uint64_t previous = 0, count = 0;
+            if (!readPod(reader, previous) || !readPod(reader, count)
+                || count > std::numeric_limits<std::size_t>::max())
+                throw std::runtime_error("pickle spool entry block is malformed");
+            std::vector<std::pair<ValueId, ValueId>> block;
+            block.reserve(static_cast<std::size_t>(count));
+            for (std::uint64_t index = 0; index < count; ++index) {
+                ValueId key = 0, child = 0;
+                if (!readPod(reader, key) || !readPod(reader, child))
+                    throw std::runtime_error("pickle spool entry block is truncated");
+                block.emplace_back(key, child);
+            }
+            blocks.push_back(std::move(block)); offset = previous;
+        }
+        return blocks;
+    }
+
+    [[nodiscard]] std::string fieldName(const ValueId value) const {
+        if (const auto found = fieldNames.find(value); found != fieldNames.end())
+            return found->second;
+        const auto& descriptor = store.node(value);
+        const auto bytes = readPayload(descriptor.data, descriptor.auxiliary);
+        auto name = std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        fieldNames.emplace(value, name); return name;
+    }
+
+    const ValueStore::Impl& store;
+    mutable std::ifstream reader{};
+    mutable std::unordered_map<ValueId, std::string> fieldNames{};
+};
+
+ValueStore::ReadSession::ReadSession(const ValueStore& store)
+    : impl_(std::make_unique<Impl>(store)) {}
+ValueStore::ReadSession::~ReadSession() = default;
+ValueStore::ReadSession::ReadSession(ReadSession&&) noexcept = default;
+ValueStore::ReadSession& ValueStore::ReadSession::operator=(ReadSession&&) noexcept = default;
+ValueStore::ReadSession ValueStore::openReadSession() const { return ReadSession(*this); }
+
+ValueKind ValueStore::ReadSession::kind(const ValueId value) const {
+    return impl_->store.node(value).kind;
+}
+bool ValueStore::ReadSession::boolean(const ValueId value) const {
+    return impl_->store.node(value).data != 0;
+}
+std::uint64_t ValueStore::ReadSession::floatBits(const ValueId value) const {
+    return impl_->store.node(value).data;
+}
+std::string ValueStore::ReadSession::text(const ValueId value) const {
+    const auto& node = impl_->store.node(value);
+    const auto bytes = impl_->readPayload(node.data, node.auxiliary);
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+std::vector<std::byte> ValueStore::ReadSession::bytes(const ValueId value) const {
+    const auto& node = impl_->store.node(value);
+    return impl_->readPayload(node.data, node.auxiliary);
+}
+std::vector<ValueId> ValueStore::ReadSession::items(const ValueId value) const {
+    auto blocks = impl_->readItemBlocks(impl_->store.node(value).data);
+    std::size_t count = 0; for (const auto& block : blocks) count += block.size();
+    std::vector<ValueId> result; result.reserve(count);
+    for (auto block = blocks.rbegin(); block != blocks.rend(); ++block)
+        result.insert(result.end(), block->begin(), block->end());
+    return result;
+}
+std::vector<std::pair<ValueId, ValueId>> ValueStore::ReadSession::entries(
+    const ValueId value) const {
+    auto blocks = impl_->readEntryBlocks(impl_->store.node(value).data);
+    std::size_t count = 0; for (const auto& block : blocks) count += block.size();
+    std::vector<std::pair<ValueId, ValueId>> result; result.reserve(count);
+    for (auto block = blocks.rbegin(); block != blocks.rend(); ++block)
+        result.insert(result.end(), block->begin(), block->end());
+    return result;
+}
+StoredObject ValueStore::ReadSession::object(const ValueId value) const {
+    const auto& descriptor = impl_->store.node(value);
+    StoredObject result{std::string(ValueStore::Impl::className(descriptor.auxiliary)), {}};
+    for (const auto& [key, child] : entries(value))
+        result.attributes.emplace_back(impl_->fieldName(key), child);
+    return result;
+}
+std::string_view ValueStore::ReadSession::objectClassName(const ValueId value) const {
+    return ValueStore::Impl::className(impl_->store.node(value).auxiliary);
+}
+ValueId ValueStore::ReadSession::objectAttribute(const ValueId value,
+    const std::string_view key) const {
+    const auto& descriptor = impl_->store.node(value);
+    if (descriptor.kind != ValueKind::Object) return InvalidValueId;
+    const auto blocks = impl_->readEntryBlocks(descriptor.data);
+    for (const auto& block : blocks)
+        for (const auto& [candidate, child] : block)
+            if (impl_->fieldName(candidate) == key) return child;
+    return InvalidValueId;
+}
+std::uint64_t ValueStore::ReadSession::containerSize(const ValueId value) const {
+    if (value == InvalidValueId) return 0;
+    const auto& node = impl_->store.node(value);
+    return node.kind == ValueKind::List || node.kind == ValueKind::Tuple
+        || node.kind == ValueKind::Set || node.kind == ValueKind::FrozenSet
+        || node.kind == ValueKind::Dictionary ? node.auxiliary : 0;
+}
 
 namespace {
 
@@ -326,10 +521,11 @@ class Reader final {
 public:
     Reader(const std::filesystem::path& inputPath, const std::uint64_t inputSize,
         std::shared_ptr<ValueStore> store, PickleLimits limits, const bool disabled,
-        std::function<void(std::uint64_t, std::uint64_t)> progress)
+        std::function<void(std::uint64_t, std::uint64_t)> progress,
+        std::function<bool(std::span<const std::byte>)> inputChunk)
         : inputSize_(inputSize), store_(std::move(store)), limits_(limits),
-          disabled_(disabled), progress_(std::move(progress)) {
-        input_.rdbuf()->pubsetbuf(inputBuffer_.data(), inputBuffer_.size());
+          disabled_(disabled), progress_(std::move(progress)),
+          inputChunk_(std::move(inputChunk)) {
         input_.open(inputPath, std::ios::binary);
     }
 
@@ -413,8 +609,9 @@ private:
         throw ParseError(message + " at byte " + std::to_string(position_));
     }
     [[nodiscard]] std::uint8_t byte() {
-        char value = 0;
-        if (position_ >= inputSize_ || !input_.get(value)) fail("unexpected end of pickle");
+        if (position_ >= inputSize_) fail("unexpected end of pickle");
+        refill();
+        const auto value = inputBuffer_[bufferPosition_++];
         ++position_; return static_cast<std::uint8_t>(static_cast<unsigned char>(value));
     }
     [[nodiscard]] std::uint16_t readUnsigned16() {
@@ -441,10 +638,26 @@ private:
             || size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())
             || size > std::numeric_limits<std::size_t>::max()) fail("payload exceeds pickle size");
         std::vector<std::byte> result(static_cast<std::size_t>(size));
-        if (!result.empty()) input_.read(reinterpret_cast<char*>(result.data()),
-            static_cast<std::streamsize>(result.size()));
-        if (!input_) fail("payload is truncated");
-        position_ += size; return result;
+        std::size_t written = 0;
+        while (written < result.size()) {
+            refill();
+            const auto available = bufferSize_ - bufferPosition_;
+            const auto count = std::min(available, result.size() - written);
+            std::memcpy(result.data() + written, inputBuffer_.data() + bufferPosition_, count);
+            bufferPosition_ += count; written += count; position_ += count;
+        }
+        return result;
+    }
+
+    void refill() {
+        if (bufferPosition_ != bufferSize_) return;
+        input_.read(inputBuffer_.data(), static_cast<std::streamsize>(inputBuffer_.size()));
+        const auto count = input_.gcount();
+        if (count <= 0) fail("unexpected end of pickle");
+        bufferPosition_ = 0; bufferSize_ = static_cast<std::size_t>(count);
+        if (inputChunk_ && !inputChunk_(std::as_bytes(std::span{
+                inputBuffer_.data(), bufferSize_})))
+            fail("input digest update failed");
     }
     [[nodiscard]] std::vector<std::byte> raw(const std::uint64_t size) {
         if (!disabled_ && (size > limits_.maxRawBytes
@@ -663,6 +876,8 @@ private:
 
     std::ifstream input_{};
     std::array<char, 64u << 10> inputBuffer_{};
+    std::size_t bufferPosition_ = 0;
+    std::size_t bufferSize_ = 0;
     std::uint64_t inputSize_ = 0;
     std::shared_ptr<ValueStore> store_{};
     PickleLimits limits_{};
@@ -674,6 +889,7 @@ private:
     std::vector<ValueId> stack_{};
     std::vector<ValueId> memo_{};
     std::function<void(std::uint64_t, std::uint64_t)> progress_{};
+    std::function<bool(std::span<const std::byte>)> inputChunk_{};
     std::uint64_t nextProgress_ = 0;
 };
 
@@ -682,7 +898,8 @@ private:
 PickleResult readLegacyPickle(const std::filesystem::path& path,
     const std::filesystem::path& spoolPath, const PickleLimits& limits,
     const bool disableResourceLimits,
-    const std::function<void(std::uint64_t, std::uint64_t)>& progress) {
+    const std::function<void(std::uint64_t, std::uint64_t)>& progress,
+    const std::function<bool(std::span<const std::byte>)>& inputChunk) {
     std::error_code error;
     const auto size = std::filesystem::file_size(path, error);
     if (error) return {nullptr, 0, "input size could not be read", 0};
@@ -690,7 +907,8 @@ PickleResult readLegacyPickle(const std::filesystem::path& path,
         return {nullptr, 0, "input resource limit exceeded", 0};
     auto store = std::make_shared<ValueStore>(spoolPath);
     if (!store->valid()) return {nullptr, 0, store->error(), 0};
-    return Reader(path, size, std::move(store), limits, disableResourceLimits, progress).read();
+    return Reader(path, size, std::move(store), limits, disableResourceLimits,
+        progress, inputChunk).read();
 }
 
 ValueId dictionaryValue(const ValueStore& store, const ValueId dictionary,
@@ -702,15 +920,37 @@ ValueId dictionaryValue(const ValueStore& store, const ValueId dictionary,
             return value;
     return InvalidValueId;
 }
+
+ValueId dictionaryValue(const ValueStore::ReadSession& store,
+    const ValueId dictionary, const std::string_view key) {
+    if (dictionary == InvalidValueId || store.kind(dictionary) != ValueKind::Dictionary)
+        return InvalidValueId;
+    for (const auto& [candidate, value] : store.entries(dictionary))
+        if (store.kind(candidate) == ValueKind::String && store.text(candidate) == key)
+            return value;
+    return InvalidValueId;
+}
 ValueId attributeValue(const ValueStore& store, const ValueId object,
     const std::string_view key) {
     if (object == InvalidValueId || store.kind(object) != ValueKind::Object)
         return InvalidValueId;
-    for (const auto& [name, value] : store.object(object).attributes)
-        if (name == key) return value;
-    return InvalidValueId;
+    return store.objectAttribute(object, key);
+}
+
+ValueId attributeValue(const ValueStore::ReadSession& store,
+    const ValueId object, const std::string_view key) {
+    if (object == InvalidValueId || store.kind(object) != ValueKind::Object)
+        return InvalidValueId;
+    return store.objectAttribute(object, key);
 }
 std::string valueString(const ValueStore& store, const ValueId value) {
+    if (value == InvalidValueId) return {};
+    const auto kind = store.kind(value);
+    return kind == ValueKind::String || kind == ValueKind::Integer
+        ? store.text(value) : std::string{};
+}
+
+std::string valueString(const ValueStore::ReadSession& store, const ValueId value) {
     if (value == InvalidValueId) return {};
     const auto kind = store.kind(value);
     return kind == ValueKind::String || kind == ValueKind::Integer

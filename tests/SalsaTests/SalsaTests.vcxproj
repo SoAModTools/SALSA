@@ -41,7 +41,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;$(SalsaRepositoryRoot)third-party\SPICE\third-party\lodepng;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\googletest\googletest\include;$(SalsaRepositoryRoot)third-party\googletest\googletest;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>

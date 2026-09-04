@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <cstdint>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -37,7 +38,14 @@ struct LegacyConversionRequest final {
     bool trustedInputConfirmed = false;
     bool retainOriginal = false;
     bool disableResourceLimits = false;
+    // Zero selects Auto; explicit values are limited to one through four.
+    std::uint32_t scriptWorkers = 0;
 };
+
+// Returns the normal converter Job Object ceiling for an installed-memory size.
+// A zero size represents failed discovery and selects the documented fallback.
+[[nodiscard]] std::uint64_t legacyConverterMemoryLimit(
+    std::uint64_t installedPhysicalBytes) noexcept;
 
 enum class LegacyConversionStatus {
     Ready,

@@ -23,6 +23,7 @@ namespace salsa::core {
 namespace {
 
 using Json = nlohmann::ordered_json;
+using namespace std::string_view_literals;
 
 [[nodiscard]] Diagnostic capsuleError(std::string message,
     const std::filesystem::path& path,
@@ -120,9 +121,71 @@ using Json = nlohmann::ordered_json;
     }
 }
 
+[[nodiscard]] Result<std::vector<unsigned char>> readCompressedRecord(
+    const std::filesystem::path& path, const std::uint64_t maximum,
+    const std::uint64_t declaredSize, const std::string_view expectedDigest) {
+    auto bytes = readBounded(path, maximum);
+    if (!bytes) return Result<std::vector<unsigned char>>::failure(bytes.diagnostics());
+    if (bytes.value().size() != declaredSize)
+        return Result<std::vector<unsigned char>>::failure(capsuleError(
+            "A capsule entry size does not match its manifest.", path,
+            DiagnosticCode::LegacyCapsuleIntegrityFailed));
+    auto digest = sha256(bytes.value());
+    if (!digest || digest.value().toHex() != expectedDigest)
+        return Result<std::vector<unsigned char>>::failure(capsuleError(
+            "A capsule entry hash does not match its manifest.", path,
+            DiagnosticCode::LegacyCapsuleIntegrityFailed));
+    const auto* begin = reinterpret_cast<const std::uint8_t*>(bytes.value().data());
+    LodePNGDecompressSettings settings = lodepng_default_decompress_settings;
+    settings.max_output_size = static_cast<std::size_t>(std::min<std::uint64_t>(
+        maximum, std::numeric_limits<std::size_t>::max()));
+    std::vector<unsigned char> decoded;
+    if (lodepng::decompress(decoded, begin, bytes.value().size(), settings) != 0
+        || decoded.size() > maximum)
+        return Result<std::vector<unsigned char>>::failure(capsuleError(
+            "A capsule CBOR record could not be decompressed within its limit.", path));
+    return Result<std::vector<unsigned char>>::success(std::move(decoded));
+}
+
+[[nodiscard]] Result<std::string> hashFileBounded(const std::filesystem::path& path,
+    const std::uint64_t maximum, const std::uint64_t declaredSize) {
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error || size != declaredSize || size > maximum)
+        return Result<std::string>::failure(capsuleError(
+            error ? "A capsule file size could not be read."
+                  : size != declaredSize
+                    ? "A capsule entry size does not match its manifest."
+                    : "A capsule file exceeds its validation limit.", path,
+            size != declaredSize ? DiagnosticCode::LegacyCapsuleIntegrityFailed
+                                 : DiagnosticCode::LegacyCapsuleInvalid));
+    auto created = Sha256Hasher::create();
+    if (!created) return Result<std::string>::failure(created.diagnostics());
+    auto hasher = std::move(created).takeValue();
+    std::ifstream input(path, std::ios::binary);
+    std::array<std::byte, 64u << 10> buffer{};
+    std::uint64_t readTotal = 0;
+    while (readTotal < size) {
+        const auto remaining = size - readTotal;
+        const auto requested = static_cast<std::streamsize>(std::min<std::uint64_t>(
+            remaining, buffer.size()));
+        input.read(reinterpret_cast<char*>(buffer.data()), requested);
+        const auto count = input.gcount();
+        if (count <= 0) return Result<std::string>::failure(capsuleError(
+            "A capsule file could not be read completely.", path));
+        auto updated = hasher.update(std::span{buffer.data(), static_cast<std::size_t>(count)});
+        if (!updated) return Result<std::string>::failure(updated.diagnostics());
+        readTotal += static_cast<std::uint64_t>(count);
+    }
+    auto digest = hasher.finish();
+    if (!digest) return Result<std::string>::failure(digest.diagnostics());
+    return Result<std::string>::success(digest.value().toHex());
+}
+
 [[nodiscard]] Result<void> verifyEntry(const std::filesystem::path& root,
     const Json& entry, const LegacyCapsuleValidationLimits& limits,
-    std::uint64_t& canonicalBytes, std::set<std::filesystem::path>& expected) {
+    std::uint64_t& canonicalBytes, std::set<std::filesystem::path>& expected,
+    const bool verifyContents) {
     if (!hasExactKeys(entry, {"path", "size", "sha256", "canonical"})
         || !entry.at("path").is_string() || !entry.at("size").is_number_unsigned()
         || !entry.at("sha256").is_string() || !entry.at("canonical").is_boolean())
@@ -144,17 +207,21 @@ using Json = nlohmann::ordered_json;
     const auto absolute = root / relative;
     if (!isRegularWithoutReparsePoint(absolute)) return Result<void>::failure(capsuleError(
         "A capsule entry is missing, not regular, or is a reparse point.", absolute));
-    auto bytes = readBounded(absolute, limits.maxCanonicalBytes);
-    if (!bytes) return Result<void>::failure(bytes.diagnostics());
-    if (bytes.value().size() != declaredSize)
-        return Result<void>::failure(capsuleError(
-            "A capsule entry size does not match its manifest.", absolute,
-            DiagnosticCode::LegacyCapsuleIntegrityFailed));
-    auto actual = sha256(bytes.value());
-    if (!actual || actual.value().toHex() != digest)
-        return Result<void>::failure(capsuleError(
-            "A capsule entry hash does not match its manifest.", absolute,
-            DiagnosticCode::LegacyCapsuleIntegrityFailed));
+    if (verifyContents) {
+        auto actual = hashFileBounded(absolute, limits.maxCanonicalBytes, declaredSize);
+        if (!actual) return Result<void>::failure(actual.diagnostics());
+        if (actual.value() != digest)
+            return Result<void>::failure(capsuleError(
+                "A capsule entry hash does not match its manifest.", absolute,
+                DiagnosticCode::LegacyCapsuleIntegrityFailed));
+    } else {
+        std::error_code error;
+        const auto size = std::filesystem::file_size(absolute, error);
+        if (error || size != declaredSize)
+            return Result<void>::failure(capsuleError(
+                "A capsule entry size does not match its manifest.", absolute,
+                DiagnosticCode::LegacyCapsuleIntegrityFailed));
+    }
     if (entry.at("canonical").get<bool>()) {
         if (canonicalBytes > limits.maxCanonicalBytes - declaredSize)
             return Result<void>::failure(capsuleError(
@@ -314,60 +381,227 @@ malformed:
     return validateInertGraphs({&root}, path, maximumNodes);
 }
 
-[[nodiscard]] Result<Json> validateScriptRecord(const std::filesystem::path& root,
-    const Json& inventory, const LegacyCapsuleValidationLimits& limits) {
-    const auto relative = fromUtf8(inventory.at("path").get<std::string>());
-    auto parsed = parseCborFile(root / relative, limits.maxRecordBytes);
-    if (!parsed) return parsed;
-    const auto& record = parsed.value();
-    if (!hasExactKeys(record, {"formatId", "schemaVersion", "ordinal", "key",
-            "storedName", "status", "counts", "diagnostics", "ir"})
-        || record.at("formatId") != "jahorta.salsa.legacy-script-record"
-        || !record.at("schemaVersion").is_number_unsigned()
-        || record.at("schemaVersion").get<std::uint64_t>() != 2
-        || record.at("ordinal") != inventory.at("ordinal")
-        || record.at("key") != inventory.at("key")
-        || record.at("storedName") != inventory.at("storedName")
-        || record.at("status") != inventory.at("status")
-        || !hasExactKeys(record.at("counts"), {"sections", "instructions",
-            "parameters", "links", "strings"})
-        || !record.at("diagnostics").is_array())
-        return Result<Json>::failure(capsuleError(
-            "A capsule script record is malformed.", root / relative));
-    const auto& ir = record.at("ir");
-    const auto omittedFailedIr = ir.is_null() && inventory.at("status") == "failed";
-    if (!omittedFailedIr && (!hasExactKeys(ir, {"header", "footer", "string_groups", "strings",
-            "sections", "links", "sidecar"})
-        || !hasExactKeys(ir.at("sidecar"), {"folded_sects", "index", "sect_tree",
-            "sect_list", "string_garbage", "unused_sections", "errors",
-            "error_sections", "variables"})))
-        return Result<Json>::failure(capsuleError(
-            "A capsule script does not contain typed migration IR.",
-            root / relative));
-    for (const auto key : {"sections", "instructions", "parameters", "links", "strings"})
-        if (!record.at("counts").at(key).is_number_unsigned())
-            return Result<Json>::failure(capsuleError(
-                "A capsule script count is malformed.", root / relative));
-    if (record.at("counts").at("sections") != inventory.at("sections")
-        || record.at("counts").at("instructions") != inventory.at("instructions")
-        || record.at("counts").at("parameters") != inventory.at("parameters")
-        || record.at("counts").at("strings") != inventory.at("strings")
-        || record.at("diagnostics").size() != inventory.at("diagnostics").get<std::uint64_t>())
-        return Result<Json>::failure(capsuleError(
-            "A capsule script summary does not match its record.", root / relative,
-            DiagnosticCode::LegacyCapsuleIntegrityFailed));
-    if (!omittedFailedIr) {
-        std::vector<const Json*> roots{
-            &ir.at("header"), &ir.at("footer"), &ir.at("string_groups"),
-            &ir.at("strings"), &ir.at("sections"), &ir.at("links")};
-        for (auto iterator = ir.at("sidecar").begin();
-             iterator != ir.at("sidecar").end(); ++iterator)
-            roots.push_back(&iterator.value());
-        auto graphs = validateInertGraphs(roots, root / relative,
-            limits.maxNodesPerRecord);
-        if (!graphs) return Result<Json>::failure(graphs.diagnostics());
+class CborCursor final {
+public:
+    explicit CborCursor(const std::span<const unsigned char> bytes) : bytes_(bytes) {}
+
+    [[nodiscard]] bool array(std::uint64_t& size) { return head(4u, size); }
+    [[nodiscard]] bool map(std::uint64_t& size) { return head(5u, size); }
+    [[nodiscard]] bool unsignedValue(std::uint64_t& value) { return head(0u, value); }
+    [[nodiscard]] bool boolean(bool& value) {
+        if (position_ >= bytes_.size()) return false;
+        if (bytes_[position_] == 0xf4u) { ++position_; value = false; return true; }
+        if (bytes_[position_] == 0xf5u) { ++position_; value = true; return true; }
+        return false;
     }
-    return parsed;
+    [[nodiscard]] bool null() {
+        if (position_ >= bytes_.size() || bytes_[position_] != 0xf6u) return false;
+        ++position_; return true;
+    }
+    [[nodiscard]] bool nextIsNull() const {
+        return position_ < bytes_.size() && bytes_[position_] == 0xf6u;
+    }
+    [[nodiscard]] bool text(std::string_view& value) {
+        std::uint64_t size = 0;
+        if (!head(3u, size) || size > bytes_.size() - position_) return false;
+        value = {reinterpret_cast<const char*>(bytes_.data() + position_),
+            static_cast<std::size_t>(size)};
+        position_ += static_cast<std::size_t>(size); return true;
+    }
+    [[nodiscard]] bool expectText(const std::string_view expected) {
+        std::string_view actual;
+        return text(actual) && actual == expected;
+    }
+    [[nodiscard]] bool byteString() {
+        std::uint64_t size = 0;
+        if (!head(2u, size) || size > bytes_.size() - position_) return false;
+        position_ += static_cast<std::size_t>(size); return true;
+    }
+    [[nodiscard]] bool skip(std::uint32_t depth, std::uint64_t& budget) {
+        if (depth > 128u || budget == 0) return false;
+        --budget;
+        std::uint8_t major = 0, additional = 0;
+        std::uint64_t value = 0;
+        if (!head(major, additional, value)) return false;
+        if (major == 0u || major == 1u) return true;
+        if (major == 2u || major == 3u) {
+            if (value > bytes_.size() - position_) return false;
+            position_ += static_cast<std::size_t>(value); return true;
+        }
+        if (major == 4u || major == 5u) {
+            if (major == 5u && value > std::numeric_limits<std::uint64_t>::max() / 2u)
+                return false;
+            const auto children = major == 5u ? value * 2u : value;
+            if (children > budget) return false;
+            for (std::uint64_t index = 0; index < children; ++index)
+                if (!skip(depth + 1u, budget)) return false;
+            return true;
+        }
+        return major == 7u && (additional == 20u || additional == 21u
+            || additional == 22u || additional == 26u || additional == 27u);
+    }
+    [[nodiscard]] bool finished() const noexcept { return position_ == bytes_.size(); }
+
+private:
+    [[nodiscard]] bool head(const std::uint8_t expectedMajor, std::uint64_t& value) {
+        std::uint8_t major = 0, additional = 0;
+        return head(major, additional, value) && major == expectedMajor;
+    }
+    [[nodiscard]] bool head(std::uint8_t& major, std::uint8_t& additional,
+        std::uint64_t& value) {
+        if (position_ >= bytes_.size()) return false;
+        const auto initial = bytes_[position_++];
+        major = initial >> 5u; additional = initial & 0x1fu;
+        if (additional < 24u) { value = additional; return true; }
+        const auto count = additional == 24u ? 1u : additional == 25u ? 2u
+            : additional == 26u ? 4u : additional == 27u ? 8u : 0u;
+        if (count == 0u || count > bytes_.size() - position_) return false;
+        value = 0;
+        for (unsigned index = 0; index < count; ++index)
+            value = (value << 8u) | bytes_[position_++];
+        return true;
+    }
+
+    std::span<const unsigned char> bytes_{};
+    std::size_t position_ = 0;
+};
+
+[[nodiscard]] bool validateTaggedValue(CborCursor& cursor,
+    std::uint64_t& nextNodeId, const std::uint64_t maximumNodes,
+    const std::uint32_t depth = 0) {
+    if (depth > 1'024u) return false;
+    std::uint64_t size = 0, tag = 0;
+    if (!cursor.array(size) || size == 0u || !cursor.unsignedValue(tag)) return false;
+    if (tag == 0u) {
+        std::uint64_t id = 0;
+        return size == 2u && cursor.unsignedValue(id) && id != 0u && id < nextNodeId;
+    }
+    const auto node = [&]() {
+        std::uint64_t id = 0;
+        if (!cursor.unsignedValue(id) || id != nextNodeId || nextNodeId > maximumNodes)
+            return false;
+        ++nextNodeId; return true;
+    };
+    switch (tag) {
+    case 1u:
+        return size == 1u;
+    case 2u: {
+        bool value = false; return size == 2u && cursor.boolean(value);
+    }
+    case 3u: {
+        std::string_view value; return size == 2u && cursor.text(value);
+    }
+    case 4u: {
+        std::uint64_t value = 0; return size == 2u && cursor.unsignedValue(value);
+    }
+    case 5u: case 6u:
+        return size == 2u && cursor.byteString();
+    case 7u: case 8u: case 9u: case 10u: {
+        std::uint64_t count = 0;
+        if (size != 3u || !node() || !cursor.array(count)) return false;
+        for (std::uint64_t index = 0; index < count; ++index)
+            if (!validateTaggedValue(cursor, nextNodeId, maximumNodes, depth + 1u))
+                return false;
+        return true;
+    }
+    case 11u: {
+        std::uint64_t count = 0;
+        if (size != 3u || !node() || !cursor.array(count)) return false;
+        for (std::uint64_t index = 0; index < count; ++index) {
+            std::uint64_t pairSize = 0;
+            if (!cursor.array(pairSize) || pairSize != 2u
+                || !validateTaggedValue(cursor, nextNodeId, maximumNodes, depth + 1u)
+                || !validateTaggedValue(cursor, nextNodeId, maximumNodes, depth + 1u))
+                return false;
+        }
+        return true;
+    }
+    case 12u: {
+        static constexpr std::array<std::uint64_t, 6> fieldCounts{3, 16, 11, 12, 9, 5};
+        std::uint64_t classCode = 0, count = 0;
+        if (size != 4u || !node() || !cursor.unsignedValue(classCode)
+            || classCode == 0u || classCode > fieldCounts.size()
+            || !cursor.array(count) || count != fieldCounts[classCode - 1u]) return false;
+        for (std::uint64_t index = 0; index < count; ++index)
+            if (!validateTaggedValue(cursor, nextNodeId, maximumNodes, depth + 1u))
+                return false;
+        return true;
+    }
+    case 13u: {
+        std::string_view name;
+        return size == 2u && cursor.text(name) && allowedLegacyClass(name);
+    }
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] Result<void> validateScriptRecord(const std::filesystem::path& root,
+    const Json& inventory, const LegacyCapsuleValidationLimits& limits,
+    const std::uint64_t declaredSize, const std::string_view expectedDigest) {
+    const auto relative = fromUtf8(inventory.at("path").get<std::string>());
+    auto decoded = readCompressedRecord(root / relative, limits.maxRecordBytes,
+        declaredSize, expectedDigest);
+    if (!decoded) return Result<void>::failure(decoded.diagnostics());
+    CborCursor cursor(std::span<const unsigned char>{decoded.value()});
+    std::uint64_t size = 0, number = 0;
+    std::string_view text;
+    const auto malformed = [&]() {
+        return Result<void>::failure(capsuleError(
+            "A capsule script record is malformed.", root / relative));
+    };
+    if (!cursor.map(size) || size != 9u
+        || !cursor.expectText("formatId") || !cursor.text(text)
+        || text != "jahorta.salsa.legacy-script-record"
+        || !cursor.expectText("schemaVersion") || !cursor.unsignedValue(number) || number != 2u
+        || !cursor.expectText("ordinal") || !cursor.unsignedValue(number)
+        || number != inventory.at("ordinal").get<std::uint64_t>()
+        || !cursor.expectText("key") || !cursor.text(text)
+        || text != inventory.at("key").get_ref<const std::string&>()
+        || !cursor.expectText("storedName") || !cursor.text(text)
+        || text != inventory.at("storedName").get_ref<const std::string&>()
+        || !cursor.expectText("status") || !cursor.text(text)
+        || text != inventory.at("status").get_ref<const std::string&>()
+        || !cursor.expectText("counts") || !cursor.map(size) || size != 5u)
+        return malformed();
+    std::array<std::uint64_t, 5> counts{};
+    static constexpr std::array countNames{
+        "sections"sv, "instructions"sv, "parameters"sv, "links"sv, "strings"sv};
+    for (std::size_t index = 0; index < countNames.size(); ++index)
+        if (!cursor.expectText(countNames[index]) || !cursor.unsignedValue(counts[index]))
+            return malformed();
+    if (counts[0] != inventory.at("sections").get<std::uint64_t>()
+        || counts[1] != inventory.at("instructions").get<std::uint64_t>()
+        || counts[2] != inventory.at("parameters").get<std::uint64_t>()
+        || counts[4] != inventory.at("strings").get<std::uint64_t>()
+        || !cursor.expectText("diagnostics") || !cursor.array(size)
+        || size != inventory.at("diagnostics").get<std::uint64_t>())
+        return malformed();
+    std::uint64_t diagnosticBudget = std::max<std::uint64_t>(1u,
+        std::min<std::uint64_t>(limits.maxNodesPerRecord, 1u << 20));
+    for (std::uint64_t index = 0; index < size; ++index)
+        if (!cursor.skip(0, diagnosticBudget)) return malformed();
+    if (!cursor.expectText("ir")) return malformed();
+    const auto failed = inventory.at("status") == "failed";
+    if (cursor.nextIsNull()) {
+        if (!failed || !cursor.null() || !cursor.finished()) return malformed();
+        return Result<void>::success();
+    }
+    if (!cursor.map(size) || size != 7u) return malformed();
+    std::uint64_t nextNodeId = 1;
+    for (const auto field : {"header"sv, "footer"sv, "string_groups"sv,
+            "strings"sv, "sections"sv, "links"sv})
+        if (!cursor.expectText(field)
+            || !validateTaggedValue(cursor, nextNodeId, limits.maxNodesPerRecord))
+            return malformed();
+    if (!cursor.expectText("sidecar") || !cursor.map(size) || size != 9u) return malformed();
+    for (const auto field : {"folded_sects"sv, "index"sv, "sect_tree"sv,
+            "sect_list"sv, "string_garbage"sv, "unused_sections"sv,
+            "errors"sv, "error_sections"sv, "variables"sv})
+        if (!cursor.expectText(field)
+            || !validateTaggedValue(cursor, nextNodeId, limits.maxNodesPerRecord))
+            return malformed();
+    return cursor.finished() ? Result<void>::success() : malformed();
 }
 
 }  // namespace
@@ -433,8 +667,14 @@ Result<LegacyCapsuleSummary> LegacyCapsuleReader::validate(
     identityMaterial.push_back('\0');
     std::string previousEntryPath{};
     std::map<std::string, bool, std::less<>> declaredPaths{};
+    std::map<std::string, std::pair<std::uint64_t, std::string>, std::less<>>
+        declaredIntegrity{};
     for (const auto& entry : manifest.at("entries")) {
-        auto verified = verifyEntry(root, entry, limits, canonicalBytes, expected);
+        const auto deferredScript = entry.is_object() && entry.contains("path")
+            && entry.at("path").is_string()
+            && isNumberedScriptPath(entry.at("path").get_ref<const std::string&>());
+        auto verified = verifyEntry(root, entry, limits, canonicalBytes, expected,
+            !deferredScript);
         if (!verified) return Result<LegacyCapsuleSummary>::failure(verified.diagnostics());
         const auto entryPath = entry.at("path").get<std::string>();
         if (!previousEntryPath.empty() && entryPath <= previousEntryPath)
@@ -443,6 +683,9 @@ Result<LegacyCapsuleSummary> LegacyCapsuleReader::validate(
         previousEntryPath = entryPath;
         const auto canonical = entry.at("canonical").get<bool>();
         declaredPaths.emplace(entryPath, canonical);
+        declaredIntegrity.emplace(entryPath, std::pair{
+            entry.at("size").get<std::uint64_t>(),
+            entry.at("sha256").get<std::string>()});
         if (entryPath == "project.cbor") {
             if (!canonical) return Result<LegacyCapsuleSummary>::failure(capsuleError(
                 "The capsule project record must be canonical.", root / L"capsule.json"));
@@ -544,7 +787,13 @@ Result<LegacyCapsuleSummary> LegacyCapsuleReader::validate(
             if (!script.at(key).is_number_unsigned())
                 return Result<LegacyCapsuleSummary>::failure(capsuleError(
                     "A script inventory count is malformed.", root / L"capsule.json"));
-        auto scriptRecord = validateScriptRecord(root, script, limits);
+        const auto integrity = declaredIntegrity.find(
+            script.at("path").get_ref<const std::string&>());
+        if (integrity == declaredIntegrity.end())
+            return Result<LegacyCapsuleSummary>::failure(capsuleError(
+                "A script inventory path is not a declared capsule entry.", root / relative));
+        auto scriptRecord = validateScriptRecord(root, script, limits,
+            integrity->second.first, integrity->second.second);
         if (!scriptRecord) return Result<LegacyCapsuleSummary>::failure(
             scriptRecord.diagnostics());
         actionRequired = actionRequired || scriptStatus == "failed";

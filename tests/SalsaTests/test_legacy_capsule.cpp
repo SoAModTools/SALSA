@@ -1,9 +1,11 @@
 #include "SalsaCore/Foundation/Hashing.h"
 #include "SalsaCore/Legacy/LegacyCapsule.h"
 #include "SalsaCore/Legacy/LegacyConversionService.h"
+#include "../../src/SalsaLegacyConverter/LegacyConverter.h"
 
 #include <Windows.h>
 #include <gtest/gtest.h>
+#include <lodepng.h>
 #include <nlohmann/json.hpp>
 
 #include <atomic>
@@ -73,7 +75,8 @@ void write(const std::filesystem::path& path, const std::vector<std::uint8_t>& b
     return std::filesystem::path(path).parent_path();
 }
 
-[[nodiscard]] std::filesystem::path makeCapsule(const std::filesystem::path& parent) {
+[[nodiscard]] std::filesystem::path makeCapsule(const std::filesystem::path& parent,
+    const bool withScript = false) {
     const auto root = parent / L"fixture.salsa-legacy";
     nlohmann::ordered_json projectRecord{
         {"formatId", "jahorta.salsa.legacy-project-record"}, {"schemaVersion", 2},
@@ -93,6 +96,43 @@ void write(const std::filesystem::path& path, const std::vector<std::uint8_t>& b
     identity += sourceHash; identity.push_back('\0'); identity += "project.cbor";
     identity.push_back('\0'); identity += projectHash; identity.push_back('\0');
     identity += std::to_string(project.size()); identity.push_back('\n');
+    nlohmann::ordered_json scripts = nlohmann::ordered_json::array();
+    nlohmann::ordered_json entries = nlohmann::ordered_json::array({{{"path", "project.cbor"},
+        {"size", project.size()}, {"sha256", projectHash}, {"canonical", true}}});
+    if (withScript) {
+        const auto nullValue = nlohmann::ordered_json::array({1});
+        nlohmann::ordered_json sidecar{
+            {"folded_sects", nullValue}, {"index", nullValue}, {"sect_tree", nullValue},
+            {"sect_list", nullValue}, {"string_garbage", nullValue},
+            {"unused_sections", nullValue}, {"errors", nullValue},
+            {"error_sections", nullValue}, {"variables", nullValue}};
+        nlohmann::ordered_json record{
+            {"formatId", "jahorta.salsa.legacy-script-record"}, {"schemaVersion", 2},
+            {"ordinal", 0}, {"key", "A001A"}, {"storedName", "A001A"},
+            {"status", "accepted"},
+            {"counts", {{"sections", 0}, {"instructions", 0}, {"parameters", 0},
+                {"links", 0}, {"strings", 0}}},
+            {"diagnostics", nlohmann::ordered_json::array()},
+            {"ir", {{"header", nullValue}, {"footer", nullValue},
+                {"string_groups", nullValue}, {"strings", nullValue},
+                {"sections", nullValue}, {"links", nullValue},
+                {"sidecar", std::move(sidecar)}}}};
+        const auto raw = nlohmann::ordered_json::to_cbor(record);
+        std::vector<std::uint8_t> compressed;
+        if (lodepng::compress(compressed, raw) != 0)
+            throw std::runtime_error("test script compression failed");
+        constexpr auto path = "scripts/000000.cbor.zlib";
+        write(root / L"scripts" / L"000000.cbor.zlib", compressed);
+        const auto scriptHash = digest(compressed);
+        identity += path; identity.push_back('\0'); identity += scriptHash;
+        identity.push_back('\0'); identity += std::to_string(compressed.size());
+        identity.push_back('\n');
+        scripts.push_back({{"ordinal", 0}, {"key", "A001A"}, {"storedName", "A001A"},
+            {"status", "accepted"}, {"sections", 0}, {"instructions", 0},
+            {"parameters", 0}, {"strings", 0}, {"diagnostics", 0}, {"path", path}});
+        entries.push_back({{"path", path}, {"size", compressed.size()},
+            {"sha256", scriptHash}, {"canonical", true}});
+    }
     const auto capsuleId = digest(identity);
     nlohmann::ordered_json manifest{
         {"formatId", LegacyCapsuleFormatId}, {"schemaVersion", LegacyCapsuleSchemaVersion},
@@ -100,11 +140,18 @@ void write(const std::filesystem::path& path, const std::vector<std::uint8_t>& b
         {"status", "ready"},
         {"source", {{"filename", "fixture.prj"}, {"size", 123}, {"sha256", sourceHash},
             {"pickleProtocol", 4}, {"projectVersion", 7}, {"originalRetained", false}}},
-        {"normalizationCount", 0}, {"scripts", nlohmann::ordered_json::array()},
-        {"entries", nlohmann::ordered_json::array({{{"path", "project.cbor"},
-            {"size", project.size()}, {"sha256", projectHash}, {"canonical", true}}})}};
+        {"normalizationCount", 0}, {"scripts", std::move(scripts)},
+        {"entries", std::move(entries)}};
     auto encoded = manifest.dump(2); encoded.push_back('\n'); write(root / L"capsule.json", encoded);
     return root;
+}
+
+TEST(LegacyCapsuleTest, ValidatesTypedCompressedScriptRecord) {
+    LegacyTemporaryDirectory temporary;
+    auto validated = LegacyCapsuleReader::validate(makeCapsule(temporary.path(), true));
+    ASSERT_TRUE(validated) << validated.diagnostics().front().message;
+    ASSERT_EQ(validated.value().scripts.size(), 1u);
+    EXPECT_EQ(validated.value().scripts.front().key, "A001A");
 }
 
 TEST(LegacyCapsuleTest, ValidatesDeterministicShardedManifest) {
@@ -120,6 +167,21 @@ TEST(LegacyCapsuleTest, RejectsTamperedCanonicalEntry) {
     LegacyTemporaryDirectory temporary;
     const auto capsule = makeCapsule(temporary.path());
     write(capsule / L"project.cbor", "tampered\n");
+    const auto validated = LegacyCapsuleReader::validate(capsule);
+    ASSERT_FALSE(validated);
+    EXPECT_EQ(validated.diagnostics().front().code,
+        DiagnosticCode::LegacyCapsuleIntegrityFailed);
+}
+
+TEST(LegacyCapsuleTest, RejectsTamperedCompressedScriptEntry) {
+    LegacyTemporaryDirectory temporary;
+    const auto capsule = makeCapsule(temporary.path(), true);
+    const auto scriptPath = capsule / L"scripts" / L"000000.cbor.zlib";
+    std::ifstream input(scriptPath, std::ios::binary);
+    std::vector<std::uint8_t> bytes(std::istreambuf_iterator<char>{input}, {});
+    ASSERT_FALSE(bytes.empty());
+    bytes.back() ^= 0xffu;
+    write(scriptPath, bytes);
     const auto validated = LegacyCapsuleReader::validate(capsule);
     ASSERT_FALSE(validated);
     EXPECT_EQ(validated.diagnostics().front().code,
@@ -171,6 +233,25 @@ TEST(LegacyConversionServiceTest, RequiresFreshTrustedInputConfirmation) {
     EXPECT_FALSE(std::filesystem::exists(request.destination));
 }
 
+TEST(LegacyConversionServiceTest, CalculatesAdaptiveConverterMemoryLimit) {
+    constexpr std::uint64_t gibibyte = 1ull << 30;
+    EXPECT_EQ(legacyConverterMemoryLimit(0), 8ull * gibibyte);
+    EXPECT_EQ(legacyConverterMemoryLimit(2ull * gibibyte), 4ull * gibibyte);
+    EXPECT_EQ(legacyConverterMemoryLimit(8ull * gibibyte), 4ull * gibibyte);
+    EXPECT_EQ(legacyConverterMemoryLimit(24ull * gibibyte), 12ull * gibibyte);
+    EXPECT_EQ(legacyConverterMemoryLimit(96ull * gibibyte), 16ull * gibibyte);
+}
+
+TEST(LegacyConversionServiceTest, ResolvesAutoAndExplicitScriptWorkers) {
+    using salsa::legacy::resolveScriptWorkerCount;
+    EXPECT_EQ(resolveScriptWorkerCount(0, 16, 20), 4u);
+    EXPECT_EQ(resolveScriptWorkerCount(0, 2, 20), 2u);
+    EXPECT_EQ(resolveScriptWorkerCount(0, 0, 20), 1u);
+    EXPECT_EQ(resolveScriptWorkerCount(0, 16, 0), 0u);
+    EXPECT_EQ(resolveScriptWorkerCount(4, 1, 2), 2u);
+    EXPECT_EQ(resolveScriptWorkerCount(3, 16, 20), 3u);
+}
+
 TEST(LegacyConversionServiceTest, RejectsMalformedInputThroughIsolatedBroker) {
     LegacyTemporaryDirectory temporary;
     const auto converter = executableDirectory() / L"SalsaLegacyConverter.exe";
@@ -193,6 +274,32 @@ TEST(LegacyConversionServiceTest, RejectsMalformedInputThroughIsolatedBroker) {
     EXPECT_FALSE(std::filesystem::exists(request.destination));
 }
 
+TEST(LegacyConversionServiceTest, PreCancelledConversionRemovesAllStagingOutput) {
+    LegacyTemporaryDirectory temporary;
+    const auto converter = executableDirectory() / L"SalsaLegacyConverter.exe";
+    if (!std::filesystem::is_regular_file(converter))
+        GTEST_SKIP() << "The separately built converter executable is unavailable.";
+    const auto source = temporary.path() / L"input.prj";
+    write(source, "malformed");
+    LegacyConversionRequest request{};
+    request.source = source;
+    request.destination = temporary.path() / L"output.salsa-legacy";
+    request.converterExecutable = converter;
+    request.trustedInputConfirmed = true;
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    const auto result = LegacyConversionService::convert(
+        request, cancellation.get_token());
+    ASSERT_FALSE(result.diagnostics.empty());
+    EXPECT_EQ(result.status, LegacyConversionStatus::Cancelled);
+    EXPECT_EQ(result.diagnostics.front().code,
+        DiagnosticCode::LegacyConversionCancelled);
+    EXPECT_FALSE(std::filesystem::exists(request.destination));
+    for (const auto& entry : std::filesystem::directory_iterator(temporary.path()))
+        EXPECT_FALSE(entry.path().filename().wstring().starts_with(
+            request.destination.filename().wstring() + L".staging-"));
+}
+
 TEST(LegacyConversionServiceTest, ConvertsV7ThroughIsolatedBrokerAndInstallsAtomically) {
     LegacyTemporaryDirectory temporary;
     const auto converter = executableDirectory() / L"SalsaLegacyConverter.exe";
@@ -212,7 +319,9 @@ TEST(LegacyConversionServiceTest, ConvertsV7ThroughIsolatedBrokerAndInstallsAtom
     request.source = source;
     request.destination = temporary.path() / L"output.salsa-legacy";
     request.converterExecutable = converter;
+    request.receiptDirectory = temporary.path() / L"receipts";
     request.trustedInputConfirmed = true;
+    request.scriptWorkers = 1;
     const auto result = LegacyConversionService::convert(request);
     ASSERT_TRUE(result.finalized())
         << (result.diagnostics.empty() ? "no diagnostic" : result.diagnostics.front().message);
@@ -221,6 +330,16 @@ TEST(LegacyConversionServiceTest, ConvertsV7ThroughIsolatedBrokerAndInstallsAtom
     EXPECT_EQ(result.capsule->source.projectVersion, 7u);
     EXPECT_TRUE(result.capsule->scripts.empty());
     EXPECT_TRUE(std::filesystem::is_regular_file(request.destination / L"capsule.json"));
+    const auto receiptPath = *request.receiptDirectory
+        / (result.capsule->capsuleId + ".json");
+    std::ifstream receiptInput(receiptPath, std::ios::binary);
+    ASSERT_TRUE(receiptInput);
+    const auto receipt = nlohmann::ordered_json::parse(receiptInput);
+    EXPECT_EQ(receipt["helperResult"]["scriptWorkers"]["requested"], 1);
+    EXPECT_EQ(receipt["helperResult"]["scriptWorkers"]["used"], 0);
+    EXPECT_TRUE(receipt["helperResult"]["timingsMs"].contains("normalizeScripts"));
+    EXPECT_TRUE(receipt["helperResult"]["timingsMs"].contains("analyzeScripts"));
+    EXPECT_TRUE(receipt["helperResult"]["timingsMs"].contains("encodeScripts"));
     for (const auto& entry : std::filesystem::directory_iterator(temporary.path()))
         EXPECT_FALSE(entry.path().filename().wstring().starts_with(
             request.destination.filename().wstring() + L".staging-"));

@@ -9,7 +9,8 @@ namespace {
 
 void usage() {
     std::cerr << "usage: SalsaLegacyConverter convert <input.prj> <output-directory> "
-                 "[--retain-original] [--disable-resource-limits]\n";
+                 "[--retain-original] [--disable-resource-limits] "
+                 "[--script-workers auto|1|2|3|4]\n";
 }
 
 }  // namespace
@@ -23,6 +24,15 @@ int wmain(const int argc, wchar_t** argv) {
         const auto option = std::wstring_view(argv[index]);
         if (option == L"--retain-original") request.retainOriginal = true;
         else if (option == L"--disable-resource-limits") request.disableResourceLimits = true;
+        else if (option == L"--script-workers" && index + 1 < argc) {
+            const auto value = std::wstring_view(argv[++index]);
+            if (value == L"auto") request.scriptWorkers = 0;
+            else if (value == L"1") request.scriptWorkers = 1;
+            else if (value == L"2") request.scriptWorkers = 2;
+            else if (value == L"3") request.scriptWorkers = 3;
+            else if (value == L"4") request.scriptWorkers = 4;
+            else { usage(); return 2; }
+        }
         else { usage(); return 2; }
     }
     salsa::legacy::ConversionOutcome outcome{};
@@ -46,7 +56,20 @@ int wmain(const int argc, wchar_t** argv) {
     }
     nlohmann::ordered_json result{{"protocol", "jahorta.salsa.legacy-converter-events"},
         {"version", 1}, {"type", "result"}, {"message", outcome.message},
-        {"capsuleId", outcome.capsuleId}};
+        {"capsuleId", outcome.capsuleId},
+        {"timingsMs", {{"readProject", outcome.readProjectMilliseconds},
+            {"normalizeScripts", outcome.normalizeScriptsMilliseconds},
+            {"analyzeScripts", outcome.analyzeScriptsMilliseconds},
+            {"encodeScripts", outcome.encodeScriptsMilliseconds},
+            {"encodeCpu", outcome.encodeCpuMilliseconds},
+            {"compressOutputCpu", outcome.compressOutputCpuMilliseconds},
+            {"convertScripts", outcome.convertScriptsMilliseconds},
+            {"finalize", outcome.finalizeMilliseconds},
+            {"total", outcome.totalMilliseconds}}},
+        {"scriptWorkers", {{"requested", outcome.requestedScriptWorkers == 0
+                ? nlohmann::ordered_json("auto")
+                : nlohmann::ordered_json(outcome.requestedScriptWorkers)},
+            {"used", outcome.usedScriptWorkers}}}};
     switch (outcome.status) {
     case salsa::legacy::ConversionOutcome::Status::Ready: result["status"] = "ready"; break;
     case salsa::legacy::ConversionOutcome::Status::ActionRequired: result["status"] = "action-required"; break;

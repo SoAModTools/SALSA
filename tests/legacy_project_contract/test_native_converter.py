@@ -26,6 +26,36 @@ def make_script(name: str = "A001A") -> contract.SCTScript:
     return contract.SCTScript(name)
 
 
+def result_event(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    return json.loads(result.stdout.splitlines()[-1])
+
+
+def capsule_files(root: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*") if path.is_file()
+    }
+
+
+def make_populated_scripts(count: int) -> list[contract.SCTScript]:
+    scripts: list[contract.SCTScript] = []
+    for script_index in range(count):
+        script = make_script(f"A{script_index:03d}A")
+        for section_index in range(3):
+            section = contract.SCTSection()
+            section.name = f"section_{section_index}"
+            instruction = contract.SCTInstruction()
+            instruction.base_id = script_index + section_index
+            parameter = contract.SCTParameter(section_index, "int")
+            parameter.value = script_index * 10 + section_index
+            instruction.params[section_index] = parameter
+            section.add_instruction(instruction)
+            script.add_section(section)
+        script.strings["message"] = f"script {script_index}"
+        scripts.append(script)
+    return scripts
+
+
 class NativeLegacyConverterTests(unittest.TestCase):
     def setUp(self) -> None:
         if not CONVERTER.is_file():
@@ -63,20 +93,77 @@ class NativeLegacyConverterTests(unittest.TestCase):
         manifest2 = json.loads((second / "capsule.json").read_text(encoding="utf-8"))
         self.assertEqual("ready", manifest1["status"])
         self.assertEqual(manifest1["capsuleId"], manifest2["capsuleId"])
-        files1 = {
-            path.relative_to(first): path.read_bytes()
-            for path in first.rglob("*") if path.is_file()
-        }
-        files2 = {
-            path.relative_to(second): path.read_bytes()
-            for path in second.rglob("*") if path.is_file()
-        }
+        files1 = capsule_files(first)
+        files2 = capsule_files(second)
         self.assertEqual(files1, files2)
+        first_event = result_event(result1)
+        self.assertEqual("auto", first_event["scriptWorkers"]["requested"])
+        self.assertEqual(0, first_event["scriptWorkers"]["used"])
+
+    def test_worker_counts_produce_byte_identical_capsules_and_ids(self) -> None:
+        source = self.write_project(
+            "parallel.prj", make_project(*make_populated_scripts(6)))
+        capsules: list[dict[Path, bytes]] = []
+        capsule_ids: list[str] = []
+        for workers in ("1", "2", "3", "4", "auto"):
+            destination = self.root / f"workers-{workers}.salsa-legacy"
+            result = self.convert(
+                source, destination, "--script-workers", workers)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            event = result_event(result)
+            expected = min(4 if workers == "auto" else int(workers), 6)
+            self.assertEqual(expected, event["scriptWorkers"]["used"])
+            capsules.append(capsule_files(destination))
+            capsule_ids.append(event["capsuleId"])
+        self.assertTrue(all(files == capsules[0] for files in capsules[1:]))
+        self.assertEqual(1, len(set(capsule_ids)))
+
+    def test_workers_are_clamped_to_script_count_and_shared_values_are_safe(self) -> None:
+        first, second = make_populated_scripts(2)
+        shared = ("frame_delay", "Non-numeric frame delay given")
+        first.errors.append(shared)
+        second.errors.append(shared)
+        source = self.write_project("shared.prj", make_project(first, second))
+        serial = self.root / "shared-serial.salsa-legacy"
+        parallel = self.root / "shared-parallel.salsa-legacy"
+        serial_result = self.convert(source, serial, "--script-workers", "1")
+        parallel_result = self.convert(source, parallel, "--script-workers", "4")
+        self.assertEqual(0, serial_result.returncode, serial_result.stdout + serial_result.stderr)
+        self.assertEqual(0, parallel_result.returncode,
+                         parallel_result.stdout + parallel_result.stderr)
+        self.assertEqual(2, result_event(parallel_result)["scriptWorkers"]["used"])
+        self.assertEqual(capsule_files(serial), capsule_files(parallel))
+
+    def test_parallel_progress_is_serialized_and_monotonic(self) -> None:
+        source = self.write_project(
+            "progress.prj", make_project(*make_populated_scripts(5)))
+        result = self.convert(
+            source, self.root / "progress.salsa-legacy", "--script-workers", "4")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        for phase in ("script", "write"):
+            phase_events = [event for event in events
+                            if event.get("type") == "progress"
+                            and event.get("phase") == phase]
+            self.assertEqual(list(range(6)),
+                             [event["completed"] for event in phase_events])
+            self.assertTrue(all(event["total"] == 5 for event in phase_events))
+
+    def test_invalid_script_worker_values_are_rejected_by_cli(self) -> None:
+        source = self.write_project("project.prj", make_project())
+        for value in ("0", "5", "many"):
+            destination = self.root / f"invalid-{value}.salsa-legacy"
+            result = self.convert(source, destination, "--script-workers", value)
+            self.assertEqual(2, result.returncode)
+            self.assertFalse(destination.exists())
+        missing = self.convert(source, self.root / "missing.salsa-legacy",
+                               "--script-workers")
+        self.assertEqual(2, missing.returncode)
 
     def test_v6_is_rejected_with_resave_direction_and_no_capsule(self) -> None:
         source = self.write_project("old.prj", make_project(version=6))
         destination = self.root / "old.salsa-legacy"
-        result = self.convert(source, destination)
+        result = self.convert(source, destination, "--script-workers", "4")
         self.assertEqual(4, result.returncode)
         self.assertIn("Open and resave", result.stdout)
         self.assertFalse(destination.exists())
@@ -86,7 +173,7 @@ class NativeLegacyConverterTests(unittest.TestCase):
         script.development_only_field = "not official"
         source = self.write_project("broken-script.prj", make_project(script))
         destination = self.root / "broken-script.salsa-legacy"
-        result = self.convert(source, destination)
+        result = self.convert(source, destination, "--script-workers", "4")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         manifest = json.loads((destination / "capsule.json").read_text(encoding="utf-8"))
         self.assertEqual("action-required", manifest["status"])
@@ -116,6 +203,20 @@ class NativeLegacyConverterTests(unittest.TestCase):
         self.assertEqual(1, manifest["scripts"][0]["sections"])
         self.assertEqual(1, manifest["scripts"][0]["instructions"])
         self.assertEqual(1, manifest["scripts"][0]["parameters"])
+        event = result_event(result)
+        self.assertEqual("result", event["type"])
+        self.assertEqual(
+            {"readProject", "normalizeScripts", "analyzeScripts", "encodeScripts",
+             "encodeCpu", "compressOutputCpu", "convertScripts", "finalize", "total"},
+            set(event["timingsMs"]),
+        )
+        self.assertGreaterEqual(
+            event["timingsMs"]["total"],
+            sum(
+                event["timingsMs"][phase]
+                for phase in ("readProject", "convertScripts", "finalize")
+            ),
+        )
         record = zlib.decompress(
             (destination / manifest["scripts"][0]["path"]).read_bytes()
         )
@@ -127,6 +228,7 @@ class NativeLegacyConverterTests(unittest.TestCase):
         ):
             self.assertNotIn(recomputed, record)
         self.assertFalse(any(self.root.glob("*.pickle-spool-*.tmp")))
+        self.assertFalse(any(destination.rglob("*.part")))
 
     def test_optional_original_is_inert_and_does_not_change_capsule_identity(self) -> None:
         source = self.write_project("project.prj", make_project())

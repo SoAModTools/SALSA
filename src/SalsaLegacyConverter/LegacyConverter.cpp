@@ -7,16 +7,21 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <charconv>
+#include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <ranges>
 #include <set>
 #include <span>
 #include <sstream>
-#include <unordered_map>
+#include <thread>
 #include <unordered_set>
 
 #pragma comment(lib, "bcrypt.lib")
@@ -41,6 +46,78 @@ struct Entry final {
     std::string sha256;
     bool canonical = true;
 };
+
+struct ScriptAnalysis final {
+    std::string key{};
+    std::string storedName{};
+    Counts counts{};
+    std::vector<Diagnostic> diagnostics{};
+};
+
+struct ScriptShard final {
+    Entry entry{};
+    std::uint64_t encodeMilliseconds = 0;
+    std::uint64_t compressOutputMilliseconds = 0;
+};
+
+[[nodiscard]] std::string scriptShardPath(const std::size_t ordinal) {
+    std::ostringstream relative;
+    relative << "scripts/" << std::setw(6) << std::setfill('0')
+        << ordinal << ".cbor.zlib";
+    return relative.str();
+}
+
+using SteadyClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t elapsedMilliseconds(
+    const SteadyClock::time_point started, const SteadyClock::time_point finished) {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(finished - started).count());
+}
+
+[[nodiscard]] std::uint32_t resolveScriptWorkers(const std::uint32_t requested,
+    const std::size_t scriptCount) {
+    return resolveScriptWorkerCount(requested,
+        std::thread::hardware_concurrency(), scriptCount);
+}
+
+template <typename Task, typename Complete>
+void runScriptWorkers(const ValueStore& store, const std::size_t taskCount,
+    const std::uint32_t workerCount, Task&& task, Complete&& complete) {
+    if (taskCount == 0) return;
+    std::atomic_size_t next{};
+    std::atomic_bool stopped{};
+    std::mutex failureMutex;
+    std::exception_ptr failure;
+    const auto run = [&] {
+        try {
+            auto reader = store.openReadSession();
+            for (;;) {
+                if (stopped.load(std::memory_order_acquire)) return;
+                const auto index = next.fetch_add(1u, std::memory_order_relaxed);
+                if (index >= taskCount) return;
+                task(reader, index);
+                complete(index);
+            }
+        } catch (...) {
+            stopped.store(true, std::memory_order_release);
+            std::scoped_lock lock(failureMutex);
+            if (!failure) failure = std::current_exception();
+        }
+    };
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+    try {
+        for (std::uint32_t index = 0; index < workerCount; ++index)
+            workers.emplace_back(run);
+    } catch (...) {
+        stopped.store(true, std::memory_order_release);
+        for (auto& worker : workers) worker.join();
+        throw;
+    }
+    for (auto& worker : workers) worker.join();
+    if (failure) std::rethrow_exception(failure);
+}
 
 [[nodiscard]] std::string hex(std::span<const std::byte> bytes) {
     static constexpr char digits[] = "0123456789abcdef";
@@ -122,24 +199,13 @@ private:
     output.flush(); return output.good();
 }
 
-[[nodiscard]] bool compressFile(const std::filesystem::path& source,
-    const std::filesystem::path& destination) {
-    std::error_code error;
-    const auto size = std::filesystem::file_size(source, error);
-    if (error || size > std::numeric_limits<std::size_t>::max()) return false;
-    std::ifstream input(source, std::ios::binary);
-    std::vector<unsigned char> uncompressed(static_cast<std::size_t>(size));
-    if (!uncompressed.empty()) input.read(reinterpret_cast<char*>(uncompressed.data()),
-        static_cast<std::streamsize>(uncompressed.size()));
-    if (!input) return false;
+[[nodiscard]] std::vector<unsigned char> compressBytes(
+    const std::span<const std::byte> uncompressed) {
     std::vector<unsigned char> compressed;
-    if (lodepng::compress(compressed, uncompressed) != 0) return false;
-    std::filesystem::create_directories(destination.parent_path(), error);
-    if (error) return false;
-    std::ofstream output(destination, std::ios::binary | std::ios::trunc);
-    if (!compressed.empty()) output.write(reinterpret_cast<const char*>(compressed.data()),
-        static_cast<std::streamsize>(compressed.size()));
-    output.flush(); return output.good();
+    const auto* begin = reinterpret_cast<const unsigned char*>(uncompressed.data());
+    if (lodepng::compress(compressed, begin, uncompressed.size()) != 0)
+        return {};
+    return compressed;
 }
 
 [[nodiscard]] std::vector<std::byte> jsonBytes(const Json& value) {
@@ -233,14 +299,9 @@ private:
     return 0;
 }
 
-[[nodiscard]] bool exactObject(const ValueStore& store, const ValueId value,
+[[nodiscard]] bool exactStoredObject(const StoredObject& object,
     const std::string_view className, const std::string& path,
     std::vector<Diagnostic>& diagnostics) {
-    if (value == InvalidValueId || store.kind(value) != ValueKind::Object) {
-        diagnostics.push_back({"invalid-object-type", path, "Legacy object has an unexpected type."});
-        return false;
-    }
-    const auto object = store.object(value);
     if (object.className != className || !expectedFields().contains(object.className)) {
         diagnostics.push_back({"unexpected-class", path, "Legacy object class is not allowed."});
         return false;
@@ -255,46 +316,95 @@ private:
     return true;
 }
 
-void validateSelectedGraph(const ValueStore& store, const ValueId value,
-    const std::string& path, std::vector<Diagnostic>& diagnostics,
-    std::unordered_set<ValueId>& active, std::unordered_set<ValueId>& visited) {
-    if (value == InvalidValueId || visited.contains(value)) return;
-    if (!active.insert(value).second) {
+template <typename Reader>
+[[nodiscard]] bool exactObject(const Reader& store, const ValueId value,
+    const std::string_view className, const std::string& path,
+    std::vector<Diagnostic>& diagnostics) {
+    if (value == InvalidValueId || store.kind(value) != ValueKind::Object) {
+        diagnostics.push_back({"invalid-object-type", path, "Legacy object has an unexpected type."});
+        return false;
+    }
+    return exactStoredObject(store.object(value), className, path, diagnostics);
+}
+
+class SparseTraversalState final {
+public:
+    [[nodiscard]] std::uint32_t get(const ValueId value) const {
+        const auto page = static_cast<std::size_t>(value >> PageBits);
+        if (page >= pages_.size() || !pages_[page]) return 0;
+        return pages_[page][static_cast<std::size_t>(value & PageMask)];
+    }
+    void set(const ValueId value, const std::uint32_t state) {
+        const auto page = static_cast<std::size_t>(value >> PageBits);
+        if (page >= pages_.size()) pages_.resize(page + 1u);
+        if (!pages_[page]) pages_[page] = std::make_unique<std::uint32_t[]>(PageSize);
+        pages_[page][static_cast<std::size_t>(value & PageMask)] = state;
+    }
+private:
+    static constexpr std::size_t PageBits = 16;
+    static constexpr std::size_t PageSize = 1u << PageBits;
+    static constexpr ValueId PageMask = PageSize - 1u;
+    std::vector<std::unique_ptr<std::uint32_t[]>> pages_{};
+};
+
+void validateSelectedGraph(ValueStore::ReadSession& store, const ValueId value,
+    std::string& path, std::vector<Diagnostic>& diagnostics,
+    SparseTraversalState& scratch) {
+    if (value == InvalidValueId || scratch.get(value) == 2u) return;
+    if (scratch.get(value) == 1u) {
         diagnostics.push_back({"cyclic-value", path, "Cyclic values are not valid migration IR."});
         return;
     }
+    scratch.set(value, 1u);
     const auto kind = store.kind(value);
     if (kind == ValueKind::Object) {
         const auto object = store.object(value);
-        (void)exactObject(store, value, object.className, path, diagnostics);
-        for (const auto& [name, child] : object.attributes)
-            if (retainedField(object.className, name))
-                validateSelectedGraph(store, child, path + "." + name,
-                    diagnostics, active, visited);
+        (void)exactStoredObject(object, object.className, path, diagnostics);
+        for (const auto& [name, child] : object.attributes) {
+            if (!retainedField(object.className, name)) continue;
+            const auto restore = path.size();
+            path.push_back('.'); path.append(name);
+            validateSelectedGraph(store, child, path, diagnostics, scratch);
+            path.resize(restore);
+        }
     } else if (kind == ValueKind::List || kind == ValueKind::Tuple
         || kind == ValueKind::Set || kind == ValueKind::FrozenSet) {
         std::size_t index = 0;
-        for (const auto child : store.items(value))
-            validateSelectedGraph(store, child, path + "[" + std::to_string(index++) + "]",
-                diagnostics, active, visited);
+        for (const auto child : store.items(value)) {
+            const auto restore = path.size();
+            std::array<char, 32> number{};
+            const auto [end, ignored] = std::to_chars(number.data(), number.data() + number.size(), index++);
+            (void)ignored;
+            path.push_back('['); path.append(number.data(), end); path.push_back(']');
+            validateSelectedGraph(store, child, path, diagnostics, scratch);
+            path.resize(restore);
+        }
     } else if (kind == ValueKind::Dictionary) {
         std::size_t index = 0;
         for (const auto& [key, child] : store.entries(value)) {
-            validateSelectedGraph(store, key, path + ".keys[" + std::to_string(index) + "]",
-                diagnostics, active, visited);
-            validateSelectedGraph(store, child, path + ".values[" + std::to_string(index++) + "]",
-                diagnostics, active, visited);
+            std::array<char, 32> number{};
+            const auto [end, ignored] = std::to_chars(number.data(), number.data() + number.size(), index++);
+            (void)ignored;
+            auto restore = path.size(); path.append(".keys[");
+            path.append(number.data(), end); path.push_back(']');
+            validateSelectedGraph(store, key, path, diagnostics, scratch);
+            path.resize(restore); path.append(".values[");
+            path.append(number.data(), end); path.push_back(']');
+            validateSelectedGraph(store, child, path, diagnostics, scratch);
+            path.resize(restore);
         }
     }
-    active.erase(value); visited.insert(value);
+    scratch.set(value, 2u);
 }
 
-[[nodiscard]] std::uint64_t dictionarySize(const ValueStore& store, const ValueId value) {
+template <typename Reader>
+[[nodiscard]] std::uint64_t dictionarySize(const Reader& store, const ValueId value) {
     return value != InvalidValueId && store.kind(value) == ValueKind::Dictionary
-        ? store.entries(value).size() : 0;
+        ? store.containerSize(value) : 0;
 }
 
-[[nodiscard]] Counts countScript(const ValueStore& store, const ValueId script) {
+template <typename Reader>
+[[nodiscard]] Counts countScript(const Reader& store, const ValueId script) {
     Counts counts{};
     const auto sections = attributeValue(store, script, "sects");
     if (sections == InvalidValueId || store.kind(sections) != ValueKind::Dictionary) return counts;
@@ -316,7 +426,7 @@ void validateSelectedGraph(const ValueStore& store, const ValueId value,
     }
     const auto links = attributeValue(store, script, "links");
     counts.links = links != InvalidValueId && (store.kind(links) == ValueKind::List
-        || store.kind(links) == ValueKind::Tuple) ? store.items(links).size() : 0;
+        || store.kind(links) == ValueKind::Tuple) ? store.containerSize(links) : 0;
     counts.strings = dictionarySize(store, attributeValue(store, script, "strings"));
     return counts;
 }
@@ -368,7 +478,7 @@ void normalizePlaceholders(ValueStore& store, const ValueId script,
         for (const auto& [id, instruction] : instructionEntries) {
             const auto base = attributeValue(store, instruction, "base_id");
             if (store.kind(instruction) == ValueKind::Object
-                && store.object(instruction).className.ends_with(".SCTInstruction")
+                && store.objectClassName(instruction).ends_with(".SCTInstruction")
                 && base != InvalidValueId && store.kind(base) == ValueKind::Null)
                 placeholders.push_back(valueString(store, id));
         }
@@ -398,12 +508,7 @@ void normalizePlaceholders(ValueStore& store, const ValueId script,
 
 class CborWriter final {
 public:
-    explicit CborWriter(const std::filesystem::path& path) {
-        std::error_code error; std::filesystem::create_directories(path.parent_path(), error);
-        if (!error) output_.open(path, std::ios::binary | std::ios::trunc);
-    }
-    ~CborWriter() { output_.flush(); }
-    [[nodiscard]] bool good() { output_.flush(); return output_.good(); }
+    [[nodiscard]] std::vector<std::byte> take() { return std::move(output_); }
     void array(const std::uint64_t size) { major(4, size); }
     void map(const std::uint64_t size) { major(5, size); }
     void unsignedValue(const std::uint64_t value) { major(0, value); }
@@ -414,12 +519,13 @@ public:
     void boolean(const bool value) { byte(value ? 0xf5 : 0xf4); }
     void null() { byte(0xf6); }
     void text(const std::string_view value) {
-        major(3, value.size()); output_.write(value.data(), static_cast<std::streamsize>(value.size()));
+        major(3, value.size());
+        const auto bytes = std::as_bytes(std::span{value.data(), value.size()});
+        output_.insert(output_.end(), bytes.begin(), bytes.end());
     }
     void bytes(const std::span<const std::byte> value) {
         major(2, value.size());
-        if (!value.empty()) output_.write(reinterpret_cast<const char*>(value.data()),
-            static_cast<std::streamsize>(value.size()));
+        output_.insert(output_.end(), value.begin(), value.end());
     }
     void json(const Json& value) {
         if (value.is_null()) null();
@@ -440,7 +546,7 @@ public:
         } else throw std::runtime_error("unsupported JSON value in CBOR writer");
     }
 private:
-    void byte(const std::uint8_t value) { output_.put(static_cast<char>(value)); }
+    void byte(const std::uint8_t value) { output_.push_back(static_cast<std::byte>(value)); }
     void bigEndian(const std::uint64_t value, const unsigned count) {
         for (auto shift = count * 8u; shift != 0; shift -= 8u)
             byte(static_cast<std::uint8_t>(value >> (shift - 8u)));
@@ -453,12 +559,12 @@ private:
         else if (value <= 0xffffffffu) { byte(prefix | 26u); bigEndian(value, 4); }
         else { byte(prefix | 27u); bigEndian(value, 8); }
     }
-    std::ofstream output_{};
+    std::vector<std::byte> output_{};
 };
 
 class FilteredEncoder final {
 public:
-    FilteredEncoder(const ValueStore& store, CborWriter& writer)
+    FilteredEncoder(ValueStore::ReadSession& store, CborWriter& writer)
         : store_(store), writer_(writer) {}
     void write(const ValueId value) { writeValue(value, 0); }
 private:
@@ -476,12 +582,16 @@ private:
         const auto compound = kind == ValueKind::List || kind == ValueKind::Tuple
             || kind == ValueKind::Set || kind == ValueKind::FrozenSet
             || kind == ValueKind::Dictionary || kind == ValueKind::Object;
-        if (compound) if (const auto found = ids_.find(value); found != ids_.end()) {
+        if (compound && state_.get(value) != 0u) {
             writer_.array(2); writer_.unsignedValue(Reference);
-            writer_.unsignedValue(found->second); return;
+            writer_.unsignedValue(state_.get(value)); return;
         }
         const auto nodeId = compound ? nextId_++ : 0;
-        if (compound) ids_[value] = nodeId;
+        if (compound) {
+            if (nodeId > std::numeric_limits<std::uint32_t>::max())
+                throw std::runtime_error("legacy record has too many compound nodes");
+            state_.set(value, static_cast<std::uint32_t>(nodeId));
+        }
         const auto prefix = [&](const std::uint64_t size, const std::uint8_t tag) {
             writer_.array(size); writer_.unsignedValue(tag);
             if (compound) writer_.unsignedValue(nodeId);
@@ -536,10 +646,10 @@ private:
             prefix(2, Global); writer_.text(store_.text(value)); break;
         }
     }
-    const ValueStore& store_;
+    ValueStore::ReadSession& store_;
     CborWriter& writer_;
     std::uint64_t nextId_ = 1;
-    std::unordered_map<ValueId, std::uint64_t> ids_{};
+    SparseTraversalState state_{};
 };
 
 [[nodiscard]] Json diagnosticsJson(const std::vector<Diagnostic>& diagnostics) {
@@ -550,15 +660,15 @@ private:
 }
 
 void writeNamedValue(CborWriter& writer, FilteredEncoder& encoder,
-    const ValueStore& store, const ValueId object, const std::string_view name) {
+    const ValueStore::ReadSession& store, const ValueId object, const std::string_view name) {
     writer.text(name); encoder.write(attributeValue(store, object, name));
 }
 
-[[nodiscard]] bool writeScriptRecord(const std::filesystem::path& path,
-    const ValueStore& store, const ValueId script, const std::uint32_t ordinal,
+[[nodiscard]] std::vector<std::byte> writeScriptRecord(
+    ValueStore::ReadSession& store, const ValueId script, const std::uint32_t ordinal,
     const std::string& key, const std::string& storedName, const bool accepted,
     const Counts& counts, const std::vector<Diagnostic>& diagnostics) {
-    CborWriter writer(path); FilteredEncoder encoder(store, writer);
+    CborWriter writer; FilteredEncoder encoder(store, writer);
     writer.map(9);
     writer.text("formatId"); writer.text("jahorta.salsa.legacy-script-record");
     writer.text("schemaVersion"); writer.unsignedValue(2);
@@ -575,8 +685,8 @@ void writeNamedValue(CborWriter& writer, FilteredEncoder& encoder,
     writer.text("diagnostics"); writer.json(diagnosticsJson(diagnostics));
     writer.text("ir");
     if (script == InvalidValueId || store.kind(script) != ValueKind::Object
-        || !store.object(script).className.ends_with(".SCTScript")) {
-        writer.null(); return writer.good();
+        || !store.objectClassName(script).ends_with(".SCTScript")) {
+        writer.null(); return writer.take();
     }
     // This order is the migration pipeline: framing, text, semantic sections,
     // then references and authoring/advisory sidecars.
@@ -591,13 +701,13 @@ void writeNamedValue(CborWriter& writer, FilteredEncoder& encoder,
     for (const auto field : {"folded_sects", "index", "sect_tree", "sect_list",
             "string_garbage", "unused_sections", "errors", "error_sections", "variables"})
         writeNamedValue(writer, encoder, store, script, field);
-    return writer.good();
+    return writer.take();
 }
 
-[[nodiscard]] bool writeProjectRecord(const std::filesystem::path& path,
-    const ValueStore& store, const ValueId project, const Json& normalizations,
+[[nodiscard]] std::vector<std::byte> writeProjectRecord(
+    ValueStore::ReadSession& store, const ValueId project, const Json& normalizations,
     const std::vector<Diagnostic>& diagnostics) {
-    CborWriter writer(path); FilteredEncoder encoder(store, writer);
+    CborWriter writer; FilteredEncoder encoder(store, writer);
     writer.map(6);
     writer.text("formatId"); writer.text("jahorta.salsa.legacy-project-record");
     writer.text("schemaVersion"); writer.unsignedValue(2);
@@ -608,7 +718,36 @@ void writeNamedValue(CborWriter& writer, FilteredEncoder& encoder,
     writeNamedValue(writer, encoder, store, project, "inst_id_colors");
     writer.text("normalizations"); writer.json(normalizations);
     writer.text("diagnostics"); writer.json(diagnosticsJson(diagnostics));
-    return writer.good();
+    return writer.take();
+}
+
+[[nodiscard]] std::optional<Entry> publishGeneratedFile(const std::filesystem::path& root,
+    const std::string& relative, const std::span<const std::byte> bytes,
+    const bool canonical, const ConversionRequest& request) {
+    const auto size = static_cast<std::uint64_t>(bytes.size());
+    if (!request.disableResourceLimits && size > request.limits.maxOutputBytes)
+        return std::nullopt;
+    const auto digest = sha256(bytes); if (digest.empty()) return std::nullopt;
+    const auto* begin = reinterpret_cast<const char8_t*>(relative.data());
+    const auto finalPath = root
+        / std::filesystem::path(std::u8string(begin, begin + relative.size()));
+    const auto partPath = finalPath.wstring() + L".part";
+    if (!writeFile(partPath, bytes)) return std::nullopt;
+    std::error_code error;
+    std::filesystem::rename(partPath, finalPath, error);
+    if (error) return std::nullopt;
+    return Entry{relative, size, digest, canonical};
+}
+
+[[nodiscard]] bool addGeneratedFile(const std::filesystem::path& root,
+    const std::string& relative, const std::span<const std::byte> bytes,
+    const bool canonical, std::vector<Entry>& entries,
+    std::uint64_t& outputBytes, const ConversionRequest& request) {
+    auto entry = publishGeneratedFile(root, relative, bytes, canonical, request);
+    if (!entry || (!request.disableResourceLimits
+        && outputBytes > request.limits.maxOutputBytes - entry->size)) return false;
+    outputBytes += entry->size; entries.push_back(std::move(*entry));
+    return true;
 }
 
 [[nodiscard]] bool addExistingFile(const std::filesystem::path& root,
@@ -639,38 +778,44 @@ void writeNamedValue(CborWriter& writer, FilteredEncoder& encoder,
 
 ConversionOutcome convertLegacyProject(const ConversionRequest& request,
     const ProgressCallback& progress) {
+    using Clock = std::chrono::steady_clock;
+    const auto totalStarted = Clock::now();
     const auto report = [&](const std::string_view phase, const std::uint64_t completed,
                             const std::uint64_t total, const std::string_view current = {}) {
         if (progress) progress(phase, completed, total, current);
     };
     std::error_code error;
-    if (request.input.empty() || request.output.empty()
+    if (request.scriptWorkers > 4 || request.input.empty() || request.output.empty()
         || !std::filesystem::is_regular_file(request.input, error) || error
         || std::filesystem::exists(request.output, error))
         return {ConversionOutcome::Status::Rejected,
-            "Input must be a regular file and output must not exist.", {}};
+            request.scriptWorkers > 4
+                ? "Script workers must be Auto or an explicit count from 1 through 4."
+                : "Input must be a regular file and output must not exist.", {}};
     const auto sourceSize = std::filesystem::file_size(request.input, error);
     if (error) return {ConversionOutcome::Status::Failed,
         "The project size could not be read.", {}};
-    report("hash", 0, sourceSize, filenameUtf8(request.input));
-    const auto sourceHash = sha256File(request.input);
-    if (sourceHash.empty()) return {ConversionOutcome::Status::Failed,
-        "The project could not be hashed.", {}};
-    report("hash", sourceSize, sourceSize, filenameUtf8(request.input));
-
+    const auto readStarted = Clock::now();
+    Sha256 sourceHasher;
     const auto spoolPath = request.output.parent_path()
         / (request.output.filename().wstring() + L".pickle-spool-"
             + std::to_wstring(GetCurrentProcessId()) + L".tmp");
     report("parse", 0, sourceSize, filenameUtf8(request.input));
     auto pickle = readLegacyPickle(request.input, spoolPath, request.limits.pickle,
         request.disableResourceLimits, [&](const std::uint64_t completed,
-            const std::uint64_t total) { report("parse", completed, total); });
-    if (!pickle) return {ConversionOutcome::Status::Rejected, pickle.error, {}};
+            const std::uint64_t total) { report("parse", completed, total); },
+        [&](const std::span<const std::byte> bytes) { return sourceHasher.add(bytes); });
+    if (!pickle) return {pickle.error.starts_with("input digest update failed")
+            ? ConversionOutcome::Status::Failed : ConversionOutcome::Status::Rejected,
+        pickle.error, {}};
+    const auto sourceHash = sourceHasher.finish();
+    if (sourceHash.empty()) return {ConversionOutcome::Status::Failed,
+        "The project could not be hashed.", {}};
     report("parse", sourceSize, sourceSize);
     auto& store = *pickle.store;
     std::vector<Diagnostic> projectDiagnostics;
     if (store.kind(pickle.root) != ValueKind::Object
-        || store.object(pickle.root).className != "SALSA.Project.project_container.SCTProject")
+        || store.objectClassName(pickle.root) != "SALSA.Project.project_container.SCTProject")
         return {ConversionOutcome::Status::Rejected,
             "The pickle root is not a legacy SALSA project.", {}};
     const auto version = attributeValue(store, pickle.root, "version");
@@ -692,6 +837,7 @@ ConversionOutcome convertLegacyProject(const ConversionRequest& request,
     if (!request.disableResourceLimits && scriptEntries.size() > request.limits.maxScripts)
         return {ConversionOutcome::Status::Rejected,
             "The project exceeds the script resource limit.", {}};
+    const auto readFinished = Clock::now();
 
     std::filesystem::create_directories(request.output, error);
     if (error) return {ConversionOutcome::Status::Failed,
@@ -704,7 +850,7 @@ ConversionOutcome convertLegacyProject(const ConversionRequest& request,
 
     Json normalizations = Json::array(), scriptInventory = Json::array();
     std::vector<Entry> entries; std::uint64_t outputBytes = 0; Counts totals{};
-    std::set<std::string> foldedNames; bool actionRequired = false;
+    bool actionRequired = false;
     const auto globals = attributeValue(store, pickle.root, "global_variables");
     const auto colors = attributeValue(store, pickle.root, "inst_id_colors");
     if (globals == InvalidValueId || store.kind(globals) != ValueKind::Dictionary)
@@ -715,74 +861,141 @@ ConversionOutcome convertLegacyProject(const ConversionRequest& request,
             "Instruction colors do not have the official v7 dictionary shape."});
     actionRequired = !projectDiagnostics.empty();
 
-    std::uint32_t ordinal = 0;
+    const auto scriptsStarted = Clock::now();
+    const auto normalizationStarted = scriptsStarted;
     for (const auto& [keyValue, script] : scriptEntries) {
         const auto key = valueString(store, keyValue);
-        report("script", ordinal, scriptEntries.size(), key);
-        std::vector<Diagnostic> diagnostics;
-        if (store.kind(keyValue) != ValueKind::String
-            || !exactObject(store, script, "SALSA.Project.project_container.SCTScript",
-                "project.scts[" + key + "]", diagnostics)) {
-            if (diagnostics.empty()) diagnostics.push_back(
-                {"invalid-script", key, "Script entry is malformed."});
-        } else {
-            std::unordered_set<ValueId> active, visited;
-            validateSelectedGraph(store, script, "project.scts[" + key + "]",
-                diagnostics, active, visited);
-            const auto stored = attributeValue(store, script, "name");
-            if (stored == InvalidValueId || store.kind(stored) != ValueKind::String
-                || store.text(stored) != key)
-                diagnostics.push_back({"script-key-name-mismatch", key,
-                    "The dictionary key does not exactly match the stored script name."});
-            auto folded = key; std::ranges::transform(folded, folded.begin(),
-                [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (!foldedNames.insert(folded).second)
-                diagnostics.push_back({"duplicate-script-stem", key,
-                    "The project contains case-insensitively colliding script stems."});
-        }
         normalizePlaceholders(store, script, key, normalizations);
         normalizeStrings(store, script, key, normalizations);
-        const auto counts = countScript(store, script);
-        totals.sections += counts.sections; totals.instructions += counts.instructions;
-        totals.parameters += counts.parameters; totals.links += counts.links;
-        totals.strings += counts.strings;
+    }
+    const auto normalizationFinished = Clock::now();
+    store.seal();
+    const auto usedWorkers = resolveScriptWorkers(request.scriptWorkers, scriptEntries.size());
+    std::vector<ScriptAnalysis> analyses(scriptEntries.size());
+    std::mutex analysisProgressMutex;
+    std::uint64_t analyzed = 0;
+    report("script", 0, scriptEntries.size());
+    const auto analysisStarted = Clock::now();
+    try {
+        runScriptWorkers(store, scriptEntries.size(), usedWorkers,
+            [&](ValueStore::ReadSession& reader, const std::size_t index) {
+                const auto& [keyValue, script] = scriptEntries[index];
+                auto& analysis = analyses[index];
+                analysis.key = valueString(reader, keyValue);
+                if (reader.kind(keyValue) != ValueKind::String
+                    || !exactObject(reader, script,
+                        "SALSA.Project.project_container.SCTScript",
+                        "project.scts[" + analysis.key + "]", analysis.diagnostics)) {
+                    if (analysis.diagnostics.empty()) analysis.diagnostics.push_back(
+                        {"invalid-script", analysis.key, "Script entry is malformed."});
+                } else {
+                    SparseTraversalState scratch;
+                    auto path = "project.scts[" + analysis.key + "]";
+                    validateSelectedGraph(reader, script, path,
+                        analysis.diagnostics, scratch);
+                    const auto stored = attributeValue(reader, script, "name");
+                    if (stored == InvalidValueId || reader.kind(stored) != ValueKind::String
+                        || reader.text(stored) != analysis.key)
+                        analysis.diagnostics.push_back({"script-key-name-mismatch", analysis.key,
+                            "The dictionary key does not exactly match the stored script name."});
+                }
+                analysis.counts = countScript(reader, script);
+                analysis.storedName = valueString(reader,
+                    attributeValue(reader, script, "name"));
+            },
+            [&](const std::size_t index) {
+                std::scoped_lock lock(analysisProgressMutex);
+                report("script", ++analyzed, scriptEntries.size(), analyses[index].key);
+            });
+    } catch (const std::exception&) {
+        return fail("A script could not be analyzed.");
+    }
+    const auto analysisFinished = Clock::now();
+
+    for (auto& analysis : analyses) {
+        totals.sections += analysis.counts.sections;
+        totals.instructions += analysis.counts.instructions;
+        totals.parameters += analysis.counts.parameters;
+        totals.links += analysis.counts.links;
+        totals.strings += analysis.counts.strings;
         if (!request.disableResourceLimits && !withinCounts(totals, request.limits))
-            diagnostics.push_back({"resource-limit", key,
+            analysis.diagnostics.push_back({"resource-limit", analysis.key,
                 "The project exceeds a structural resource limit."});
-        const bool accepted = diagnostics.empty(); actionRequired = actionRequired || !accepted;
-        std::ostringstream relative; relative << "scripts/" << std::setw(6)
-            << std::setfill('0') << ordinal << ".cbor.zlib";
-        const auto relativeText = relative.str();
-        const auto* begin = reinterpret_cast<const char8_t*>(relativeText.data());
-        const auto recordPath = request.output
-            / std::filesystem::path(std::u8string(begin, begin + relativeText.size()));
-        const auto rawPartPath = recordPath.wstring() + L".uncompressed.part";
-        const auto compressedPartPath = recordPath.wstring() + L".part";
-        if (!writeScriptRecord(rawPartPath, store, script, ordinal, key,
-                valueString(store, attributeValue(store, script, "name")), accepted,
-                counts, diagnostics)) return fail("A script capsule record could not be written.");
-        if (!compressFile(rawPartPath, compressedPartPath))
-            return fail("A script capsule record could not be compressed.");
-        std::filesystem::remove(rawPartPath, error);
-        if (error) return fail("A temporary script record could not be removed.");
-        std::filesystem::rename(compressedPartPath, recordPath, error);
-        if (error || !addExistingFile(request.output, relativeText, true,
-                entries, outputBytes, request))
-            return fail("A script capsule record could not be finalized.");
-        scriptInventory.push_back({{"ordinal", ordinal}, {"key", key},
-            {"storedName", valueString(store, attributeValue(store, script, "name"))},
-            {"status", accepted ? "accepted" : "failed"}, {"sections", counts.sections},
-            {"instructions", counts.instructions}, {"parameters", counts.parameters},
-            {"strings", counts.strings}, {"diagnostics", diagnostics.size()},
-            {"path", relativeText}});
-        ++ordinal;
+        actionRequired = actionRequired || !analysis.diagnostics.empty();
     }
 
-    const auto projectPart = request.output / L"project.cbor.part";
-    if (!writeProjectRecord(projectPart, store, pickle.root, normalizations,
-            projectDiagnostics)) return fail("The project capsule record could not be written.");
-    std::filesystem::rename(projectPart, request.output / L"project.cbor", error);
-    if (error || !addExistingFile(request.output, "project.cbor", true,
+    std::vector<ScriptShard> shards(scriptEntries.size());
+    std::mutex writeProgressMutex;
+    std::uint64_t written = 0;
+    report("write", 0, scriptEntries.size());
+    const auto encodingStarted = Clock::now();
+    try {
+        runScriptWorkers(store, scriptEntries.size(), usedWorkers,
+            [&](ValueStore::ReadSession& reader, const std::size_t index) {
+                const auto script = scriptEntries[index].second;
+                const auto& analysis = analyses[index];
+                const auto relative = scriptShardPath(index);
+                const auto encodeStarted = Clock::now();
+                auto record = writeScriptRecord(reader, script,
+                    static_cast<std::uint32_t>(index), analysis.key,
+                    analysis.storedName, analysis.diagnostics.empty(),
+                    analysis.counts, analysis.diagnostics);
+                if (record.empty())
+                    throw std::runtime_error("script record encoding failed");
+                const auto encodeFinished = Clock::now();
+                auto compressed = compressBytes(record);
+                if (compressed.empty())
+                    throw std::runtime_error("script record compression failed");
+                auto entry = publishGeneratedFile(request.output, relative,
+                    std::as_bytes(std::span{compressed.data(), compressed.size()}),
+                    true, request);
+                if (!entry) throw std::runtime_error("script shard publication failed");
+                const auto published = Clock::now();
+                shards[index] = {std::move(*entry),
+                    elapsedMilliseconds(encodeStarted, encodeFinished),
+                    elapsedMilliseconds(encodeFinished, published)};
+            },
+            [&](const std::size_t index) {
+                std::scoped_lock lock(writeProgressMutex);
+                report("write", ++written, scriptEntries.size(), analyses[index].key);
+            });
+    } catch (const std::exception&) {
+        return fail("A script capsule record could not be finalized.");
+    }
+    const auto encodingFinished = Clock::now();
+    std::uint64_t encodeCpuMilliseconds = 0;
+    std::uint64_t compressOutputCpuMilliseconds = 0;
+    for (std::size_t index = 0; index < shards.size(); ++index) {
+        const auto& shard = shards[index];
+        if (!request.disableResourceLimits
+            && outputBytes > request.limits.maxOutputBytes - shard.entry.size)
+            return fail("A script capsule record could not be finalized.");
+        outputBytes += shard.entry.size;
+        entries.push_back(shard.entry);
+        encodeCpuMilliseconds += shard.encodeMilliseconds;
+        compressOutputCpuMilliseconds += shard.compressOutputMilliseconds;
+        const auto& analysis = analyses[index];
+        scriptInventory.push_back({{"ordinal", index}, {"key", analysis.key},
+            {"storedName", analysis.storedName},
+            {"status", analysis.diagnostics.empty() ? "accepted" : "failed"},
+            {"sections", analysis.counts.sections},
+            {"instructions", analysis.counts.instructions},
+            {"parameters", analysis.counts.parameters},
+            {"strings", analysis.counts.strings},
+            {"diagnostics", analysis.diagnostics.size()},
+            {"path", shard.entry.path}});
+    }
+    const auto scriptsFinished = encodingFinished;
+
+    const auto finalizeStarted = Clock::now();
+    std::vector<std::byte> projectRecord;
+    {
+        auto projectReader = store.openReadSession();
+        projectRecord = writeProjectRecord(projectReader, pickle.root, normalizations,
+            projectDiagnostics);
+    }
+    if (projectRecord.empty()
+        || !addGeneratedFile(request.output, "project.cbor", projectRecord, true,
             entries, outputBytes, request))
         return fail("The project capsule record could not be finalized.");
     std::ranges::sort(entries, {}, &Entry::path);
@@ -814,10 +1027,24 @@ ConversionOutcome convertLegacyProject(const ConversionRequest& request,
     if (!writeFile(request.output / L"capsule.json", jsonBytes(manifest)))
         return fail("The capsule manifest could not be written.");
     ownsOutput = false; report("finalize", 1, 1, {});
-    return {actionRequired ? ConversionOutcome::Status::ActionRequired
-                           : ConversionOutcome::Status::Ready,
+    const auto finished = Clock::now();
+    ConversionOutcome outcome{actionRequired ? ConversionOutcome::Status::ActionRequired
+                                             : ConversionOutcome::Status::Ready,
         actionRequired ? "Capsule created with script decisions required."
                        : "Capsule created.", capsuleId};
+    outcome.readProjectMilliseconds = elapsedMilliseconds(readStarted, readFinished);
+    outcome.normalizeScriptsMilliseconds = elapsedMilliseconds(
+        normalizationStarted, normalizationFinished);
+    outcome.analyzeScriptsMilliseconds = elapsedMilliseconds(analysisStarted, analysisFinished);
+    outcome.encodeScriptsMilliseconds = elapsedMilliseconds(encodingStarted, encodingFinished);
+    outcome.encodeCpuMilliseconds = encodeCpuMilliseconds;
+    outcome.compressOutputCpuMilliseconds = compressOutputCpuMilliseconds;
+    outcome.convertScriptsMilliseconds = elapsedMilliseconds(scriptsStarted, scriptsFinished);
+    outcome.finalizeMilliseconds = elapsedMilliseconds(finalizeStarted, finished);
+    outcome.totalMilliseconds = elapsedMilliseconds(totalStarted, finished);
+    outcome.requestedScriptWorkers = request.scriptWorkers;
+    outcome.usedScriptWorkers = usedWorkers;
+    return outcome;
 }
 
 }  // namespace salsa::legacy

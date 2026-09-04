@@ -93,13 +93,32 @@ the entire project.
 
 ## Bounded-memory conversion
 
-The converter reads and hashes the source incrementally. Its restricted pickle
-VM writes payloads and container mutations to one temporary append-only spool;
-the VM stack, memo table, and node-offset index contain only integer handles.
-After exact root and version validation, each script is traversed from the
-spool and written directly to a `*.cbor.part` file. The temporary file is
-renamed only after it is complete and hashed. The project record and manifest
-are published last, and the spool is deleted before finalization.
+The converter reads and hashes the source in the same buffered pass. Its
+restricted pickle VM writes payloads and container mutations to one temporary
+append-only spool; the VM stack, memo table, and node-offset index contain only
+integer handles. Parsing and graph normalization are serial. The normalized
+store is then sealed against mutation, and each script worker opens an
+independent read-only spool cursor with its own field-name cache and sparse
+traversal state. Script validation and counting run in parallel, their results
+are folded in project order for cumulative limits, and independent script
+records are then encoded, compressed, hashed, written once to a `*.part` file,
+and atomically renamed in parallel. Inventory construction, capsule identity,
+the project record, and the manifest remain serial and deterministic. Worker
+count therefore does not affect capsule bytes or identity.
+
+Auto processing uses the smaller of four workers, available logical processors,
+and script count. An empty project starts no workers. The broker's normal memory
+ceiling is half of installed physical RAM, clamped to 4--16 GiB, with an 8 GiB
+fallback when discovery fails. Disabling resource safeguards removes that
+ceiling. Each worker still buffers at most one script record at a time; the
+ceiling is not an allocation target. The project record and manifest are
+published last, and the spool is deleted before finalization.
+
+Readers stream integrity checks for ordinary entries. A compressed script is
+read and hashed once, decompressed under its record-size limit, and validated
+with a fixed-schema CBOR cursor rather than a general-purpose document tree.
+This keeps validation memory proportional to one script shard instead of its
+expanded JSON-like object graph.
 
 Rejected versions, unsafe pickle operations, conversion failure, and
 cancellation never produce an accepted capsule. The spool is transient and is

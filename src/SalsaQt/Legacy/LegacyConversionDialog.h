@@ -8,6 +8,7 @@
 #include <stop_token>
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QProgressBar;
@@ -38,6 +39,7 @@ private:
     QCheckBox* trusted_ = nullptr;
     QCheckBox* retainOriginal_ = nullptr;
     QCheckBox* disableLimits_ = nullptr;
+    QComboBox* scriptWorkers_ = nullptr;
     QLabel* status_ = nullptr;
     QProgressBar* progress_ = nullptr;
     QTableWidget* scripts_ = nullptr;

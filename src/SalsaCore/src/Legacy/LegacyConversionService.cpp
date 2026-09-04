@@ -16,6 +16,7 @@
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <ranges>
 #include <sstream>
@@ -161,13 +162,22 @@ void processLine(const std::string& line, const LegacyConversionObserver& observ
 
 }  // namespace
 
+std::uint64_t legacyConverterMemoryLimit(
+    const std::uint64_t installedPhysicalBytes) noexcept {
+    constexpr std::uint64_t gibibyte = 1ull << 30;
+    if (installedPhysicalBytes == 0) return 8ull * gibibyte;
+    return std::clamp(installedPhysicalBytes / 2u,
+        4ull * gibibyte, 16ull * gibibyte);
+}
+
 LegacyConversionResult LegacyConversionService::convert(
     const LegacyConversionRequest& request, const std::stop_token stop,
     const LegacyConversionObserver& observer) {
     if (!request.trustedInputConfirmed) return failure(LegacyConversionStatus::Rejected,
         "Confirm that this legacy project comes from a trusted source before conversion.",
         request.source, DiagnosticCode::LegacyConversionNotTrusted);
-    if (!regularNoReparse(request.source) || !regularNoReparse(request.converterExecutable)
+    if (request.scriptWorkers > 4 || !regularNoReparse(request.source)
+        || !regularNoReparse(request.converterExecutable)
         || request.destination.empty() || request.destination.parent_path().empty())
         return failure(LegacyConversionStatus::Rejected,
             "The source, destination, or bundled converter path is invalid.", request.source,
@@ -279,6 +289,8 @@ LegacyConversionResult LegacyConversionService::convert(
     auto command = quote(stagedConverter) + L" convert " + quote(stagedInput) + L" " + quote(stagedCapsule);
     if (request.retainOriginal) command += L" --retain-original";
     if (request.disableResourceLimits) command += L" --disable-resource-limits";
+    command += L" --script-workers ";
+    command += request.scriptWorkers == 0 ? L"auto" : std::to_wstring(request.scriptWorkers);
     std::vector<wchar_t> mutableCommand(command.begin(), command.end()); mutableCommand.push_back(L'\0');
     PROCESS_INFORMATION processInfo{};
     const auto created = CreateProcessW(stagedConverter.c_str(), mutableCommand.data(), nullptr, nullptr,
@@ -299,10 +311,11 @@ LegacyConversionResult LegacyConversionService::convert(
     jobLimits.BasicLimitInformation.ActiveProcessLimit = 1;
     if (!request.disableResourceLimits) {
         jobLimits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
-        // The disk-spooled converter stays near 1 GiB on the 295 MiB US v7
-        // fixture. Keep room for the larger characterized fixtures and record
-        // decompression without restoring the former graph-sized allowance.
-        jobLimits.JobMemoryLimit = 4ull << 30;
+        ULONGLONG installedKilobytes = 0;
+        const auto discovered = GetPhysicallyInstalledSystemMemory(&installedKilobytes) != FALSE
+            && installedKilobytes <= std::numeric_limits<std::uint64_t>::max() / 1024u;
+        jobLimits.JobMemoryLimit = legacyConverterMemoryLimit(discovered
+            ? static_cast<std::uint64_t>(installedKilobytes) * 1024u : 0);
     }
     if (!job.value || !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation,
             &jobLimits, sizeof(jobLimits)) || !AssignProcessToJobObject(job.value, process.value)

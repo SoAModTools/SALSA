@@ -1,6 +1,7 @@
 #include "Legacy/LegacyConversionDialog.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
@@ -13,6 +14,7 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QUrl>
@@ -29,8 +31,8 @@ namespace {
     case core::LegacyConversionPhase::Staging: return QObject::tr("Staging controlled input");
     case core::LegacyConversionPhase::Hashing: return QObject::tr("Hashing project");
     case core::LegacyConversionPhase::Parsing: return QObject::tr("Reading legacy project");
-    case core::LegacyConversionPhase::Script: return QObject::tr("Converting scripts");
-    case core::LegacyConversionPhase::Writing: return QObject::tr("Writing capsule");
+    case core::LegacyConversionPhase::Script: return QObject::tr("Analyzing scripts");
+    case core::LegacyConversionPhase::Writing: return QObject::tr("Writing script records");
     case core::LegacyConversionPhase::Validating: return QObject::tr("Validating capsule");
     case core::LegacyConversionPhase::Finalizing: return QObject::tr("Finalizing capsule");
     }
@@ -64,6 +66,16 @@ LegacyConversionDialog::LegacyConversionDialog(QWidget* parent)
     auto* form = new QFormLayout;
     form->addRow(tr("Legacy project:"), sourceRow);
     form->addRow(tr("Capsule folder:"), destinationRow);
+    scriptWorkers_ = new QComboBox(this);
+    scriptWorkers_->addItem(tr("Auto (up to 4)"), 0);
+    scriptWorkers_->addItem(tr("Serial"), 1);
+    scriptWorkers_->addItem(tr("2"), 2);
+    scriptWorkers_->addItem(tr("3"), 3);
+    scriptWorkers_->addItem(tr("4"), 4);
+    const auto rememberedWorkers = QSettings{}.value(
+        QStringLiteral("legacyConversion/scriptWorkers"), 0).toInt();
+    scriptWorkers_->setCurrentIndex(std::clamp(rememberedWorkers, 0, 4));
+    form->addRow(tr("Script processing:"), scriptWorkers_);
 
     trusted_ = new QCheckBox(tr("I trust the source of this legacy .prj file"), this);
     trusted_->setToolTip(tr("Legacy project files are Python pickle containers. Conversion is isolated, but only trusted files should be selected."));
@@ -153,6 +165,9 @@ void LegacyConversionDialog::startConversion() {
     request.trustedInputConfirmed = trusted_->isChecked();
     request.retainOriginal = retainOriginal_->isChecked();
     request.disableResourceLimits = disableLimits_->isChecked();
+    request.scriptWorkers = scriptWorkers_->currentData().toUInt();
+    QSettings{}.setValue(QStringLiteral("legacyConversion/scriptWorkers"),
+        static_cast<int>(request.scriptWorkers));
     const auto token = stopSource_.get_token();
     status_->setText(tr("Preparing isolated conversion…"));
     convert_->setEnabled(false); cancel_->setEnabled(true); close_->setEnabled(false);
@@ -176,6 +191,7 @@ void LegacyConversionDialog::updateActions() {
     source_->setEnabled(!running); destination_->setEnabled(!running); trusted_->setEnabled(!running);
     sourceBrowse_->setEnabled(!running); destinationBrowse_->setEnabled(!running);
     retainOriginal_->setEnabled(!running); disableLimits_->setEnabled(!running);
+    scriptWorkers_->setEnabled(!running);
 }
 
 void LegacyConversionDialog::updateProgress(const core::LegacyConversionProgress& value) {

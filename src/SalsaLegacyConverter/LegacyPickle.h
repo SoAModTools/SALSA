@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -29,6 +30,8 @@ struct StoredObject final {
 // node descriptors and the pickle VM's integer stack/memo handles.
 class ValueStore final {
 public:
+    class ReadSession;
+
     explicit ValueStore(std::filesystem::path path);
     ~ValueStore();
     ValueStore(const ValueStore&) = delete;
@@ -38,6 +41,7 @@ public:
     [[nodiscard]] const std::string& error() const noexcept;
     [[nodiscard]] const std::filesystem::path& path() const noexcept;
     [[nodiscard]] std::uint64_t nodeCount() const noexcept;
+    void seal();
 
     [[nodiscard]] ValueId create(ValueKind kind);
     [[nodiscard]] ValueId createBoolean(bool value);
@@ -61,9 +65,40 @@ public:
     [[nodiscard]] std::vector<ValueId> items(ValueId value) const;
     [[nodiscard]] std::vector<std::pair<ValueId, ValueId>> entries(ValueId value) const;
     [[nodiscard]] StoredObject object(ValueId value) const;
+    [[nodiscard]] std::string_view objectClassName(ValueId value) const;
+    [[nodiscard]] ValueId objectAttribute(ValueId value, std::string_view key) const;
+    [[nodiscard]] std::uint64_t containerSize(ValueId value) const;
+    [[nodiscard]] ReadSession openReadSession() const;
 
 private:
     class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+class ValueStore::ReadSession final {
+public:
+    ~ReadSession();
+    ReadSession(ReadSession&&) noexcept;
+    ReadSession& operator=(ReadSession&&) noexcept;
+    ReadSession(const ReadSession&) = delete;
+    ReadSession& operator=(const ReadSession&) = delete;
+
+    [[nodiscard]] ValueKind kind(ValueId value) const;
+    [[nodiscard]] bool boolean(ValueId value) const;
+    [[nodiscard]] std::uint64_t floatBits(ValueId value) const;
+    [[nodiscard]] std::string text(ValueId value) const;
+    [[nodiscard]] std::vector<std::byte> bytes(ValueId value) const;
+    [[nodiscard]] std::vector<ValueId> items(ValueId value) const;
+    [[nodiscard]] std::vector<std::pair<ValueId, ValueId>> entries(ValueId value) const;
+    [[nodiscard]] StoredObject object(ValueId value) const;
+    [[nodiscard]] std::string_view objectClassName(ValueId value) const;
+    [[nodiscard]] ValueId objectAttribute(ValueId value, std::string_view key) const;
+    [[nodiscard]] std::uint64_t containerSize(ValueId value) const;
+
+private:
+    friend class ValueStore;
+    class Impl;
+    explicit ReadSession(const ValueStore& store);
     std::unique_ptr<Impl> impl_;
 };
 
@@ -91,12 +126,18 @@ struct PickleResult final {
     const std::filesystem::path& spoolPath,
     const PickleLimits& limits,
     bool disableResourceLimits,
-    const std::function<void(std::uint64_t, std::uint64_t)>& progress = {});
+    const std::function<void(std::uint64_t, std::uint64_t)>& progress = {},
+    const std::function<bool(std::span<const std::byte>)>& inputChunk = {});
 
 [[nodiscard]] ValueId dictionaryValue(const ValueStore& store,
     ValueId dictionary, std::string_view key);
 [[nodiscard]] ValueId attributeValue(const ValueStore& store,
     ValueId object, std::string_view key);
 [[nodiscard]] std::string valueString(const ValueStore& store, ValueId value);
+[[nodiscard]] ValueId dictionaryValue(const ValueStore::ReadSession& store,
+    ValueId dictionary, std::string_view key);
+[[nodiscard]] ValueId attributeValue(const ValueStore::ReadSession& store,
+    ValueId object, std::string_view key);
+[[nodiscard]] std::string valueString(const ValueStore::ReadSession& store, ValueId value);
 
 }  // namespace salsa::legacy
