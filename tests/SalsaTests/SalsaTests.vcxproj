@@ -58,6 +58,7 @@
     <ClCompile Include="test_hashing.cpp" />
     <ClCompile Include="test_local_game_project.cpp" />
     <ClCompile Include="test_legacy_capsule.cpp" />
+    <ClCompile Include="test_legacy_fresh_import.cpp" />
     <ClCompile Include="test_patch_envelope_persistence.cpp" />
     <ClCompile Include="test_result.cpp" />
     <ClCompile Include="test_revision_history.cpp" />

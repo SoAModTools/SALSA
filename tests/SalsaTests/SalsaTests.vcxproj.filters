@@ -36,6 +36,7 @@
     <ClCompile Include="test_hashing.cpp"><Filter>Foundation</Filter></ClCompile>
     <ClCompile Include="test_local_game_project.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="test_legacy_capsule.cpp"><Filter>Legacy</Filter></ClCompile>
+    <ClCompile Include="test_legacy_fresh_import.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="test_result.cpp"><Filter>Foundation</Filter></ClCompile>
     <ClCompile Include="test_revision_history.cpp"><Filter>History</Filter></ClCompile>
     <ClCompile Include="test_sct_edit_session.cpp"><Filter>SCT</Filter></ClCompile>

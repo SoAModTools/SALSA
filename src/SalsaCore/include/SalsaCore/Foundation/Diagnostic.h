@@ -66,6 +66,8 @@ enum class DiagnosticCode {
     LegacyCapsuleInvalid,
     LegacyCapsuleUnsupportedSchema,
     LegacyCapsuleIntegrityFailed,
+    LegacyImportInvalidRequest,
+    LegacyImportDestinationNotFresh,
 };
 
 struct Diagnostic {

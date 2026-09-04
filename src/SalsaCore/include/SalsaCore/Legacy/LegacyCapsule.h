@@ -35,6 +35,9 @@ struct LegacyScriptSummary final {
     std::uint64_t parameterCount = 0;
     std::uint64_t stringCount = 0;
     std::uint64_t diagnosticCount = 0;
+    std::filesystem::path recordRelativePath{};
+    std::uint64_t compressedSize = 0;
+    std::string compressedSha256{};
 };
 
 struct LegacyCapsuleSource final {

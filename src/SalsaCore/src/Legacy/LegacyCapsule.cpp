@@ -804,7 +804,8 @@ Result<LegacyCapsuleSummary> LegacyCapsuleReader::validate(
             script.at("instructions").get<std::uint64_t>(),
             script.at("parameters").get<std::uint64_t>(),
             script.at("strings").get<std::uint64_t>(),
-            script.at("diagnostics").get<std::uint64_t>()});
+            script.at("diagnostics").get<std::uint64_t>(), relative,
+            integrity->second.first, integrity->second.second});
     }
     const auto scriptEntryCount = std::ranges::count_if(declaredPaths, [](const auto& entry) {
         return isNumberedScriptPath(entry.first);
