@@ -10,6 +10,7 @@
 #include "Sct/SctMessageEditorWidget.h"
 #include "Sct/SctScptEditorWidget.h"
 #include "Sct/SctSemanticNavigatorWidget.h"
+#include "Legacy/LegacyConversionDialog.h"
 #include "Ui/UiConstants.h"
 #include "Workspace/DiagnosticJournalModel.h"
 #include "Workspace/DiagnosticsModel.h"
@@ -349,6 +350,9 @@ void MainWindow::buildUi() {
     openAction_ = fileMenu->addAction(tr("&Open Dataset..."));
     openAction_->setShortcut(QKeySequence::Open);
     recentMenu_ = fileMenu->addMenu(tr("Open &Recent"));
+    convertLegacyProjectAction_ = fileMenu->addAction(
+        tr("Convert &Legacy Project to Capsule..."));
+    fileMenu->addSeparator();
     saveAction_ = fileMenu->addAction(tr("&Save Document"));
     saveAction_->setShortcut(QKeySequence::Save);
     exportAction_ = fileMenu->addAction(tr("&Export Active SCT..."));
@@ -526,6 +530,8 @@ void MainWindow::buildUi() {
         this, &MainWindow::saveWorkspaceSession);
 
     connect(openAction_, &QAction::triggered, this, &MainWindow::chooseDataset);
+    connect(convertLegacyProjectAction_, &QAction::triggered,
+        this, &MainWindow::convertLegacyProject);
     connect(saveAction_, &QAction::triggered, this, &MainWindow::saveActiveDocument);
     connect(exportAction_, &QAction::triggered, this, &MainWindow::exportActiveDocument);
     connect(associatePatchWorkspaceAction_, &QAction::triggered,
@@ -852,6 +858,13 @@ void MainWindow::connectWorkspace() {
                     12000);
             }
         });
+}
+
+void MainWindow::convertLegacyProject() {
+    auto* dialog = new LegacyConversionDialog(this);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
 }
 
 void MainWindow::chooseDataset() {

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup><Filter Include="Converter"><UniqueIdentifier>{E19DCB2F-CDA6-494E-B484-A20D71C7F91E}</UniqueIdentifier></Filter></ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="LegacyConverter.h"><Filter>Converter</Filter></ClInclude>
+    <ClInclude Include="LegacyPickle.h"><Filter>Converter</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp"><Filter>Converter</Filter></ClCompile>
+    <ClCompile Include="LegacyConverter.cpp"><Filter>Converter</Filter></ClCompile>
+    <ClCompile Include="LegacyPickle.cpp"><Filter>Converter</Filter></ClCompile>
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+</Project>

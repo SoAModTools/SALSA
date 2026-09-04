@@ -57,6 +57,15 @@ enum class DiagnosticCode {
     PublicationSourceChanged,
     PublicationSourceReplacementNotConfirmed,
     PublicationWriteFailed,
+    LegacyConversionNotTrusted,
+    LegacyConversionInvalidRequest,
+    LegacyConversionFailed,
+    LegacyConversionCancelled,
+    LegacyConversionResourceLimit,
+    LegacyConversionIsolationFailed,
+    LegacyCapsuleInvalid,
+    LegacyCapsuleUnsupportedSchema,
+    LegacyCapsuleIntegrityFailed,
 };
 
 struct Diagnostic {

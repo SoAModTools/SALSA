@@ -55,6 +55,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Application\MainWindow.cpp" />
+    <ClCompile Include="Legacy\LegacyConversionDialog.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Sct\SctDocumentController.cpp" />
     <ClCompile Include="Sct\SctExportDialog.cpp" />
@@ -72,6 +73,7 @@
     <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp" />
     <ClCompile Include="Workspace\WorkspaceModel.cpp" />
     <QtMoc Include="Workspace\WorkspaceController.h" />
+    <QtMoc Include="Legacy\LegacyConversionDialog.h" />
     <QtMoc Include="Sct\SctDocumentController.h" />
     <ClInclude Include="Sct\SctExportDialog.h" />
     <ClInclude Include="Sct\SctRebaseDialog.h" />
@@ -103,6 +105,10 @@
     </ProjectReference>
     <ProjectReference Include="..\SalsaCore\SalsaCore.vcxproj">
       <Project>{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SalsaLegacyConverter\SalsaLegacyConverter.vcxproj">
+      <Project>{C1B1356A-7A02-4D20-9E48-CE3D670A8290}</Project>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

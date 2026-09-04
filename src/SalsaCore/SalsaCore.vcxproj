@@ -41,7 +41,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;$(SalsaRepositoryRoot)third-party\SPICE\third-party\lodepng;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -50,6 +50,8 @@
     <ClInclude Include="include\SalsaCore\Foundation\Hashing.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Result.h" />
     <ClInclude Include="include\SalsaCore\History\RevisionHistory.h" />
+    <ClInclude Include="include\SalsaCore\Legacy\LegacyCapsule.h" />
+    <ClInclude Include="include\SalsaCore\Legacy\LegacyConversionService.h" />
     <ClInclude Include="include\SalsaCore\Persistence\AtomicFile.h" />
     <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelope.h" />
     <ClInclude Include="include\SalsaCore\Persistence\PatchEnvelopeCodec.h" />
@@ -85,8 +87,11 @@
     <ClInclude Include="include\SalsaCore\Sct\SctWorkingState.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp" />
     <ClCompile Include="src\Application\ApplicationInfo.cpp" />
     <ClCompile Include="src\Foundation\Hashing.cpp" />
+    <ClCompile Include="src\Legacy\LegacyCapsule.cpp" />
+    <ClCompile Include="src\Legacy\LegacyConversionService.cpp" />
     <ClCompile Include="src\Persistence\AtomicFile.cpp" />
     <ClCompile Include="src\Persistence\PatchEnvelopeCodec.cpp" />
     <ClCompile Include="src\Persistence\PatchEnvelopeFileStore.cpp" />

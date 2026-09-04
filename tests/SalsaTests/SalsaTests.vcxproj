@@ -41,6 +41,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
+      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\googletest\googletest\include;$(SalsaRepositoryRoot)third-party\googletest\googletest;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
@@ -55,6 +56,7 @@
     <ClCompile Include="test_asset_locator.cpp" />
     <ClCompile Include="test_hashing.cpp" />
     <ClCompile Include="test_local_game_project.cpp" />
+    <ClCompile Include="test_legacy_capsule.cpp" />
     <ClCompile Include="test_patch_envelope_persistence.cpp" />
     <ClCompile Include="test_result.cpp" />
     <ClCompile Include="test_revision_history.cpp" />

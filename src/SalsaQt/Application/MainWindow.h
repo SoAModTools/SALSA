@@ -68,6 +68,7 @@ private:
     void buildUi();
     void connectWorkspace();
     void chooseDataset();
+    void convertLegacyProject();
     void openDataset(const QString& rootPath);
     void associatePatchWorkspace();
     void rebaseStalePatches();
@@ -178,6 +179,7 @@ private:
     QProgressBar* progressBar_ = nullptr;
     QToolButton* cancelButton_ = nullptr;
     QAction* openAction_ = nullptr;
+    QAction* convertLegacyProjectAction_ = nullptr;
     QAction* closeWorkspaceAction_ = nullptr;
     QAction* saveAction_ = nullptr;
     QAction* exportAction_ = nullptr;

@@ -16,6 +16,9 @@
     <Filter Include="SCT">
       <UniqueIdentifier>{5744D34F-4187-44F1-90D5-C68D43652E49}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Legacy">
+      <UniqueIdentifier>{5E2F6E46-5C98-436F-A5C6-F04D320C32F8}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h">
@@ -25,6 +28,8 @@
     <ClInclude Include="include\SalsaCore\Foundation\Hashing.h"><Filter>Foundation</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Foundation\Result.h"><Filter>Foundation</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\History\RevisionHistory.h"><Filter>History</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Legacy\LegacyCapsule.h"><Filter>Legacy</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Legacy\LegacyConversionService.h"><Filter>Legacy</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\LocalSalsaWorkspace.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\SctBaselineStore.h"><Filter>Project</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Persistence\SctReconciliationDecisionStore.h"><Filter>Project</Filter></ClInclude>
@@ -52,10 +57,13 @@
     <ClInclude Include="include\SalsaCore\Sct\SctWorkingState.h"><Filter>SCT</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="src\Application\ApplicationInfo.cpp">
       <Filter>Application</Filter>
     </ClCompile>
     <ClCompile Include="src\Foundation\Hashing.cpp"><Filter>Foundation</Filter></ClCompile>
+    <ClCompile Include="src\Legacy\LegacyCapsule.cpp"><Filter>Legacy</Filter></ClCompile>
+    <ClCompile Include="src\Legacy\LegacyConversionService.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="src\Persistence\LocalSalsaWorkspace.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Persistence\SctBaselineStore.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="src\Persistence\SctReconciliationDecisionStore.cpp"><Filter>Project</Filter></ClCompile>

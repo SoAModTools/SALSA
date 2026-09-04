@@ -16,6 +16,9 @@
     <Filter Include="SCT">
       <UniqueIdentifier>{94B1C73D-58F8-4631-B98C-ABDA8EF5E27A}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Legacy">
+      <UniqueIdentifier>{B6728649-77A8-47D5-A65A-C5702CF2BA9D}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc">
@@ -31,6 +34,7 @@
     <ClCompile Include="test_asset_locator.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="test_hashing.cpp"><Filter>Foundation</Filter></ClCompile>
     <ClCompile Include="test_local_game_project.cpp"><Filter>Project</Filter></ClCompile>
+    <ClCompile Include="test_legacy_capsule.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="test_result.cpp"><Filter>Foundation</Filter></ClCompile>
     <ClCompile Include="test_revision_history.cpp"><Filter>History</Filter></ClCompile>
     <ClCompile Include="test_sct_edit_session.cpp"><Filter>SCT</Filter></ClCompile>

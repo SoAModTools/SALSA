@@ -10,12 +10,16 @@
     <Filter Include="SCT">
       <UniqueIdentifier>{25345B88-F847-4A8C-9B83-82C6C45E5225}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Legacy">
+      <UniqueIdentifier>{67F42B4A-FB08-46A4-9976-9F09E73B5E0F}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Application\MainWindow.cpp">
       <Filter>Application</Filter>
     </ClCompile>
+    <ClCompile Include="Legacy\LegacyConversionDialog.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="Workspace\DiagnosticsModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\DiagnosticJournalModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceController.cpp"><Filter>Workspace</Filter></ClCompile>
@@ -32,6 +36,7 @@
     <ClCompile Include="Sct\SctScptEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <QtMoc Include="Workspace\WorkspaceController.h"><Filter>Workspace</Filter></QtMoc>
+    <QtMoc Include="Legacy\LegacyConversionDialog.h"><Filter>Legacy</Filter></QtMoc>
     <QtMoc Include="Sct\SctDocumentController.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctDocumentWidget.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctOutlineModel.h"><Filter>SCT</Filter></QtMoc>
