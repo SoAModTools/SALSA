@@ -768,7 +768,8 @@ bool SctDocumentController::exportDocument(
     const core::AssetLocator& locator,
     core::SctPublicationOptions options,
     std::filesystem::path destination,
-    const bool allowSourceReplacement) {
+    const bool allowSourceReplacement,
+    core::SctPublicationObserver observer) {
     auto* state = findState(locator);
     if (state == nullptr || busy() || publicationWatcher_.isRunning()
         || state->editBlocked) return false;
@@ -795,8 +796,9 @@ bool SctDocumentController::exportDocument(
     const auto token = publicationStop_.get_token();
     publicationLocator_ = locator;
     publicationWatcher_.setFuture(QtConcurrent::run(
-        [project = std::move(project), request = std::move(request), token] {
-            return core::SctPublicationService::publish(project, request, token);
+        [project = std::move(project), request = std::move(request), token,
+            observer = std::move(observer)] {
+            return core::SctPublicationService::publish(project, request, token, observer);
         }));
     return true;
 }

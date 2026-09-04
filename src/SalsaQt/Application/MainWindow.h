@@ -6,6 +6,7 @@
 #include "SalsaCore/Sct/SctEditSession.h"
 
 #include <QMainWindow>
+#include <QPointer>
 #include <QStringList>
 
 #include <optional>
@@ -24,6 +25,7 @@ class QTimer;
 
 namespace salsa::qt {
 
+class ExclusiveOperationCoordinator;
 class DiagnosticsModel;
 class DiagnosticJournalModel;
 class SctDocumentController;
@@ -34,6 +36,8 @@ class SctScptEditorWidget;
 class SctSemanticNavigatorWidget;
 class WorkspaceDetailsWidget;
 class WorkspaceModel;
+class WorkspaceOperationController;
+class WorkspaceMaintenanceController;
 
 class MainWindow final : public QMainWindow {
 public:
@@ -56,6 +60,7 @@ private:
         None,
         CloseDocument,
         CloseDataset,
+        OpenDataset,
         RebasePatches,
         Exit,
     };
@@ -158,6 +163,9 @@ private:
         const QString& message);
 
     WorkspaceController* controller_ = nullptr;
+    ExclusiveOperationCoordinator* exclusiveOperations_ = nullptr;
+    QPointer<WorkspaceOperationController> activeDatasetOperation_{};
+    QPointer<WorkspaceMaintenanceController> activeWorkspaceMaintenance_{};
     SctDocumentController* documentController_ = nullptr;
     WorkspaceModel* workspaceModel_ = nullptr;
     DiagnosticsModel* diagnosticsModel_ = nullptr;
@@ -236,6 +244,7 @@ private:
     PendingLifecycle pendingLifecycle_ = PendingLifecycle::None;
     std::optional<core::AssetLocator> pendingLifecycleDocument_{};
     std::vector<core::AssetLocator> pendingLifecycleSaves_{};
+    QString pendingDatasetRoot_{};
     Mode mode_ = Mode::Application;
 };
 

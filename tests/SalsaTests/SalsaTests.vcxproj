@@ -52,6 +52,7 @@
     <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
     <ClCompile Include="test_application_info.cpp" />
+    <ClCompile Include="test_exclusive_operation_flow.cpp" />
     <ClCompile Include="test_asset_catalog_diff.cpp" />
     <ClCompile Include="test_asset_locator.cpp" />
     <ClCompile Include="test_hashing.cpp" />

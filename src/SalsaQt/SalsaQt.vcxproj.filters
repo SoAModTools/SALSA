@@ -19,10 +19,15 @@
     <ClCompile Include="Application\MainWindow.cpp">
       <Filter>Application</Filter>
     </ClCompile>
+    <ClCompile Include="Application\ExclusiveOperationController.cpp"><Filter>Application</Filter></ClCompile>
+    <ClCompile Include="Application\ExclusiveOperationCoordinator.cpp"><Filter>Application</Filter></ClCompile>
+    <ClCompile Include="Application\ExclusiveOperationDialog.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="Legacy\LegacyConversionDialog.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="Workspace\DiagnosticsModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\DiagnosticJournalModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceController.cpp"><Filter>Workspace</Filter></ClCompile>
+    <ClCompile Include="Workspace\WorkspaceOperationController.cpp"><Filter>Workspace</Filter></ClCompile>
+    <ClCompile Include="Workspace\WorkspaceMaintenanceController.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Sct\SctDocumentController.cpp"><Filter>SCT</Filter></ClCompile>
@@ -36,6 +41,11 @@
     <ClCompile Include="Sct\SctScptEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <QtMoc Include="Workspace\WorkspaceController.h"><Filter>Workspace</Filter></QtMoc>
+    <QtMoc Include="Workspace\WorkspaceOperationController.h"><Filter>Workspace</Filter></QtMoc>
+    <QtMoc Include="Workspace\WorkspaceMaintenanceController.h"><Filter>Workspace</Filter></QtMoc>
+    <QtMoc Include="Application\ExclusiveOperationController.h"><Filter>Application</Filter></QtMoc>
+    <QtMoc Include="Application\ExclusiveOperationCoordinator.h"><Filter>Application</Filter></QtMoc>
+    <QtMoc Include="Application\ExclusiveOperationDialog.h"><Filter>Application</Filter></QtMoc>
     <QtMoc Include="Legacy\LegacyConversionDialog.h"><Filter>Legacy</Filter></QtMoc>
     <QtMoc Include="Sct\SctDocumentController.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctDocumentWidget.h"><Filter>SCT</Filter></QtMoc>

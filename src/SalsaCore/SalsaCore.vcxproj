@@ -46,6 +46,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h" />
+    <ClInclude Include="include\SalsaCore\Application\ExclusiveOperationFlow.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Diagnostic.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Hashing.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Result.h" />
@@ -89,6 +90,7 @@
   <ItemGroup>
     <ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp" />
     <ClCompile Include="src\Application\ApplicationInfo.cpp" />
+    <ClCompile Include="src\Application\ExclusiveOperationFlow.cpp" />
     <ClCompile Include="src\Foundation\Hashing.cpp" />
     <ClCompile Include="src\Legacy\LegacyCapsule.cpp" />
     <ClCompile Include="src\Legacy\LegacyConversionService.cpp" />

@@ -7,12 +7,29 @@
 #include "SpiceSCT/SctDocumentExporter.h"
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stop_token>
 #include <vector>
 
 namespace salsa::core {
+
+enum class SctPublicationPhase {
+    Preflight,
+    Materializing,
+    Encoding,
+    Hashing,
+    Installing,
+};
+
+struct SctPublicationProgress final {
+    SctPublicationPhase phase = SctPublicationPhase::Preflight;
+    std::uint64_t completed = 0;
+    std::uint64_t total = 1;
+};
+
+using SctPublicationObserver = std::function<void(const SctPublicationProgress&)>;
 
 struct SctPublicationOptions final {
     spice::sct::SctPlatform platform = spice::sct::SctPlatform::GameCube;
@@ -86,7 +103,8 @@ public:
     [[nodiscard]] static SctPublicationResult publish(
         const GameProjectContext& project,
         const SctPublicationRequest& request,
-        std::stop_token stopToken = {});
+        std::stop_token stopToken = {},
+        const SctPublicationObserver& observer = {});
 };
 
 }  // namespace salsa::core

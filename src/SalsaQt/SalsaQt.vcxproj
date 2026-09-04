@@ -54,6 +54,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Application\ExclusiveOperationController.cpp" />
+    <ClCompile Include="Application\ExclusiveOperationCoordinator.cpp" />
+    <ClCompile Include="Application\ExclusiveOperationDialog.cpp" />
     <ClCompile Include="Application\MainWindow.cpp" />
     <ClCompile Include="Legacy\LegacyConversionDialog.cpp" />
     <ClCompile Include="main.cpp" />
@@ -70,13 +73,20 @@
     <ClCompile Include="Workspace\DiagnosticsModel.cpp" />
     <ClCompile Include="Workspace\DiagnosticJournalModel.cpp" />
     <ClCompile Include="Workspace\WorkspaceController.cpp" />
+    <ClCompile Include="Workspace\WorkspaceOperationController.cpp" />
+    <ClCompile Include="Workspace\WorkspaceMaintenanceController.cpp" />
     <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp" />
     <ClCompile Include="Workspace\WorkspaceModel.cpp" />
+    <QtMoc Include="Application\ExclusiveOperationController.h" />
+    <QtMoc Include="Application\ExclusiveOperationCoordinator.h" />
+    <QtMoc Include="Application\ExclusiveOperationDialog.h" />
     <QtMoc Include="Workspace\WorkspaceController.h" />
+    <QtMoc Include="Workspace\WorkspaceOperationController.h" />
+    <QtMoc Include="Workspace\WorkspaceMaintenanceController.h" />
     <QtMoc Include="Legacy\LegacyConversionDialog.h" />
     <QtMoc Include="Sct\SctDocumentController.h" />
-    <ClInclude Include="Sct\SctExportDialog.h" />
-    <ClInclude Include="Sct\SctRebaseDialog.h" />
+    <QtMoc Include="Sct\SctExportDialog.h" />
+    <QtMoc Include="Sct\SctRebaseDialog.h" />
     <QtMoc Include="Sct\SctDocumentWidget.h" />
     <QtMoc Include="Sct\SctOutlineModel.h" />
     <QtMoc Include="Sct\SctStructuredOutlineModel.h" />

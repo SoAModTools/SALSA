@@ -24,6 +24,7 @@
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h">
       <Filter>Application</Filter>
     </ClInclude>
+    <ClInclude Include="include\SalsaCore\Application\ExclusiveOperationFlow.h"><Filter>Application</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Foundation\Diagnostic.h"><Filter>Foundation</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Foundation\Hashing.h"><Filter>Foundation</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Foundation\Result.h"><Filter>Foundation</Filter></ClInclude>
@@ -61,6 +62,7 @@
     <ClCompile Include="src\Application\ApplicationInfo.cpp">
       <Filter>Application</Filter>
     </ClCompile>
+    <ClCompile Include="src\Application\ExclusiveOperationFlow.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="src\Foundation\Hashing.cpp"><Filter>Foundation</Filter></ClCompile>
     <ClCompile Include="src\Legacy\LegacyCapsule.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="src\Legacy\LegacyConversionService.cpp"><Filter>Legacy</Filter></ClCompile>

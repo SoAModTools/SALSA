@@ -91,13 +91,19 @@ SctPublicationDefaults SctPublicationService::defaultsFor(
 SctPublicationResult SctPublicationService::publish(
     const GameProjectContext& project,
     const SctPublicationRequest& request,
-    const std::stop_token stopToken) {
+    const std::stop_token stopToken,
+    const SctPublicationObserver& observer) {
     SctPublicationResult result;
+    const auto progress = [&observer](const SctPublicationPhase phase,
+        const std::uint64_t completed) {
+        if (observer) observer({phase, completed, 1});
+    };
     const auto cancel = [&]() -> SctPublicationResult {
         result.cancelled = true;
         result.diagnostics.push_back(cancelledDiagnostic(request.locator));
         return std::move(result);
     };
+    progress(SctPublicationPhase::Preflight, 0);
     if (stopToken.stop_requested()) return cancel();
 
     if (!request.capturedRevision.revision.valid()
@@ -137,11 +143,13 @@ SctPublicationResult SctPublicationService::publish(
             "The source SCT is no longer current. The exported file still represents the captured in-memory revision.",
             loadedSourcePath));
     }
+    progress(SctPublicationPhase::Preflight, 1);
     if (stopToken.stop_requested()) return cancel();
 
     std::shared_ptr<const SctDocumentSnapshot> snapshot =
         request.capturedRevision.verifiedSnapshot;
     if (!snapshot) {
+        progress(SctPublicationPhase::Materializing, 0);
         if (!request.capturedRevision.materialization) {
             result.infrastructureDiagnostics.push_back(publicationDiagnostic(
                 DiagnosticSeverity::Error, DiagnosticCode::SctExportFailed,
@@ -166,6 +174,7 @@ SctPublicationResult SctPublicationService::publish(
             result.materialization->analysis,
             spice::sct::SctDocumentReadiness::StructurallyValid,
             result.materialization->diagnostics});
+        progress(SctPublicationPhase::Materializing, 1);
     }
     if (!snapshot || !snapshot->document) {
         result.infrastructureDiagnostics.push_back(publicationDiagnostic(
@@ -183,22 +192,27 @@ SctPublicationResult SctPublicationService::publish(
         {}};
     const auto* evidence = snapshot->provenance && snapshot->provenance->importEvidence
         ? &*snapshot->provenance->importEvidence : nullptr;
+    progress(SctPublicationPhase::Encoding, 0);
     auto exported = spice::sct::SctDocumentExporter::exportDocument(
         *snapshot->document, options, evidence);
     appendExportDiagnostics(result, exported.diagnostics, request.locator);
     if (!exported.success || !exported.layout) return result;
+    progress(SctPublicationPhase::Encoding, 1);
     if (stopToken.stop_requested()) return cancel();
 
     const auto output = std::span<const std::byte>{
         reinterpret_cast<const std::byte*>(exported.bytes.data()),
         exported.bytes.size()};
+    progress(SctPublicationPhase::Hashing, 0);
     const auto digest = sha256(output);
     if (!digest) {
         result.infrastructureDiagnostics.insert(result.infrastructureDiagnostics.end(),
             digest.diagnostics().begin(), digest.diagnostics().end());
         return result;
     }
+    progress(SctPublicationPhase::Hashing, 1);
     if (stopToken.stop_requested()) return cancel();
+    progress(SctPublicationPhase::Installing, 0);
     const auto written = replaceFileAtomically(request.destination, output);
     if (!written) {
         result.infrastructureDiagnostics = written.diagnostics();
@@ -209,6 +223,7 @@ SctPublicationResult SctPublicationService::publish(
         }
         return result;
     }
+    progress(SctPublicationPhase::Installing, 1);
 
     result.receipt.emplace(SctPublicationReceipt{
         request.locator,

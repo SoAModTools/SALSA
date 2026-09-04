@@ -30,6 +30,7 @@
     <ClCompile Include="test_application_info.cpp">
       <Filter>Bootstrap</Filter>
     </ClCompile>
+    <ClCompile Include="test_exclusive_operation_flow.cpp"><Filter>Bootstrap</Filter></ClCompile>
     <ClCompile Include="test_asset_catalog_diff.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="test_asset_locator.cpp"><Filter>Project</Filter></ClCompile>
     <ClCompile Include="test_hashing.cpp"><Filter>Foundation</Filter></ClCompile>

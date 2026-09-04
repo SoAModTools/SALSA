@@ -151,7 +151,8 @@ public:
         const core::AssetLocator& locator,
         core::SctPublicationOptions options,
         std::filesystem::path destination,
-        bool allowSourceReplacement);
+        bool allowSourceReplacement,
+        core::SctPublicationObserver observer = {});
     void setWorkspace(std::shared_ptr<const core::LocalSalsaWorkspace> workspace);
     void synchronizeCatalog(const core::AssetCatalogSnapshot& catalog);
     void closeDocument(const core::AssetLocator& locator);

@@ -3,7 +3,6 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
-#include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -11,13 +10,10 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMessageBox>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTableWidget>
-#include <QUrl>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -26,7 +22,7 @@
 namespace salsa::qt {
 namespace {
 
-[[nodiscard]] QString phaseText(const core::LegacyConversionPhase phase) {
+QString phaseText(const core::LegacyConversionPhase phase) {
     switch (phase) {
     case core::LegacyConversionPhase::Staging: return QObject::tr("Staging controlled input");
     case core::LegacyConversionPhase::Hashing: return QObject::tr("Hashing project");
@@ -39,7 +35,7 @@ namespace {
     return QObject::tr("Converting");
 }
 
-[[nodiscard]] QString diagnosticText(const std::vector<core::Diagnostic>& diagnostics) {
+QString diagnosticText(const std::vector<core::Diagnostic>& diagnostics) {
     QStringList messages;
     for (const auto& diagnostic : diagnostics)
         messages.push_back(QString::fromStdString(diagnostic.message));
@@ -48,116 +44,204 @@ namespace {
 
 }  // namespace
 
-LegacyConversionDialog::LegacyConversionDialog(QWidget* parent)
-    : QDialog(parent) {
-    setWindowTitle(tr("Convert Legacy SALSA Project"));
-    setAttribute(Qt::WA_DeleteOnClose);
-    resize(900, 620);
+LegacyConversionController::LegacyConversionController(QObject* parent)
+    : ExclusiveOperationController(parent) {
+    connect(&watcher_, &QFutureWatcherBase::finished,
+        this, &LegacyConversionController::finishConversion);
+}
 
-    source_ = new QLineEdit(this);
-    destination_ = new QLineEdit(this);
-    sourceBrowse_ = new QPushButton(tr("Browse…"), this);
-    destinationBrowse_ = new QPushButton(tr("Choose Parent…"), this);
-    auto* sourceRow = new QWidget(this); auto* sourceLayout = new QHBoxLayout(sourceRow);
-    sourceLayout->setContentsMargins(0, 0, 0, 0); sourceLayout->addWidget(source_); sourceLayout->addWidget(sourceBrowse_);
-    auto* destinationRow = new QWidget(this); auto* destinationLayout = new QHBoxLayout(destinationRow);
-    destinationLayout->setContentsMargins(0, 0, 0, 0); destinationLayout->addWidget(destination_); destinationLayout->addWidget(destinationBrowse_);
+LegacyConversionController::~LegacyConversionController() {
+    if (!watcher_.isRunning()) return;
+    stopSource_.request_stop();
+    watcher_.waitForFinished();
+}
 
+QString LegacyConversionController::title() const { return tr("Convert Legacy SALSA Project"); }
+
+core::ExclusiveOperationFlowDefinition LegacyConversionController::flowDefinition() const {
+    using Role = core::ExclusiveOperationPageRole;
+    return {"configure",
+        {{"configure", Role::Configuration}, {"processing", Role::Processing},
+         {"summary", Role::Summary}},
+        {{"start", "configure", "start", "processing"},
+         {"abandon", "configure", "cancelled", "summary"},
+         {"complete", "processing", "complete", "summary"},
+         {"failed", "processing", "failed", "summary"},
+         {"cancelled", "processing", "cancelled", "summary"}}};
+}
+
+QWidget* LegacyConversionController::createPage(
+    const std::string_view pageId, QWidget* parent) {
+    if (pageId == "configure") return createConfigurationPage(parent);
+    if (pageId == "processing") return createProcessingPage(parent);
+    return createSummaryPage(parent);
+}
+
+std::optional<ExclusiveOperationAction> LegacyConversionController::actionForEdge(
+    const std::string_view edgeId) const {
+    if (edgeId == "start") return ExclusiveOperationAction{
+        tr("Convert"), ExclusiveOperationActionRole::Primary};
+    return std::nullopt;
+}
+
+bool LegacyConversionController::edgeEnabled(const std::string_view edgeId) const {
+    if (edgeId != "start") return true;
+    return source_ && destination_ && trusted_
+        && QFileInfo(source_->text()).isFile()
+        && !destination_->text().trimmed().isEmpty() && trusted_->isChecked()
+        && (!disableLimits_->isChecked() || disableLimitsConfirmed_->isChecked());
+}
+
+void LegacyConversionController::handleEvent(const std::string_view event) {
+    if (event == "start") startConversion();
+    else ExclusiveOperationController::handleEvent(event);
+}
+
+void LegacyConversionController::requestCancel() {
+    if (!watcher_.isRunning()) {
+        result_.emplace();
+        result_->status = core::LegacyConversionStatus::Cancelled;
+        raiseEvent("cancelled");
+        return;
+    }
+    stopSource_.request_stop();
+    setCancellable(false);
+    if (processingStatus_) processingStatus_->setText(tr("Cancelling conversion…"));
+}
+
+QWidget* LegacyConversionController::createConfigurationPage(QWidget* parent) {
+    auto* page = new QWidget(parent);
+    source_ = new QLineEdit(page);
+    destination_ = new QLineEdit(page);
+    auto* sourceBrowse = new QPushButton(tr("Browse…"), page);
+    auto* destinationBrowse = new QPushButton(tr("Choose Parent…"), page);
+    auto* sourceRow = new QWidget(page);
+    auto* sourceLayout = new QHBoxLayout(sourceRow);
+    sourceLayout->setContentsMargins(0, 0, 0, 0);
+    sourceLayout->addWidget(source_);
+    sourceLayout->addWidget(sourceBrowse);
+    auto* destinationRow = new QWidget(page);
+    auto* destinationLayout = new QHBoxLayout(destinationRow);
+    destinationLayout->setContentsMargins(0, 0, 0, 0);
+    destinationLayout->addWidget(destination_);
+    destinationLayout->addWidget(destinationBrowse);
     auto* form = new QFormLayout;
     form->addRow(tr("Legacy project:"), sourceRow);
     form->addRow(tr("Capsule folder:"), destinationRow);
-    scriptWorkers_ = new QComboBox(this);
+    scriptWorkers_ = new QComboBox(page);
     scriptWorkers_->addItem(tr("Auto (up to 4)"), 0);
     scriptWorkers_->addItem(tr("Serial"), 1);
     scriptWorkers_->addItem(tr("2"), 2);
     scriptWorkers_->addItem(tr("3"), 3);
     scriptWorkers_->addItem(tr("4"), 4);
-    const auto rememberedWorkers = QSettings{}.value(
-        QStringLiteral("legacyConversion/scriptWorkers"), 0).toInt();
-    scriptWorkers_->setCurrentIndex(std::clamp(rememberedWorkers, 0, 4));
+    scriptWorkers_->setCurrentIndex(std::clamp(QSettings{}.value(
+        QStringLiteral("legacyConversion/scriptWorkers"), 0).toInt(), 0, 4));
     form->addRow(tr("Script processing:"), scriptWorkers_);
+    trusted_ = new QCheckBox(tr("I trust the source of this legacy .prj file"), page);
+    retainOriginal_ = new QCheckBox(
+        tr("Retain an inert copy of the original .prj as capsule evidence"), page);
+    disableLimits_ = new QCheckBox(
+        tr("Advanced: disable resource limits for this conversion"), page);
+    disableLimitsConfirmed_ = new QCheckBox(tr(
+        "I understand that size, memory, and structural limits will be removed"), page);
+    disableLimitsConfirmed_->hide();
+    configurationStatus_ = new QLabel(
+        tr("Select an official final SALSA version 7 project."), page);
+    configurationStatus_->setWordWrap(true);
+    auto* layout = new QVBoxLayout(page);
+    layout->addLayout(form);
+    layout->addWidget(trusted_);
+    layout->addWidget(retainOriginal_);
+    layout->addWidget(disableLimits_);
+    layout->addWidget(disableLimitsConfirmed_);
+    layout->addWidget(configurationStatus_);
+    layout->addStretch();
+    connect(sourceBrowse, &QPushButton::clicked, this, &LegacyConversionController::chooseSource);
+    connect(destinationBrowse, &QPushButton::clicked,
+        this, &LegacyConversionController::chooseDestinationParent);
+    for (auto* edit : {source_, destination_})
+        connect(edit, &QLineEdit::textChanged, this,
+            &ExclusiveOperationController::presentationChanged);
+    connect(trusted_, &QCheckBox::toggled, this,
+        &ExclusiveOperationController::presentationChanged);
+    connect(disableLimits_, &QCheckBox::toggled, this, [this](const bool checked) {
+        disableLimitsConfirmed_->setVisible(checked);
+        if (!checked) disableLimitsConfirmed_->setChecked(false);
+        emit presentationChanged();
+    });
+    connect(disableLimitsConfirmed_, &QCheckBox::toggled, this,
+        &ExclusiveOperationController::presentationChanged);
+    return page;
+}
 
-    trusted_ = new QCheckBox(tr("I trust the source of this legacy .prj file"), this);
-    trusted_->setToolTip(tr("Legacy project files are Python pickle containers. Conversion is isolated, but only trusted files should be selected."));
-    retainOriginal_ = new QCheckBox(tr("Retain an inert copy of the original .prj as capsule evidence"), this);
-    disableLimits_ = new QCheckBox(tr("Advanced: disable resource limits for this conversion"), this);
-    status_ = new QLabel(tr("Select an official final SALSA version 7 project."), this);
-    status_->setWordWrap(true);
-    progress_ = new QProgressBar(this); progress_->setRange(0, 1); progress_->setValue(0);
-    scripts_ = new QTableWidget(this); scripts_->setColumnCount(6);
+QWidget* LegacyConversionController::createProcessingPage(QWidget* parent) {
+    auto* page = new QWidget(parent);
+    processingStatus_ = new QLabel(tr(
+        "SALSA is converting the project in its isolated helper process."), page);
+    processingStatus_->setWordWrap(true);
+    auto* layout = new QVBoxLayout(page);
+    layout->addWidget(processingStatus_);
+    layout->addStretch();
+    return page;
+}
+
+QWidget* LegacyConversionController::createSummaryPage(QWidget* parent) {
+    auto* page = new QWidget(parent);
+    summaryStatus_ = new QLabel(page);
+    summaryStatus_->setWordWrap(true);
+    scripts_ = new QTableWidget(page);
+    scripts_->setColumnCount(6);
     scripts_->setHorizontalHeaderLabels({tr("Script"), tr("Status"), tr("Sections"),
         tr("Instructions"), tr("Parameters"), tr("Diagnostics")});
     scripts_->setSelectionBehavior(QAbstractItemView::SelectRows);
     scripts_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     scripts_->setAlternatingRowColors(true);
     scripts_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-
-    convert_ = new QPushButton(tr("Convert"), this);
-    cancel_ = new QPushButton(tr("Cancel Conversion"), this); cancel_->setEnabled(false);
-    close_ = new QPushButton(tr("Close"), this);
-    auto* buttons = new QHBoxLayout; buttons->addStretch(); buttons->addWidget(convert_);
-    buttons->addWidget(cancel_); buttons->addWidget(close_);
-
-    auto* layout = new QVBoxLayout(this); layout->addLayout(form); layout->addWidget(trusted_);
-    layout->addWidget(retainOriginal_); layout->addWidget(disableLimits_); layout->addWidget(status_);
-    layout->addWidget(progress_); layout->addWidget(scripts_, 1); layout->addLayout(buttons);
-
-    connect(sourceBrowse_, &QPushButton::clicked, this, &LegacyConversionDialog::chooseSource);
-    connect(destinationBrowse_, &QPushButton::clicked, this, &LegacyConversionDialog::chooseDestinationParent);
-    connect(convert_, &QPushButton::clicked, this, &LegacyConversionDialog::startConversion);
-    connect(cancel_, &QPushButton::clicked, this, &LegacyConversionDialog::cancelConversion);
-    connect(close_, &QPushButton::clicked, this, &QDialog::close);
-    connect(source_, &QLineEdit::textChanged, this, &LegacyConversionDialog::updateActions);
-    connect(destination_, &QLineEdit::textChanged, this, &LegacyConversionDialog::updateActions);
-    connect(trusted_, &QCheckBox::toggled, this, &LegacyConversionDialog::updateActions);
-    connect(&watcher_, &QFutureWatcherBase::finished, this, &LegacyConversionDialog::finishConversion);
-    updateActions();
+    auto* layout = new QVBoxLayout(page);
+    layout->addWidget(summaryStatus_);
+    layout->addWidget(scripts_, 1);
+    populateSummary();
+    return page;
 }
 
-LegacyConversionDialog::~LegacyConversionDialog() {
-    if (watcher_.isRunning()) { stopSource_.request_stop(); watcher_.waitForFinished(); }
-}
-
-void LegacyConversionDialog::chooseSource() {
-    const auto selected = QFileDialog::getOpenFileName(this, tr("Select Legacy SALSA Project"),
-        source_->text(), tr("Legacy SALSA projects (*.prj);;All files (*)"));
+void LegacyConversionController::chooseSource() {
+    const auto selected = QFileDialog::getOpenFileName(source_->window(),
+        tr("Select Legacy SALSA Project"), source_->text(),
+        tr("Legacy SALSA projects (*.prj);;All files (*)"));
     if (selected.isEmpty()) return;
     source_->setText(QDir::toNativeSeparators(selected));
     if (destination_->text().isEmpty()) {
-        const QFileInfo sourceInfo(selected);
-        destination_->setText(QDir::toNativeSeparators(sourceInfo.dir().filePath(
-            sourceInfo.completeBaseName() + QStringLiteral(".salsa-legacy"))));
+        const QFileInfo info(selected);
+        destination_->setText(QDir::toNativeSeparators(info.dir().filePath(
+            info.completeBaseName() + QStringLiteral(".salsa-legacy"))));
     }
     trusted_->setChecked(false);
 }
 
-void LegacyConversionDialog::chooseDestinationParent() {
-    const auto current = QFileInfo(destination_->text());
-    const auto selected = QFileDialog::getExistingDirectory(this, tr("Select Capsule Parent Folder"),
-        current.dir().absolutePath(), QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+void LegacyConversionController::chooseDestinationParent() {
+    const QFileInfo current(destination_->text());
+    const auto selected = QFileDialog::getExistingDirectory(destination_->window(),
+        tr("Select Capsule Parent Folder"), current.dir().absolutePath(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (selected.isEmpty()) return;
     auto name = current.fileName();
-    if (name.isEmpty()) name = QFileInfo(source_->text()).completeBaseName() + QStringLiteral(".salsa-legacy");
+    if (name.isEmpty()) name = QFileInfo(source_->text()).completeBaseName()
+        + QStringLiteral(".salsa-legacy");
     destination_->setText(QDir::toNativeSeparators(QDir(selected).filePath(name)));
 }
 
-void LegacyConversionDialog::startConversion() {
-    if (!convert_->isEnabled()) return;
-    if (disableLimits_->isChecked() && QMessageBox::warning(this, tr("Disable resource limits?"),
-            tr("This removes size, memory, and structural safeguards for this conversion. "
-               "AppContainer isolation, no-network execution, strict version validation, and capsule validation remain enabled."),
-            QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Ok) return;
+void LegacyConversionController::startConversion() {
+    if (!edgeEnabled("start")) return;
     if (QFileInfo::exists(destination_->text())) {
-        QMessageBox::warning(this, tr("Capsule destination exists"),
-            tr("Choose a new folder. Existing capsules are immutable and are never overwritten."));
+        configurationStatus_->setText(tr(
+            "Choose a new destination. Existing capsules are immutable and are never overwritten."));
         return;
     }
-    scripts_->setRowCount(0); stopSource_ = std::stop_source{};
     core::LegacyConversionRequest request{};
     request.source = std::filesystem::path(source_->text().toStdWString());
     request.destination = std::filesystem::path(destination_->text().toStdWString());
-    request.converterExecutable = std::filesystem::path(
-        QDir(QCoreApplication::applicationDirPath()).filePath(
+    request.converterExecutable = std::filesystem::path(QDir(
+        QCoreApplication::applicationDirPath()).filePath(
             QStringLiteral("SalsaLegacyConverter.exe")).toStdWString());
     request.receiptDirectory = std::filesystem::path(QDir(
         QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(
@@ -168,60 +252,62 @@ void LegacyConversionDialog::startConversion() {
     request.scriptWorkers = scriptWorkers_->currentData().toUInt();
     QSettings{}.setValue(QStringLiteral("legacyConversion/scriptWorkers"),
         static_cast<int>(request.scriptWorkers));
+    stopSource_ = std::stop_source{};
+    result_.reset();
+    setCancellable(true);
+    raiseEvent("start");
     const auto token = stopSource_.get_token();
-    status_->setText(tr("Preparing isolated conversion…"));
-    convert_->setEnabled(false); cancel_->setEnabled(true); close_->setEnabled(false);
     watcher_.setFuture(QtConcurrent::run([this, request = std::move(request), token] {
         return core::LegacyConversionService::convert(request, token,
             [this](const core::LegacyConversionProgress& value) {
-                QMetaObject::invokeMethod(this, [this, value] { updateProgress(value); }, Qt::QueuedConnection);
+                QMetaObject::invokeMethod(this,
+                    [this, value] { updateProgress(value); }, Qt::QueuedConnection);
             });
     }));
-    updateActions();
 }
 
-void LegacyConversionDialog::cancelConversion() {
-    stopSource_.request_stop(); cancel_->setEnabled(false); status_->setText(tr("Cancelling conversion…"));
-}
-
-void LegacyConversionDialog::updateActions() {
-    const bool running = watcher_.isRunning();
-    convert_->setEnabled(!running && trusted_->isChecked()
-        && QFileInfo(source_->text()).isFile() && !destination_->text().trimmed().isEmpty());
-    source_->setEnabled(!running); destination_->setEnabled(!running); trusted_->setEnabled(!running);
-    sourceBrowse_->setEnabled(!running); destinationBrowse_->setEnabled(!running);
-    retainOriginal_->setEnabled(!running); disableLimits_->setEnabled(!running);
-    scriptWorkers_->setEnabled(!running);
-}
-
-void LegacyConversionDialog::updateProgress(const core::LegacyConversionProgress& value) {
-    const auto text = value.current.empty() ? phaseText(value.phase)
-        : tr("%1: %2").arg(phaseText(value.phase), QString::fromStdString(value.current));
-    status_->setText(text);
-    if (value.total == 0) progress_->setRange(0, 0);
-    else { progress_->setRange(0, 1000); progress_->setValue(static_cast<int>(
-        std::min<std::uint64_t>(1000, value.completed * 1000 / value.total))); }
-}
-
-void LegacyConversionDialog::finishConversion() {
-    cancel_->setEnabled(false); close_->setEnabled(true); progress_->setRange(0, 1); progress_->setValue(1);
-    const auto result = watcher_.result();
-    if (result.capsule) {
-        showSummary(*result.capsule);
-        status_->setText(result.status == core::LegacyConversionStatus::Ready
-            ? tr("Capsule created and validated.")
-            : tr("Capsule created and validated. One or more script decisions will be required during import."));
-    } else {
-        status_->setText(result.status == core::LegacyConversionStatus::Cancelled
-            ? tr("Conversion cancelled. No capsule was created.")
-            : diagnosticText(result.diagnostics));
-        if (result.status != core::LegacyConversionStatus::Cancelled)
-            QMessageBox::warning(this, tr("Legacy conversion did not complete"), status_->text());
+void LegacyConversionController::updateProgress(
+    const core::LegacyConversionProgress& value) {
+    if (value.phase == core::LegacyConversionPhase::Finalizing) {
+        setCancellable(false);
+        setFinishing(true);
     }
-    trusted_->setChecked(false); updateActions();
+    const auto unit = value.phase == core::LegacyConversionPhase::Script
+        || value.phase == core::LegacyConversionPhase::Writing
+        ? ExclusiveOperationProgressUnit::Scripts
+        : value.phase == core::LegacyConversionPhase::Hashing
+            ? ExclusiveOperationProgressUnit::Bytes
+            : ExclusiveOperationProgressUnit::Steps;
+    reportProgress(phaseText(value.phase), value.completed, value.total, unit,
+        QString::fromStdString(value.current));
 }
 
-void LegacyConversionDialog::showSummary(const core::LegacyCapsuleSummary& summary) {
+void LegacyConversionController::finishConversion() {
+    result_ = watcher_.result();
+    setFinishing(false);
+    setCancellable(false);
+    populateSummary();
+    if (result_->status == core::LegacyConversionStatus::Cancelled)
+        raiseEvent("cancelled");
+    else if (result_->capsule)
+        raiseEvent("complete");
+    else
+        raiseEvent("failed");
+}
+
+void LegacyConversionController::populateSummary() {
+    if (!summaryStatus_ || !scripts_ || !result_) return;
+    if (!result_->capsule) {
+        scripts_->setRowCount(0);
+        summaryStatus_->setText(result_->status == core::LegacyConversionStatus::Cancelled
+            ? tr("Conversion was cancelled. No capsule was created.")
+            : diagnosticText(result_->diagnostics));
+        return;
+    }
+    const auto& summary = *result_->capsule;
+    summaryStatus_->setText(result_->status == core::LegacyConversionStatus::Ready
+        ? tr("The capsule was created and validated.")
+        : tr("The capsule was created and validated; some scripts require decisions during import."));
     scripts_->setRowCount(static_cast<int>(summary.scripts.size()));
     for (int row = 0; row < scripts_->rowCount(); ++row) {
         const auto& script = summary.scripts[static_cast<std::size_t>(row)];

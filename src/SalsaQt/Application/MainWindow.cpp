@@ -1,4 +1,5 @@
 #include "Application/MainWindow.h"
+#include "Application/ExclusiveOperationCoordinator.h"
 
 #include "SalsaCore/Application/ApplicationInfo.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
@@ -16,6 +17,8 @@
 #include "Workspace/DiagnosticsModel.h"
 #include "Workspace/WorkspaceDetailsWidget.h"
 #include "Workspace/WorkspaceModel.h"
+#include "Workspace/WorkspaceOperationController.h"
+#include "Workspace/WorkspaceMaintenanceController.h"
 #include "SpiceSCT/SctInstructionFactory.h"
 
 #include <QAction>
@@ -223,6 +226,11 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         QMainWindow::closeEvent(event);
         return;
     }
+    if (exclusiveOperations_ && exclusiveOperations_->active()) {
+        exclusiveOperations_->requestApplicationClose();
+        event->ignore();
+        return;
+    }
     if (!prepareScptEditor() || !flushMessageEditor() || !confirmDiscardAll(
             tr("exit SALSA"), PendingLifecycle::Exit)) {
         event->ignore();
@@ -237,6 +245,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::buildUi() {
     controller_ = new WorkspaceController(this);
+    exclusiveOperations_ = new ExclusiveOperationCoordinator(this);
     documentController_ = new SctDocumentController(this);
     workspaceModel_ = new WorkspaceModel(this);
     diagnosticsModel_ = new DiagnosticsModel(this);
@@ -555,15 +564,16 @@ void MainWindow::buildUi() {
     });
     connect(refreshAction_, &QAction::triggered, this, [this]() {
         if (!flushMessageEditor()) return;
-        if (controller_->refresh()) {
-            statusBar()->showMessage(tr("Refreshing dataset..."));
-        }
+        (void)exclusiveOperations_->open(std::make_unique<WorkspaceOperationController>(
+            controller_, WorkspaceController::Operation::Refreshing), this);
     });
     connect(cancelButton_, &QToolButton::clicked, this, [this]() {
         controller_->cancel();
         documentController_->cancel();
     });
     connect(exitAction, &QAction::triggered, this, &QWidget::close);
+    connect(exclusiveOperations_, &ExclusiveOperationCoordinator::activeChanged,
+        this, [this] { syncActions(); });
     connect(undoAction_, &QAction::triggered, this, &MainWindow::undoActiveDocument);
     connect(redoAction_, &QAction::triggered, this, &MainWindow::redoActiveDocument);
     connect(navigationBackAction_, &QAction::triggered, this, &MainWindow::navigateBack);
@@ -683,9 +693,11 @@ void MainWindow::connectWorkspace() {
     connect(controller_, &WorkspaceController::diagnosticsChanged, this, &MainWindow::syncDiagnostics);
     connect(controller_, &WorkspaceController::operationStateChanged, this, [this]() {
         const bool busy = controller_->busy();
-        progressBar_->setVisible(busy);
-        cancelButton_->setVisible(busy);
-        if (busy) {
+        const bool showStatusProgress = busy
+            && !(exclusiveOperations_ && exclusiveOperations_->active());
+        progressBar_->setVisible(showStatusProgress);
+        cancelButton_->setVisible(showStatusProgress);
+        if (showStatusProgress) {
             progressBar_->setRange(0, 0);
             progressBar_->setValue(0);
             statusBar()->showMessage(
@@ -704,6 +716,7 @@ void MainWindow::connectWorkspace() {
             const int completed,
             const int total,
             const QString& currentPath) {
+            if (exclusiveOperations_ && exclusiveOperations_->active()) return;
             if (determinate) {
                 progressBar_->setRange(0, total);
                 progressBar_->setValue(completed);
@@ -783,7 +796,8 @@ void MainWindow::connectWorkspace() {
                 cancelButton_->hide();
             }
             statusBar()->showMessage(message, 8000);
-            if (!success && !cancelled) {
+            if (!success && !cancelled
+                && !(exclusiveOperations_ && exclusiveOperations_->active())) {
                 diagnosticsDock_->show();
                 diagnosticsDock_->raise();
             }
@@ -849,7 +863,8 @@ void MainWindow::connectWorkspace() {
             if (!success && !cancelled) {
                 diagnosticsDock_->show();
                 diagnosticsDock_->raise();
-                if (!documentController_->failureDiagnostics().empty()) {
+                if (!documentController_->failureDiagnostics().empty()
+                    && !(exclusiveOperations_ && exclusiveOperations_->active())) {
                     QMessageBox::warning(this, tr("SCT export failed"), message);
                 }
             } else if (success && replacedSource) {
@@ -861,13 +876,13 @@ void MainWindow::connectWorkspace() {
 }
 
 void MainWindow::convertLegacyProject() {
-    auto* dialog = new LegacyConversionDialog(this);
-    dialog->show();
-    dialog->raise();
-    dialog->activateWindow();
+    if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
+    (void)exclusiveOperations_->open(
+        std::make_unique<LegacyConversionController>(), this);
 }
 
 void MainWindow::chooseDataset() {
+    if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
     const auto initial = recentDatasets_.isEmpty() ? QDir::homePath() : recentDatasets_.front();
     const auto root = QFileDialog::getExistingDirectory(
         this,
@@ -880,16 +895,22 @@ void MainWindow::chooseDataset() {
 }
 
 void MainWindow::openDataset(const QString& rootPath) {
+    if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
+    pendingDatasetRoot_ = rootPath;
     if (!prepareScptEditor() || !flushMessageEditor()
-        || !confirmDiscardAll(tr("open another dataset"))) return;
+        || !confirmDiscardAll(tr("open another dataset"),
+            PendingLifecycle::OpenDataset)) return;
     saveWorkspaceSession();
     scptEditor_->clear();
-    if (controller_->openDataset(rootPath)) {
-        statusBar()->showMessage(tr("Inspecting dataset..."));
-    }
+    auto operation = std::make_unique<WorkspaceOperationController>(
+        controller_, WorkspaceController::Operation::Opening, rootPath);
+    activeDatasetOperation_ = operation.get();
+    if (!exclusiveOperations_->open(std::move(operation), this))
+        activeDatasetOperation_.clear();
 }
 
 void MainWindow::associatePatchWorkspace() {
+    if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
     const auto* dataset = controller_->dataset();
     if (dataset == nullptr || !documentController_->openLocators().empty()) return;
     const auto datasetRoot = QString::fromStdWString(dataset->root.wstring());
@@ -900,10 +921,34 @@ void MainWindow::associatePatchWorkspace() {
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (selected.isEmpty()) return;
 
-    (void)openPatchWorkspace(selected, true);
+    const auto path = std::filesystem::path(selected.toStdWString());
+    const auto datasetCopy = *dataset;
+    auto operation = WorkspaceMaintenanceController::openWorkspace(
+        path, datasetCopy, [this, selected](core::LocalSalsaWorkspace opened) {
+            saveWorkspaceSession();
+            detachPatchWorkspace(false);
+            patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
+                std::move(opened));
+            documentController_->setWorkspace(patchWorkspace_);
+            const auto* current = controller_->dataset();
+            if (current) rememberPatchWorkspaceAssociation(
+                QString::fromStdWString(current->root.wstring()), selected);
+            syncActions();
+            restoreWorkspaceSession();
+            QTimer::singleShot(0, this, [this] {
+                if (activeWorkspaceMaintenance_ && !restoringWorkspaceSession_)
+                    activeWorkspaceMaintenance_->completeRestoration();
+            });
+            return tr("SALSA workspace opened: %1")
+                .arg(QDir::toNativeSeparators(selected));
+        });
+    activeWorkspaceMaintenance_ = operation.get();
+    if (!exclusiveOperations_->open(std::move(operation), this))
+        activeWorkspaceMaintenance_.clear();
 }
 
 void MainWindow::rebaseStalePatches() {
+    if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
     if (patchWorkspace_ == nullptr || controller_->busy()
         || documentController_->busy() || documentController_->isPublishing()) return;
     if (!prepareScptEditor() || !flushMessageEditor()) return;
@@ -917,61 +962,30 @@ void MainWindow::rebaseStalePatches() {
 
     const auto project = controller_->projectSnapshot();
     if (!project) return;
-    SctRebaseDialog dialog(*project, patchWorkspace_, this);
-    if (dialog.exec() != QDialog::Accepted) return;
-    bool adoptedEveryOpenDocument = true;
-    for (const auto& locator : dialog.committedAssets()) {
-        if (!documentController_->contains(locator)) continue;
-        adoptedEveryOpenDocument = documentController_->adoptRebasedDocument(
-            *project, locator) && adoptedEveryOpenDocument;
-    }
-    scheduleWorkspaceSessionSave();
-    syncActions();
-    if (adoptedEveryOpenDocument) {
-        statusBar()->showMessage(tr("The selected stale patches were rebased."), 8000);
-    } else {
-        QMessageBox::warning(this, tr("Rebase committed"), tr(
-            "The selected patches were committed, but one open document could not "
-            "adopt the result. Close and reopen that document to load the durable patch."));
-    }
+    (void)exclusiveOperations_->open(std::make_unique<SctRebaseController>(
+        *project, patchWorkspace_, [this, project](const auto& assets) {
+            bool adoptedEveryOpenDocument = true;
+            for (const auto& locator : assets) {
+                if (!documentController_->contains(locator)) continue;
+                adoptedEveryOpenDocument = documentController_->adoptRebasedDocument(
+                    *project, locator) && adoptedEveryOpenDocument;
+            }
+            scheduleWorkspaceSessionSave();
+            syncActions();
+            return adoptedEveryOpenDocument
+                ? tr("The selected stale patches were rebased.")
+                : tr("The selected patches were committed, but one open document could not "
+                     "adopt the result. Close and reopen that document to load the durable patch.");
+        }), this);
 }
 
 void MainWindow::cleanWorkspaceEvidence() {
+    if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
     if (patchWorkspace_ == nullptr) return;
-    const auto candidates = core::WorkspaceArtifactCleanupService::assess(
+    (void)exclusiveOperations_->open(WorkspaceMaintenanceController::cleanup(
         patchWorkspace_->descriptor().root,
-        patchWorkspace_->descriptor().components.transactions);
-    if (!candidates) {
-        QMessageBox::warning(this, tr("Workspace cleanup failed"),
-            candidates.diagnostics().empty()
-                ? tr("Workspace cleanup could not be assessed.")
-                : QString::fromStdString(candidates.diagnostics().front().message));
-        return;
-    }
-    if (candidates.value().empty()) {
-        QMessageBox::information(this, tr("Workspace cleanup"),
-            tr("No verified transaction recovery evidence is eligible for cleanup."));
-        return;
-    }
-    std::uintmax_t totalBytes = 0;
-    for (const auto& candidate : candidates.value()) totalBytes += candidate.byteSize;
-    const auto answer = QMessageBox::question(this, tr("Clean recovery evidence?"),
-        tr("Remove %1 verified transaction journal(s) using %2 bytes?\n\n"
-           "Active or unresolved transactions are never included. This removes rollback "
-           "evidence and cannot be undone.")
-            .arg(candidates.value().size()).arg(totalBytes),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (answer != QMessageBox::Yes) return;
-    const auto removed = core::WorkspaceArtifactCleanupService::remove(
-        patchWorkspace_->descriptor().root, candidates.value());
-    if (!removed) {
-        QMessageBox::warning(this, tr("Workspace cleanup failed"),
-            removed.diagnostics().empty()
-                ? tr("Workspace recovery evidence could not be removed.")
-                : QString::fromStdString(removed.diagnostics().front().message));
-        return;
-    }
-    statusBar()->showMessage(tr("Verified workspace recovery evidence removed."), 8000);
+        patchWorkspace_->descriptor().components.transactions,
+        [this] { syncActions(); }), this);
 }
 
 bool MainWindow::openPatchWorkspace(
@@ -1114,6 +1128,7 @@ void MainWindow::saveActiveDocument() {
 }
 
 void MainWindow::exportActiveDocument() {
+    if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
     auto* widget = activeDocumentWidget();
     if (widget == nullptr || !prepareScptEditor(widget->locator())
         || !flushMessageEditor()) return;
@@ -1124,39 +1139,12 @@ void MainWindow::exportActiveDocument() {
     const auto sourcePath = project->dataset().root / widget->locator().path();
     const auto defaults = core::SctPublicationService::defaultsFor(
         project->dataset(), *snapshot);
-    SctExportDialog dialog(widget->locator(),
+    lastExportDirectory_ = QSettings{}.value(
+        QStringLiteral("publication/lastDirectory"), lastExportDirectory_).toString();
+    (void)exclusiveOperations_->open(std::make_unique<SctPublicationController>(
+        documentController_, *project, widget->locator(),
         documentController_->workingRevision(widget->locator()), defaults,
-        sourcePath, lastExportDirectory_, this);
-    if (dialog.exec() != QDialog::Accepted) return;
-
-    const auto destination = dialog.destination();
-    const bool replacingSource = sameDatasetPath(
-        QString::fromStdWString(sourcePath.wstring()),
-        QString::fromStdWString(destination.wstring()));
-    if (replacingSource) {
-        const auto answer = QMessageBox::warning(this,
-            tr("Replace loaded source SCT?"),
-            tr("This will atomically replace the SCT in the loaded dataset. "
-               "The open document and any SALSA patch will still refer to the previous source bytes, "
-               "so the document must be reloaded before another patch checkpoint or source replacement.\n\n"
-               "Replace the loaded source file?"),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer != QMessageBox::Yes) return;
-    }
-
-    if (!documentController_->exportDocument(*project, widget->locator(),
-            dialog.options(), destination, replacingSource)) {
-        statusBar()->showMessage(tr("The SCT export could not be started."), 8000);
-        return;
-    }
-    lastExportDirectory_ = QString::fromStdWString(destination.parent_path().wstring());
-    QSettings{}.setValue(QStringLiteral("publication/lastDirectory"),
-        lastExportDirectory_);
-    statusBar()->showMessage(tr("Exporting captured SCT revision..."));
-    progressBar_->setRange(0, 0);
-    progressBar_->show();
-    cancelButton_->show();
-    syncActions();
+        sourcePath, lastExportDirectory_), this);
 }
 
 void MainWindow::syncWorkspace() {
@@ -1255,22 +1243,24 @@ void MainWindow::syncSemanticNavigator() {
 void MainWindow::syncActions() {
     const bool busy = controller_->busy() || documentController_->busy();
     const bool publishing = documentController_->isPublishing();
+    const bool exclusive = exclusiveOperations_ && exclusiveOperations_->active();
     const bool hasDataset = controller_->hasWorkspace();
     const bool hasOpenDocuments = !documentController_->openLocators().empty();
-    openAction_->setEnabled(!busy && !publishing);
-    recentMenu_->setEnabled(!busy && !publishing && !recentDatasets_.isEmpty());
-    closeWorkspaceAction_->setEnabled(hasDataset || busy || publishing);
+    openAction_->setEnabled(!busy && !publishing && !exclusive);
+    recentMenu_->setEnabled(!busy && !publishing && !exclusive && !recentDatasets_.isEmpty());
+    convertLegacyProjectAction_->setEnabled(!busy && !publishing && !exclusive);
+    closeWorkspaceAction_->setEnabled(!exclusive && (hasDataset || busy || publishing));
     associatePatchWorkspaceAction_->setEnabled(
-        hasDataset && !busy && !publishing && !hasOpenDocuments);
+        hasDataset && !busy && !publishing && !exclusive && !hasOpenDocuments);
     disconnectPatchWorkspaceAction_->setEnabled(
-        patchWorkspace_ != nullptr && !busy && !publishing && !hasOpenDocuments);
+        patchWorkspace_ != nullptr && !busy && !publishing && !exclusive && !hasOpenDocuments);
     rebasePatchesAction_->setEnabled(
-        patchWorkspace_ != nullptr && hasDataset && !busy && !publishing);
+        patchWorkspace_ != nullptr && hasDataset && !busy && !publishing && !exclusive);
     cleanWorkspaceEvidenceAction_->setEnabled(
-        patchWorkspace_ != nullptr && !busy && !publishing);
-    refreshAction_->setEnabled(hasDataset && !busy && !publishing);
-    projectTree_->setEnabled(hasDataset && !busy && !publishing);
-    messageEditor_->setEnabled(!busy);
+        patchWorkspace_ != nullptr && !busy && !publishing && !exclusive);
+    refreshAction_->setEnabled(hasDataset && !busy && !publishing && !exclusive);
+    projectTree_->setEnabled(hasDataset && !busy && !publishing && !exclusive);
+    messageEditor_->setEnabled(!busy && !exclusive);
     syncEditActions();
     if (mode_ == Mode::IsolatedDocumentEditor) {
         openAction_->setEnabled(false);
@@ -1416,8 +1406,9 @@ void MainWindow::syncNavigationActions() {
     const bool canBack = !navigationHistory_.empty() && navigationHistoryIndex_ > 0u;
     const bool canForward = !navigationHistory_.empty()
         && navigationHistoryIndex_ + 1u < navigationHistory_.size();
-    navigationBackAction_->setEnabled(canBack);
-    navigationForwardAction_->setEnabled(canForward);
+    const bool exclusive = exclusiveOperations_ && exclusiveOperations_->active();
+    navigationBackAction_->setEnabled(canBack && !exclusive);
+    navigationForwardAction_->setEnabled(canForward && !exclusive);
     navigationBackAction_->setToolTip(canBack
         ? tr("Back to %1 (Alt+Left)").arg(
             navigationEntryLabel(navigationHistory_[navigationHistoryIndex_ - 1u]))
@@ -1430,8 +1421,9 @@ void MainWindow::syncNavigationActions() {
 
 void MainWindow::syncEditActions() {
     auto* widget = activeDocumentWidget();
+    const bool exclusive = exclusiveOperations_ && exclusiveOperations_->active();
     const bool available = widget != nullptr
-        && !controller_->busy() && !documentController_->busy();
+        && !controller_->busy() && !documentController_->busy() && !exclusive;
     const bool editable = available
         && documentController_->structurallyValid(widget->locator());
     saveAction_->setEnabled(available && patchWorkspace_ != nullptr
@@ -1446,6 +1438,7 @@ void MainWindow::syncEditActions() {
     for (int i = 1; i < tabs_->count(); ++i) {
         if (auto* document = qobject_cast<SctDocumentWidget*>(tabs_->widget(i))) {
             document->setEditingEnabled(!controller_->busy() && !documentController_->busy()
+                && !exclusive
                 && documentController_->structurallyValid(document->locator()));
         }
     }
@@ -2221,6 +2214,9 @@ void MainWindow::continuePendingLifecycle(
         detachPatchWorkspace(false);
         controller_->closeWorkspace();
         statusBar()->showMessage(tr("Dataset closed."), 5000);
+    } else if (action == PendingLifecycle::OpenDataset) {
+        const auto root = std::exchange(pendingDatasetRoot_, {});
+        QTimer::singleShot(0, this, [this, root] { openDataset(root); });
     } else if (action == PendingLifecycle::RebasePatches) {
         QTimer::singleShot(0, this, [this]() { rebaseStalePatches(); });
     } else if (action == PendingLifecycle::Exit) {
@@ -2727,6 +2723,20 @@ void MainWindow::restoreWorkspaceSession() {
 void MainWindow::restoreNextWorkspaceDocument() {
     if (!restoringWorkspaceSession_ || !restoringWorkspaceSessionState_) return;
     const auto& documents = restoringWorkspaceSessionState_->documents;
+    if (activeDatasetOperation_)
+        activeDatasetOperation_->reportRestorationProgress(
+            restoringWorkspaceDocumentIndex_, documents.size(),
+            restoringWorkspaceDocumentIndex_ < documents.size()
+                ? QString::fromStdWString(
+                    documents[restoringWorkspaceDocumentIndex_].locator.path().wstring())
+                : QString{});
+    if (activeWorkspaceMaintenance_)
+        activeWorkspaceMaintenance_->reportRestorationProgress(
+            restoringWorkspaceDocumentIndex_, documents.size(),
+            restoringWorkspaceDocumentIndex_ < documents.size()
+                ? QString::fromStdWString(
+                    documents[restoringWorkspaceDocumentIndex_].locator.path().wstring())
+                : QString{});
     if (restoringWorkspaceDocumentIndex_ >= documents.size()) {
         finishWorkspaceSessionRestore();
         return;
@@ -2840,6 +2850,14 @@ void MainWindow::finishWorkspaceSessionRestore() {
     else
         statusBar()->showMessage(tr("Workspace restored with %1 stale or unavailable item(s).")
             .arg(workspaceRestoreMessages_.size()), 12000);
+    const auto restorationSummary = workspaceRestoreMessages_.isEmpty()
+        ? tr("Workspace session restored.")
+        : tr("Workspace restored with %1 stale or unavailable item(s).")
+            .arg(workspaceRestoreMessages_.size());
+    if (activeDatasetOperation_)
+        activeDatasetOperation_->completeRestoration(restorationSummary);
+    if (activeWorkspaceMaintenance_)
+        activeWorkspaceMaintenance_->completeRestoration(restorationSummary);
     workspaceRestoreMessages_.clear();
     scheduleWorkspaceSessionSave();
 }
@@ -2854,6 +2872,7 @@ void MainWindow::rebuildRecentMenu() {
         });
     }
     recentMenu_->setEnabled(!controller_->busy() && !documentController_->busy()
+        && !(exclusiveOperations_ && exclusiveOperations_->active())
         && !recentDatasets_.isEmpty());
 }
 
@@ -2882,9 +2901,11 @@ void MainWindow::recordRecentDataset(const QString& canonicalRoot) {
 void MainWindow::attemptRestoreDataset() {
     if (lastDataset_.isEmpty() || controller_->busy() || controller_->hasWorkspace()) return;
     restoringDataset_ = true;
-    if (controller_->openDataset(lastDataset_)) {
-        statusBar()->showMessage(tr("Restoring the previous dataset..."));
-    } else {
+    auto operation = std::make_unique<WorkspaceOperationController>(
+        controller_, WorkspaceController::Operation::Opening, lastDataset_);
+    activeDatasetOperation_ = operation.get();
+    if (!exclusiveOperations_->open(std::move(operation), this)) {
+        activeDatasetOperation_.clear();
         restoringDataset_ = false;
     }
 }
@@ -2974,7 +2995,8 @@ void MainWindow::handleOperationCompleted(
     if (!success && !cancelled) {
         diagnosticsDock_->show();
         diagnosticsDock_->raise();
-        if (operation == WorkspaceController::Operation::Opening && !wasRestoreAttempt) {
+        if (operation == WorkspaceController::Operation::Opening && !wasRestoreAttempt
+            && !(exclusiveOperations_ && exclusiveOperations_->active())) {
             QMessageBox::warning(this, tr("Dataset could not be opened"), message);
         }
     }
@@ -2982,6 +3004,10 @@ void MainWindow::handleOperationCompleted(
         documentController_->closeAll();
         detachPatchWorkspace(false);
         restorePatchWorkspaceAssociation();
+        QTimer::singleShot(0, this, [this]() {
+            if (!restoringWorkspaceSession_ && activeDatasetOperation_)
+                activeDatasetOperation_->completeRestoration();
+        });
     }
     if (success && operation == WorkspaceController::Operation::Refreshing) {
         if (const auto* catalog = controller_->catalog())

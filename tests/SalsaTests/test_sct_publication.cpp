@@ -135,6 +135,24 @@ TEST(SctPublicationTest, ExportsVerifiedRevisionAndReturnsReceipt) {
     EXPECT_TRUE(parsed.parseOk);
 }
 
+TEST(SctPublicationTest, ReportsOrderedPreparationAndAtomicInstallPhases) {
+    PublicationFixture fixture;
+    const auto destination = fixture.temporary.path() / L"output" / L"observed.sct";
+    const auto request = fixture.request(destination);
+    std::vector<SctPublicationProgress> progress;
+
+    const auto result = SctPublicationService::publish(fixture.project, request, {},
+        [&progress](const SctPublicationProgress& value) { progress.push_back(value); });
+
+    ASSERT_TRUE(result.succeeded());
+    ASSERT_FALSE(progress.empty());
+    EXPECT_EQ(progress.front().phase, SctPublicationPhase::Preflight);
+    EXPECT_EQ(progress.front().completed, 0u);
+    EXPECT_EQ(progress.back().phase, SctPublicationPhase::Installing);
+    EXPECT_EQ(progress.back().completed, 1u);
+    for (const auto& value : progress) EXPECT_LE(value.completed, value.total);
+}
+
 TEST(SctPublicationTest, CapturesPendingRevisionIndependentlyOfLaterEdits) {
     PublicationFixture fixture;
     ASSERT_TRUE(fixture.session.renameSection(
