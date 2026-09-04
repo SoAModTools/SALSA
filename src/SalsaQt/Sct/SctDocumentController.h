@@ -49,6 +49,14 @@ public:
         core::LocalGameProject project, const core::AssetLocator& locator);
     [[nodiscard]] bool reloadDocument(
         core::LocalGameProject project, const core::AssetLocator& locator);
+    [[nodiscard]] bool adoptRebasedDocument(
+        const core::LocalGameProject& project, const core::AssetLocator& locator);
+    [[nodiscard]] bool installTransientDocument(
+        const core::AssetLocator& locator,
+        std::shared_ptr<const core::SctDocumentSnapshot> provenanceSnapshot,
+        const core::SctSemanticState& state);
+    [[nodiscard]] std::optional<core::SctSemanticState> semanticState(
+        const core::AssetLocator& locator) const;
     [[nodiscard]] bool selectTextConvention(
         const core::AssetLocator& locator,
         spice::sct::SctKnownTextConvention convention);

@@ -5,6 +5,7 @@
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
 #include "Sct/SctDocumentController.h"
 #include "Sct/SctDocumentWidget.h"
+#include "Sct/SctRebaseDialog.h"
 #include "Sct/SctExportDialog.h"
 #include "Sct/SctMessageEditorWidget.h"
 #include "Sct/SctScptEditorWidget.h"
@@ -179,24 +180,48 @@ constexpr qsizetype MaximumRecentDatasets = 10;
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent)
-    : QMainWindow(parent) {
+    : MainWindow(Mode::Application, parent) {}
+
+MainWindow::MainWindow(const Mode mode, QWidget* parent)
+    : QMainWindow(parent), mode_(mode) {
     const auto name = core::applicationName();
     setWindowTitle(QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size())));
     resize(1100, 700);
 
     buildUi();
     connectWorkspace();
-    restoreApplicationSettings();
+    if (mode_ == Mode::Application) restoreApplicationSettings();
     syncWorkspace();
     syncDiagnostics();
     syncSemanticNavigator();
     syncActions();
     recordActiveNavigation();
     statusBar()->showMessage(tr("Ready"));
-    QTimer::singleShot(0, this, &MainWindow::attemptRestoreDataset);
+    if (mode_ == Mode::Application)
+        QTimer::singleShot(0, this, &MainWindow::attemptRestoreDataset);
+}
+
+bool MainWindow::installSemanticCandidate(
+    const core::AssetLocator& locator,
+    std::shared_ptr<const core::SctDocumentSnapshot> provenanceSnapshot,
+    const core::SctSemanticState& state) {
+    return mode_ == Mode::IsolatedDocumentEditor
+        && documentController_->installTransientDocument(
+            locator, std::move(provenanceSnapshot), state);
+}
+
+std::optional<core::SctSemanticState> MainWindow::captureSemanticCandidate(
+    const core::AssetLocator& locator) {
+    if (mode_ != Mode::IsolatedDocumentEditor
+        || !prepareScptEditor(locator) || !flushMessageEditor()) return std::nullopt;
+    return documentController_->semanticState(locator);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+    if (mode_ == Mode::IsolatedDocumentEditor) {
+        QMainWindow::closeEvent(event);
+        return;
+    }
     if (!prepareScptEditor() || !flushMessageEditor() || !confirmDiscardAll(
             tr("exit SALSA"), PendingLifecycle::Exit)) {
         event->ignore();
@@ -338,6 +363,11 @@ void MainWindow::buildUi() {
         tr("Open or Create &Workspace..."));
     disconnectPatchWorkspaceAction_ = projectMenu->addAction(
         tr("Close Workspace"));
+    projectMenu->addSeparator();
+    rebasePatchesAction_ = projectMenu->addAction(
+        tr("Rebase Stale Patches..."));
+    cleanWorkspaceEvidenceAction_ = projectMenu->addAction(
+        tr("Clean Workspace Recovery Evidence..."));
     projectMenu->addSeparator();
     refreshAction_ = projectMenu->addAction(tr("&Refresh Dataset"));
     refreshAction_->setShortcut(QKeySequence::Refresh);
@@ -502,6 +532,10 @@ void MainWindow::buildUi() {
         this, &MainWindow::associatePatchWorkspace);
     connect(disconnectPatchWorkspaceAction_, &QAction::triggered,
         this, &MainWindow::disconnectPatchWorkspace);
+    connect(rebasePatchesAction_, &QAction::triggered,
+        this, &MainWindow::rebaseStalePatches);
+    connect(cleanWorkspaceEvidenceAction_, &QAction::triggered,
+        this, &MainWindow::cleanWorkspaceEvidence);
     connect(closeWorkspaceAction_, &QAction::triggered, this, [this]() {
         if (!prepareScptEditor() || !flushMessageEditor() || !confirmDiscardAll(
                 tr("close the dataset"), PendingLifecycle::CloseDataset)) return;
@@ -856,6 +890,77 @@ void MainWindow::associatePatchWorkspace() {
     (void)openPatchWorkspace(selected, true);
 }
 
+void MainWindow::rebaseStalePatches() {
+    if (patchWorkspace_ == nullptr || controller_->busy()
+        || documentController_->busy() || documentController_->isPublishing()) return;
+    if (!prepareScptEditor() || !flushMessageEditor()) return;
+    const auto dirty = documentController_->dirtyLocators();
+    if (!confirmDiscardAll(tr("rebase stale patches"),
+            PendingLifecycle::RebasePatches)) return;
+    // A true return with pre-existing dirty documents means the user chose
+    // Discard. Close just those sessions so their uncheckpointed state cannot
+    // leak into the independently reconstructed rebase inputs.
+    for (const auto& locator : dirty) documentController_->closeDocument(locator);
+
+    const auto project = controller_->projectSnapshot();
+    if (!project) return;
+    SctRebaseDialog dialog(*project, patchWorkspace_, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    bool adoptedEveryOpenDocument = true;
+    for (const auto& locator : dialog.committedAssets()) {
+        if (!documentController_->contains(locator)) continue;
+        adoptedEveryOpenDocument = documentController_->adoptRebasedDocument(
+            *project, locator) && adoptedEveryOpenDocument;
+    }
+    scheduleWorkspaceSessionSave();
+    syncActions();
+    if (adoptedEveryOpenDocument) {
+        statusBar()->showMessage(tr("The selected stale patches were rebased."), 8000);
+    } else {
+        QMessageBox::warning(this, tr("Rebase committed"), tr(
+            "The selected patches were committed, but one open document could not "
+            "adopt the result. Close and reopen that document to load the durable patch."));
+    }
+}
+
+void MainWindow::cleanWorkspaceEvidence() {
+    if (patchWorkspace_ == nullptr) return;
+    const auto candidates = core::WorkspaceArtifactCleanupService::assess(
+        patchWorkspace_->descriptor().root,
+        patchWorkspace_->descriptor().components.transactions);
+    if (!candidates) {
+        QMessageBox::warning(this, tr("Workspace cleanup failed"),
+            candidates.diagnostics().empty()
+                ? tr("Workspace cleanup could not be assessed.")
+                : QString::fromStdString(candidates.diagnostics().front().message));
+        return;
+    }
+    if (candidates.value().empty()) {
+        QMessageBox::information(this, tr("Workspace cleanup"),
+            tr("No verified transaction recovery evidence is eligible for cleanup."));
+        return;
+    }
+    std::uintmax_t totalBytes = 0;
+    for (const auto& candidate : candidates.value()) totalBytes += candidate.byteSize;
+    const auto answer = QMessageBox::question(this, tr("Clean recovery evidence?"),
+        tr("Remove %1 verified transaction journal(s) using %2 bytes?\n\n"
+           "Active or unresolved transactions are never included. This removes rollback "
+           "evidence and cannot be undone.")
+            .arg(candidates.value().size()).arg(totalBytes),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes) return;
+    const auto removed = core::WorkspaceArtifactCleanupService::remove(
+        patchWorkspace_->descriptor().root, candidates.value());
+    if (!removed) {
+        QMessageBox::warning(this, tr("Workspace cleanup failed"),
+            removed.diagnostics().empty()
+                ? tr("Workspace recovery evidence could not be removed.")
+                : QString::fromStdString(removed.diagnostics().front().message));
+        return;
+    }
+    statusBar()->showMessage(tr("Verified workspace recovery evidence removed."), 8000);
+}
+
 bool MainWindow::openPatchWorkspace(
     const QString& workspaceRoot, const bool allowConfirmation) {
     const auto* dataset = controller_->dataset();
@@ -1146,10 +1251,27 @@ void MainWindow::syncActions() {
         hasDataset && !busy && !publishing && !hasOpenDocuments);
     disconnectPatchWorkspaceAction_->setEnabled(
         patchWorkspace_ != nullptr && !busy && !publishing && !hasOpenDocuments);
+    rebasePatchesAction_->setEnabled(
+        patchWorkspace_ != nullptr && hasDataset && !busy && !publishing);
+    cleanWorkspaceEvidenceAction_->setEnabled(
+        patchWorkspace_ != nullptr && !busy && !publishing);
     refreshAction_->setEnabled(hasDataset && !busy && !publishing);
     projectTree_->setEnabled(hasDataset && !busy && !publishing);
     messageEditor_->setEnabled(!busy);
     syncEditActions();
+    if (mode_ == Mode::IsolatedDocumentEditor) {
+        openAction_->setEnabled(false);
+        recentMenu_->setEnabled(false);
+        closeWorkspaceAction_->setEnabled(false);
+        associatePatchWorkspaceAction_->setEnabled(false);
+        disconnectPatchWorkspaceAction_->setEnabled(false);
+        rebasePatchesAction_->setEnabled(false);
+        cleanWorkspaceEvidenceAction_->setEnabled(false);
+        refreshAction_->setEnabled(false);
+        saveAction_->setEnabled(false);
+        exportAction_->setEnabled(false);
+        projectTree_->setEnabled(false);
+    }
 }
 
 SctDocumentWidget* MainWindow::activeDocumentWidget() const {
@@ -2086,6 +2208,8 @@ void MainWindow::continuePendingLifecycle(
         detachPatchWorkspace(false);
         controller_->closeWorkspace();
         statusBar()->showMessage(tr("Dataset closed."), 5000);
+    } else if (action == PendingLifecycle::RebasePatches) {
+        QTimer::singleShot(0, this, [this]() { rebaseStalePatches(); });
     } else if (action == PendingLifecycle::Exit) {
         QTimer::singleShot(0, this, &QWidget::close);
     }

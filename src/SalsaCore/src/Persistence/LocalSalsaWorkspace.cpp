@@ -2,6 +2,7 @@
 
 #include "SalsaCore/Foundation/Hashing.h"
 #include "SalsaCore/Persistence/AtomicFile.h"
+#include "SalsaCore/Persistence/WorkspaceTransaction.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -702,8 +703,14 @@ Result<LocalSalsaWorkspace> LocalSalsaWorkspace::openOrCreate(
         std::filesystem::remove(rollbackPath, error);
     if (error) return Result<LocalSalsaWorkspace>::failure(workspaceError(
         "The verified schema-one rollback manifest could not be removed.", rollbackPath));
+    auto descriptor = descriptorFrom(root, std::move(verified).takeValue());
+    const auto recoveries = WorkspaceTransactionService::recoverAll(
+        descriptor.root, descriptor.components.transactions);
+    for (const auto& recovery : recoveries)
+        if (!recovery.succeeded())
+            return Result<LocalSalsaWorkspace>::failure(recovery.diagnostics);
     return Result<LocalSalsaWorkspace>::success(LocalSalsaWorkspace(
-        descriptorFrom(root, std::move(verified).takeValue())));
+        std::move(descriptor)));
 }
 
 const SalsaWorkspaceDescriptor& LocalSalsaWorkspace::descriptor() const noexcept {

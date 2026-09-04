@@ -102,6 +102,12 @@ public:
     SctEditSession(SctEditSession&&) noexcept = default;
     SctEditSession& operator=(SctEditSession&&) noexcept = default;
 
+    [[nodiscard]] static std::unique_ptr<SctEditSession> createRebased(
+        std::shared_ptr<const SctDocumentSnapshot> newBaselineSnapshot,
+        std::shared_ptr<const SctDocumentSnapshot> rebasedSnapshot,
+        std::span<const SctAuthoredArm> authoredArms,
+        std::span<const SctPatchedTextRepair> textRepairs);
+
     [[nodiscard]] SctEditResult insertInstructionAfter(
         spice::sct::SctInstructionId anchorInstruction,
         std::uint16_t opcode);
@@ -216,6 +222,11 @@ private:
     };
 
     struct RevisionDelta final {
+        struct ExternalState final {
+            std::shared_ptr<const SctDocumentSnapshot> snapshot{};
+            std::vector<SctAuthoredArm> authoredArms{};
+            std::vector<SctPatchedTextRepair> textRepairs{};
+        };
         RevisionId parent{};
         SctSemanticOperationBatch forward{};
         SctSemanticOperationBatch inverse{};
@@ -224,6 +235,8 @@ private:
         SctEditChangeSet forwardChanges{};
         SctEditChangeSet reverseChanges{};
         SelectionHints selections{};
+        std::optional<ExternalState> externalBefore{};
+        std::optional<ExternalState> externalAfter{};
     };
 
     struct MaterializationCheckpoint final {
@@ -242,6 +255,7 @@ private:
         std::uint64_t preflightMicroseconds = 0);
     void pruneMaterializationCheckpoints();
     void rebuildSemanticProjection();
+    void installExternalState(const RevisionDelta::ExternalState& state);
 
     std::shared_ptr<const SctDocumentSnapshot> baselineSnapshot_;
     RevisionHistory<RevisionDelta> history_;

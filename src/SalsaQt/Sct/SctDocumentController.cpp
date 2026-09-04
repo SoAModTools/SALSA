@@ -91,6 +91,84 @@ bool SctDocumentController::reloadDocument(
     return true;
 }
 
+bool SctDocumentController::adoptRebasedDocument(
+    const core::LocalGameProject& project, const core::AssetLocator& locator) {
+    auto* state = findState(locator);
+    if (state == nullptr) return true;
+    if (busy() || state->materializationWatcher || state->checkpointWatcher
+        || state->session->isDirty() || workspace_ == nullptr) return false;
+    auto reopened = core::SctPatchCheckpointService::load(
+        project, workspace_.get(), workspace_.get(), locator);
+    if (!reopened.load.succeeded() || !reopened.baseline
+        || !reopened.patchApplied || reopened.patchConflict) {
+        failureDiagnostics_ = reopened.load.infrastructureDiagnostics;
+        failurePipelineDiagnostics_ = reopened.load.document
+            ? reopened.load.document->diagnostics
+            : std::vector<core::SctPipelineDiagnostic>{};
+        return false;
+    }
+    state->session = core::SctEditSession::createRebased(
+        reopened.baseline, reopened.load.document,
+        reopened.authoredArms, reopened.textRepairs);
+    state->status = SourceStatus::Current;
+    state->patchConflict = false;
+    state->editBlocked = false;
+    state->publicationDiagnostics.clear();
+    state->lastPublication.reset();
+    failureDiagnostics_.clear();
+    failurePipelineDiagnostics_.clear();
+    emit documentChanged(identity(locator), SctDocumentUpdate{
+        SctDocumentUpdateKind::Replacement,
+        state->session->currentSnapshot(), std::nullopt,
+        state->session->semanticProjection()});
+    emit editCompleted(identity(locator), true,
+        tr("The rebased patch was adopted as one undoable document change."));
+    return true;
+}
+
+bool SctDocumentController::installTransientDocument(
+    const core::AssetLocator& locator,
+    std::shared_ptr<const core::SctDocumentSnapshot> provenanceSnapshot,
+    const core::SctSemanticState& semanticState) {
+    if (busy() || contains(locator) || !provenanceSnapshot
+        || !provenanceSnapshot->provenance || !semanticState.document) return false;
+    const auto validation = spice::sct::SctDocumentValidator::validateDocument(
+        *semanticState.document);
+    if (!validation.validDocument) return false;
+    auto snapshot = std::make_shared<core::SctDocumentSnapshot>(
+        core::SctDocumentSnapshot{provenanceSnapshot->provenance,
+            semanticState.document,
+            std::make_shared<const spice::sct::SctDocumentAnalysis>(
+                spice::sct::SctDocumentAnalysis::build(*semanticState.document,
+                    provenanceSnapshot->provenance->importEvidence
+                        ? &*provenanceSnapshot->provenance->importEvidence : nullptr)),
+            spice::sct::SctDocumentReadiness::StructurallyValid, {}});
+    DocumentState state{locator,
+        std::make_unique<core::SctEditSession>(snapshot, snapshot,
+            semanticState.authoredArms, semanticState.textRepairs)};
+    auto [found, inserted] = documents_.emplace(locator.identityKey(), std::move(state));
+    if (!inserted) return false;
+    emit documentChanged(identity(locator), SctDocumentUpdate{
+        SctDocumentUpdateKind::Replacement,
+        found->second.session->currentSnapshot(), std::nullopt,
+        found->second.session->semanticProjection()});
+    emit focusRequested(identity(locator));
+    return true;
+}
+
+std::optional<core::SctSemanticState> SctDocumentController::semanticState(
+    const core::AssetLocator& locator) const {
+    const auto* state = findState(locator);
+    if (state == nullptr) return std::nullopt;
+    const auto document = state->session->materializeRevision(
+        state->session->workingRevision());
+    if (!document) return std::nullopt;
+    return core::SctSemanticState{*document,
+        {state->session->structuredAuthoring().arms().begin(),
+            state->session->structuredAuthoring().arms().end()},
+        state->session->workingState().textRepairProvenances()};
+}
+
 bool SctDocumentController::selectTextConvention(
     const core::AssetLocator& locator,
     const spice::sct::SctKnownTextConvention convention) {

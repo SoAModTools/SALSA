@@ -82,6 +82,7 @@ struct SctChangeUnit final {
     std::string summary{};
     std::vector<std::string> details{};
     std::vector<std::string> coupledUnitIds{};
+    std::string dependencyGroupId{};
     std::optional<SctNavigationTarget> target{};
     std::optional<SctChangeIdentity> identity{};
     bool selectable = true;

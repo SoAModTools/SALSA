@@ -37,13 +37,28 @@ class WorkspaceModel;
 
 class MainWindow final : public QMainWindow {
 public:
+    enum class Mode { Application, IsolatedDocumentEditor };
+
     explicit MainWindow(QWidget* parent = nullptr);
+    MainWindow(Mode mode, QWidget* parent);
+    [[nodiscard]] bool installSemanticCandidate(
+        const core::AssetLocator& locator,
+        std::shared_ptr<const core::SctDocumentSnapshot> provenanceSnapshot,
+        const core::SctSemanticState& state);
+    [[nodiscard]] std::optional<core::SctSemanticState> captureSemanticCandidate(
+        const core::AssetLocator& locator);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
 
 private:
-    enum class PendingLifecycle { None, CloseDocument, CloseDataset, Exit };
+    enum class PendingLifecycle {
+        None,
+        CloseDocument,
+        CloseDataset,
+        RebasePatches,
+        Exit,
+    };
     struct NavigationEntry final {
         std::optional<core::AssetLocator> locator{};
         std::optional<core::SctNavigationTarget> target{};
@@ -55,6 +70,8 @@ private:
     void chooseDataset();
     void openDataset(const QString& rootPath);
     void associatePatchWorkspace();
+    void rebaseStalePatches();
+    void cleanWorkspaceEvidence();
     [[nodiscard]] bool openPatchWorkspace(
         const QString& workspaceRoot, bool allowConfirmation);
     void disconnectPatchWorkspace();
@@ -167,6 +184,8 @@ private:
     QAction* refreshAction_ = nullptr;
     QAction* associatePatchWorkspaceAction_ = nullptr;
     QAction* disconnectPatchWorkspaceAction_ = nullptr;
+    QAction* rebasePatchesAction_ = nullptr;
+    QAction* cleanWorkspaceEvidenceAction_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
     QAction* navigationBackAction_ = nullptr;
@@ -215,6 +234,7 @@ private:
     PendingLifecycle pendingLifecycle_ = PendingLifecycle::None;
     std::optional<core::AssetLocator> pendingLifecycleDocument_{};
     std::vector<core::AssetLocator> pendingLifecycleSaves_{};
+    Mode mode_ = Mode::Application;
 };
 
 }  // namespace salsa::qt

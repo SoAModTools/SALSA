@@ -268,6 +268,42 @@ SctEditSession::SctEditSession(
     rebuildSemanticProjection();
 }
 
+std::unique_ptr<SctEditSession> SctEditSession::createRebased(
+    std::shared_ptr<const SctDocumentSnapshot> newBaselineSnapshot,
+    std::shared_ptr<const SctDocumentSnapshot> rebasedSnapshot,
+    const std::span<const SctAuthoredArm> authoredArms,
+    const std::span<const SctPatchedTextRepair> textRepairs) {
+    if (!newBaselineSnapshot || !newBaselineSnapshot->document
+        || newBaselineSnapshot->readiness
+            != spice::sct::SctDocumentReadiness::StructurallyValid
+        || !rebasedSnapshot || !rebasedSnapshot->document
+        || rebasedSnapshot->readiness
+            != spice::sct::SctDocumentReadiness::StructurallyValid)
+        return nullptr;
+    auto session = std::make_unique<SctEditSession>(newBaselineSnapshot);
+    auto delta = std::make_shared<RevisionDelta>();
+    delta->parent = session->history_.currentRevision().id;
+    delta->forwardChanges.documentChanged = true;
+    delta->reverseChanges.documentChanged = true;
+    delta->externalBefore = RevisionDelta::ExternalState{
+        newBaselineSnapshot, {}, {}};
+    delta->externalAfter = RevisionDelta::ExternalState{
+        rebasedSnapshot,
+        {authoredArms.begin(), authoredArms.end()},
+        {textRepairs.begin(), textRepairs.end()}};
+    const auto committed = session->history_.commit(
+        delta, "Rebase patch onto new source");
+    if (!committed.created) return nullptr;
+    session->installExternalState(*delta->externalAfter);
+    session->materializationCheckpoints_.push_back(
+        {committed.revision, rebasedSnapshot});
+    session->verifiedRevision_ = committed.revision;
+    session->history_.markCheckpoint();
+    session->pruneMaterializationCheckpoints();
+    session->rebuildSemanticProjection();
+    return session;
+}
+
 SctEditResult SctEditSession::insertInstructionAfter(
     const spice::sct::SctInstructionId anchorInstruction,
     const std::uint16_t opcode) {
@@ -1535,6 +1571,22 @@ std::optional<SctEditResult> SctEditSession::undo() {
     const auto journalStart = EditClock::now();
     if (!history_.canUndo()) return std::nullopt;
     const auto source = history_.currentRevision();
+    if (source.state->externalBefore) {
+        installExternalState(*source.state->externalBefore);
+        const auto navigation = history_.undo();
+        assert(navigation.has_value());
+        verifiedRevision_ = navigation->to;
+        rebuildSemanticProjection();
+        SctEditResult result;
+        result.committed = true;
+        result.revision = navigation->to;
+        result.snapshot = currentSnapshot_;
+        result.changes = source.state->reverseChanges;
+        result.transition = SctRevisionTransition{SctRevisionTransitionKind::Undo,
+            navigation->from, navigation->to, result.changes, std::nullopt,
+            SctRevisionVerification::Verified};
+        return result;
+    }
     std::optional<SctStructuredAuthoringApplication> authoringApplication;
     if (!source.state->authoringInverse.operations.empty())
         authoringApplication = structuredAuthoring_.apply(source.state->authoringInverse);
@@ -1579,6 +1631,22 @@ std::optional<SctEditResult> SctEditSession::redo() {
     const auto journalStart = EditClock::now();
     const auto target = history_.redoTarget();
     if (!target.has_value()) return std::nullopt;
+    if (target->state->externalAfter) {
+        installExternalState(*target->state->externalAfter);
+        const auto navigation = history_.redo();
+        assert(navigation.has_value());
+        verifiedRevision_ = navigation->to;
+        rebuildSemanticProjection();
+        SctEditResult result;
+        result.committed = true;
+        result.revision = navigation->to;
+        result.snapshot = currentSnapshot_;
+        result.changes = target->state->forwardChanges;
+        result.transition = SctRevisionTransition{SctRevisionTransitionKind::Redo,
+            navigation->from, navigation->to, result.changes, std::nullopt,
+            SctRevisionVerification::Verified};
+        return result;
+    }
     std::optional<SctStructuredAuthoringApplication> authoringApplication;
     if (!target->state->authoringForward.operations.empty())
         authoringApplication = structuredAuthoring_.apply(target->state->authoringForward);
@@ -2123,6 +2191,18 @@ void SctEditSession::rebuildSemanticProjection() {
         SctSemanticEditorProjection::build(currentSnapshot_->analysis->structuredControlFlow,
             workingState_, structuredAuthoring_, history_.currentRevision().id,
             verifiedRevision_));
+}
+
+void SctEditSession::installExternalState(
+    const RevisionDelta::ExternalState& state) {
+    assert(state.snapshot != nullptr);
+    assert(state.snapshot->document != nullptr);
+    workingState_ = SctWorkingState(state.snapshot->document, state.textRepairs);
+    structuredAuthoring_ = SctStructuredAuthoringState(state.authoredArms);
+    materializedDocument_ = state.snapshot->document;
+    currentSnapshot_ = state.snapshot;
+    structurallyValid_ = state.snapshot->readiness
+        == spice::sct::SctDocumentReadiness::StructurallyValid;
 }
 
 void SctEditSession::pruneMaterializationCheckpoints() {

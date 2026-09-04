@@ -184,6 +184,34 @@ TEST(SctEditSession, StartsAtACleanCheckpointAndHistoriesAreIndependent) {
     EXPECT_EQ(script(*second.currentSnapshot()).instructions.size(), 2u);
 }
 
+TEST(SctEditSession, RebasedSessionHasOneUndoBackToTheNewSourceBaseline) {
+    const auto baseline = loadedSnapshot();
+    ASSERT_NE(baseline, nullptr);
+    auto rebasedDocument = *baseline->document;
+    auto& instructions = std::get<SctScriptSectionContent>(
+        rebasedDocument.sections.front().content).instructions;
+    instructions.front().skipRefresh = true;
+    const auto rebased = snapshotWith(baseline, std::move(rebasedDocument));
+
+    auto session = SctEditSession::createRebased(baseline, rebased, {}, {});
+    ASSERT_NE(session, nullptr);
+    EXPECT_FALSE(session->isDirty());
+    EXPECT_TRUE(session->canUndo());
+    EXPECT_EQ(session->undoDescription(), "Rebase patch onto new source");
+    EXPECT_TRUE(script(*session->currentSnapshot()).instructions.front().skipRefresh);
+
+    const auto undone = session->undo();
+    ASSERT_TRUE(undone.has_value());
+    EXPECT_FALSE(script(*session->currentSnapshot()).instructions.front().skipRefresh);
+    EXPECT_TRUE(session->isDirty());
+    EXPECT_TRUE(session->canRedo());
+
+    const auto redone = session->redo();
+    ASSERT_TRUE(redone.has_value());
+    EXPECT_TRUE(script(*session->currentSnapshot()).instructions.front().skipRefresh);
+    EXPECT_FALSE(session->isDirty());
+}
+
 TEST(SctEditSession, OffersOnlyFactoryCompletePlatformAgnosticOpcodes) {
     const auto& choices = SctEditSession::insertableOpcodes();
     EXPECT_TRUE(std::ranges::any_of(choices, [](const auto& choice) {

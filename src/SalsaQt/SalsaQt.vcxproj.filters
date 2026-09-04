@@ -23,6 +23,7 @@
     <ClCompile Include="Workspace\WorkspaceModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Sct\SctDocumentController.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctExportDialog.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="Sct\SctRebaseDialog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctDocumentWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctOutlineModel.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctStructuredOutlineModel.cpp"><Filter>SCT</Filter></ClCompile>
@@ -45,6 +46,7 @@
       <Filter>Application</Filter>
     </ClInclude>
     <ClInclude Include="Sct\SctExportDialog.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="Sct\SctRebaseDialog.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="Workspace\DiagnosticsModel.h"><Filter>Workspace</Filter></ClInclude>
     <ClInclude Include="Workspace\DiagnosticJournalModel.h"><Filter>Workspace</Filter></ClInclude>
     <ClInclude Include="Ui\UiConstants.h"><Filter>Application</Filter></ClInclude>
