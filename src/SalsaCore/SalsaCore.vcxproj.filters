@@ -47,6 +47,7 @@
     <ClInclude Include="include\SalsaCore\Sct\SctChangePlan.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentMaterializer.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctEditSession.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Sct\SctFragment.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctInspectionLocation.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctGlyphCatalog.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Sct\SctMessageAuthoring.h"><Filter>SCT</Filter></ClInclude>
@@ -83,6 +84,7 @@
     <ClCompile Include="src\Sct\SctChangePlan.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctDocumentMaterializer.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctEditSession.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="src\Sct\SctFragment.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctGlyphCatalog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctMessageAuthoring.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctParameterAuthoring.cpp"><Filter>SCT</Filter></ClCompile>

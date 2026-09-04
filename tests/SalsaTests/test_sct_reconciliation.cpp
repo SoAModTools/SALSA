@@ -120,6 +120,31 @@ TEST(SctReconciliationTest, ReidentifiesEquivalentIndependentDocumentsWithoutCha
     EXPECT_TRUE(difference.value().empty());
 }
 
+TEST(SctReconciliationTest, RemapsAndRetainsUnboundReferenceProvenance) {
+    const auto baseline = document();
+    const auto incoming = document(8);
+    auto reconciliation = request(baseline, incoming);
+    const auto incomingInstruction = std::get<SctScriptSectionContent>(
+        incoming.sections.front().content).instructions[1].id;
+    reconciliation.incomingAssets.front().state.unboundReferences.push_back({
+        {incomingInstruction, {0u, std::nullopt}}, "scripts/source.sct",
+        SctFooterEntryId{91u}, std::nullopt});
+    const auto reconciled = SctDocumentReconciler::reconcile(reconciliation);
+    ASSERT_TRUE(reconciled);
+    ASSERT_EQ(reconciled.value().scripts.size(), 1u);
+    ASSERT_TRUE(reconciled.value().scripts.front().candidate.has_value());
+    const auto& candidate = *reconciled.value().scripts.front().candidate;
+    ASSERT_EQ(candidate.unboundReferences.size(), 1u);
+    const auto baselineInstruction = std::get<SctScriptSectionContent>(
+        baseline.sections.front().content).instructions[1].id;
+    EXPECT_EQ(candidate.unboundReferences.front().site.instruction,
+        baselineInstruction);
+    EXPECT_EQ(candidate.unboundReferences.front().sourceAssetIdentity,
+        "scripts/source.sct");
+    EXPECT_EQ(candidate.unboundReferences.front().sourceTarget,
+        SctDocumentReferenceTarget{SctFooterEntryId{91u}});
+}
+
 TEST(SctReconciliationTest, StrongInstructionMatchAnnotatesItsChangeUnit) {
     const auto baseline = document();
     auto incoming = document(4);

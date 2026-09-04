@@ -10,10 +10,12 @@
 #include "SpiceSCT/SctDocumentIndex.h"
 
 #include <QWidget>
+#include <QList>
 
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 #include <functional>
@@ -65,6 +67,8 @@ public:
         const core::SctEditChangeSet& changes);
     void setSourceStatus(int sourceStatus);
     void selectTarget(core::SctNavigationTarget target, bool reveal = true);
+    void selectTargets(std::span<const core::SctNavigationTarget> targets,
+        bool reveal = true);
     [[nodiscard]] bool selectLocation(
         const core::SctInspectionLocation& location,
         bool reveal = true);
@@ -81,9 +85,14 @@ public:
     [[nodiscard]] QString targetLabel(core::SctNavigationTarget target) const;
     [[nodiscard]] std::optional<InstructionInsertionContext> insertionContext() const;
     [[nodiscard]] std::optional<spice::sct::SctInstructionId> selectedInstruction() const;
+    [[nodiscard]] std::vector<spice::sct::SctInstructionId>
+        selectedInstructions() const;
+    [[nodiscard]] std::optional<spice::sct::SctInstructionId>
+        rangeMoveAnchor(core::SctInstructionMoveDirection direction) const;
     [[nodiscard]] std::optional<core::SctMessageTarget> selectedMessageTarget() const;
     [[nodiscard]] std::optional<core::SctTextTarget> selectedTextTarget() const;
     [[nodiscard]] std::optional<spice::sct::SctSectionId> selectedSection() const;
+    [[nodiscard]] std::vector<spice::sct::SctSectionId> selectedSections() const;
     [[nodiscard]] bool canEditSelectedMessage() const;
     [[nodiscard]] bool canDeleteSelected() const;
     [[nodiscard]] bool canMoveSelected(core::SctInstructionMoveDirection direction) const;
@@ -96,6 +105,8 @@ signals:
     void insertInstructionRequested(const QString& identityKey);
     void deleteInstructionRequested(const QString& identityKey);
     void moveInstructionRequested(const QString& identityKey, int direction);
+    void moveInstructionRangeRequested(const QString& identityKey,
+        const QList<qulonglong>& instructions, qulonglong anchor);
     void editMessageRequested(const QString& identityKey);
     void createScriptSectionRequested(const QString& identityKey);
     void createIndexedStringRequested(const QString& identityKey);

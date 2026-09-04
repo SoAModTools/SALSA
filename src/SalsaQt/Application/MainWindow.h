@@ -4,6 +4,7 @@
 #include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
 #include "SalsaCore/Persistence/WorkspaceSession.h"
 #include "SalsaCore/Sct/SctEditSession.h"
+#include "SalsaCore/Sct/SctFragment.h"
 
 #include <QMainWindow>
 #include <QPointer>
@@ -15,8 +16,11 @@
 class QAction;
 class QCloseEvent;
 class QDockWidget;
+class QLineEdit;
+class QListWidget;
 class QMenu;
 class QProgressBar;
+class QPushButton;
 class QTableView;
 class QTabWidget;
 class QToolButton;
@@ -111,6 +115,20 @@ private:
     void insertInstruction();
     void deleteInstruction();
     void moveInstruction(core::SctInstructionMoveDirection direction);
+    [[nodiscard]] std::optional<core::SctSemanticFragment>
+        captureSelectedFragment(bool reportFailure = true);
+    [[nodiscard]] bool copyFragmentToClipboard(
+        const core::SctSemanticFragment& fragment);
+    void copySelection();
+    void cutSelection();
+    void pasteSelection();
+    void duplicateSelection();
+    void deleteSelection();
+    void saveSelectionAsSnippet();
+    void pasteSelectedSnippet();
+    void deleteSelectedSnippet();
+    void reloadSnippets();
+    [[nodiscard]] bool pasteFragment(const core::SctSemanticFragment& fragment);
     void editSelectedMessage();
     void createScriptSection();
     void createIndexedString();
@@ -181,9 +199,14 @@ private:
     QDockWidget* semanticNavigatorDock_ = nullptr;
     QDockWidget* messageEditorDock_ = nullptr;
     QDockWidget* scptEditorDock_ = nullptr;
+    QDockWidget* snippetLibraryDock_ = nullptr;
     SctSemanticNavigatorWidget* semanticNavigator_ = nullptr;
     SctMessageEditorWidget* messageEditor_ = nullptr;
     SctScptEditorWidget* scptEditor_ = nullptr;
+    QLineEdit* snippetSearch_ = nullptr;
+    QListWidget* snippetList_ = nullptr;
+    QPushButton* pasteSnippetButton_ = nullptr;
+    QPushButton* deleteSnippetButton_ = nullptr;
     QProgressBar* progressBar_ = nullptr;
     QToolButton* cancelButton_ = nullptr;
     QAction* openAction_ = nullptr;
@@ -198,6 +221,11 @@ private:
     QAction* cleanWorkspaceEvidenceAction_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
+    QAction* cutAction_ = nullptr;
+    QAction* copyAction_ = nullptr;
+    QAction* pasteAction_ = nullptr;
+    QAction* duplicateAction_ = nullptr;
+    QAction* saveSnippetAction_ = nullptr;
     QAction* navigationBackAction_ = nullptr;
     QAction* navigationForwardAction_ = nullptr;
     QAction* editMessageAction_ = nullptr;
@@ -225,6 +253,11 @@ private:
     QString lastDataset_{};
     QString lastExportDirectory_{};
     std::shared_ptr<const core::LocalSalsaWorkspace> patchWorkspace_{};
+    struct LoadedSnippet final {
+        bool workspace = false;
+        core::SctSnippet snippet{};
+    };
+    std::vector<LoadedSnippet> loadedSnippets_{};
     QTimer* workspaceSessionSaveTimer_ = nullptr;
     std::optional<core::WorkspaceSessionState> restoringWorkspaceSessionState_{};
     std::size_t restoringWorkspaceDocumentIndex_ = 0;

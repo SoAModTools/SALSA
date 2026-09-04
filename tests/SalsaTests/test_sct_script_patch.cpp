@@ -361,9 +361,11 @@ TEST(SalsaScriptPatchTest, PreservesAllocatorHighWaterAfterTransientEdits) {
         working.nextOpaqueAttachmentIdValue());
 }
 
-TEST(SalsaScriptPatchTest, RoundTripsV3ScptProgramsAndStringGroupMarkers) {
+TEST(SalsaScriptPatchTest, RoundTripsV4ScptProgramsAndStringGroupMarkers) {
     SalsaScriptPatch patch;
     SctDocumentInstruction instruction{SctInstructionId{1u}, 125u};
+    instruction.fixedParameters.push_back({7u, SctUnresolvedReferenceValue{
+        {SctReferenceTargetStorage::IndexedString, SctTextKind::SctString}, {0u}}});
     instruction.scheduledExpression = SctCanonicalExpression{SctTypedScptProgram{{
         SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000180u, {}},
         SctScptValueOperation{SctScptValueKind::BitVariable, 0x20000005u, {}},
@@ -371,16 +373,21 @@ TEST(SalsaScriptPatchTest, RoundTripsV3ScptProgramsAndStringGroupMarkers) {
         SctScptStackOverwritePreviousWithTopOperation{},
         SctScptInertOperation{},
     }}, SctExpressionTermination::StopCode};
-    patch.sections.push_back({std::nullopt, SctDocumentSection{SctSectionId{1u}, "GROUP",
+    const std::string rawName{"GR\0UP", 5u};
+    patch.sections.push_back({std::nullopt, SctDocumentSection{SctSectionId{1u}, rawName,
         SctStringGroupMarkerSectionContent{{9u, 0x1du}}}});
     patch.sections.push_back({std::nullopt, SctDocumentSection{SctSectionId{2u}, "SCRIPT",
         SctScriptSectionContent{{instruction}}}});
+    const SctParameterSite site{instruction.id, {7u, std::nullopt}};
+    patch.unboundReferences.push_back({site, std::nullopt,
+        SctUnboundReferenceOrigin{site, "scripts/source.sct", SctStringId{44u},
+            std::string{"MS\0NAME", 7u}}});
 
     const auto encoded = SalsaScriptPatchCodec::serialize(patch);
     ASSERT_TRUE(encoded);
     const std::string json(reinterpret_cast<const char*>(encoded.value().data()),
         encoded.value().size());
-    EXPECT_NE(json.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(json.find("\"schemaVersion\": 4"), std::string::npos);
     EXPECT_NE(json.find("\"stringGroupMarker\""), std::string::npos);
     EXPECT_NE(json.find("\"stackOverwrite\""), std::string::npos);
     EXPECT_NE(json.find("\"inert\""), std::string::npos);
@@ -388,6 +395,7 @@ TEST(SalsaScriptPatchTest, RoundTripsV3ScptProgramsAndStringGroupMarkers) {
     const auto decoded = SalsaScriptPatchCodec::deserialize(encoded.value());
     ASSERT_TRUE(decoded);
     ASSERT_EQ(decoded.value().sections.size(), 2u);
+    EXPECT_EQ(decoded.value().sections[0].after->nameBytes, rawName);
     const auto& marker = std::get<SctStringGroupMarkerSectionContent>(
         decoded.value().sections[0].after->content);
     EXPECT_EQ(marker.preambleWords, (std::vector<std::uint32_t>{9u, 0x1du}));
@@ -402,6 +410,15 @@ TEST(SalsaScriptPatchTest, RoundTripsV3ScptProgramsAndStringGroupMarkers) {
     EXPECT_TRUE(std::holds_alternative<SctScptStackOverwritePreviousWithTopOperation>(
         program.operations[3]));
     EXPECT_TRUE(std::holds_alternative<SctScptInertOperation>(program.operations[4]));
+    ASSERT_EQ(decoded.value().unboundReferences.size(), 1u);
+    ASSERT_TRUE(decoded.value().unboundReferences.front().after.has_value());
+    const auto& origin = *decoded.value().unboundReferences.front().after;
+    EXPECT_EQ(origin.site, site);
+    EXPECT_EQ(origin.sourceAssetIdentity, "scripts/source.sct");
+    EXPECT_EQ(origin.sourceTarget, SctDocumentReferenceTarget{SctStringId{44u}});
+    const std::optional<std::string> expectedTargetName{
+        std::string{"MS\0NAME", 7u}};
+    EXPECT_EQ(origin.sourceTargetNameBytes, expectedTargetName);
 }
 
 TEST(SalsaScriptPatchTest, RejectsUnknownFieldsVersionsAndInvalidTargets) {
@@ -416,9 +433,9 @@ TEST(SalsaScriptPatchTest, RejectsUnknownFieldsVersionsAndInvalidTargets) {
 
     std::string wrongVersion(reinterpret_cast<const char*>(encoded.value().data()),
         encoded.value().size());
-    const auto version = wrongVersion.find("\"schemaVersion\": 3");
+    const auto version = wrongVersion.find("\"schemaVersion\": 4");
     ASSERT_NE(version, std::string::npos);
-    wrongVersion.replace(version, std::string("\"schemaVersion\": 3").size(),
+    wrongVersion.replace(version, std::string("\"schemaVersion\": 4").size(),
         "\"schemaVersion\": 2");
     const auto unsupported = SalsaScriptPatchCodec::deserialize(patchBytes(wrongVersion));
     ASSERT_FALSE(unsupported);

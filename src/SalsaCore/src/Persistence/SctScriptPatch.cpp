@@ -102,6 +102,16 @@ template<typename Id>
     return result;
 }
 
+[[nodiscard]] Json byteString(const std::string_view value) {
+    return bytes(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(value.data()), value.size()));
+}
+
+[[nodiscard]] std::string parseByteString(const Json& value) {
+    const auto parsed = parseBytes(value);
+    return std::string(reinterpret_cast<const char*>(parsed.data()), parsed.size());
+}
+
 [[nodiscard]] Json words(const std::span<const std::uint32_t> values) {
     Json result = Json::array();
     for (const auto value : values) result.push_back(value);
@@ -229,6 +239,66 @@ template<typename Id>
     if (!value.at("textKind").is_null())
         result.textKind = checkedEnum<spice::sct::SctTextKind>(
             value.at("textKind"), 1u, "text kind");
+    return result;
+}
+
+[[nodiscard]] Json encodeReferenceTarget(
+    const spice::sct::SctDocumentReferenceTarget& target) {
+    return std::visit([](const auto id) -> Json {
+        using T = std::decay_t<decltype(id)>;
+        if constexpr (std::is_same_v<T, spice::sct::SctInstructionId>)
+            return Json{{"kind", "instruction"}, {"id", id.value()}};
+        if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
+            return Json{{"kind", "string"}, {"id", id.value()}};
+        return Json{{"kind", "footer"}, {"id", id.value()}};
+    }, target);
+}
+
+[[nodiscard]] spice::sct::SctDocumentReferenceTarget parseReferenceTarget(
+    const Json& value) {
+    requireObject(value, {"kind", "id"});
+    const auto kind = value.at("kind").get<std::string>();
+    if (kind == "instruction") return id<spice::sct::SctInstructionId>(value.at("id"));
+    if (kind == "string") return id<spice::sct::SctStringId>(value.at("id"));
+    if (kind == "footer") return id<spice::sct::SctFooterEntryId>(value.at("id"));
+    throw std::runtime_error("reference target kind invalid");
+}
+
+[[nodiscard]] Json encodeParameterSite(const spice::sct::SctParameterSite& site) {
+    return Json{{"instruction", site.instruction.value()},
+        {"schemaIndex", site.parameter.schemaIndex},
+        {"repeatedGroupOrdinal", site.parameter.repeatedGroupOrdinal
+            ? Json(*site.parameter.repeatedGroupOrdinal) : Json(nullptr)}};
+}
+
+[[nodiscard]] spice::sct::SctParameterSite parseParameterSite(const Json& value) {
+    requireObject(value, {"instruction", "schemaIndex", "repeatedGroupOrdinal"});
+    spice::sct::SctParameterSite result;
+    result.instruction = id<spice::sct::SctInstructionId>(value.at("instruction"));
+    result.parameter.schemaIndex = value.at("schemaIndex").get<std::uint32_t>();
+    if (!value.at("repeatedGroupOrdinal").is_null())
+        result.parameter.repeatedGroupOrdinal =
+            value.at("repeatedGroupOrdinal").get<std::uint32_t>();
+    return result;
+}
+
+[[nodiscard]] Json encodeUnboundOrigin(const SctUnboundReferenceOrigin& origin) {
+    return Json{{"site", encodeParameterSite(origin.site)},
+        {"sourceAssetIdentity", origin.sourceAssetIdentity},
+        {"sourceTarget", encodeReferenceTarget(origin.sourceTarget)},
+        {"sourceTargetNameBytes", origin.sourceTargetNameBytes
+            ? byteString(*origin.sourceTargetNameBytes) : Json(nullptr)}};
+}
+
+[[nodiscard]] SctUnboundReferenceOrigin parseUnboundOrigin(const Json& value) {
+    requireObject(value, {"site", "sourceAssetIdentity", "sourceTarget",
+        "sourceTargetNameBytes"});
+    SctUnboundReferenceOrigin result;
+    result.site = parseParameterSite(value.at("site"));
+    result.sourceAssetIdentity = value.at("sourceAssetIdentity").get<std::string>();
+    result.sourceTarget = parseReferenceTarget(value.at("sourceTarget"));
+    if (!value.at("sourceTargetNameBytes").is_null())
+        result.sourceTargetNameBytes = parseByteString(value.at("sourceTargetNameBytes"));
     return result;
 }
 
@@ -459,7 +529,7 @@ template<typename Id>
                 {"preambleWords", words(item.preambleWords)}};
         else return Json{{"kind", "opaque"}};
     }, value.content);
-    return Json{{"id", value.id.value()}, {"nameBytes", value.nameBytes},
+    return Json{{"id", value.id.value()}, {"nameBytes", byteString(value.nameBytes)},
         {"content", std::move(content)}};
 }
 
@@ -467,7 +537,7 @@ template<typename Id>
     requireObject(value, {"id", "nameBytes", "content"});
     spice::sct::SctDocumentSection result;
     result.id = id<spice::sct::SctSectionId>(value.at("id"));
-    result.nameBytes = value.at("nameBytes").get<std::string>();
+    result.nameBytes = parseByteString(value.at("nameBytes"));
     const auto& content = value.at("content");
     if (!content.is_object() || !content.contains("kind")) throw std::runtime_error("section content invalid");
     const auto kind = content.at("kind").get<std::string>();
@@ -803,6 +873,21 @@ template<typename T, typename Id>
     return found == values.end() ? nullptr : &*found;
 }
 
+[[nodiscard]] std::string siteKey(const spice::sct::SctParameterSite& site) {
+    return std::to_string(site.instruction.value()) + ":"
+        + std::to_string(site.parameter.schemaIndex) + ":"
+        + (site.parameter.repeatedGroupOrdinal
+            ? std::to_string(*site.parameter.repeatedGroupOrdinal) : "-");
+}
+
+[[nodiscard]] const SctUnboundReferenceOrigin* findUnboundReference(
+    const std::vector<SctUnboundReferenceOrigin>& values,
+    const spice::sct::SctParameterSite& site) {
+    const auto found = std::ranges::find(values, site,
+        &SctUnboundReferenceOrigin::site);
+    return found == values.end() ? nullptr : &*found;
+}
+
 }  // namespace
 
 bool SalsaScriptPatch::empty() const noexcept {
@@ -810,7 +895,7 @@ bool SalsaScriptPatch::empty() const noexcept {
         && !sectionOrder.has_value() && sections.empty()
         && scriptSections.empty() && textValues.empty() && !footerOrder.has_value()
         && footerEntries.empty()
-        && authoredArms.empty() && textRepairs.empty();
+        && authoredArms.empty() && textRepairs.empty() && unboundReferences.empty();
 }
 
 Result<std::vector<std::byte>> SalsaScriptPatchCodec::serialize(
@@ -843,8 +928,8 @@ Result<std::vector<std::byte>> SalsaScriptPatchCodec::serialize(
                         ? encodeInstruction(*instruction.after) : Json(nullptr)}});
             document["scriptSections"].push_back(Json{{"section", section.section.value()},
                 {"nameBytes", section.nameBytes
-                    ? Json{{"before", *section.nameBytes->before},
-                        {"after", *section.nameBytes->after}} : Json(nullptr)},
+                    ? Json{{"before", byteString(*section.nameBytes->before)},
+                        {"after", byteString(*section.nameBytes->after)}} : Json(nullptr)},
                 {"instructionOrder", section.instructionOrder
                     ? Json{{"before", ids(std::span{section.instructionOrder->before})},
                         {"after", ids(std::span{section.instructionOrder->after})}} : Json(nullptr)},
@@ -877,6 +962,14 @@ Result<std::vector<std::byte>> SalsaScriptPatchCodec::serialize(
             document["textRepairs"].push_back(Json{{"target", encodeTarget(repair.target)},
                 {"before", before}, {"after", after}});
         }
+        document["unboundReferences"] = Json::array();
+        for (const auto& reference : patch.unboundReferences)
+            document["unboundReferences"].push_back(Json{
+                {"site", encodeParameterSite(reference.site)},
+                {"before", reference.before
+                    ? encodeUnboundOrigin(*reference.before) : Json(nullptr)},
+                {"after", reference.after
+                    ? encodeUnboundOrigin(*reference.after) : Json(nullptr)}});
         auto text = document.dump(2);
         text.push_back('\n');
         const auto raw = std::as_bytes(std::span{text.data(), text.size()});
@@ -894,7 +987,8 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
         const auto document = Json::parse(text);
         requireObject(document, {"formatId", "schemaVersion", "sourceTextConvention",
             "allocatorState", "sectionOrder", "sections", "scriptSections",
-            "textValues", "footerOrder", "footerEntries", "authoredArms", "textRepairs"});
+            "textValues", "footerOrder", "footerEntries", "authoredArms", "textRepairs",
+            "unboundReferences"});
         if (document.at("formatId").get<std::string>() != PayloadType)
             throw std::runtime_error("patch format ID does not match SALSA SCT patches");
         if (!document.at("schemaVersion").is_number_unsigned()
@@ -936,7 +1030,7 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
                 const auto& name = section.at("nameBytes");
                 requireObject(name, {"before", "after"});
                 parsed.nameBytes = SctValueDelta<std::string>{
-                    name.at("before").get<std::string>(), name.at("after").get<std::string>()};
+                    parseByteString(name.at("before")), parseByteString(name.at("after"))};
             }
             if (!section.at("instructionOrder").is_null()) {
                 const auto& order = section.at("instructionOrder");
@@ -1004,6 +1098,20 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
             if (!delta.before && !delta.after)
                 throw std::runtime_error("text repair delta has no before or after value");
             patch.textRepairs.push_back(std::move(delta));
+        }
+        for (const auto& reference : document.at("unboundReferences")) {
+            requireObject(reference, {"site", "before", "after"});
+            SctPatchedUnboundReferenceDelta delta;
+            delta.site = parseParameterSite(reference.at("site"));
+            if (!reference.at("before").is_null())
+                delta.before = parseUnboundOrigin(reference.at("before"));
+            if (!reference.at("after").is_null())
+                delta.after = parseUnboundOrigin(reference.at("after"));
+            if ((!delta.before && !delta.after)
+                || (delta.before && delta.before->site != delta.site)
+                || (delta.after && delta.after->site != delta.site))
+                throw std::runtime_error("unbound reference delta is invalid");
+            patch.unboundReferences.push_back(std::move(delta));
         }
         return Result<SalsaScriptPatch>::success(std::move(patch));
     } catch (const std::exception& error) {
@@ -1124,6 +1232,20 @@ Result<SalsaScriptPatch> SalsaScriptPatchService::diff(
     for (const auto& repair : working.textRepairs)
         if (!findRepair(baseline.textRepairs, repair.target))
             patch.textRepairs.push_back({repair.target, std::nullopt, repair.provenance});
+    for (const auto& reference : baseline.unboundReferences) {
+        const auto* target = findUnboundReference(
+            working.unboundReferences, reference.site);
+        if (!target)
+            patch.unboundReferences.push_back(
+                {reference.site, reference, std::nullopt});
+        else if (*target != reference)
+            patch.unboundReferences.push_back(
+                {reference.site, reference, *target});
+    }
+    for (const auto& reference : working.unboundReferences)
+        if (!findUnboundReference(baseline.unboundReferences, reference.site))
+            patch.unboundReferences.push_back(
+                {reference.site, std::nullopt, reference});
 
     std::ranges::sort(patch.sections, {}, [](const auto& value) {
         return (value.before ? value.before->id : value.after->id).value();
@@ -1141,6 +1263,9 @@ Result<SalsaScriptPatch> SalsaScriptPatchService::diff(
         return (value.before ? value.before->id : value.after->id).value;
     });
     std::ranges::sort(patch.textRepairs, {}, [](const auto& value) { return targetKey(value.target); });
+    std::ranges::sort(patch.unboundReferences, {}, [](const auto& value) {
+        return siteKey(value.site);
+    });
     return Result<SalsaScriptPatch>::success(std::move(patch));
 }
 
@@ -1225,6 +1350,17 @@ Result<SctSemanticState> SalsaScriptPatchService::apply(
                     throw std::runtime_error("text repair expected-before state does not match");
             } else if (current) throw std::runtime_error("inserted text repair already exists");
         }
+        for (const auto& change : patch.unboundReferences) {
+            const auto* current = findUnboundReference(
+                baseline.unboundReferences, change.site);
+            if (change.before) {
+                if (!current || *current != *change.before)
+                    throw std::runtime_error(
+                        "unbound reference expected-before state does not match");
+            } else if (current) {
+                throw std::runtime_error("inserted unbound reference already exists");
+            }
+        }
 
         auto document = std::make_shared<spice::sct::SctDocument>(source);
         for (const auto& change : patch.sections) {
@@ -1301,9 +1437,18 @@ Result<SctSemanticState> SalsaScriptPatchService::apply(
             if (change.after) repairs.push_back({change.target, *change.after});
         }
         std::ranges::sort(repairs, {}, [](const auto& value) { return targetKey(value.target); });
+        auto unboundReferences = baseline.unboundReferences;
+        for (const auto& change : patch.unboundReferences) {
+            std::erase_if(unboundReferences, [&](const auto& value) {
+                return value.site == change.site;
+            });
+            if (change.after) unboundReferences.push_back(*change.after);
+        }
+        std::ranges::sort(unboundReferences, {}, &SctUnboundReferenceOrigin::site);
         verifyTextRepairs(*baseline.document, *document, repairs);
         return Result<SctSemanticState>::success(SctSemanticState{
-            std::move(document), std::move(authoredArms), std::move(repairs)});
+            std::move(document), std::move(authoredArms), std::move(repairs),
+            std::move(unboundReferences)});
     } catch (const std::exception& error) {
         return Result<SctSemanticState>::failure(patchError(
             std::string("The SCT patch could not be applied: ") + error.what(),
@@ -1438,6 +1583,7 @@ SctPatchedLoadResult SctPatchCheckpointService::load(
     result.load.document = std::move(snapshot);
     result.authoredArms = std::move(applied.authoredArms);
     result.textRepairs = std::move(applied.textRepairs);
+    result.unboundReferences = std::move(applied.unboundReferences);
     result.patchApplied = true;
     return result;
 }
@@ -1467,9 +1613,10 @@ SctCheckpointResult SctPatchCheckpointService::checkpoint(
             DiagnosticCode::SctPatchVerificationFailed));
         return result;
     }
-    const SctSemanticState baselineState{request.baseline->document, {}, {}};
+    const SctSemanticState baselineState{request.baseline->document, {}, {}, {}};
     const SctSemanticState workingState{materialized.document,
-        request.materialization.expectedStructuredArms, request.textRepairs};
+        request.materialization.expectedStructuredArms, request.textRepairs,
+        request.unboundReferences};
     auto patch = SalsaScriptPatchService::diff(baselineState, workingState,
         request.baseline->provenance->textConvention);
     if (!patch) {

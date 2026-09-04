@@ -45,6 +45,13 @@ template<typename T>
     return "repair:" + textKey(target);
 }
 
+[[nodiscard]] std::string unboundKey(const spice::sct::SctParameterSite& site) {
+    return "unbound:" + std::to_string(site.instruction.value()) + ':'
+        + std::to_string(site.parameter.schemaIndex) + ':'
+        + (site.parameter.repeatedGroupOrdinal
+            ? std::to_string(*site.parameter.repeatedGroupOrdinal) : "fixed");
+}
+
 [[nodiscard]] bool sameOpaque(const spice::sct::SctOpaqueAttachment& left,
     const spice::sct::SctOpaqueAttachment& right) {
     return left.id == right.id && left.bytes == right.bytes
@@ -226,6 +233,8 @@ void addOrMergeUnit(SctScriptChangePlan& script,
         result.insert(armKey(id));
     }
     for (const auto& repair : patch.textRepairs) result.insert(repairKey(repair.target));
+    for (const auto& origin : patch.unboundReferences)
+        result.insert(unboundKey(origin.site));
     if (patch.sectionOrder)
         for (const auto id : orderAffected(patch.sectionOrder->before, patch.sectionOrder->after))
             result.insert(idKey("section", id));
@@ -288,6 +297,9 @@ void addOrMergeUnit(SctScriptChangePlan& script,
     }
     for (const auto& value : plan.completePatch.textRepairs)
         if (selectedKeys.contains(repairKey(value.target))) result.textRepairs.push_back(value);
+    for (const auto& value : plan.completePatch.unboundReferences)
+        if (selectedKeys.contains(unboundKey(value.site)))
+            result.unboundReferences.push_back(value);
 
     if (plan.completePatch.sectionOrder && current.document) {
         std::unordered_set<spice::sct::SctSectionId> selected;
@@ -459,6 +471,19 @@ Result<SctChangePlan> SctChangePlanService::build(
                     : "Add text repair provenance";
                 addOrMergeUnit(script, byKey, std::move(unit), identity);
             }
+            for (const auto& value : script.completePatch.unboundReferences) {
+                SctChangeUnit unit;
+                unit.entityKey = unboundKey(value.site);
+                unit.category = SctChangeCategory::AuthoringMetadata;
+                unit.entityKind = SctChangeEntityKind::UnboundReference;
+                unit.summary = value.before
+                    ? (value.after ? "Change unbound reference provenance"
+                                   : "Remove unbound reference provenance")
+                    : "Add unbound reference provenance";
+                unit.target = SctNavigationTarget{SctNavigationKind::Instruction,
+                    value.site.instruction.value()};
+                addOrMergeUnit(script, byKey, std::move(unit), identity);
+            }
             if (script.completePatch.allocatorState) {
                 SctChangeUnit unit;
                 unit.entityKey = "allocator";
@@ -502,6 +527,16 @@ Result<SctChangePlan> SctChangePlanService::build(
                 auto& metadataUnit = script.units[metadata->second];
                 textUnit.coupledUnitIds.push_back(metadataUnit.id);
                 metadataUnit.coupledUnitIds.push_back(textUnit.id);
+            }
+            for (const auto& origin : script.completePatch.unboundReferences) {
+                const auto instruction = byKey.find(idKey(
+                    "instruction", origin.site.instruction));
+                const auto metadata = byKey.find(unboundKey(origin.site));
+                if (instruction == byKey.end() || metadata == byKey.end()) continue;
+                auto& instructionUnit = script.units[instruction->second];
+                auto& metadataUnit = script.units[metadata->second];
+                instructionUnit.coupledUnitIds.push_back(metadataUnit.id);
+                metadataUnit.coupledUnitIds.push_back(instructionUnit.id);
             }
         }
         if (preservedOpaque) {

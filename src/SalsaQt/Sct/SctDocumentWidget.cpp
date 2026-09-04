@@ -140,6 +140,12 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     outline_ = new QTreeView(physicalTab);
     outlineModel_ = new SctOutlineModel(outline_);
     outline_->setModel(outlineModel_);
+    outline_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    outline_->setDragEnabled(true);
+    outline_->setAcceptDrops(true);
+    outline_->setDropIndicatorShown(true);
+    outline_->setDragDropMode(QAbstractItemView::InternalMove);
+    outline_->setDefaultDropAction(Qt::MoveAction);
     outline_->setIndentation(ui::TreeIndentation);
     outline_->setContextMenuPolicy(Qt::CustomContextMenu);
     outline_->header()->setSectionResizeMode(QHeaderView::Interactive);
@@ -258,6 +264,17 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
                 static_cast<int>(target->kind), target->id);
             emit becameActive(QString::fromStdString(locator_.identityKey()));
             emit editContextChanged();
+        });
+    connect(outline_->selectionModel(), &QItemSelectionModel::selectionChanged,
+        this, [this] {
+            syncDocumentButtons();
+            emit editContextChanged();
+        });
+    connect(outlineModel_, &SctOutlineModel::instructionRangeDropRequested,
+        this, [this](const QList<qulonglong>& instructions,
+            const qulonglong anchor) {
+            emit moveInstructionRangeRequested(
+                QString::fromStdString(locator_.identityKey()), instructions, anchor);
         });
     connect(structuredOutline_->selectionModel(), &QItemSelectionModel::currentChanged,
         this, [this](const QModelIndex& current) {
@@ -852,6 +869,28 @@ void SctDocumentWidget::selectTarget(
     (void)selectLocation(core::SctInspectionLocation{ target }, reveal);
 }
 
+void SctDocumentWidget::selectTargets(
+    const std::span<const core::SctNavigationTarget> targets,
+    const bool reveal) {
+    if (targets.empty()) return;
+    outlineTabs_->setCurrentIndex(0);
+    QItemSelection selection;
+    QModelIndex current;
+    for (const auto target : targets) {
+        const auto index = outlineModel_->indexForTarget(target);
+        if (!index.isValid()) continue;
+        if (!current.isValid()) current = index;
+        selection.select(index, index);
+        if (reveal) expandAncestors(*outline_, index);
+    }
+    if (!current.isValid()) return;
+    outline_->selectionModel()->select(selection,
+        QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    outline_->selectionModel()->setCurrentIndex(current,
+        QItemSelectionModel::NoUpdate);
+    if (reveal) outline_->scrollTo(current, QAbstractItemView::PositionAtCenter);
+}
+
 bool SctDocumentWidget::selectLocation(
     const core::SctInspectionLocation& location,
     const bool reveal) {
@@ -945,11 +984,14 @@ SctDocumentWidget::insertionContext() const {
 
 bool SctDocumentWidget::canDeleteSelected() const {
     if (outlineTabs_->currentIndex() != 0) return false;
-    const auto instruction = selectedInstruction();
-    if (!instruction.has_value()) return false;
-    const auto* existing = outlineModel_->instruction(*instruction);
-    return existing != nullptr && !(existing->opcode == 9u
-        && !outlineModel_->previousInstruction(*instruction).has_value());
+    const auto instructions = selectedInstructions();
+    if (!instructions.empty()) return std::ranges::none_of(instructions,
+        [this](const auto instruction) {
+            const auto* existing = outlineModel_->instruction(instruction);
+            return existing == nullptr || (existing->opcode == 9u
+                && !outlineModel_->previousInstruction(instruction).has_value());
+        });
+    return !selectedSections().empty();
 }
 
 std::optional<spice::sct::SctInstructionId> SctDocumentWidget::selectedInstruction() const {
@@ -957,6 +999,39 @@ std::optional<spice::sct::SctInstructionId> SctDocumentWidget::selectedInstructi
     if (!currentTarget_.has_value()
         || currentTarget_->kind != core::SctNavigationKind::Instruction) return std::nullopt;
     return spice::sct::SctInstructionId(currentTarget_->id);
+}
+
+std::vector<spice::sct::SctInstructionId>
+SctDocumentWidget::selectedInstructions() const {
+    if (outlineTabs_->currentIndex() != 0) return {};
+    auto indexes = outline_->selectionModel()->selectedRows(0);
+    if (indexes.empty()) return {};
+    const auto parent = indexes.front().parent();
+    if (!parent.isValid()) return {};
+    std::ranges::sort(indexes, {}, &QModelIndex::row);
+    std::vector<spice::sct::SctInstructionId> result;
+    result.reserve(indexes.size());
+    for (qsizetype ordinal = 0; ordinal < indexes.size(); ++ordinal) {
+        const auto& index = indexes[ordinal];
+        const auto target = outlineModel_->target(index);
+        if (index.parent() != parent || !target
+            || target->kind != core::SctNavigationKind::Instruction
+            || (ordinal != 0u
+                && index.row() != indexes[ordinal - 1u].row() + 1)) return {};
+        result.emplace_back(target->id);
+    }
+    return result;
+}
+
+std::optional<spice::sct::SctInstructionId>
+SctDocumentWidget::rangeMoveAnchor(
+    const core::SctInstructionMoveDirection direction) const {
+    const auto selected = selectedInstructions();
+    if (selected.empty()) return std::nullopt;
+    if (direction == core::SctInstructionMoveDirection::Down)
+        return outlineModel_->nextInstruction(selected.back());
+    const auto previous = outlineModel_->previousInstruction(selected.front());
+    return previous ? outlineModel_->previousInstruction(*previous) : std::nullopt;
 }
 
 std::optional<core::SctMessageTarget> SctDocumentWidget::selectedMessageTarget() const {
@@ -992,14 +1067,41 @@ std::optional<spice::sct::SctSectionId> SctDocumentWidget::selectedSection() con
     return spice::sct::SctSectionId(currentTarget_->id);
 }
 
+std::vector<spice::sct::SctSectionId> SctDocumentWidget::selectedSections() const {
+    if (outlineTabs_->currentIndex() != 0) return {};
+    auto indexes = outline_->selectionModel()->selectedRows(0);
+    if (indexes.empty()) return {};
+    std::ranges::sort(indexes, {}, &QModelIndex::row);
+    std::vector<spice::sct::SctSectionId> result;
+    result.reserve(indexes.size());
+    for (qsizetype ordinal = 0; ordinal < indexes.size(); ++ordinal) {
+        const auto& index = indexes[ordinal];
+        const auto target = outlineModel_->target(index);
+        if (index.parent().isValid() || !target
+            || target->kind != core::SctNavigationKind::Section
+            || (ordinal != 0u
+                && index.row() != indexes[ordinal - 1u].row() + 1)) return {};
+        result.emplace_back(target->id);
+    }
+    return result;
+}
+
 bool SctDocumentWidget::canEditSelectedMessage() const {
     return editingEnabled_ && selectedTextTarget().has_value();
 }
 
 bool SctDocumentWidget::canMoveSelected(const core::SctInstructionMoveDirection direction) const {
     if (outlineTabs_->currentIndex() != 0) return false;
+    const auto selected = selectedInstructions();
+    if (selected.size() > 1u) {
+        if (!rangeMoveAnchor(direction)) return false;
+        return std::ranges::none_of(selected, [this](const auto id) {
+            const auto* instruction = outlineModel_->instruction(id);
+            return !instruction || instruction->opcode == 9u || instruction->opcode == 12u;
+        });
+    }
     const auto instruction = selectedInstruction();
-    if (!instruction.has_value()) return false;
+    if (!instruction) return false;
     const auto* current = outlineModel_->instruction(*instruction);
     const auto otherId = direction == core::SctInstructionMoveDirection::Up
         ? outlineModel_->previousInstruction(*instruction)

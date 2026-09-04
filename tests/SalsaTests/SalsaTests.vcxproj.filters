@@ -41,6 +41,7 @@
     <ClCompile Include="test_revision_history.cpp"><Filter>History</Filter></ClCompile>
     <ClCompile Include="test_sct_edit_session.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_sct_expression_language.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="test_sct_fragment.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_sct_document_inspection.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_sct_message_authoring.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_sct_publication.cpp"><Filter>SCT</Filter></ClCompile>

@@ -65,10 +65,17 @@ struct SctPatchedTextRepairDelta final {
     std::optional<SctTextRepairProvenance> after{};
 };
 
+struct SctPatchedUnboundReferenceDelta final {
+    spice::sct::SctParameterSite site;
+    std::optional<SctUnboundReferenceOrigin> before{};
+    std::optional<SctUnboundReferenceOrigin> after{};
+};
+
 struct SctSemanticState final {
     std::shared_ptr<const spice::sct::SctDocument> document{};
     std::vector<SctAuthoredArm> authoredArms{};
     std::vector<SctPatchedTextRepair> textRepairs{};
+    std::vector<SctUnboundReferenceOrigin> unboundReferences{};
 };
 
 // A canonical baseline-to-working delta. It is intentionally not the undo journal.
@@ -83,6 +90,7 @@ struct SalsaScriptPatch final {
     std::vector<SctValueDelta<spice::sct::SctDocumentFooterEntry>> footerEntries{};
     std::vector<SctValueDelta<SctAuthoredArm>> authoredArms{};
     std::vector<SctPatchedTextRepairDelta> textRepairs{};
+    std::vector<SctPatchedUnboundReferenceDelta> unboundReferences{};
 
     [[nodiscard]] bool empty() const noexcept;
 };
@@ -91,12 +99,13 @@ struct SctPatchApplication final {
     std::shared_ptr<const spice::sct::SctDocument> document{};
     std::vector<SctAuthoredArm> authoredArms{};
     std::vector<SctPatchedTextRepair> textRepairs{};
+    std::vector<SctUnboundReferenceOrigin> unboundReferences{};
 };
 
 class SalsaScriptPatchCodec final {
 public:
     static constexpr std::string_view PayloadType = "jahorta.salsa.sct-script-patch";
-    static constexpr std::uint32_t SchemaVersion = 3;
+    static constexpr std::uint32_t SchemaVersion = 4;
 
     [[nodiscard]] static Result<std::vector<std::byte>> serialize(
         const SalsaScriptPatch& patch);
@@ -121,6 +130,7 @@ struct SctPatchedLoadResult final {
     std::shared_ptr<const SctDocumentSnapshot> baseline{};
     std::vector<SctAuthoredArm> authoredArms{};
     std::vector<SctPatchedTextRepair> textRepairs{};
+    std::vector<SctUnboundReferenceOrigin> unboundReferences{};
     bool patchApplied = false;
     bool patchConflict = false;
 };
@@ -131,6 +141,7 @@ struct SctCheckpointRequest final {
     std::shared_ptr<const SctDocumentSnapshot> baseline{};
     SctMaterializationRequest materialization{};
     std::vector<SctPatchedTextRepair> textRepairs{};
+    std::vector<SctUnboundReferenceOrigin> unboundReferences{};
 };
 
 struct SctCheckpointResult final {

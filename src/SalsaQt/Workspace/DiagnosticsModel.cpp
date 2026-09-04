@@ -49,6 +49,9 @@ namespace {
     case core::DiagnosticCode::InvalidSalsaWorkspace: return QStringLiteral("InvalidSalsaWorkspace");
     case core::DiagnosticCode::UnsupportedSctPatchSchema: return QStringLiteral("UnsupportedSctPatchSchema");
     case core::DiagnosticCode::InvalidSctPatch: return QStringLiteral("InvalidSctPatch");
+    case core::DiagnosticCode::UnsupportedSctFragmentSchema: return QStringLiteral("UnsupportedSctFragmentSchema");
+    case core::DiagnosticCode::InvalidSctFragment: return QStringLiteral("InvalidSctFragment");
+    case core::DiagnosticCode::SctFragmentTooLarge: return QStringLiteral("SctFragmentTooLarge");
     case core::DiagnosticCode::SctPatchSourceMismatch: return QStringLiteral("SctPatchSourceMismatch");
     case core::DiagnosticCode::SctPatchApplyFailed: return QStringLiteral("SctPatchApplyFailed");
     case core::DiagnosticCode::SctPatchVerificationFailed: return QStringLiteral("SctPatchVerificationFailed");

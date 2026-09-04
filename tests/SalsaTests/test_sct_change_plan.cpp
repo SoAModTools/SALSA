@@ -355,5 +355,35 @@ TEST(SctChangePlanTest, CouplesTextRepairProvenanceToSemanticText) {
         (std::vector<SctPatchedTextRepair>{repair}));
 }
 
+TEST(SctChangePlanTest, SelectsAndAppliesUnboundReferenceProvenance) {
+    const auto asset = locator("scripts/unbound.sct");
+    const auto baseline = makeDocument();
+    auto before = state(baseline);
+    auto after = state(baseline);
+    const auto instruction = std::get<SctScriptSectionContent>(
+        baseline.sections.front().content).instructions[1].id;
+    const SctParameterSite site{instruction, {0u, std::nullopt}};
+    after.unboundReferences.push_back({site, "scripts/source.sct",
+        SctStringId{27u}, std::string{"MS0000027"}});
+    const std::array input{SctScriptComparisonInput{asset,
+        SourceRevision{digest("unbound")}, before, after, std::nullopt}};
+    const auto built = SctChangePlanService::build(input);
+    ASSERT_TRUE(built);
+    ASSERT_EQ(built.value().scripts.size(), 1u);
+    const auto* metadata = unit(built.value().scripts.front(),
+        SctChangeEntityKind::UnboundReference, instruction.value());
+    ASSERT_NE(metadata, nullptr);
+
+    const SctChangeSelection selection{built.value().id, {metadata->id}, {}};
+    const std::array current{SctCurrentScriptState{asset, before}};
+    const auto applied = SctChangePlanService::apply(
+        built.value(), current, selection);
+    ASSERT_EQ(applied.scripts.size(), 1u);
+    ASSERT_TRUE(applied.scripts.front().state.has_value());
+    ASSERT_EQ(applied.scripts.front().state->unboundReferences.size(), 1u);
+    EXPECT_EQ(applied.scripts.front().state->unboundReferences.front(),
+        after.unboundReferences.front());
+}
+
 }  // namespace
 }  // namespace salsa::core

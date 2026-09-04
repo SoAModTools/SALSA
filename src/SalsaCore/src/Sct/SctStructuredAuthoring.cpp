@@ -8,9 +8,17 @@
 namespace salsa::core {
 
 SctStructuredAuthoringState::SctStructuredAuthoringState(
-    const std::span<const SctAuthoredArm> arms)
-    : arms_(arms.begin(), arms.end()) {
+    const std::span<const SctAuthoredArm> arms,
+    const std::span<const SctUnboundReferenceOrigin> unboundReferences)
+    : arms_(arms.begin(), arms.end()),
+      unboundReferences_(unboundReferences.begin(), unboundReferences.end()) {
     for (const auto& arm : arms_) nextId_ = std::max(nextId_, arm.id.value + 1u);
+    std::ranges::sort(unboundReferences_, {}, &SctUnboundReferenceOrigin::site);
+}
+
+std::span<const SctUnboundReferenceOrigin>
+SctStructuredAuthoringState::unboundReferences() const noexcept {
+    return unboundReferences_;
 }
 
 SctAuthoredArmId SctStructuredAuthoringState::nextId() const noexcept {
@@ -30,11 +38,12 @@ const SctAuthoredArm* SctStructuredAuthoringState::find(
 SctStructuredAuthoringApplication SctStructuredAuthoringState::apply(
     const SctStructuredAuthoringOperationBatch& batch) {
     SctStructuredAuthoringApplication result;
-    if (batch.operations.empty()) {
+    if (batch.empty()) {
         result.issue = "An authoring operation batch cannot be empty.";
         return result;
     }
     auto candidate = arms_;
+    auto candidateUnbound = unboundReferences_;
     auto candidateNext = nextId_;
     for (const auto& operation : batch.operations) {
         if (!operation.id.valid()) {
@@ -63,8 +72,39 @@ SctStructuredAuthoringApplication SctStructuredAuthoringState::apply(
         result.inverse.operations.insert(result.inverse.operations.begin(),
             SctSetAuthoredArmOperation{operation.id, operation.after, operation.before});
     }
+    for (const auto& operation : batch.unboundReferences) {
+        if (!operation.site.instruction) {
+            result.issue = "An unbound reference site cannot use instruction ID zero.";
+            return result;
+        }
+        const auto found = std::ranges::find(candidateUnbound, operation.site,
+            &SctUnboundReferenceOrigin::site);
+        const auto current = found == candidateUnbound.end()
+            ? std::optional<SctUnboundReferenceOrigin>{}
+            : std::optional<SctUnboundReferenceOrigin>{*found};
+        if (current != operation.before) {
+            result.issue = "The unbound reference origin no longer has the expected state.";
+            return result;
+        }
+        if (operation.after && operation.after->site != operation.site) {
+            result.issue = "The replacement unbound reference origin has a different site.";
+            return result;
+        }
+        if (found != candidateUnbound.end()) {
+            if (operation.after) *found = *operation.after;
+            else candidateUnbound.erase(found);
+        } else if (operation.after) {
+            candidateUnbound.push_back(*operation.after);
+        }
+        result.inverse.unboundReferences.insert(
+            result.inverse.unboundReferences.begin(),
+            SctSetUnboundReferenceOriginOperation{
+                operation.site, operation.after, operation.before});
+    }
     std::ranges::sort(candidate, {}, &SctAuthoredArm::id);
+    std::ranges::sort(candidateUnbound, {}, &SctUnboundReferenceOrigin::site);
     arms_ = std::move(candidate);
+    unboundReferences_ = std::move(candidateUnbound);
     nextId_ = candidateNext;
     return result;
 }

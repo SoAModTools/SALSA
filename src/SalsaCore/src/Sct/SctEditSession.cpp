@@ -241,21 +241,55 @@ void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
     return true;
 }
 
+template<typename Remap>
+[[nodiscard]] SctStructuredAuthoringOperationBatch remapUnboundRepeatedGroups(
+    const SctStructuredAuthoringState& state,
+    const spice::sct::SctInstructionId instruction,
+    Remap&& remap) {
+    struct Change final {
+        SctUnboundReferenceOrigin before;
+        std::optional<SctUnboundReferenceOrigin> after;
+    };
+    std::vector<Change> changes;
+    for (const auto& origin : state.unboundReferences()) {
+        if (origin.site.instruction != instruction
+            || !origin.site.parameter.repeatedGroupOrdinal) continue;
+        const auto mapped = remap(*origin.site.parameter.repeatedGroupOrdinal);
+        if (mapped == origin.site.parameter.repeatedGroupOrdinal) continue;
+        std::optional<SctUnboundReferenceOrigin> after;
+        if (mapped) {
+            after = origin;
+            after->site.parameter.repeatedGroupOrdinal = *mapped;
+        }
+        changes.push_back({origin, std::move(after)});
+    }
+    SctStructuredAuthoringOperationBatch batch;
+    for (const auto& change : changes)
+        batch.unboundReferences.push_back(
+            {change.before.site, change.before, std::nullopt});
+    for (const auto& change : changes)
+        if (change.after)
+            batch.unboundReferences.push_back(
+                {change.after->site, std::nullopt, change.after});
+    return batch;
+}
+
 }  // namespace
 
 SctEditSession::SctEditSession(std::shared_ptr<const SctDocumentSnapshot> initialSnapshot)
-    : SctEditSession(initialSnapshot, initialSnapshot, {}, {}) {}
+    : SctEditSession(initialSnapshot, initialSnapshot, {}, {}, {}) {}
 
 SctEditSession::SctEditSession(
     std::shared_ptr<const SctDocumentSnapshot> baselineSnapshot,
     std::shared_ptr<const SctDocumentSnapshot> restoredSnapshot,
     const std::span<const SctAuthoredArm> authoredArms,
-    const std::span<const SctPatchedTextRepair> textRepairs)
+    const std::span<const SctPatchedTextRepair> textRepairs,
+    const std::span<const SctUnboundReferenceOrigin> unboundReferences)
     : baselineSnapshot_(std::move(baselineSnapshot)),
       history_(std::make_shared<const RevisionDelta>()),
       workingState_(restoredSnapshot != nullptr ? restoredSnapshot->document : nullptr,
           textRepairs),
-      structuredAuthoring_(authoredArms),
+      structuredAuthoring_(authoredArms, unboundReferences),
       materializedDocument_(restoredSnapshot != nullptr ? restoredSnapshot->document : nullptr),
       currentSnapshot_(std::move(restoredSnapshot)) {
     assert(baselineSnapshot_ != nullptr);
@@ -272,7 +306,8 @@ std::unique_ptr<SctEditSession> SctEditSession::createRebased(
     std::shared_ptr<const SctDocumentSnapshot> newBaselineSnapshot,
     std::shared_ptr<const SctDocumentSnapshot> rebasedSnapshot,
     const std::span<const SctAuthoredArm> authoredArms,
-    const std::span<const SctPatchedTextRepair> textRepairs) {
+    const std::span<const SctPatchedTextRepair> textRepairs,
+    const std::span<const SctUnboundReferenceOrigin> unboundReferences) {
     if (!newBaselineSnapshot || !newBaselineSnapshot->document
         || newBaselineSnapshot->readiness
             != spice::sct::SctDocumentReadiness::StructurallyValid
@@ -286,11 +321,12 @@ std::unique_ptr<SctEditSession> SctEditSession::createRebased(
     delta->forwardChanges.documentChanged = true;
     delta->reverseChanges.documentChanged = true;
     delta->externalBefore = RevisionDelta::ExternalState{
-        newBaselineSnapshot, {}, {}};
+        newBaselineSnapshot, {}, {}, {}};
     delta->externalAfter = RevisionDelta::ExternalState{
         rebasedSnapshot,
         {authoredArms.begin(), authoredArms.end()},
-        {textRepairs.begin(), textRepairs.end()}};
+        {textRepairs.begin(), textRepairs.end()},
+        {unboundReferences.begin(), unboundReferences.end()}};
     const auto committed = session->history_.commit(
         delta, "Rebase patch onto new source");
     if (!committed.created) return nullptr;
@@ -654,6 +690,232 @@ SctEditResult SctEditSession::moveInstruction(
         SelectionHints{ moved, moved }, elapsedMicroseconds(preflightStart));
 }
 
+Result<SctSemanticFragment> SctEditSession::captureInstructions(
+    const std::span<const spice::sct::SctInstructionId> instructions) const {
+    return SctFragmentService::captureInstructions(workingState_, structuredAuthoring_,
+        baselineSnapshot_->provenance->source().descriptor.locator.identityKey(),
+        instructions);
+}
+
+Result<SctSemanticFragment> SctEditSession::captureSections(
+    const std::span<const spice::sct::SctSectionId> sections) const {
+    return SctFragmentService::captureSections(workingState_, structuredAuthoring_,
+        baselineSnapshot_->provenance->source().descriptor.locator.identityKey(),
+        sections);
+}
+
+SctEditResult SctEditSession::pasteFragment(
+    const SctSemanticFragment& fragment, SctFragmentPasteDestination destination) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!structurallyValid_)
+        return failure({editError(locator, "DocumentNotStructurallyValid",
+            "Pasting is unavailable until the document is structurally valid.")});
+    if (fragment.kind == SctFragmentKind::SectionRange
+        && destination.sectionNames.empty())
+        destination.sectionNames = SctFragmentService::suggestSectionNames(
+            workingState_, fragment);
+    auto plan = SctFragmentService::planPaste(workingState_, structuredAuthoring_,
+        locator.identityKey(), fragment, destination);
+    if (!plan) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : plan.diagnostics())
+            diagnostics.push_back(editError(locator, "FragmentPasteFailed",
+                diagnostic.message));
+        return failure(std::move(diagnostics));
+    }
+    auto paste = std::move(plan).takeValue();
+    const auto insertedSelection = paste.insertedSelection;
+    const auto first = insertedSelection.empty()
+        ? std::optional<SctNavigationTarget>{}
+        : std::optional<SctNavigationTarget>{insertedSelection.front()};
+    const auto undoTarget = fragment.kind == SctFragmentKind::InstructionRange
+        && destination.instructionAfter
+        ? std::optional<SctNavigationTarget>{SctNavigationTarget{
+            SctNavigationKind::Instruction, destination.instructionAfter->value()}}
+        : destination.sectionAfter
+            ? std::optional<SctNavigationTarget>{SctNavigationTarget{
+                SctNavigationKind::Section, destination.sectionAfter->value()}}
+            : std::optional<SctNavigationTarget>{SctNavigationTarget{
+                SctNavigationKind::Document, 0u}};
+    return commit(std::move(paste.document), std::move(paste.authoring),
+        fragment.kind == SctFragmentKind::InstructionRange
+            ? "Paste instructions" : "Paste sections",
+        SelectionHints{undoTarget, first,
+            undoTarget ? std::vector<SctNavigationTarget>{*undoTarget}
+                       : std::vector<SctNavigationTarget>{},
+            insertedSelection});
+}
+
+SctEditResult SctEditSession::deleteInstructions(
+    const std::span<const spice::sct::SctInstructionId> instructions) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!structurallyValid_)
+        return failure({editError(locator, "DocumentNotStructurallyValid",
+            "Deleting instructions is unavailable until the document is structurally valid.")});
+    auto fragment = captureInstructions(instructions);
+    if (!fragment) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : fragment.diagnostics())
+            diagnostics.push_back(editError(locator, "InstructionRangeInvalid",
+                diagnostic.message));
+        return failure(std::move(diagnostics));
+    }
+    std::unordered_set<spice::sct::SctInstructionId> selected(
+        instructions.begin(), instructions.end());
+    for (const auto id : instructions) {
+        const auto* value = workingState_.instruction(id);
+        const auto placement = workingState_.placement(id);
+        if (!value || !placement) return failure({editError(locator,
+            "InstructionNotFound", "A selected instruction no longer exists.")});
+        if (value->opcode == 9u && !placement->after)
+            return failure({editError(locator, "ProtectedSectionLabel",
+                "The section label cannot be deleted.")});
+        for (const auto source : workingState_.inboundReferenceSources(
+                spice::sct::SctDocumentReferenceTarget{id}))
+            if (!selected.contains(source))
+                return failure({editError(locator, "InstructionHasIncomingReference",
+                    "The selected range has an incoming reference from outside the range.",
+                    SctNavigationTarget{SctNavigationKind::Instruction,
+                        source.value()})});
+    }
+    SctSemanticOperationBatch operations;
+    for (auto it = instructions.rbegin(); it != instructions.rend(); ++it)
+        operations.operations.push_back(SctDeleteInstructionOperation{*it});
+    SctStructuredAuthoringOperationBatch authoring;
+    for (const auto& arm : fragment.value().authoredArms)
+        authoring.operations.push_back({arm.id, arm, std::nullopt});
+    for (const auto& origin : structuredAuthoring_.unboundReferences())
+        if (selected.contains(origin.site.instruction))
+            authoring.unboundReferences.push_back(
+                {origin.site, origin, std::nullopt});
+    const auto placement = workingState_.placement(instructions.front());
+    std::optional<SctNavigationTarget> fallback;
+    if (const auto next = workingState_.instructionAfter(instructions.back()))
+        fallback = SctNavigationTarget{SctNavigationKind::Instruction, next->value()};
+    else if (placement && placement->after && !selected.contains(*placement->after))
+        fallback = SctNavigationTarget{SctNavigationKind::Instruction,
+            placement->after->value()};
+    else if (placement)
+        fallback = SctNavigationTarget{SctNavigationKind::Section,
+            placement->section.value()};
+    std::vector<SctNavigationTarget> removed;
+    for (const auto id : instructions)
+        removed.push_back({SctNavigationKind::Instruction, id.value()});
+    return commit(std::move(operations), std::move(authoring),
+        instructions.size() == 1u ? "Delete instruction" : "Delete instructions",
+        SelectionHints{removed.front(), fallback, removed, {}});
+}
+
+SctEditResult SctEditSession::deleteSections(
+    const std::span<const spice::sct::SctSectionId> sections) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!structurallyValid_)
+        return failure({editError(locator, "DocumentNotStructurallyValid",
+            "Deleting sections is unavailable until the document is structurally valid.")});
+    auto fragment = captureSections(sections);
+    if (!fragment) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : fragment.diagnostics())
+            diagnostics.push_back(editError(locator, "SectionRangeInvalid", diagnostic.message));
+        return failure(std::move(diagnostics));
+    }
+    std::unordered_set<spice::sct::SctInstructionId> instructions;
+    std::unordered_set<spice::sct::SctStringId> strings;
+    for (const auto& section : fragment.value().sections) {
+        if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(
+                &section.content))
+            for (const auto& instruction : script->instructions)
+                instructions.insert(instruction.id);
+        if (const auto* text = std::get_if<spice::sct::SctStringSectionContent>(
+                &section.content)) strings.insert(text->string.id);
+    }
+    for (const auto id : instructions)
+        for (const auto source : workingState_.inboundReferenceSources(
+                spice::sct::SctDocumentReferenceTarget{id}))
+            if (!instructions.contains(source))
+                return failure({editError(locator, "SectionHasExternalReference",
+                    "A selected section is referenced by an instruction outside the selection.")});
+    for (const auto id : strings)
+        for (const auto source : workingState_.inboundReferenceSources(
+                spice::sct::SctDocumentReferenceTarget{id}))
+            if (!instructions.contains(source))
+                return failure({editError(locator, "SectionHasExternalReference",
+                    "A selected indexed string is referenced outside the selection.")});
+    SctSemanticOperationBatch operations;
+    for (auto it = sections.rbegin(); it != sections.rend(); ++it)
+        operations.operations.push_back(SctDeleteSectionOperation{*it});
+    SctStructuredAuthoringOperationBatch authoring;
+    for (const auto& arm : fragment.value().authoredArms)
+        authoring.operations.push_back({arm.id, arm, std::nullopt});
+    for (const auto& origin : structuredAuthoring_.unboundReferences())
+        if (instructions.contains(origin.site.instruction))
+            authoring.unboundReferences.push_back(
+                {origin.site, origin, std::nullopt});
+    const auto order = workingState_.sectionOrder();
+    const auto last = std::ranges::find(order, sections.back());
+    std::optional<SctNavigationTarget> fallback;
+    if (last != order.end() && std::next(last) != order.end())
+        fallback = SctNavigationTarget{SctNavigationKind::Section,
+            std::next(last)->value()};
+    else {
+        const auto placement = workingState_.sectionPlacement(sections.front());
+        if (placement && placement->after)
+            fallback = SctNavigationTarget{SctNavigationKind::Section,
+                placement->after->value()};
+    }
+    std::vector<SctNavigationTarget> removed;
+    for (const auto id : sections)
+        removed.push_back({SctNavigationKind::Section, id.value()});
+    return commit(std::move(operations), std::move(authoring),
+        sections.size() == 1u ? "Delete section" : "Delete sections",
+        SelectionHints{removed.front(), fallback, removed, {}});
+}
+
+SctEditResult SctEditSession::moveInstructionsAfter(
+    const std::span<const spice::sct::SctInstructionId> instructions,
+    const spice::sct::SctInstructionId anchor) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!structurallyValid_)
+        return failure({editError(locator, "DocumentNotStructurallyValid",
+            "Moving instructions is unavailable until the document is structurally valid.")});
+    auto fragment = captureInstructions(instructions);
+    if (!fragment) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : fragment.diagnostics())
+            diagnostics.push_back(editError(locator, "InstructionRangeInvalid", diagnostic.message));
+        return failure(std::move(diagnostics));
+    }
+    const auto anchorPlacement = workingState_.placement(anchor);
+    const auto selectionPlacement = workingState_.placement(instructions.front());
+    if (!anchorPlacement || !selectionPlacement
+        || anchorPlacement->section != selectionPlacement->section
+        || std::ranges::find(instructions, anchor) != instructions.end())
+        return failure({editError(locator, "InstructionRangeMoveInvalid",
+            "An instruction range can move only within its section and after an unselected anchor.")});
+    if (const auto* anchorInstruction = workingState_.instruction(anchor);
+        !anchorInstruction || anchorInstruction->opcode == 12u)
+        return failure({editError(locator, "InstructionMoveAcrossReturn",
+            "Instructions cannot be moved after Return.")});
+    for (const auto id : instructions) {
+        const auto* instruction = workingState_.instruction(id);
+        if (!instruction || instruction->opcode == 9u || instruction->opcode == 12u)
+            return failure({editError(locator, "InstructionRangeMoveProtected",
+                "Section labels and Return cannot be moved in a range.")});
+    }
+    SctSemanticOperationBatch operations;
+    auto insertionAnchor = anchor;
+    for (const auto id : instructions) {
+        operations.operations.push_back(
+            SctRelocateInstructionAfterOperation{id, insertionAnchor});
+        insertionAnchor = id;
+    }
+    std::vector<SctNavigationTarget> selection;
+    for (const auto id : instructions)
+        selection.push_back({SctNavigationKind::Instruction, id.value()});
+    return commit(std::move(operations), {}, "Move instructions",
+        SelectionHints{selection.front(), selection.front(), selection, selection});
+}
+
 SctEditResult SctEditSession::replaceMessage(
     const SctMessageTarget& target,
     const SctMessageDraft& draft,
@@ -783,8 +1045,14 @@ SctEditResult SctEditSession::replaceParameterValue(
         result.suggestedSelection = target;
         return result;
     }
+    SctStructuredAuthoringOperationBatch authoring;
+    const auto origin = std::ranges::find(
+        structuredAuthoring_.unboundReferences(), site,
+        &SctUnboundReferenceOrigin::site);
+    if (origin != structuredAuthoring_.unboundReferences().end())
+        authoring.unboundReferences.push_back({site, *origin, std::nullopt});
     return commit(SctSemanticOperationBatch{{SctReplaceParameterValueOperation{
-        site, std::move(value)}}}, {}, "Edit instruction parameter",
+        site, std::move(value)}}}, std::move(authoring), "Edit instruction parameter",
         SelectionHints{target, target});
 }
 
@@ -857,8 +1125,13 @@ SctEditResult SctEditSession::insertRepeatedGroup(
     if (!materialized.group) return failure({editError(locator,
         "RepeatedGroupDraftIncomplete",
         "Required or provisional repeated parameters must be resolved before creation.", target)});
+    auto authoring = remapUnboundRepeatedGroups(structuredAuthoring_, instructionId,
+        [ordinal](const std::uint32_t current) -> std::optional<std::uint32_t> {
+            return current >= ordinal ? current + 1u : current;
+        });
     return commit(SctSemanticOperationBatch{{SctInsertRepeatedGroupOperation{
-        instructionId, ordinal, *materialized.group}}}, {}, "Add repeated parameter group",
+        instructionId, ordinal, *materialized.group}}}, std::move(authoring),
+        "Add repeated parameter group",
         SelectionHints{target, target});
 }
 
@@ -889,8 +1162,14 @@ SctEditResult SctEditSession::deleteRepeatedGroup(
         return failure({editError(locator, "RepeatedGroupManagedBySemanticEditor",
             "Switch case groups managed by the Semantic Outline cannot be edited as raw groups.", target)});
     }
+    auto authoring = remapUnboundRepeatedGroups(structuredAuthoring_, instructionId,
+        [ordinal](const std::uint32_t current) -> std::optional<std::uint32_t> {
+            if (current == ordinal) return std::nullopt;
+            return current > ordinal ? current - 1u : current;
+        });
     return commit(SctSemanticOperationBatch{{SctDeleteRepeatedGroupOperation{
-        instructionId, ordinal}}}, {}, "Delete repeated parameter group",
+        instructionId, ordinal}}}, std::move(authoring),
+        "Delete repeated parameter group",
         SelectionHints{target, target});
 }
 
@@ -923,8 +1202,19 @@ SctEditResult SctEditSession::moveRepeatedGroup(
     }
     const auto destination = direction == SctRepeatedGroupMoveDirection::Up
         ? ordinal - 1u : ordinal + 1u;
+    auto authoring = remapUnboundRepeatedGroups(structuredAuthoring_, instructionId,
+        [ordinal, destination](const std::uint32_t current)
+            -> std::optional<std::uint32_t> {
+            if (current == ordinal) return destination;
+            if (ordinal < destination && current > ordinal && current <= destination)
+                return current - 1u;
+            if (ordinal > destination && current >= destination && current < ordinal)
+                return current + 1u;
+            return current;
+        });
     return commit(SctSemanticOperationBatch{{SctRelocateRepeatedGroupOperation{
-        instructionId, ordinal, destination}}}, {}, "Move repeated parameter group",
+        instructionId, ordinal, destination}}}, std::move(authoring),
+        "Move repeated parameter group",
         SelectionHints{target, target});
 }
 
@@ -1117,6 +1407,10 @@ SctEditResult SctEditSession::deleteSection(const spice::sct::SctSectionId secti
         if (arm.controller.section == sectionId)
             authored.operations.push_back({arm.id, arm, std::nullopt});
     }
+    for (const auto& origin : structuredAuthoring_.unboundReferences())
+        if (internal.contains(origin.site.instruction.value()))
+            authored.unboundReferences.push_back(
+                {origin.site, origin, std::nullopt});
     const auto placement = workingState_.sectionPlacement(sectionId);
     const SctNavigationTarget removed{SctNavigationKind::Section, sectionId.value()};
     std::optional<SctNavigationTarget> next;
@@ -1588,7 +1882,7 @@ std::optional<SctEditResult> SctEditSession::undo() {
         return result;
     }
     std::optional<SctStructuredAuthoringApplication> authoringApplication;
-    if (!source.state->authoringInverse.operations.empty())
+    if (!source.state->authoringInverse.empty())
         authoringApplication = structuredAuthoring_.apply(source.state->authoringInverse);
     if (authoringApplication && !authoringApplication->succeeded())
         return failure({editError(
@@ -1622,6 +1916,8 @@ std::optional<SctEditResult> SctEditSession::undo() {
         navigation->to == verifiedRevision_ ? SctRevisionVerification::Verified
             : SctRevisionVerification::Pending};
     result.suggestedSelection = source.state->selections.undoSelection;
+    result.suggestedSelectionRange = source.state->selections.undoSelectionRange;
+    result.transition->suggestedSelectionRange = result.suggestedSelectionRange;
     result.journalMicroseconds = elapsedMicroseconds(journalStart);
     rebuildSemanticProjection();
     return result;
@@ -1648,7 +1944,7 @@ std::optional<SctEditResult> SctEditSession::redo() {
         return result;
     }
     std::optional<SctStructuredAuthoringApplication> authoringApplication;
-    if (!target->state->authoringForward.operations.empty())
+    if (!target->state->authoringForward.empty())
         authoringApplication = structuredAuthoring_.apply(target->state->authoringForward);
     if (authoringApplication && !authoringApplication->succeeded())
         return failure({editError(
@@ -1682,6 +1978,8 @@ std::optional<SctEditResult> SctEditSession::redo() {
         navigation->to == verifiedRevision_ ? SctRevisionVerification::Verified
             : SctRevisionVerification::Pending};
     result.suggestedSelection = target->state->selections.redoSelection;
+    result.suggestedSelectionRange = target->state->selections.redoSelectionRange;
+    result.transition->suggestedSelectionRange = result.suggestedSelectionRange;
     result.journalMicroseconds = elapsedMicroseconds(journalStart);
     rebuildSemanticProjection();
     return result;
@@ -1796,6 +2094,9 @@ std::optional<SctCheckpointRequest> SctEditSession::checkpointRequest(
         baselineSnapshot_,
         std::move(*request),
         workingState_.textRepairProvenances(),
+        std::vector<SctUnboundReferenceOrigin>{
+            structuredAuthoring_.unboundReferences().begin(),
+            structuredAuthoring_.unboundReferences().end()},
     };
 }
 
@@ -1904,7 +2205,7 @@ std::optional<SctEditResult> SctEditSession::rejectToVerifiedRevision(
     while (cursor != revision) {
         const auto entry = history_.revision(cursor);
         if (!entry.has_value()) return std::nullopt;
-        if (!entry->state->authoringInverse.operations.empty()) {
+        if (!entry->state->authoringInverse.empty()) {
             const auto authoring = structuredAuthoring_.apply(
                 entry->state->authoringInverse);
             if (!authoring.succeeded()) return std::nullopt;
@@ -1962,6 +2263,11 @@ const SctWorkingState& SctEditSession::workingState() const noexcept {
 
 const SctStructuredAuthoringState& SctEditSession::structuredAuthoring() const noexcept {
     return structuredAuthoring_;
+}
+
+std::span<const SctUnboundReferenceOrigin>
+SctEditSession::unboundReferences() const noexcept {
+    return structuredAuthoring_.unboundReferences();
 }
 
 std::shared_ptr<const SctSemanticEditorProjection>
@@ -2108,7 +2414,7 @@ SctEditResult SctEditSession::commit(
     SelectionHints selections,
     const std::uint64_t preflightMicroseconds) {
     const auto journalStart = EditClock::now();
-    if (operation.operations.empty() && authoringOperation.operations.empty())
+    if (operation.operations.empty() && authoringOperation.empty())
         return failure({editError(
             baselineSnapshot_->provenance->source().descriptor.locator,
             "EmptyEdit", "An edit must contain a document or semantic authoring operation.")});
@@ -2116,7 +2422,7 @@ SctEditResult SctEditSession::commit(
     appendOrphanedFooterPlainTextCleanup(operation);
 
     std::optional<SctStructuredAuthoringApplication> authoringApplication;
-    if (!authoringOperation.operations.empty())
+    if (!authoringOperation.empty())
         authoringApplication = structuredAuthoring_.apply(authoringOperation);
     if (authoringApplication && !authoringApplication->succeeded()) {
         return failure({editError(
@@ -2177,6 +2483,8 @@ SctEditResult SctEditSession::commit(
         committed.revision == verifiedRevision_ ? SctRevisionVerification::Verified
             : SctRevisionVerification::Pending};
     result.suggestedSelection = selections.redoSelection;
+    result.suggestedSelectionRange = selections.redoSelectionRange;
+    result.transition->suggestedSelectionRange = selections.redoSelectionRange;
     result.preflightMicroseconds = preflightMicroseconds;
     result.journalMicroseconds = elapsedMicroseconds(journalStart);
     return result;
@@ -2198,7 +2506,8 @@ void SctEditSession::installExternalState(
     assert(state.snapshot != nullptr);
     assert(state.snapshot->document != nullptr);
     workingState_ = SctWorkingState(state.snapshot->document, state.textRepairs);
-    structuredAuthoring_ = SctStructuredAuthoringState(state.authoredArms);
+    structuredAuthoring_ = SctStructuredAuthoringState(
+        state.authoredArms, state.unboundReferences);
     materializedDocument_ = state.snapshot->document;
     currentSnapshot_ = state.snapshot;
     structurallyValid_ = state.snapshot->readiness

@@ -25,6 +25,8 @@
 #include <QAction>
 #include <QCloseEvent>
 #include <QCheckBox>
+#include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDir>
 #include <QDockWidget>
@@ -34,6 +36,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QHBoxLayout>
 #include <QIcon>
 #include <QItemSelectionModel>
 #include <QInputDialog>
@@ -43,6 +46,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMimeData>
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
@@ -68,12 +72,20 @@
 #include <ranges>
 #include <type_traits>
 #include <sstream>
+#include <span>
+#include <unordered_set>
 
 namespace salsa::qt {
 namespace {
 
 constexpr int SettingsStateVersion = 1;
 constexpr qsizetype MaximumRecentDatasets = 10;
+
+[[nodiscard]] bool hasTextEditingFocus() {
+    const auto* focus = QApplication::focusWidget();
+    return focus != nullptr && (focus->inherits("QLineEdit")
+        || focus->inherits("QTextEdit") || focus->inherits("QPlainTextEdit"));
+}
 
 [[nodiscard]] QString draftWord(const std::uint32_t value) {
     return QStringLiteral("0x%1").arg(value, 8, 16, QLatin1Char('0')).toUpper();
@@ -368,6 +380,27 @@ void MainWindow::buildUi() {
     tabifyDockWidget(semanticNavigatorDock_, scptEditorDock_);
     scptEditorDock_->hide();
 
+    auto* snippetPane = new QWidget(this);
+    auto* snippetLayout = new QVBoxLayout(snippetPane);
+    snippetLayout->setContentsMargins(6, 6, 6, 6);
+    snippetSearch_ = new QLineEdit(snippetPane);
+    snippetSearch_->setPlaceholderText(tr("Search snippets..."));
+    snippetList_ = new QListWidget(snippetPane);
+    auto* snippetButtons = new QHBoxLayout;
+    pasteSnippetButton_ = new QPushButton(tr("Insert"), snippetPane);
+    deleteSnippetButton_ = new QPushButton(tr("Delete"), snippetPane);
+    snippetButtons->addWidget(pasteSnippetButton_);
+    snippetButtons->addWidget(deleteSnippetButton_);
+    snippetLayout->addWidget(snippetSearch_);
+    snippetLayout->addWidget(snippetList_, 1);
+    snippetLayout->addLayout(snippetButtons);
+    snippetLibraryDock_ = new QDockWidget(tr("Snippet Library"), this);
+    snippetLibraryDock_->setObjectName(QStringLiteral("SnippetLibraryDock"));
+    snippetLibraryDock_->setWidget(snippetPane);
+    addDockWidget(Qt::RightDockWidgetArea, snippetLibraryDock_);
+    tabifyDockWidget(semanticNavigatorDock_, snippetLibraryDock_);
+    snippetLibraryDock_->hide();
+
     auto* fileMenu = menuBar()->addMenu(tr("&File"));
     openAction_ = fileMenu->addAction(tr("&Open Dataset..."));
     openAction_->setShortcut(QKeySequence::Open);
@@ -427,11 +460,21 @@ void MainWindow::buildUi() {
     redoAction_->setIcon(QIcon::fromTheme(QStringLiteral("edit-redo"),
         style()->standardIcon(QStyle::SP_ArrowForward)));
     editMenu->addSeparator();
+    cutAction_ = editMenu->addAction(tr("Cu&t"));
+    cutAction_->setShortcut(QKeySequence::Cut);
+    copyAction_ = editMenu->addAction(tr("&Copy"));
+    copyAction_->setShortcut(QKeySequence::Copy);
+    pasteAction_ = editMenu->addAction(tr("&Paste"));
+    pasteAction_->setShortcut(QKeySequence::Paste);
+    duplicateAction_ = editMenu->addAction(tr("&Duplicate"));
+    duplicateAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    saveSnippetAction_ = editMenu->addAction(tr("Save Selection as Snippet..."));
+    editMenu->addSeparator();
     editMessageAction_ = editMenu->addAction(tr("Edit &Text"));
     editMenu->addSeparator();
     insertInstructionAction_ = editMenu->addAction(tr("&Insert Instruction..."));
     insertInstructionAction_->setShortcut(QKeySequence(Qt::Key_Insert));
-    deleteInstructionAction_ = editMenu->addAction(tr("&Delete Instruction"));
+    deleteInstructionAction_ = editMenu->addAction(tr("&Delete Selection"));
     deleteInstructionAction_->setShortcut(QKeySequence::Delete);
     moveInstructionUpAction_ = editMenu->addAction(tr("Move Instruction &Up"));
     moveInstructionUpAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Up));
@@ -454,6 +497,7 @@ void MainWindow::buildUi() {
     viewMenu->addAction(semanticNavigatorDock_->toggleViewAction());
     viewMenu->addAction(messageEditorDock_->toggleViewAction());
     viewMenu->addAction(scptEditorDock_->toggleViewAction());
+    viewMenu->addAction(snippetLibraryDock_->toggleViewAction());
     viewMenu->addAction(editToolbar->toggleViewAction());
 
 #if defined(_DEBUG)
@@ -589,6 +633,16 @@ void MainWindow::buildUi() {
         this, [this] { syncActions(); });
     connect(undoAction_, &QAction::triggered, this, &MainWindow::undoActiveDocument);
     connect(redoAction_, &QAction::triggered, this, &MainWindow::redoActiveDocument);
+    connect(cutAction_, &QAction::triggered, this, &MainWindow::cutSelection);
+    connect(copyAction_, &QAction::triggered, this, &MainWindow::copySelection);
+    connect(pasteAction_, &QAction::triggered, this, &MainWindow::pasteSelection);
+    connect(duplicateAction_, &QAction::triggered, this, &MainWindow::duplicateSelection);
+    connect(saveSnippetAction_, &QAction::triggered,
+        this, &MainWindow::saveSelectionAsSnippet);
+    connect(QApplication::clipboard(), &QClipboard::dataChanged,
+        this, &MainWindow::syncEditActions);
+    connect(qApp, &QApplication::focusChanged, this,
+        [this](QWidget*, QWidget*) { syncEditActions(); });
     connect(navigationBackAction_, &QAction::triggered, this, &MainWindow::navigateBack);
     connect(navigationForwardAction_, &QAction::triggered, this, &MainWindow::navigateForward);
     connect(editMessageAction_, &QAction::triggered, this, &MainWindow::editSelectedMessage);
@@ -611,12 +665,31 @@ void MainWindow::buildUi() {
     });
     connect(deleteTextAction_, &QAction::triggered, this, &MainWindow::deleteSelectedText);
     connect(insertInstructionAction_, &QAction::triggered, this, &MainWindow::insertInstruction);
-    connect(deleteInstructionAction_, &QAction::triggered, this, &MainWindow::deleteInstruction);
+    connect(deleteInstructionAction_, &QAction::triggered, this, &MainWindow::deleteSelection);
     connect(moveInstructionUpAction_, &QAction::triggered, this, [this]() {
         moveInstruction(core::SctInstructionMoveDirection::Up);
     });
     connect(moveInstructionDownAction_, &QAction::triggered, this, [this]() {
         moveInstruction(core::SctInstructionMoveDirection::Down);
+    });
+    connect(pasteSnippetButton_, &QPushButton::clicked,
+        this, &MainWindow::pasteSelectedSnippet);
+    connect(deleteSnippetButton_, &QPushButton::clicked,
+        this, &MainWindow::deleteSelectedSnippet);
+    connect(snippetList_, &QListWidget::itemDoubleClicked,
+        this, [this](QListWidgetItem*) { pasteSelectedSnippet(); });
+    connect(snippetSearch_, &QLineEdit::textChanged, this,
+        [this](const QString& filter) {
+            for (int row = 0; row < snippetList_->count(); ++row)
+                snippetList_->item(row)->setHidden(
+                    !snippetList_->item(row)->text().contains(
+                        filter, Qt::CaseInsensitive)
+                    && !snippetList_->item(row)->toolTip().contains(
+                        filter, Qt::CaseInsensitive));
+        });
+    connect(snippetList_, &QListWidget::currentRowChanged, this, [this](const int row) {
+        pasteSnippetButton_->setEnabled(row >= 0 && activeDocumentWidget() != nullptr);
+        deleteSnippetButton_->setEnabled(row >= 0);
     });
 
     connect(
@@ -698,6 +771,9 @@ void MainWindow::buildUi() {
             messageEditor_->focusEditor();
         }
     });
+    pasteSnippetButton_->setEnabled(false);
+    deleteSnippetButton_->setEnabled(false);
+    reloadSnippets();
 }
 
 void MainWindow::connectWorkspace() {
@@ -776,6 +852,19 @@ void MainWindow::connectWorkspace() {
             if (auto* widget = activeDocumentWidget())
                 widget->selectTarget(
                     { static_cast<core::SctNavigationKind>(kind), id }, false);
+        });
+    connect(documentController_, &SctDocumentController::selectionRangeRequested,
+        this, [this](const QString& identityKey, const QList<int>& kinds,
+            const QList<qulonglong>& ids) {
+            focusDocument(identityKey);
+            if (kinds.size() != ids.size()) return;
+            std::vector<core::SctNavigationTarget> targets;
+            targets.reserve(static_cast<std::size_t>(ids.size()));
+            for (qsizetype index = 0; index < ids.size(); ++index)
+                targets.push_back({static_cast<core::SctNavigationKind>(kinds[index]),
+                    ids[index]});
+            if (auto* widget = activeDocumentWidget())
+                widget->selectTargets(targets, false);
         });
     connect(documentController_, &SctDocumentController::documentClosed,
         this, [this](const QString& identityKey) {
@@ -946,6 +1035,7 @@ void MainWindow::associatePatchWorkspace() {
             patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
                 std::move(opened));
             documentController_->setWorkspace(patchWorkspace_);
+            reloadSnippets();
             const auto* current = controller_->dataset();
             if (current) rememberPatchWorkspaceAssociation(
                 QString::fromStdWString(current->root.wstring()), selected);
@@ -1057,6 +1147,7 @@ bool MainWindow::openPatchWorkspace(
     patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
         std::move(opened).takeValue());
     documentController_->setWorkspace(patchWorkspace_);
+    reloadSnippets();
     rememberPatchWorkspaceAssociation(
         QString::fromStdWString(dataset->root.wstring()), workspaceRoot);
     statusBar()->showMessage(tr("SALSA workspace opened: %1")
@@ -1082,11 +1173,13 @@ void MainWindow::detachPatchWorkspace(const bool saveSession) {
     workspaceRestoreMessages_.clear();
     documentController_->setWorkspace(nullptr);
     patchWorkspace_.reset();
+    reloadSnippets();
 }
 
 void MainWindow::restorePatchWorkspaceAssociation() {
     documentController_->setWorkspace(nullptr);
     patchWorkspace_.reset();
+    reloadSnippets();
     const auto* dataset = controller_->dataset();
     if (dataset == nullptr) return;
     const auto datasetRoot = normalizedRecentDatasetPath(
@@ -1472,6 +1565,26 @@ void MainWindow::syncEditActions() {
     redoAction_->setToolTip(redoDescription.has_value()
         ? tr("Redo %1").arg(QString::fromStdString(*redoDescription)) : tr("Redo"));
     editMessageAction_->setEnabled(editable && widget->canEditSelectedMessage());
+    const bool fragmentShortcutContext = !hasTextEditingFocus();
+    const bool fragmentSelection = editable && fragmentShortcutContext
+        && (!widget->selectedInstructions().empty()
+            || !widget->selectedSections().empty());
+    cutAction_->setEnabled(fragmentSelection);
+    copyAction_->setEnabled(fragmentSelection);
+    duplicateAction_->setEnabled(fragmentSelection);
+    saveSnippetAction_->setEnabled(fragmentSelection);
+    const auto fragmentMime = QString::fromLatin1(
+        core::SctFragmentCodec::MimeType.data(),
+        static_cast<qsizetype>(core::SctFragmentCodec::MimeType.size()));
+    const auto* clipboardData = QApplication::clipboard()->mimeData();
+    pasteAction_->setEnabled(editable && fragmentShortcutContext
+        && clipboardData != nullptr
+        && clipboardData->hasFormat(fragmentMime));
+    if (snippetList_ != nullptr) {
+        const bool snippetSelected = snippetList_->currentRow() >= 0;
+        pasteSnippetButton_->setEnabled(editable && snippetSelected);
+        deleteSnippetButton_->setEnabled(!exclusive && snippetSelected);
+    }
     createScriptSectionAction_->setEnabled(editable);
     createIndexedStringAction_->setEnabled(editable);
     const bool sectionSelected = editable && widget->selectedSection().has_value();
@@ -1940,6 +2053,271 @@ MainWindow::configureRepeatedGroupDraft(
     return std::nullopt;
 }
 
+std::optional<core::SctSemanticFragment> MainWindow::captureSelectedFragment(
+    const bool reportFailure) {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return std::nullopt;
+    core::Result<core::SctSemanticFragment> captured = [&] {
+        const auto instructions = widget->selectedInstructions();
+        if (!instructions.empty())
+            return documentController_->captureInstructions(
+                widget->locator(), instructions);
+        const auto sections = widget->selectedSections();
+        if (!sections.empty())
+            return documentController_->captureSections(widget->locator(), sections);
+        return core::Result<core::SctSemanticFragment>::failure(core::Diagnostic{
+            core::DiagnosticSeverity::Error, core::DiagnosticCode::InvalidSctFragment,
+            "Select a contiguous instruction range or contiguous physical sections.",
+            widget->locator().path()});
+    }();
+    if (!captured) {
+        if (reportFailure) QMessageBox::warning(this, tr("Selection Cannot Be Copied"),
+            captured.diagnostics().empty() ? tr("The selection is not copyable.")
+                : QString::fromStdString(captured.diagnostics().front().message));
+        return std::nullopt;
+    }
+    return std::move(captured).takeValue();
+}
+
+bool MainWindow::copyFragmentToClipboard(
+    const core::SctSemanticFragment& fragment) {
+    const auto encoded = core::SctFragmentCodec::serialize(fragment);
+    if (!encoded) {
+        QMessageBox::warning(this, tr("Copy Failed"),
+            QString::fromStdString(encoded.diagnostics().front().message));
+        return false;
+    }
+    auto* data = new QMimeData;
+    data->setData(QString::fromLatin1(core::SctFragmentCodec::MimeType.data(),
+        static_cast<qsizetype>(core::SctFragmentCodec::MimeType.size())),
+        QByteArray(reinterpret_cast<const char*>(encoded.value().data()),
+            static_cast<qsizetype>(encoded.value().size())));
+    data->setText(fragment.kind == core::SctFragmentKind::InstructionRange
+        ? tr("SALSA instruction fragment (%1 instructions)")
+            .arg(fragment.instructions.size())
+        : tr("SALSA section fragment (%1 sections)").arg(fragment.sections.size()));
+    QApplication::clipboard()->setMimeData(data);
+    return true;
+}
+
+void MainWindow::copySelection() {
+    const auto fragment = captureSelectedFragment();
+    if (fragment) (void)copyFragmentToClipboard(*fragment);
+}
+
+void MainWindow::cutSelection() {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    const auto fragment = captureSelectedFragment();
+    if (!fragment || !copyFragmentToClipboard(*fragment)) return;
+    const auto instructions = widget->selectedInstructions();
+    if (!instructions.empty()) {
+        (void)documentController_->deleteInstructions(widget->locator(), instructions);
+        return;
+    }
+    const auto sections = widget->selectedSections();
+    if (!sections.empty())
+        (void)documentController_->deleteSections(widget->locator(), sections);
+}
+
+bool MainWindow::pasteFragment(const core::SctSemanticFragment& fragment) {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return false;
+    core::SctFragmentPasteDestination destination;
+    if (fragment.kind == core::SctFragmentKind::InstructionRange) {
+        const auto selected = widget->selectedInstructions();
+        destination.instructionAfter = selected.empty()
+            ? widget->selectedInstruction()
+            : std::optional<spice::sct::SctInstructionId>{selected.back()};
+        if (!destination.instructionAfter) {
+            QMessageBox::information(this, tr("Choose an Insertion Point"),
+                tr("Select a physical instruction after which the fragment should be inserted."));
+            return false;
+        }
+    } else {
+        const auto selected = widget->selectedSections();
+        destination.sectionAfter = selected.empty()
+            ? widget->selectedSection()
+            : std::optional<spice::sct::SctSectionId>{selected.back()};
+        auto names = documentController_->suggestSectionNames(
+            widget->locator(), fragment);
+        if (names.size() != fragment.sections.size()) return false;
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Review Pasted Section Names"));
+        auto* layout = new QVBoxLayout(&dialog);
+        layout->addWidget(new QLabel(tr(
+            "Review the unique physical names that will be used for the pasted sections."),
+            &dialog));
+        std::vector<QLineEdit*> editors;
+        editors.reserve(names.size());
+        for (std::size_t ordinal = 0; ordinal < names.size(); ++ordinal) {
+            auto* row = new QHBoxLayout;
+            row->addWidget(new QLabel(QString::fromUtf8(
+                fragment.sections[ordinal].nameBytes.data(),
+                static_cast<qsizetype>(fragment.sections[ordinal].nameBytes.size())),
+                &dialog));
+            auto* editor = new QLineEdit(QString::fromStdString(names[ordinal]), &dialog);
+            editor->setMaxLength(16);
+            row->addWidget(editor, 1);
+            layout->addLayout(row);
+            editors.push_back(editor);
+        }
+        auto* buttons = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        layout->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        if (dialog.exec() != QDialog::Accepted) return false;
+        static const QRegularExpression validName(
+            QStringLiteral("^[A-Za-z0-9_]{1,16}$"));
+        std::unordered_set<std::string> unique;
+        for (auto* editor : editors) {
+            if (!validName.match(editor->text()).hasMatch()
+                || !unique.insert(editor->text().toStdString()).second) {
+                QMessageBox::warning(this, tr("Invalid Section Names"), tr(
+                    "Every pasted section name must match [A-Za-z0-9_]{1,16} and be unique."));
+                return false;
+            }
+            destination.sectionNames.push_back(editor->text().toStdString());
+        }
+    }
+    return documentController_->pasteFragment(
+        widget->locator(), fragment, std::move(destination));
+}
+
+void MainWindow::pasteSelection() {
+    const auto* data = QApplication::clipboard()->mimeData();
+    const auto mime = QString::fromLatin1(core::SctFragmentCodec::MimeType.data(),
+        static_cast<qsizetype>(core::SctFragmentCodec::MimeType.size()));
+    if (data == nullptr || !data->hasFormat(mime)) return;
+    const auto raw = data->data(mime);
+    const auto bytes = std::as_bytes(std::span{raw.constData(),
+        static_cast<std::size_t>(raw.size())});
+    const auto fragment = core::SctFragmentCodec::deserialize(bytes);
+    if (!fragment) {
+        QMessageBox::warning(this, tr("Paste Failed"),
+            QString::fromStdString(fragment.diagnostics().front().message));
+        return;
+    }
+    (void)pasteFragment(fragment.value());
+}
+
+void MainWindow::duplicateSelection() {
+    const auto fragment = captureSelectedFragment();
+    if (fragment) (void)pasteFragment(*fragment);
+}
+
+void MainWindow::deleteSelection() {
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr) return;
+    const auto instructions = widget->selectedInstructions();
+    if (!instructions.empty()) {
+        (void)documentController_->deleteInstructions(widget->locator(), instructions);
+        return;
+    }
+    const auto sections = widget->selectedSections();
+    if (!sections.empty()) {
+        if (QMessageBox::question(this, tr("Delete Sections"),
+                tr("Delete the selected sections and their contents?")) == QMessageBox::Yes)
+            (void)documentController_->deleteSections(widget->locator(), sections);
+    }
+}
+
+void MainWindow::saveSelectionAsSnippet() {
+    const auto fragment = captureSelectedFragment();
+    if (!fragment) return;
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Save Snippet"));
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(tr("Name:"), &dialog));
+    auto* name = new QLineEdit(&dialog);
+    name->setMaxLength(120);
+    layout->addWidget(name);
+    layout->addWidget(new QLabel(tr("Description (optional):"), &dialog));
+    auto* description = new QLineEdit(&dialog);
+    layout->addWidget(description);
+    auto* scope = new QComboBox(&dialog);
+    scope->addItem(tr("Personal"), false);
+    if (patchWorkspace_) scope->addItem(tr("Workspace"), true);
+    layout->addWidget(scope);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Save)->setEnabled(false);
+    connect(name, &QLineEdit::textChanged, &dialog, [buttons](const QString& value) {
+        buttons->button(QDialogButtonBox::Save)->setEnabled(!value.trimmed().isEmpty());
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const bool workspace = scope->currentData().toBool();
+    const auto root = workspace
+        ? patchWorkspace_->componentPath(
+            patchWorkspace_->descriptor().components.authoring / L"snippets")
+        : std::filesystem::path(QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation).toStdWString()) / L"snippets";
+    core::SctSnippetStore store(root);
+    const auto saved = store.save({name->text().trimmed().toStdString(),
+        description->text().toStdString(), *fragment});
+    if (!saved) QMessageBox::warning(this, tr("Snippet Save Failed"),
+        QString::fromStdString(saved.diagnostics().front().message));
+    else reloadSnippets();
+}
+
+void MainWindow::reloadSnippets() {
+    if (snippetList_ == nullptr) return;
+    loadedSnippets_.clear();
+    snippetList_->clear();
+    const auto append = [&](const std::filesystem::path& root, const bool workspace) {
+        const core::SctSnippetStore store(root);
+        const auto loaded = store.loadAll();
+        if (!loaded) return;
+        for (const auto& snippet : loaded.value())
+            loadedSnippets_.push_back({workspace, snippet});
+    };
+    append(std::filesystem::path(QStandardPaths::writableLocation(
+        QStandardPaths::AppDataLocation).toStdWString()) / L"snippets", false);
+    if (patchWorkspace_) append(patchWorkspace_->componentPath(
+        patchWorkspace_->descriptor().components.authoring / L"snippets"), true);
+    for (std::size_t index = 0; index < loadedSnippets_.size(); ++index) {
+        const auto& loaded = loadedSnippets_[index];
+        auto* item = new QListWidgetItem(
+            QString::fromStdString(loaded.snippet.name)
+                + (loaded.workspace ? tr("  [Workspace]") : tr("  [Personal]")),
+            snippetList_);
+        item->setToolTip(QString::fromStdString(loaded.snippet.description));
+        item->setData(Qt::UserRole, static_cast<qulonglong>(index));
+    }
+}
+
+void MainWindow::pasteSelectedSnippet() {
+    const auto* item = snippetList_->currentItem();
+    if (item == nullptr) return;
+    const auto index = item->data(Qt::UserRole).toULongLong();
+    if (index < loadedSnippets_.size())
+        (void)pasteFragment(loadedSnippets_[static_cast<std::size_t>(index)].snippet.fragment);
+}
+
+void MainWindow::deleteSelectedSnippet() {
+    const auto* item = snippetList_->currentItem();
+    if (item == nullptr) return;
+    const auto index = item->data(Qt::UserRole).toULongLong();
+    if (index >= loadedSnippets_.size()) return;
+    const auto& loaded = loadedSnippets_[static_cast<std::size_t>(index)];
+    if (QMessageBox::question(this, tr("Delete Snippet"),
+            tr("Delete snippet '%1'?").arg(QString::fromStdString(loaded.snippet.name)))
+        != QMessageBox::Yes) return;
+    const auto root = loaded.workspace && patchWorkspace_
+        ? patchWorkspace_->componentPath(
+            patchWorkspace_->descriptor().components.authoring / L"snippets")
+        : std::filesystem::path(QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation).toStdWString()) / L"snippets";
+    const auto removed = core::SctSnippetStore(root).remove(loaded.snippet.name);
+    if (!removed) QMessageBox::warning(this, tr("Snippet Delete Failed"),
+        QString::fromStdString(removed.diagnostics().front().message));
+    else reloadSnippets();
+}
+
 void MainWindow::deleteInstruction() {
     auto* widget = activeDocumentWidget();
     if (widget == nullptr) return;
@@ -1951,9 +2329,16 @@ void MainWindow::deleteInstruction() {
 void MainWindow::moveInstruction(const core::SctInstructionMoveDirection direction) {
     auto* widget = activeDocumentWidget();
     if (widget == nullptr) return;
-    const auto instruction = widget->selectedInstruction();
-    if (instruction.has_value())
-        (void)documentController_->moveInstruction(widget->locator(), *instruction, direction);
+    const auto instructions = widget->selectedInstructions();
+    if (instructions.size() > 1u) {
+        const auto anchor = widget->rangeMoveAnchor(direction);
+        if (anchor) (void)documentController_->moveInstructionsAfter(
+            widget->locator(), instructions, *anchor);
+        return;
+    }
+    if (const auto instruction = widget->selectedInstruction())
+        (void)documentController_->moveInstruction(
+            widget->locator(), *instruction, direction);
 }
 
 void MainWindow::createScriptSection() {
@@ -2314,10 +2699,20 @@ void MainWindow::syncDocument(
         connect(widget, &SctDocumentWidget::insertInstructionRequested,
             this, [this](const QString&) { insertInstruction(); });
         connect(widget, &SctDocumentWidget::deleteInstructionRequested,
-            this, [this](const QString&) { deleteInstruction(); });
+            this, [this](const QString&) { deleteSelection(); });
         connect(widget, &SctDocumentWidget::moveInstructionRequested,
             this, [this](const QString&, const int direction) {
                 moveInstruction(static_cast<core::SctInstructionMoveDirection>(direction));
+            });
+        connect(widget, &SctDocumentWidget::moveInstructionRangeRequested,
+            this, [this, widget](const QString&, const QList<qulonglong>& values,
+                const qulonglong anchor) {
+                std::vector<spice::sct::SctInstructionId> instructions;
+                instructions.reserve(static_cast<std::size_t>(values.size()));
+                for (const auto value : values)
+                    instructions.emplace_back(value);
+                (void)documentController_->moveInstructionsAfter(widget->locator(),
+                    instructions, spice::sct::SctInstructionId(anchor));
             });
         connect(widget, &SctDocumentWidget::editMessageRequested,
             this, [this](const QString&) { editSelectedMessage(); });

@@ -4,6 +4,7 @@
 #include "SalsaCore/Sct/SctSemanticOperation.h"
 
 #include <QAbstractItemModel>
+#include <QList>
 
 #include <memory>
 #include <unordered_map>
@@ -25,6 +26,12 @@ public:
     QVariant data(const QModelIndex& index, int role) const override;
     QVariant headerData(int section, Qt::Orientation orientation,
         int role) const override;
+    Qt::ItemFlags flags(const QModelIndex& index) const override;
+    QStringList mimeTypes() const override;
+    QMimeData* mimeData(const QModelIndexList& indexes) const override;
+    bool dropMimeData(const QMimeData* data, Qt::DropAction action,
+        int row, int column, const QModelIndex& parent) override;
+    Qt::DropActions supportedDropActions() const override;
 
     void resetFrom(const std::vector<core::SctOutlineItem>& outline,
         const spice::sct::SctDocument& document);
@@ -39,6 +46,10 @@ public:
         spice::sct::SctInstructionId id) const;
     [[nodiscard]] std::optional<spice::sct::SctInstructionId> nextInstruction(
         spice::sct::SctInstructionId id) const;
+
+signals:
+    void instructionRangeDropRequested(
+        const QList<qulonglong>& instructions, qulonglong anchor);
 
 private:
     struct Node final {

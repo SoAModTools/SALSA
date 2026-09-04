@@ -32,6 +32,7 @@ enum class SctChangeEntityKind {
     FooterEntry,
     AuthoredArm,
     TextRepair,
+    UnboundReference,
     AllocatorState,
     OpaquePreservation,
 };

@@ -109,7 +109,8 @@ bool SctDocumentController::adoptRebasedDocument(
     }
     state->session = core::SctEditSession::createRebased(
         reopened.baseline, reopened.load.document,
-        reopened.authoredArms, reopened.textRepairs);
+        reopened.authoredArms, reopened.textRepairs,
+        reopened.unboundReferences);
     state->status = SourceStatus::Current;
     state->patchConflict = false;
     state->editBlocked = false;
@@ -145,7 +146,8 @@ bool SctDocumentController::installTransientDocument(
             spice::sct::SctDocumentReadiness::StructurallyValid, {}});
     DocumentState state{locator,
         std::make_unique<core::SctEditSession>(snapshot, snapshot,
-            semanticState.authoredArms, semanticState.textRepairs)};
+            semanticState.authoredArms, semanticState.textRepairs,
+            semanticState.unboundReferences)};
     auto [found, inserted] = documents_.emplace(locator.identityKey(), std::move(state));
     if (!inserted) return false;
     emit documentChanged(identity(locator), SctDocumentUpdate{
@@ -163,10 +165,12 @@ std::optional<core::SctSemanticState> SctDocumentController::semanticState(
     const auto document = state->session->materializeRevision(
         state->session->workingRevision());
     if (!document) return std::nullopt;
+    const auto unbound = state->session->unboundReferences();
     return core::SctSemanticState{*document,
         {state->session->structuredAuthoring().arms().begin(),
             state->session->structuredAuthoring().arms().end()},
-        state->session->workingState().textRepairProvenances()};
+        state->session->workingState().textRepairProvenances(),
+        {unbound.begin(), unbound.end()}};
 }
 
 bool SctDocumentController::selectTextConvention(
@@ -496,6 +500,71 @@ bool SctDocumentController::moveInstruction(
         state->session->moveInstruction(instruction, direction),
         direction == core::SctInstructionMoveDirection::Up
             ? tr("Instruction moved up.") : tr("Instruction moved down."));
+}
+
+core::Result<core::SctSemanticFragment> SctDocumentController::captureInstructions(
+    const core::AssetLocator& locator,
+    const std::span<const spice::sct::SctInstructionId> instructions) const {
+    const auto* state = findState(locator);
+    if (state == nullptr || busy() || state->editBlocked)
+        return core::Result<core::SctSemanticFragment>::failure(core::Diagnostic{
+            core::DiagnosticSeverity::Error, core::DiagnosticCode::InvalidSctFragment,
+            "The document is not available for copying.", locator.path()});
+    return state->session->captureInstructions(instructions);
+}
+
+core::Result<core::SctSemanticFragment> SctDocumentController::captureSections(
+    const core::AssetLocator& locator,
+    const std::span<const spice::sct::SctSectionId> sections) const {
+    const auto* state = findState(locator);
+    if (state == nullptr || busy() || state->editBlocked)
+        return core::Result<core::SctSemanticFragment>::failure(core::Diagnostic{
+            core::DiagnosticSeverity::Error, core::DiagnosticCode::InvalidSctFragment,
+            "The document is not available for copying.", locator.path()});
+    return state->session->captureSections(sections);
+}
+
+std::vector<std::string> SctDocumentController::suggestSectionNames(
+    const core::AssetLocator& locator,
+    const core::SctSemanticFragment& fragment) const {
+    const auto* state = findState(locator);
+    return state == nullptr ? std::vector<std::string>{}
+        : core::SctFragmentService::suggestSectionNames(
+            state->session->workingState(), fragment);
+}
+
+bool SctDocumentController::pasteFragment(const core::AssetLocator& locator,
+    const core::SctSemanticFragment& fragment,
+    core::SctFragmentPasteDestination destination) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->pasteFragment(
+            fragment, std::move(destination)), tr("Fragment pasted."));
+}
+
+bool SctDocumentController::deleteInstructions(const core::AssetLocator& locator,
+    const std::span<const spice::sct::SctInstructionId> instructions) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->deleteInstructions(instructions),
+            tr("Instructions deleted."));
+}
+
+bool SctDocumentController::deleteSections(const core::AssetLocator& locator,
+    const std::span<const spice::sct::SctSectionId> sections) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->deleteSections(sections),
+            tr("Sections deleted."));
+}
+
+bool SctDocumentController::moveInstructionsAfter(const core::AssetLocator& locator,
+    const std::span<const spice::sct::SctInstructionId> instructions,
+    const spice::sct::SctInstructionId anchor) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->moveInstructionsAfter(
+            instructions, anchor), tr("Instructions moved."));
 }
 
 bool SctDocumentController::replaceMessage(
@@ -855,6 +924,15 @@ bool SctDocumentController::applyEditResult(
         emit selectionRequested(key, static_cast<int>(result.suggestedSelection->kind),
             static_cast<qulonglong>(result.suggestedSelection->id));
     }
+    if (result.suggestedSelectionRange.size() > 1u) {
+        QList<int> kinds;
+        QList<qulonglong> ids;
+        for (const auto target : result.suggestedSelectionRange) {
+            kinds.push_back(static_cast<int>(target.kind));
+            ids.push_back(static_cast<qulonglong>(target.id));
+        }
+        emit selectionRangeRequested(key, kinds, ids);
+    }
     emit editCompleted(key, true, std::move(successMessage));
     if (result.changes.documentChanged) requestMaterialization(state);
     return true;
@@ -1094,7 +1172,8 @@ void SctDocumentController::onFinished() {
     auto makeSession = [&]() {
         if (result.patchApplied) {
             return std::make_unique<core::SctEditSession>(result.baseline,
-                result.load.document, result.authoredArms, result.textRepairs);
+                result.load.document, result.authoredArms, result.textRepairs,
+                result.unboundReferences);
         }
         return std::make_unique<core::SctEditSession>(result.load.document);
     };

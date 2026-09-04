@@ -4,10 +4,12 @@
 #include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
+#include "SalsaCore/Sct/SctFragment.h"
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
 #include "SalsaCore/Sct/SctPublication.h"
 
 #include <QFutureWatcher>
+#include <QList>
 #include <QObject>
 #include <QString>
 
@@ -15,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <unordered_map>
 #include <vector>
@@ -77,6 +80,25 @@ public:
         const core::AssetLocator& locator,
         spice::sct::SctInstructionId instruction,
         core::SctInstructionMoveDirection direction);
+    [[nodiscard]] core::Result<core::SctSemanticFragment> captureInstructions(
+        const core::AssetLocator& locator,
+        std::span<const spice::sct::SctInstructionId> instructions) const;
+    [[nodiscard]] core::Result<core::SctSemanticFragment> captureSections(
+        const core::AssetLocator& locator,
+        std::span<const spice::sct::SctSectionId> sections) const;
+    [[nodiscard]] std::vector<std::string> suggestSectionNames(
+        const core::AssetLocator& locator,
+        const core::SctSemanticFragment& fragment) const;
+    [[nodiscard]] bool pasteFragment(const core::AssetLocator& locator,
+        const core::SctSemanticFragment& fragment,
+        core::SctFragmentPasteDestination destination);
+    [[nodiscard]] bool deleteInstructions(const core::AssetLocator& locator,
+        std::span<const spice::sct::SctInstructionId> instructions);
+    [[nodiscard]] bool deleteSections(const core::AssetLocator& locator,
+        std::span<const spice::sct::SctSectionId> sections);
+    [[nodiscard]] bool moveInstructionsAfter(const core::AssetLocator& locator,
+        std::span<const spice::sct::SctInstructionId> instructions,
+        spice::sct::SctInstructionId anchor);
     [[nodiscard]] bool replaceMessage(
         const core::AssetLocator& locator,
         const core::SctMessageTarget& target,
@@ -225,6 +247,8 @@ signals:
         const QString& identityKey, bool success, bool cancelled,
         const QString& message, bool replacedSource);
     void selectionRequested(const QString& identityKey, int kind, qulonglong id);
+    void selectionRangeRequested(const QString& identityKey,
+        const QList<int>& kinds, const QList<qulonglong>& ids);
 
 private:
     enum class Operation { None, Opening, Reloading, Reimporting };

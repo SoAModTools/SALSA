@@ -4,6 +4,7 @@
 #include "SalsaCore/Persistence/SctScriptPatch.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctDocumentMaterializer.h"
+#include "SalsaCore/Sct/SctFragment.h"
 #include "SalsaCore/Sct/SctMessageAuthoring.h"
 #include "SalsaCore/Sct/SctPublication.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
@@ -49,6 +50,7 @@ struct SctWorkingTransition final {
     SctEditChangeSet changes{};
     std::optional<SctNavigationTarget> suggestedSelection{};
     SctRevisionVerification verification = SctRevisionVerification::Pending;
+    std::vector<SctNavigationTarget> suggestedSelectionRange{};
 };
 
 using SctRevisionTransition = SctWorkingTransition;
@@ -60,6 +62,7 @@ struct SctEditResult final {
     SctEditChangeSet changes{};
     std::optional<SctRevisionTransition> transition{};
     std::optional<SctNavigationTarget> suggestedSelection{};
+    std::vector<SctNavigationTarget> suggestedSelectionRange{};
     std::vector<SctPipelineDiagnostic> diagnostics{};
     std::uint64_t preflightMicroseconds = 0;
     std::uint64_t journalMicroseconds = 0;
@@ -95,7 +98,8 @@ public:
         std::shared_ptr<const SctDocumentSnapshot> baselineSnapshot,
         std::shared_ptr<const SctDocumentSnapshot> restoredSnapshot,
         std::span<const SctAuthoredArm> authoredArms,
-        std::span<const SctPatchedTextRepair> textRepairs);
+        std::span<const SctPatchedTextRepair> textRepairs,
+        std::span<const SctUnboundReferenceOrigin> unboundReferences = {});
 
     SctEditSession(const SctEditSession&) = delete;
     SctEditSession& operator=(const SctEditSession&) = delete;
@@ -106,7 +110,8 @@ public:
         std::shared_ptr<const SctDocumentSnapshot> newBaselineSnapshot,
         std::shared_ptr<const SctDocumentSnapshot> rebasedSnapshot,
         std::span<const SctAuthoredArm> authoredArms,
-        std::span<const SctPatchedTextRepair> textRepairs);
+        std::span<const SctPatchedTextRepair> textRepairs,
+        std::span<const SctUnboundReferenceOrigin> unboundReferences = {});
 
     [[nodiscard]] SctEditResult insertInstructionAfter(
         spice::sct::SctInstructionId anchorInstruction,
@@ -121,6 +126,20 @@ public:
     [[nodiscard]] SctEditResult moveInstruction(
         spice::sct::SctInstructionId instruction,
         SctInstructionMoveDirection direction);
+    [[nodiscard]] Result<SctSemanticFragment> captureInstructions(
+        std::span<const spice::sct::SctInstructionId> instructions) const;
+    [[nodiscard]] Result<SctSemanticFragment> captureSections(
+        std::span<const spice::sct::SctSectionId> sections) const;
+    [[nodiscard]] SctEditResult pasteFragment(
+        const SctSemanticFragment& fragment,
+        SctFragmentPasteDestination destination);
+    [[nodiscard]] SctEditResult deleteInstructions(
+        std::span<const spice::sct::SctInstructionId> instructions);
+    [[nodiscard]] SctEditResult deleteSections(
+        std::span<const spice::sct::SctSectionId> sections);
+    [[nodiscard]] SctEditResult moveInstructionsAfter(
+        std::span<const spice::sct::SctInstructionId> instructions,
+        spice::sct::SctInstructionId anchor);
     [[nodiscard]] SctEditResult replaceMessage(
         const SctMessageTarget& target,
         const SctMessageDraft& draft,
@@ -209,6 +228,8 @@ public:
 
     [[nodiscard]] const SctWorkingState& workingState() const noexcept;
     [[nodiscard]] const SctStructuredAuthoringState& structuredAuthoring() const noexcept;
+    [[nodiscard]] std::span<const SctUnboundReferenceOrigin>
+        unboundReferences() const noexcept;
     [[nodiscard]] std::shared_ptr<const SctSemanticEditorProjection>
         semanticProjection() const noexcept;
 
@@ -219,6 +240,8 @@ private:
     struct SelectionHints final {
         std::optional<SctNavigationTarget> undoSelection{};
         std::optional<SctNavigationTarget> redoSelection{};
+        std::vector<SctNavigationTarget> undoSelectionRange{};
+        std::vector<SctNavigationTarget> redoSelectionRange{};
     };
 
     struct RevisionDelta final {
@@ -226,6 +249,7 @@ private:
             std::shared_ptr<const SctDocumentSnapshot> snapshot{};
             std::vector<SctAuthoredArm> authoredArms{};
             std::vector<SctPatchedTextRepair> textRepairs{};
+            std::vector<SctUnboundReferenceOrigin> unboundReferences{};
         };
         RevisionId parent{};
         SctSemanticOperationBatch forward{};

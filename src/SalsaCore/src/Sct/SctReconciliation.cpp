@@ -188,6 +188,12 @@ void remapInstruction(SctDocumentInstruction& instruction, const IdMaps& maps) {
     return arm;
 }
 
+[[nodiscard]] SctUnboundReferenceOrigin remapOriginSite(
+    SctUnboundReferenceOrigin origin, const IdMaps& maps) {
+    origin.site.instruction = remapped(maps.instructions, origin.site.instruction);
+    return origin;
+}
+
 void remapDocument(SctDocument& document, const IdMaps& maps) {
     for (auto& section : document.sections) {
         section.id = remapped(maps.sections, section.id);
@@ -224,6 +230,8 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
         patch.authoredArms.push_back({std::nullopt, arm});
     for (const auto& repair : state.textRepairs)
         patch.textRepairs.push_back({repair.target, std::nullopt, repair.provenance});
+    for (const auto& origin : state.unboundReferences)
+        patch.unboundReferences.push_back({origin.site, std::nullopt, origin});
     return patch;
 }
 
@@ -290,6 +298,8 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
         value.target = remapTextTarget(value.target, maps);
         result.textRepairs.push_back(std::move(value));
     }
+    for (auto value : source.unboundReferences)
+        result.unboundReferences.push_back(remapOriginSite(std::move(value), maps));
     return result;
 }
 
@@ -1363,6 +1373,17 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
                 repair.target, &SctTextRepairRecord::target);
             if (exists == candidate.textRepairs.end()) candidate.textRepairs.push_back(repair);
         }
+        for (auto origin : pair.incoming->state.unboundReferences)
+            candidate.unboundReferences.push_back(
+                remapOriginSite(std::move(origin), maps));
+        for (const auto& origin : pair.baseline->state.unboundReferences) {
+            const auto exists = std::ranges::find(candidate.unboundReferences,
+                origin.site, &SctUnboundReferenceOrigin::site);
+            if (exists == candidate.unboundReferences.end())
+                candidate.unboundReferences.push_back(origin);
+        }
+        std::ranges::sort(candidate.unboundReferences, {},
+            &SctUnboundReferenceOrigin::site);
 
         SctReconciledScript script{pair.baseline->locator, pair.incoming->key};
         script.candidate = candidate;

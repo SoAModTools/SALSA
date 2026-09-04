@@ -357,6 +357,49 @@ TEST(SctEditSession, MovesOnlyWithinASectionAndPreservesInstructionIdentity) {
     EXPECT_EQ(session.currentRevision(), moved.revision);
 }
 
+TEST(SctEditSession, MovesDeletesAndRestoresContiguousInstructionRangesAtomically) {
+    auto baseline = snapshotWith(loadedSnapshot(), makeScriptDocument({125, 125, 125}));
+    SctEditSession session(baseline);
+    const auto original = script(*baseline).instructions;
+    const auto section = baseline->document->sections.front().id;
+    const std::array selected{original[1].id, original[2].id};
+
+    const auto moved = session.moveInstructionsAfter(selected, original[3].id);
+    ASSERT_TRUE(moved.committed);
+    EXPECT_EQ(moved.suggestedSelectionRange,
+        (std::vector<SctNavigationTarget>{{SctNavigationKind::Instruction,
+            original[1].id.value()}, {SctNavigationKind::Instruction,
+            original[2].id.value()}}));
+    const auto order = [&] {
+        const auto current = session.workingState().instructionOrder(section);
+        return std::vector<SctInstructionId>(current.begin(), current.end());
+    };
+    EXPECT_EQ(order(), (std::vector<SctInstructionId>{original[0].id,
+        original[3].id, original[1].id, original[2].id, original[4].id}));
+
+    const auto undoneMove = session.undo();
+    ASSERT_TRUE(undoneMove.has_value());
+    EXPECT_EQ(order(),
+        (std::vector<SctInstructionId>{original[0].id, original[1].id,
+            original[2].id, original[3].id, original[4].id}));
+    ASSERT_TRUE(session.redo().has_value());
+
+    const auto deleted = session.deleteInstructions(selected);
+    ASSERT_TRUE(deleted.committed);
+    EXPECT_EQ(order(),
+        (std::vector<SctInstructionId>{original[0].id, original[3].id,
+            original[4].id}));
+    const auto undoneDelete = session.undo();
+    ASSERT_TRUE(undoneDelete.has_value());
+    EXPECT_EQ(undoneDelete->suggestedSelectionRange,
+        (std::vector<SctNavigationTarget>{{SctNavigationKind::Instruction,
+            original[1].id.value()}, {SctNavigationKind::Instruction,
+            original[2].id.value()}}));
+    EXPECT_EQ(order(),
+        (std::vector<SctInstructionId>{original[0].id, original[3].id,
+            original[1].id, original[2].id, original[4].id}));
+}
+
 TEST(SctEditSession, EnforcesLabelAndReturnAuthoringBoundaries) {
     auto baseline = snapshotWith(loadedSnapshot(), makeScriptDocument({125}));
     SctEditSession session(baseline);
@@ -1076,6 +1119,53 @@ TEST(SctParameterEditing, RepeatedGroupLifecycleUsesExactReversibleChanges) {
     const auto minimum = session.deleteRepeatedGroup(built.instruction->id, 0u);
     EXPECT_FALSE(minimum.committed);
     EXPECT_TRUE(hasCode(minimum, "RepeatedGroupMinimum"));
+}
+
+TEST(SctParameterEditing, RepeatedGroupEditsKeepUnboundReferenceOriginsAtTheirValues) {
+    auto document = makeScriptDocument();
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    SctInstructionFactoryRequest request;
+    request.opcode = 42u;
+    request.repeatedGroupCount = 2u;
+    request.parameterOverrides = {
+        {{0u, std::nullopt}, SctExpressionFactory::encodedDecimalLiteral(0)},
+        {{2u, 0u}, SctExpressionFactory::encodedDecimalLiteral(1)},
+        {{2u, 1u}, SctExpressionFactory::encodedDecimalLiteral(2)},
+    };
+    const auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    const auto built = SctInstructionFactory::materialize(document, *draft.draft);
+    ASSERT_TRUE(built.instruction.has_value());
+    instructions.insert(std::prev(instructions.end()), *built.instruction);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
+
+    const auto baseline = snapshotWith(loadedSnapshot(), std::move(document));
+    const SctParameterSite site{built.instruction->id, {2u, 1u}};
+    const SctUnboundReferenceOrigin origin{site, "scripts/source.sct",
+        SctInstructionId{90u}, std::nullopt};
+    SctEditSession session(baseline, baseline, {}, {}, std::span{&origin, 1u});
+    auto groupDraft = SctInstructionFactory::createRepeatedGroupDraft(42u, {
+        {2u, SctExpressionFactory::encodedDecimalLiteral(7)}});
+    ASSERT_TRUE(groupDraft.draft.has_value());
+    const auto group = SctInstructionFactory::materializeRepeatedGroup(*groupDraft.draft);
+    ASSERT_TRUE(group.group.has_value());
+
+    ASSERT_TRUE(session.insertRepeatedGroup(
+        built.instruction->id, 0u, *group.group).committed);
+    ASSERT_EQ(session.unboundReferences().size(), 1u);
+    EXPECT_EQ(session.unboundReferences().front().site.parameter.repeatedGroupOrdinal, 2u);
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_EQ(session.unboundReferences().front().site.parameter.repeatedGroupOrdinal, 1u);
+
+    ASSERT_TRUE(session.moveRepeatedGroup(built.instruction->id, 1u,
+        SctRepeatedGroupMoveDirection::Up).committed);
+    EXPECT_EQ(session.unboundReferences().front().site.parameter.repeatedGroupOrdinal, 0u);
+    ASSERT_TRUE(session.deleteRepeatedGroup(built.instruction->id, 0u).committed);
+    EXPECT_TRUE(session.unboundReferences().empty());
+    ASSERT_TRUE(session.undo().has_value());
+    ASSERT_EQ(session.unboundReferences().size(), 1u);
+    EXPECT_EQ(session.unboundReferences().front().site.parameter.repeatedGroupOrdinal, 0u);
 }
 
 TEST(SctParameterEditing, SharedFooterPlainTextUsesAtomicCopyOnWrite) {

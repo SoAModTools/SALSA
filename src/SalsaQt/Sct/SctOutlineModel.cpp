@@ -3,6 +3,7 @@
 #include "SpiceSCT/SctOpcodeMetadata.h"
 
 #include <QString>
+#include <QMimeData>
 
 #include <algorithm>
 #include <ranges>
@@ -52,6 +53,80 @@ QVariant SctOutlineModel::headerData(
     const int section, const Qt::Orientation orientation, const int role) const {
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) return {};
     return section == 0 ? tr("Physical outline") : tr("Kind / ID");
+}
+
+Qt::ItemFlags SctOutlineModel::flags(const QModelIndex& modelIndex) const {
+    auto result = QAbstractItemModel::flags(modelIndex);
+    if (!modelIndex.isValid()) return result;
+    const auto* node = static_cast<Node*>(modelIndex.internalPointer());
+    if (node->target.kind == core::SctNavigationKind::Instruction)
+        result |= Qt::ItemIsDragEnabled;
+    if (node->target.kind == core::SctNavigationKind::Section)
+        result |= Qt::ItemIsDropEnabled;
+    return result;
+}
+
+QStringList SctOutlineModel::mimeTypes() const {
+    return {QStringLiteral("application/vnd.jahorta.salsa.instruction-range")};
+}
+
+QMimeData* SctOutlineModel::mimeData(const QModelIndexList& indexes) const {
+    auto* data = new QMimeData;
+    std::vector<const Node*> nodes;
+    for (const auto& index : indexes) {
+        if (!index.isValid() || index.column() != 0) continue;
+        const auto* node = static_cast<Node*>(index.internalPointer());
+        if (node->target.kind != core::SctNavigationKind::Instruction) continue;
+        nodes.push_back(node);
+    }
+    std::ranges::sort(nodes, {}, [&](const Node* node) { return rowOf(node); });
+    nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+    if (nodes.empty()) return data;
+    const auto* parent = nodes.front()->parent;
+    for (std::size_t ordinal = 0; ordinal < nodes.size(); ++ordinal) {
+        if (nodes[ordinal]->parent != parent
+            || rowOf(nodes[ordinal]) != rowOf(nodes.front()) + static_cast<int>(ordinal))
+            return data;
+    }
+    QByteArray encoded;
+    for (const auto* node : nodes) {
+        if (!encoded.isEmpty()) encoded.push_back(',');
+        encoded += QByteArray::number(node->target.id);
+    }
+    data->setData(mimeTypes().front(), encoded);
+    return data;
+}
+
+bool SctOutlineModel::dropMimeData(const QMimeData* data,
+    const Qt::DropAction action, int row, const int column,
+    const QModelIndex& parentIndex) {
+    if (action == Qt::IgnoreAction) return true;
+    if (action != Qt::MoveAction || column > 0 || !parentIndex.isValid()
+        || !data->hasFormat(mimeTypes().front())) return false;
+    auto* section = static_cast<Node*>(parentIndex.internalPointer());
+    if (section->target.kind != core::SctNavigationKind::Section) return false;
+    if (row < 0) row = static_cast<int>(section->children.size());
+    if (row <= 0 || row > static_cast<int>(section->children.size())) return false;
+    auto* anchor = section->children[static_cast<std::size_t>(row - 1)].get();
+    if (anchor->target.kind != core::SctNavigationKind::Instruction) return false;
+    QList<qulonglong> instructions;
+    for (const auto& token : data->data(mimeTypes().front()).split(',')) {
+        bool valid = false;
+        const auto value = token.toULongLong(&valid);
+        if (!valid || value == 0u) return false;
+        const auto* node = nodeFor({core::SctNavigationKind::Instruction, value});
+        if (!node || node->parent != section) return false;
+        instructions.push_back(value);
+    }
+    if (instructions.empty()
+        || std::ranges::find(instructions, anchor->target.id) != instructions.end())
+        return false;
+    emit instructionRangeDropRequested(instructions, anchor->target.id);
+    return true;
+}
+
+Qt::DropActions SctOutlineModel::supportedDropActions() const {
+    return Qt::MoveAction;
 }
 
 void SctOutlineModel::resetFrom(
