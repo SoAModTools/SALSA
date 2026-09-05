@@ -438,7 +438,7 @@ void SctMessageEditorWidget::buildUi() {
     plainPage_ = new QWidget(pages_);
     auto* plainLayout = new QVBoxLayout(plainPage_);
     auto* plainHelp = new QLabel(tr(
-        "Plain footer text is edited as exact Unicode. Formatting commands are not available."),
+        "Plain supplementary text is edited as exact Unicode. Formatting commands are not available."),
         plainPage_);
     plainHelp->setWordWrap(true);
     auto* plainGlyphs = new QPushButton(tr("Glyphs..."), plainPage_);
@@ -525,7 +525,7 @@ bool SctMessageEditorWidget::bindText(
     identityLabel_->setText(tr("%1 — %2 %3")
         .arg(QString::fromStdWString(locator_->path().wstring()))
         .arg(std::holds_alternative<spice::sct::SctStringId>(*target_)
-            ? tr("indexed string") : tr("footer text"))
+            ? tr("indexed string") : tr("supplementary text"))
         .arg(std::visit([](const auto id) { return QString::number(id.value()); }, *target_)));
     return refreshText(value);
 }
@@ -550,7 +550,7 @@ bool SctMessageEditorWidget::bindMessage(
     identityLabel_->setText(tr("%1 — %2 %3")
         .arg(QString::fromStdWString(locator_->path().wstring()))
         .arg(std::holds_alternative<spice::sct::SctStringId>(*target_)
-            ? tr("indexed string") : tr("footer message"))
+            ? tr("indexed string") : tr("supplementary message"))
         .arg(std::visit([](const auto id) { return QString::number(id.value()); }, *target_)));
     const auto projection = core::SctMessageAuthoringProfile::project(*message);
     if (!projection.supported()) {
@@ -826,7 +826,8 @@ bool SctMessageEditorWidget::commitDraft(
         errorLabel_->hide();
     } else {
         failedCommitKind_ = kind;
-        errorLabel_->setText(tr("The message edit could not be committed. Review Diagnostics for details."));
+        errorLabel_->setText(tr(
+            "The message edit was rejected; the previous text was retained."));
         errorLabel_->show();
     }
     return success;
@@ -880,9 +881,14 @@ bool SctMessageEditorWidget::flushPlainText() {
     committing_ = true;
     const auto success = plainTextCommitHandler_(*locator_, *target_, value);
     committing_ = false;
-    if (success) committedPlainText_ = value;
-    else emit statusMessageRequested(tr(
-        "The plain-text edit could not be committed. Review Diagnostics for details."));
+    if (success) {
+        committedPlainText_ = value;
+        errorLabel_->hide();
+    } else {
+        errorLabel_->setText(tr(
+            "The plain-text edit was rejected; the previous text was retained."));
+        errorLabel_->show();
+    }
     return success;
 }
 

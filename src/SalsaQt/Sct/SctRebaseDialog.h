@@ -88,6 +88,7 @@ private:
     QFutureWatcher<core::SctWorkspaceRebaseCommitResult> commitWatcher_{};
     std::vector<PreparedAsset> assets_{};
     QString summary_{};
+    bool activityReported_ = false;
 };
 
 }  // namespace salsa::qt

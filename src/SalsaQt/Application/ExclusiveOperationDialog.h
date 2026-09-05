@@ -37,6 +37,7 @@ private:
     void dispatch(const QString& event);
     void showCurrentPage();
     void rebuildActions();
+    void applyPageLayout(core::ExclusiveOperationPageLayout layout);
     void requestCancel();
     void finishAndClose();
     [[nodiscard]] QString progressText(const QString& phase, quint64 completed,
@@ -53,6 +54,7 @@ private:
     std::unordered_map<std::string, QWidget*> pageWidgets_;
     bool valid_ = false;
     bool closing_ = false;
+    bool initialSizeApplied_ = false;
 };
 
 }  // namespace salsa::qt

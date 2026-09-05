@@ -21,46 +21,8 @@ namespace {
 }
 
 [[nodiscard]] QString codeText(const core::DiagnosticCode code) {
-    switch (code) {
-    case core::DiagnosticCode::Cancelled: return QStringLiteral("Cancelled");
-    case core::DiagnosticCode::InvalidDatasetRoot: return QStringLiteral("InvalidDatasetRoot");
-    case core::DiagnosticCode::DatasetEnumerationFailed: return QStringLiteral("DatasetEnumerationFailed");
-    case core::DiagnosticCode::NoSctAssets: return QStringLiteral("NoSctAssets");
-    case core::DiagnosticCode::InvalidAssetLocator: return QStringLiteral("InvalidAssetLocator");
-    case core::DiagnosticCode::DuplicateAssetLocator: return QStringLiteral("DuplicateAssetLocator");
-    case core::DiagnosticCode::AssetOutsideDataset: return QStringLiteral("AssetOutsideDataset");
-    case core::DiagnosticCode::AssetNotFound: return QStringLiteral("AssetNotFound");
-    case core::DiagnosticCode::AssetReadFailed: return QStringLiteral("AssetReadFailed");
-    case core::DiagnosticCode::SourceChanged: return QStringLiteral("SourceChanged");
-    case core::DiagnosticCode::SctParseFailed: return QStringLiteral("SctParseFailed");
-    case core::DiagnosticCode::SctImportFailed: return QStringLiteral("SctImportFailed");
-    case core::DiagnosticCode::ReparsePointSkipped: return QStringLiteral("ReparsePointSkipped");
-    case core::DiagnosticCode::HashInitializationFailed: return QStringLiteral("HashInitializationFailed");
-    case core::DiagnosticCode::HashUpdateFailed: return QStringLiteral("HashUpdateFailed");
-    case core::DiagnosticCode::HashFinalizationFailed: return QStringLiteral("HashFinalizationFailed");
-    case core::DiagnosticCode::HashStateInvalid: return QStringLiteral("HashStateInvalid");
-    case core::DiagnosticCode::MalformedPersistenceJson: return QStringLiteral("MalformedPersistenceJson");
-    case core::DiagnosticCode::InvalidPatchEnvelope: return QStringLiteral("InvalidPatchEnvelope");
-    case core::DiagnosticCode::UnsupportedPersistenceSchemaVersion: return QStringLiteral("UnsupportedPersistenceSchemaVersion");
-    case core::DiagnosticCode::PatchPayloadCorrupt: return QStringLiteral("PatchPayloadCorrupt");
-    case core::DiagnosticCode::PersistenceReadFailed: return QStringLiteral("PersistenceReadFailed");
-    case core::DiagnosticCode::PersistenceWriteFailed: return QStringLiteral("PersistenceWriteFailed");
-    case core::DiagnosticCode::PersistenceReplaceFailed: return QStringLiteral("PersistenceReplaceFailed");
-    case core::DiagnosticCode::InvalidSalsaWorkspace: return QStringLiteral("InvalidSalsaWorkspace");
-    case core::DiagnosticCode::UnsupportedSctPatchSchema: return QStringLiteral("UnsupportedSctPatchSchema");
-    case core::DiagnosticCode::InvalidSctPatch: return QStringLiteral("InvalidSctPatch");
-    case core::DiagnosticCode::UnsupportedSctFragmentSchema: return QStringLiteral("UnsupportedSctFragmentSchema");
-    case core::DiagnosticCode::InvalidSctFragment: return QStringLiteral("InvalidSctFragment");
-    case core::DiagnosticCode::SctFragmentTooLarge: return QStringLiteral("SctFragmentTooLarge");
-    case core::DiagnosticCode::SctPatchSourceMismatch: return QStringLiteral("SctPatchSourceMismatch");
-    case core::DiagnosticCode::SctPatchApplyFailed: return QStringLiteral("SctPatchApplyFailed");
-    case core::DiagnosticCode::SctPatchVerificationFailed: return QStringLiteral("SctPatchVerificationFailed");
-    case core::DiagnosticCode::SctExportFailed: return QStringLiteral("SctExportFailed");
-    case core::DiagnosticCode::PublicationSourceChanged: return QStringLiteral("PublicationSourceChanged");
-    case core::DiagnosticCode::PublicationSourceReplacementNotConfirmed: return QStringLiteral("PublicationSourceReplacementNotConfirmed");
-    case core::DiagnosticCode::PublicationWriteFailed: return QStringLiteral("PublicationWriteFailed");
-    }
-    return QStringLiteral("Unknown");
+    const auto name = core::diagnosticCodeName(code);
+    return QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
 }
 
 [[nodiscard]] std::optional<core::SctInspectionLocation> inspectionLocation(
@@ -82,6 +44,7 @@ void DiagnosticsModel::setDiagnostics(std::vector<core::Diagnostic> diagnostics)
     std::vector<DiagnosticRow> rows;
     rows.reserve(diagnostics.size());
     for (const auto& diagnostic : diagnostics) {
+        if (!core::isCurrentDiagnosticSeverity(diagnostic.severity)) continue;
         rows.push_back({ diagnostic.severity, codeText(diagnostic.code),
             QString::fromStdString(diagnostic.message),
             diagnostic.path.has_value() ? QString::fromStdWString(diagnostic.path->wstring()) : QString{},
@@ -110,6 +73,7 @@ std::vector<DiagnosticRow> DiagnosticsModel::rowsFor(
     std::vector<DiagnosticRow> rows;
     rows.reserve(workspace.size() + document.size());
     for (const auto& diagnostic : workspace) {
+        if (!core::isCurrentDiagnosticSeverity(diagnostic.severity)) continue;
         rows.push_back({ diagnostic.severity, codeText(diagnostic.code),
             QString::fromStdString(diagnostic.message),
             diagnostic.path.has_value() ? QString::fromStdWString(diagnostic.path->wstring()) : QString{},
@@ -117,6 +81,7 @@ std::vector<DiagnosticRow> DiagnosticsModel::rowsFor(
             std::nullopt, std::nullopt });
     }
     for (const auto& diagnostic : document) {
+        if (!core::isCurrentDiagnosticSeverity(diagnostic.severity)) continue;
         QString location;
         if (diagnostic.locator.has_value())
             location = QString::fromStdWString(diagnostic.locator->path().wstring());

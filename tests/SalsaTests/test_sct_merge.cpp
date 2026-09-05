@@ -26,7 +26,7 @@ using namespace spice::sct;
     for (std::uint64_t index = 0; index < seed; ++index) {
         (void)builder.allocateSectionId();
         (void)builder.allocateInstructionId();
-        (void)builder.allocateFooterEntryId();
+        (void)builder.allocateSupplementaryTextId();
     }
     SctScriptSectionContent script;
     for (const std::uint16_t opcode : {9u, 125u, 12u}) {
@@ -39,7 +39,7 @@ using namespace spice::sct;
     }
     builder.document().sections.push_back(
         {builder.allocateSectionId(), "SCRIPT", std::move(script)});
-    builder.document().footerEntries.push_back({builder.allocateFooterEntryId(),
+    builder.document().supplementaryText.push_back({builder.allocateSupplementaryTextId(),
         SctTextKind::PlainString, SctPlainText{"base"}});
     return std::move(builder).finish();
 }
@@ -79,7 +79,7 @@ TEST(SctMergeTest, ComposesDisjointLocalAndIncomingChangesDeterministically) {
     auto local = base;
     middle(local).skipRefresh = true;
     auto incoming = base;
-    std::get<SctPlainText>(incoming.footerEntries.front().value).utf8 = "incoming";
+    std::get<SctPlainText>(incoming.supplementaryText.front().value).utf8 = "incoming";
 
     const auto built = SctMergePlanService::build(request(base, local, incoming));
     ASSERT_TRUE(built) << (built.diagnostics().empty()
@@ -91,7 +91,7 @@ TEST(SctMergeTest, ComposesDisjointLocalAndIncomingChangesDeterministically) {
     ASSERT_TRUE(preview.candidate.has_value());
     EXPECT_TRUE(middle(*preview.candidate->document).skipRefresh);
     EXPECT_EQ(std::get<SctPlainText>(
-        preview.candidate->document->footerEntries.front().value).utf8, "incoming");
+        preview.candidate->document->supplementaryText.front().value).utf8, "incoming");
 
     const auto again = SctMergePlanService::build(request(base, local, incoming));
     ASSERT_TRUE(again);
@@ -157,7 +157,7 @@ TEST(SctMergeTest, RejectsStaleContextAndEditedCandidateOutsideConflictGroup) {
         built.value(), {}, "different").status, SctMergePreviewStatus::Stale);
 
     auto escaped = incoming;
-    std::get<SctPlainText>(escaped.footerEntries.front().value).utf8 = "escaped";
+    std::get<SctPlainText>(escaped.supplementaryText.front().value).utf8 = "escaped";
     const std::array edited{SctMergeResolution{built.value().conflicts.front().id,
         SctMergeResolutionKind::UseEditedCandidate, state(escaped)}};
     const auto rejected = SctMergePlanService::preview(
@@ -174,7 +174,7 @@ TEST(SctPatchRebaseTest, ReconcilesIndependentSourceLineagesAndVerifiesPatchRoun
     ASSERT_TRUE(oldPatch);
 
     auto newBaseline = document(10);
-    std::get<SctPlainText>(newBaseline.footerEntries.front().value).utf8 = "new source";
+    std::get<SctPlainText>(newBaseline.supplementaryText.front().value).utf8 = "new source";
     const auto built = SctPatchRebaseService::build({locator(),
         SourceRevision{digest("old-source")}, SourceRevision{digest("new-source")},
         state(oldBaseline), oldPatch.value(), state(newBaseline),
@@ -188,7 +188,7 @@ TEST(SctPatchRebaseTest, ReconcilesIndependentSourceLineagesAndVerifiesPatchRoun
     ASSERT_TRUE(preview.merge.candidate.has_value());
     EXPECT_TRUE(middle(*preview.merge.candidate->document).skipRefresh);
     EXPECT_EQ(std::get<SctPlainText>(
-        preview.merge.candidate->document->footerEntries.front().value).utf8,
+        preview.merge.candidate->document->supplementaryText.front().value).utf8,
         "new source");
     EXPECT_FALSE(preview.serializedPatch.empty());
 }

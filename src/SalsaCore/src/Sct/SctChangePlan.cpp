@@ -28,7 +28,7 @@ namespace {
     return std::visit([](const auto id) {
         using T = std::decay_t<decltype(id)>;
         return std::string(std::is_same_v<T, spice::sct::SctStringId>
-            ? "string:" : "footer:") + std::to_string(id.value());
+            ? "string:" : "supplementary-text:") + std::to_string(id.value());
     }, target);
 }
 
@@ -168,10 +168,10 @@ template<typename T, typename Id>
     return result;
 }
 
-[[nodiscard]] std::vector<spice::sct::SctFooterEntryId> footerOrder(
+[[nodiscard]] std::vector<spice::sct::SctSupplementaryTextId> supplementaryTextOrder(
     const spice::sct::SctDocument& document) {
-    std::vector<spice::sct::SctFooterEntryId> result;
-    for (const auto& entry : document.footerEntries) result.push_back(entry.id);
+    std::vector<spice::sct::SctSupplementaryTextId> result;
+    for (const auto& entry : document.supplementaryText) result.push_back(entry.id);
     return result;
 }
 
@@ -189,7 +189,7 @@ template<typename T, typename Id>
 [[nodiscard]] SctPatchedAllocatorState allocatorState(
     const spice::sct::SctDocument& document) {
     return {document.nextSectionIdValue(), document.nextInstructionIdValue(),
-        document.nextStringIdValue(), document.nextFooterEntryIdValue(),
+        document.nextStringIdValue(), document.nextSupplementaryTextIdValue(),
         document.nextOpaqueAttachmentIdValue()};
 }
 
@@ -200,7 +200,7 @@ template<typename T, typename Id>
         std::max(current.nextSectionId, proposed.nextSectionId),
         std::max(current.nextInstructionId, proposed.nextInstructionId),
         std::max(current.nextStringId, proposed.nextStringId),
-        std::max(current.nextFooterEntryId, proposed.nextFooterEntryId),
+        std::max(current.nextSupplementaryTextId, proposed.nextSupplementaryTextId),
         std::max(current.nextOpaqueAttachmentId, proposed.nextOpaqueAttachmentId),
     };
 }
@@ -239,9 +239,9 @@ void addOrMergeUnit(SctScriptChangePlan& script,
                 result.insert(idKey("instruction", id));
     }
     for (const auto& value : patch.textValues) result.insert(textKey(value.target));
-    for (const auto& entry : patch.footerEntries) {
+    for (const auto& entry : patch.supplementaryText) {
         const auto id = entry.before ? entry.before->id : entry.after->id;
-        result.insert(idKey("footer", id));
+        result.insert(idKey("supplementary-text", id));
     }
     for (const auto& arm : patch.authoredArms) {
         const auto id = arm.before ? arm.before->id : arm.after->id;
@@ -259,9 +259,9 @@ void addOrMergeUnit(SctScriptChangePlan& script,
     if (patch.sectionOrder)
         for (const auto id : orderAffected(patch.sectionOrder->before, patch.sectionOrder->after))
             result.insert(idKey("section", id));
-    if (patch.footerOrder)
-        for (const auto id : orderAffected(patch.footerOrder->before, patch.footerOrder->after))
-            result.insert(idKey("footer", id));
+    if (patch.supplementaryTextOrder)
+        for (const auto id : orderAffected(patch.supplementaryTextOrder->before, patch.supplementaryTextOrder->after))
+            result.insert(idKey("supplementary-text", id));
     return result;
 }
 
@@ -308,9 +308,9 @@ void addOrMergeUnit(SctScriptChangePlan& script,
     }
     for (const auto& value : plan.completePatch.textValues)
         if (selectedKeys.contains(textKey(value.target))) result.textValues.push_back(value);
-    for (const auto& value : plan.completePatch.footerEntries) {
+    for (const auto& value : plan.completePatch.supplementaryText) {
         const auto id = value.before ? value.before->id : value.after->id;
-        if (selectedKeys.contains(idKey("footer", id))) result.footerEntries.push_back(value);
+        if (selectedKeys.contains(idKey("supplementary-text", id))) result.supplementaryText.push_back(value);
     }
     for (const auto& value : plan.completePatch.authoredArms) {
         const auto id = value.before ? value.before->id : value.after->id;
@@ -343,16 +343,16 @@ void addOrMergeUnit(SctScriptChangePlan& script,
                 SctOrderDelta<spice::sct::SctSectionId>{before, after};
         }
     }
-    if (plan.completePatch.footerOrder && current.document) {
-        std::unordered_set<spice::sct::SctFooterEntryId> selected;
-        for (const auto id : orderAffected(plan.completePatch.footerOrder->before,
-                plan.completePatch.footerOrder->after))
-            if (selectedOrderKeys.contains(idKey("footer", id))) selected.insert(id);
+    if (plan.completePatch.supplementaryTextOrder && current.document) {
+        std::unordered_set<spice::sct::SctSupplementaryTextId> selected;
+        for (const auto id : orderAffected(plan.completePatch.supplementaryTextOrder->before,
+                plan.completePatch.supplementaryTextOrder->after))
+            if (selectedOrderKeys.contains(idKey("supplementary-text", id))) selected.insert(id);
         if (!selected.empty()) {
-            const auto before = footerOrder(*current.document);
-            const auto after = projectOrder(before, plan.completePatch.footerOrder->after, selected);
-            if (before != after) result.footerOrder =
-                SctOrderDelta<spice::sct::SctFooterEntryId>{before, after};
+            const auto before = supplementaryTextOrder(*current.document);
+            const auto after = projectOrder(before, plan.completePatch.supplementaryTextOrder->after, selected);
+            if (before != after) result.supplementaryTextOrder =
+                SctOrderDelta<spice::sct::SctSupplementaryTextId>{before, after};
         }
     }
     return result;
@@ -454,29 +454,29 @@ Result<SctChangePlan> SctChangePlanService::build(
                 SctChangeUnit unit;
                 unit.entityKey = textKey(value.target);
                 unit.category = std::holds_alternative<spice::sct::SctStringId>(value.target)
-                    ? SctChangeCategory::Text : SctChangeCategory::Footer;
+                    ? SctChangeCategory::Text : SctChangeCategory::SupplementaryText;
                 unit.entityKind = std::holds_alternative<spice::sct::SctStringId>(value.target)
-                    ? SctChangeEntityKind::IndexedString : SctChangeEntityKind::FooterEntry;
+                    ? SctChangeEntityKind::IndexedString : SctChangeEntityKind::SupplementaryText;
                 unit.summary = "Change text";
                 std::visit([&](const auto id) {
                     using T = std::decay_t<decltype(id)>;
                     unit.target = SctNavigationTarget{
                         std::is_same_v<T, spice::sct::SctStringId>
-                            ? SctNavigationKind::String : SctNavigationKind::FooterEntry,
+                            ? SctNavigationKind::String : SctNavigationKind::SupplementaryText,
                         id.value()};
                 }, value.target);
                 addOrMergeUnit(script, byKey, std::move(unit), identity);
             }
-            for (const auto& value : script.completePatch.footerEntries) {
+            for (const auto& value : script.completePatch.supplementaryText) {
                 const auto id = value.before ? value.before->id : value.after->id;
                 SctChangeUnit unit;
-                unit.entityKey = idKey("footer", id);
-                unit.category = SctChangeCategory::Footer;
-                unit.entityKind = SctChangeEntityKind::FooterEntry;
+                unit.entityKey = idKey("supplementary-text", id);
+                unit.category = SctChangeCategory::SupplementaryText;
+                unit.entityKind = SctChangeEntityKind::SupplementaryText;
                 unit.summary = value.before
-                    ? (value.after ? "Change footer entry" : "Delete footer entry")
-                    : "Insert footer entry";
-                unit.target = SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()};
+                    ? (value.after ? "Change supplementary text" : "Delete supplementary text")
+                    : "Insert supplementary text";
+                unit.target = SctNavigationTarget{SctNavigationKind::SupplementaryText, id.value()};
                 unit.affectsOrder = !value.before || !value.after;
                 addOrMergeUnit(script, byKey, std::move(unit), identity);
             }
@@ -569,15 +569,15 @@ Result<SctChangePlan> SctChangePlanService::build(
                     unit.affectsOrder = true;
                     addOrMergeUnit(script, byKey, std::move(unit), identity);
                 }
-            if (script.completePatch.footerOrder)
-                for (const auto id : orderAffected(script.completePatch.footerOrder->before,
-                        script.completePatch.footerOrder->after)) {
+            if (script.completePatch.supplementaryTextOrder)
+                for (const auto id : orderAffected(script.completePatch.supplementaryTextOrder->before,
+                        script.completePatch.supplementaryTextOrder->after)) {
                     SctChangeUnit unit;
-                    unit.entityKey = idKey("footer", id);
-                    unit.category = SctChangeCategory::Footer;
-                    unit.entityKind = SctChangeEntityKind::FooterEntry;
-                    unit.summary = "Move footer entry";
-                    unit.target = SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()};
+                    unit.entityKey = idKey("supplementary-text", id);
+                    unit.category = SctChangeCategory::SupplementaryText;
+                    unit.entityKind = SctChangeEntityKind::SupplementaryText;
+                    unit.summary = "Move supplementary text";
+                    unit.target = SctNavigationTarget{SctNavigationKind::SupplementaryText, id.value()};
                     unit.affectsOrder = true;
                     addOrMergeUnit(script, byKey, std::move(unit), identity);
                 }

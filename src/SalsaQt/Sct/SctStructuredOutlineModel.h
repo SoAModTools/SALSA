@@ -5,6 +5,7 @@
 
 #include <QAbstractItemModel>
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -55,6 +56,7 @@ private:
         QString tooltip{};
         std::optional<core::SctNavigationTarget> target{};
         bool suggested = false;
+        std::size_t importedEvidenceCount = 0;
         std::optional<EditContext> editContext{};
         Node* parent = nullptr;
         std::vector<std::unique_ptr<Node>> children{};
@@ -68,9 +70,9 @@ private:
     void appendArm(Node& parent, const spice::sct::SctSectionStructure& section,
         const spice::sct::SctStructuredRegion& region,
         const spice::sct::SctStructuredArm& arm);
-    void appendHistoricalCandidate(Node& parent,
-        const spice::sct::SctHistoricalStructureCandidate& candidate);
     void appendIssue(Node& parent, const spice::sct::SctStructureIssue& issue);
+    void markImportedEvidence(Node& node,
+        spice::sct::SctInstructionId instruction) const;
     void appendAuthoredArms();
     void indexNode(Node& node);
     [[nodiscard]] QModelIndex indexForNode(const Node* node, int column = 0) const;
@@ -85,6 +87,7 @@ private:
     std::vector<std::unique_ptr<Node>> roots_{};
     std::unordered_map<std::string, Node*> targets_{};
     std::unordered_map<std::uint64_t, Node*> regionsByController_{};
+    std::unordered_map<std::uint64_t, std::size_t> importedEvidenceByInstruction_{};
     std::vector<spice::sct::SctInstructionId> hiddenControlFlow_{};
 };
 

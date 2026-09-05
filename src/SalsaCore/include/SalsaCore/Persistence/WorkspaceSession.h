@@ -45,7 +45,8 @@ struct WorkspaceSessionState final {
 class WorkspaceSessionCodec final {
 public:
     static constexpr std::string_view FormatId = "jahorta.salsa.session";
-    static constexpr std::uint32_t SchemaVersion = 1;
+    static constexpr std::uint32_t SchemaVersion = 2;
+    static constexpr std::uint32_t LegacySchemaVersion = 1;
 
     [[nodiscard]] static Result<std::string> serialize(
         const WorkspaceSessionState& state);

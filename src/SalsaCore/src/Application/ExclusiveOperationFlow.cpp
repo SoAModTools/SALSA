@@ -10,6 +10,30 @@
 
 namespace salsa::core {
 
+ExclusiveOperationLogicalSize resolveExclusiveOperationSize(
+    const ExclusiveOperationPageLayout layout,
+    const ExclusiveOperationLogicalSize pageMinimum,
+    const ExclusiveOperationLogicalSize availableScreen,
+    const std::optional<ExclusiveOperationLogicalSize> currentSize) noexcept {
+    ExclusiveOperationLogicalSize target;
+    switch (layout) {
+    case ExclusiveOperationPageLayout::Compact: target = {560, 260}; break;
+    case ExclusiveOperationPageLayout::Standard: target = {820, 600}; break;
+    case ExclusiveOperationPageLayout::Expanded: target = {1080, 760}; break;
+    }
+    target.width = std::max(target.width, pageMinimum.width);
+    target.height = std::max(target.height, pageMinimum.height);
+    const auto maximumWidth = std::max(1, availableScreen.width * 9 / 10);
+    const auto maximumHeight = std::max(1, availableScreen.height * 9 / 10);
+    target.width = std::clamp(target.width, 1, maximumWidth);
+    target.height = std::clamp(target.height, 1, maximumHeight);
+    if (currentSize) {
+        target.width = std::max(target.width, currentSize->width);
+        target.height = std::max(target.height, currentSize->height);
+    }
+    return target;
+}
+
 ExclusiveOperationFlow::ExclusiveOperationFlow(ExclusiveOperationFlowDefinition definition)
     : definition_(std::move(definition)), currentPage_(definition_.entry) {}
 

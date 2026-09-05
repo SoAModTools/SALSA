@@ -3,9 +3,11 @@
 
 #include "SpiceSCT/SctOpcodeMetadata.h"
 
+#include <QApplication>
 #include <QBrush>
 #include <QColor>
 #include <QFont>
+#include <QStyle>
 #include <QStringList>
 
 #include <algorithm>
@@ -138,6 +140,14 @@ QVariant SctStructuredOutlineModel::data(const QModelIndex& modelIndex, const in
     const auto* node = static_cast<Node*>(modelIndex.internalPointer());
     if (role == Qt::DisplayRole)
         return modelIndex.column() == 0 ? node->label : node->secondary;
+    if (role == Qt::DecorationRole && modelIndex.column() == 0
+        && node->importedEvidenceCount != 0u)
+        return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+    if (role == Qt::AccessibleDescriptionRole
+        && node->importedEvidenceCount != 0u) {
+        return tr("%1 imported control-flow evidence item(s). Select to inspect.")
+            .arg(node->importedEvidenceCount);
+    }
     if (role == Qt::ToolTipRole && !node->tooltip.isEmpty()) return node->tooltip;
     if (role == Qt::FontRole && node->suggested) {
         QFont font;
@@ -200,12 +210,15 @@ void SctStructuredOutlineModel::rebuild() {
     roots_.clear();
     targets_.clear();
     regionsByController_.clear();
+    importedEvidenceByInstruction_.clear();
     hiddenControlFlow_.clear();
     if (!snapshot_ || !snapshot_->document || !snapshot_->analysis) {
         endResetModel();
         return;
     }
     for (const auto& section : snapshot_->analysis->structuredControlFlow.sections()) {
+        for (const auto& candidate : section.historicalCandidates)
+            ++importedEvidenceByInstruction_[candidate.sourceInstruction.value()];
         for (const auto& region : section.regions) {
             for (const auto& evidence : region.evidence) {
                 if ((evidence.kind == SctStructureEvidenceKind::PreTargetJump
@@ -226,6 +239,13 @@ void SctStructuredOutlineModel::rebuild() {
             : QString::fromUtf8(source->nameBytes.data(),
                 static_cast<qsizetype>(source->nameBytes.size()));
         root->secondary = tr("Script");
+        root->importedEvidenceCount = section.historicalCandidates.size();
+        if (root->importedEvidenceCount != 0u) {
+            root->secondary += tr(" | Imported evidence: %1")
+                .arg(root->importedEvidenceCount);
+            root->tooltip = tr("%1 imported control-flow evidence item(s). "
+                "Select the section to inspect.").arg(root->importedEvidenceCount);
+        }
         const auto belongsToTopLevelRegion = [&](const SctInstructionId instruction) {
             return std::ranges::any_of(section.regions, [&](const auto& region) {
                 if (region.parent) return false;
@@ -264,8 +284,6 @@ void SctStructuredOutlineModel::rebuild() {
             if (blockNode && !blockNode->children.empty())
                 root->children.push_back(std::move(blockNode));
         }
-        for (const auto& candidate : section.historicalCandidates)
-            appendHistoricalCandidate(*root, candidate);
         if (showRejectedEvidence_) {
             for (const auto& issue : section.issues) appendIssue(*root, issue);
         }
@@ -295,6 +313,7 @@ void SctStructuredOutlineModel::appendInstruction(Node& parent,
                 : QString::fromStdString(resolved.mnemonic))
             .arg(value->opcode);
     node->secondary = tr("Instruction %1").arg(instruction.value());
+    markImportedEvidence(*node, instruction);
     parent.children.push_back(std::move(node));
 }
 
@@ -307,6 +326,7 @@ void SctStructuredOutlineModel::appendRegion(Node& parent,
     node->label = regionName(region.id.kind);
     node->secondary = confidenceName(region.minimumEdgeConfidence);
     node->tooltip = evidenceTooltip(region.evidence);
+    markImportedEvidence(*node, region.id.headerInstruction);
     node->editContext = EditContext{region.id.headerInstruction, std::nullopt,
         region.id.kind, std::nullopt, true, false, false, false};
     regionsByController_[region.id.headerInstruction.value()] = node.get();
@@ -368,25 +388,6 @@ void SctStructuredOutlineModel::appendArm(Node& parent,
         destination->children.push_back(std::move(empty));
     }
     if (armNode) parent.children.push_back(std::move(armNode));
-}
-
-void SctStructuredOutlineModel::appendHistoricalCandidate(Node& parent,
-    const SctHistoricalStructureCandidate& candidate) {
-    auto node = std::make_unique<Node>();
-    node->parent = &parent;
-    node->suggested = true;
-    node->label = candidate.suggestedKind
-        ? tr("Suggested %1").arg(regionName(*candidate.suggestedKind))
-        : tr("Suggested control-flow region");
-    node->secondary = tr("Historical · %1")
-        .arg(confidenceName(candidate.evidenceConfidence));
-    node->tooltip = evidenceTooltip(candidate.evidence);
-    const auto target = candidate.suggestedController.value_or(candidate.sourceInstruction);
-    node->target = core::SctNavigationTarget{
-        core::SctNavigationKind::Instruction, target.value()};
-    for (const auto instruction : candidate.involvedInstructions)
-        appendInstruction(*node, instruction);
-    parent.children.push_back(std::move(node));
 }
 
 void SctStructuredOutlineModel::appendIssue(Node& parent,
@@ -455,6 +456,7 @@ void SctStructuredOutlineModel::appendAuthoredArms() {
                     ? tr("Opcode %1").arg(instruction.opcode)
                     : QString::fromStdString(resolved.mnemonic);
                 child->secondary = tr("Instruction %1").arg(instruction.id.value());
+                markImportedEvidence(*child, instruction.id);
                 child->editContext = node->editContext;
                 node->children.push_back(std::move(child));
             }
@@ -462,6 +464,18 @@ void SctStructuredOutlineModel::appendAuthoredArms() {
         parent->children.push_back(std::move(node));
         indexNode(*parent->children.back());
     }
+}
+
+void SctStructuredOutlineModel::markImportedEvidence(
+    Node& node, const SctInstructionId instruction) const {
+    const auto found = importedEvidenceByInstruction_.find(instruction.value());
+    if (found == importedEvidenceByInstruction_.end() || found->second == 0u) return;
+    node.importedEvidenceCount = found->second;
+    node.secondary += tr(" | Imported evidence: %1").arg(found->second);
+    const auto evidence = tr("%1 imported control-flow evidence item(s). "
+        "Select the instruction to inspect.").arg(found->second);
+    if (!node.tooltip.isEmpty()) node.tooltip += QLatin1Char('\n');
+    node.tooltip += evidence;
 }
 
 void SctStructuredOutlineModel::indexNode(Node& node) {

@@ -559,12 +559,12 @@ struct TranslatedLegacyDocument final {
             state.reasons.push_back("A footer string is not encodable under the selected publication profile.");
             return std::nullopt;
         }
-        SctDocumentFooterEntry footer;
-        footer.id = state.document.allocateFooterEntryId();
+        SctDocumentSupplementaryText footer;
+        footer.id = state.document.allocateSupplementaryTextId();
         footer.kind = textRule->kind;
         footer.value = SctOpaqueText{*encoded};
-        state.document.footerEntries.push_back(std::move(footer));
-        result.value = SctFooterEntryReference{state.document.footerEntries.back().id};
+        state.document.supplementaryText.push_back(std::move(footer));
+        result.value = SctSupplementaryTextReference{state.document.supplementaryText.back().id};
         return result;
     }
     const auto words = parameterWords(state.graph, parameter, state.publication.byteOrder);

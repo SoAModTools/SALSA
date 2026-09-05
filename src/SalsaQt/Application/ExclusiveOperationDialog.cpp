@@ -2,10 +2,13 @@
 
 #include <QCloseEvent>
 #include <QDialogButtonBox>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScreen>
 #include <QStackedWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -35,12 +38,12 @@ ExclusiveOperationDialog::ExclusiveOperationDialog(
     setWindowTitle(controller_->title());
     setWindowModality(Qt::ApplicationModal);
     setAttribute(Qt::WA_DeleteOnClose);
-    resize(920, 650);
-
     phase_ = new QLabel(this);
     phase_->setWordWrap(true);
+    phase_->hide();
     progress_ = new QProgressBar(this);
     progress_->setRange(0, 0);
+    progress_->hide();
     diagnostics_ = new QLabel(this);
     diagnostics_->setWordWrap(true);
     diagnostics_->hide();
@@ -61,6 +64,7 @@ ExclusiveOperationDialog::ExclusiveOperationDialog(
         phase_->setText(tr("The operation flow is invalid."));
         diagnostics_->setText(messages.join(QLatin1Char('\n')));
         diagnostics_->show();
+        applyPageLayout(core::ExclusiveOperationPageLayout::Standard);
         auto* close = buttons_->addButton(QDialogButtonBox::Close);
         connect(close, &QPushButton::clicked, this, &ExclusiveOperationDialog::finishAndClose);
         return;
@@ -86,6 +90,8 @@ ExclusiveOperationDialog::ExclusiveOperationDialog(
         this, [this](const QString& text) {
             diagnostics_->setText(text);
             diagnostics_->setVisible(!text.isEmpty());
+            if (!text.isEmpty())
+                applyPageLayout(core::ExclusiveOperationPageLayout::Standard);
         });
     connect(controller_.get(), &ExclusiveOperationController::cancellationChanged,
         this, [this] { rebuildActions(); });
@@ -94,6 +100,8 @@ ExclusiveOperationDialog::ExclusiveOperationDialog(
             if (finishing) phase_->setText(tr("Finishing safely…"));
             rebuildActions();
         });
+    connect(controller_.get(), &ExclusiveOperationController::dismissalRequested,
+        this, &ExclusiveOperationDialog::finishAndClose);
     showCurrentPage();
 }
 
@@ -132,6 +140,15 @@ void ExclusiveOperationDialog::dispatch(const QString& event) {
 
 void ExclusiveOperationDialog::showCurrentPage() {
     const auto id = flow_.currentPage();
+    const auto* node = flow_.currentNode();
+    const bool showProgress = node != nullptr
+        && node->progress == core::ExclusiveOperationProgressVisibility::Visible;
+    phase_->setVisible(showProgress);
+    progress_->setVisible(showProgress);
+    if (showProgress) {
+        phase_->clear();
+        progress_->setRange(0, 0);
+    }
     auto found = pageWidgets_.find(id);
     if (found == pageWidgets_.end()) {
         auto* page = controller_->createPage(id, pages_);
@@ -142,6 +159,34 @@ void ExclusiveOperationDialog::showCurrentPage() {
     pages_->setCurrentWidget(found->second);
     controller_->pageEntered(id);
     rebuildActions();
+    if (node != nullptr) {
+        const auto layout = node->layout;
+        applyPageLayout(layout);
+        QTimer::singleShot(0, this, [this, layout] { applyPageLayout(layout); });
+    }
+}
+
+void ExclusiveOperationDialog::applyPageLayout(
+    const core::ExclusiveOperationPageLayout layout) {
+    QSize pageMinimum;
+    if (pages_ != nullptr && pages_->currentWidget() != nullptr) {
+        const auto pageHint = pages_->currentWidget()->sizeHint();
+        if (pageHint.isValid()) pageMinimum = pageHint + QSize(80, 150);
+    }
+    QScreen* screen = nullptr;
+    if (parentWidget() != nullptr)
+        screen = QGuiApplication::screenAt(parentWidget()->mapToGlobal(
+            parentWidget()->rect().center()));
+    if (screen == nullptr) screen = QGuiApplication::primaryScreen();
+    const auto available = screen != nullptr
+        ? screen->availableGeometry().size() : QSize(1920, 1080);
+    const auto target = core::resolveExclusiveOperationSize(layout,
+        {pageMinimum.width(), pageMinimum.height()},
+        {available.width(), available.height()},
+        initialSizeApplied_ ? std::optional<core::ExclusiveOperationLogicalSize>{
+            {width(), height()}} : std::nullopt);
+    resize(target.width, target.height);
+    initialSizeApplied_ = true;
 }
 
 void ExclusiveOperationDialog::rebuildActions() {

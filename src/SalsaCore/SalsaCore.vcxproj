@@ -46,7 +46,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h" />
+    <ClInclude Include="include\SalsaCore\Application\ActivityLifecycle.h" />
     <ClInclude Include="include\SalsaCore\Application\ExclusiveOperationFlow.h" />
+    <ClInclude Include="include\SalsaCore\Application\ShellPresentation.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Diagnostic.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Hashing.h" />
     <ClInclude Include="include\SalsaCore\Foundation\Result.h" />

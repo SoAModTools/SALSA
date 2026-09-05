@@ -22,13 +22,17 @@
     <ClCompile Include="Application\ExclusiveOperationController.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="Application\ExclusiveOperationCoordinator.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="Application\ExclusiveOperationDialog.cpp"><Filter>Application</Filter></ClCompile>
+    <ClCompile Include="Application\DisabledActionHintPresenter.cpp"><Filter>Application</Filter></ClCompile>
+    <ClCompile Include="Application\HelpWindow.cpp"><Filter>Application</Filter></ClCompile>
+    <ClCompile Include="Application\SalsaLogging.cpp"><Filter>Application</Filter></ClCompile>
+    <ClCompile Include="Application\TransientNoticePresenter.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="Legacy\LegacyConversionDialog.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="Workspace\DiagnosticsModel.cpp"><Filter>Workspace</Filter></ClCompile>
-    <ClCompile Include="Workspace\DiagnosticJournalModel.cpp"><Filter>Workspace</Filter></ClCompile>
+    <ClCompile Include="Workspace\ActivityLogModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceController.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceOperationController.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceMaintenanceController.cpp"><Filter>Workspace</Filter></ClCompile>
-    <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp"><Filter>Workspace</Filter></ClCompile>
+    <ClCompile Include="Workspace\DatasetOverviewWidget.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Sct\SctDocumentController.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctCatalogEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
@@ -38,6 +42,7 @@
     <ClCompile Include="Sct\SctOutlineModel.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctStructuredOutlineModel.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctMessageEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="Sct\SctMetadataEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctParameterTableModel.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctScptEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp"><Filter>SCT</Filter></ClCompile>
@@ -57,17 +62,26 @@
     <QtMoc Include="Sct\SctParameterTableModel.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctScptEditorWidget.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctSemanticNavigatorWidget.h"><Filter>SCT</Filter></QtMoc>
+    <QtMoc Include="Workspace\DatasetOverviewWidget.h"><Filter>Workspace</Filter></QtMoc>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Application\MainWindow.h">
       <Filter>Application</Filter>
     </ClInclude>
+    <ClInclude Include="Application\DisabledActionHintPresenter.h"><Filter>Application</Filter></ClInclude>
+    <ClInclude Include="Application\HelpWindow.h"><Filter>Application</Filter></ClInclude>
+    <ClInclude Include="Application\InteractionNotice.h"><Filter>Application</Filter></ClInclude>
+    <ClInclude Include="Application\SalsaLogging.h"><Filter>Application</Filter></ClInclude>
+    <ClInclude Include="Application\TransientNoticePresenter.h"><Filter>Application</Filter></ClInclude>
     <ClInclude Include="Sct\SctExportDialog.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="Sct\SctRebaseDialog.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="Workspace\DiagnosticsModel.h"><Filter>Workspace</Filter></ClInclude>
-    <ClInclude Include="Workspace\DiagnosticJournalModel.h"><Filter>Workspace</Filter></ClInclude>
+    <ClInclude Include="Workspace\ActivityLogModel.h"><Filter>Workspace</Filter></ClInclude>
     <ClInclude Include="Ui\UiConstants.h"><Filter>Application</Filter></ClInclude>
-    <ClInclude Include="Workspace\WorkspaceDetailsWidget.h"><Filter>Workspace</Filter></ClInclude>
+    <ClInclude Include="Sct\SctMetadataEditorWidget.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="Workspace\WorkspaceModel.h"><Filter>Workspace</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <QtRcc Include="SalsaHelp.qrc"><Filter>Application</Filter></QtRcc>
   </ItemGroup>
 </Project>

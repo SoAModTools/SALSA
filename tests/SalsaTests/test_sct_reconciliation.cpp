@@ -53,7 +53,7 @@ private:
     for (std::size_t index = 0; index < skippedIds; ++index) {
         (void)builder.allocateSectionId();
         (void)builder.document().allocateInstructionId();
-        (void)builder.allocateFooterEntryId();
+        (void)builder.allocateSupplementaryTextId();
     }
     SctScriptSectionContent script;
     for (const auto opcode : opcodes) {
@@ -66,7 +66,7 @@ private:
     }
     builder.document().sections.push_back(
         {builder.allocateSectionId(), "SCRIPT", std::move(script)});
-    builder.document().footerEntries.push_back({builder.allocateFooterEntryId(),
+    builder.document().supplementaryText.push_back({builder.allocateSupplementaryTextId(),
         SctTextKind::PlainString, SctPlainText{"message"}});
     return std::move(builder).finish();
 }
@@ -128,7 +128,7 @@ TEST(SctReconciliationTest, RemapsAndRetainsUnboundReferenceProvenance) {
         incoming.sections.front().content).instructions[1].id;
     reconciliation.incomingAssets.front().state.unboundReferences.push_back({
         {incomingInstruction, {0u, std::nullopt}}, "scripts/source.sct",
-        SctFooterEntryId{91u}, std::nullopt});
+        SctSupplementaryTextId{91u}, std::nullopt});
     const auto reconciled = SctDocumentReconciler::reconcile(reconciliation);
     ASSERT_TRUE(reconciled);
     ASSERT_EQ(reconciled.value().scripts.size(), 1u);
@@ -142,7 +142,7 @@ TEST(SctReconciliationTest, RemapsAndRetainsUnboundReferenceProvenance) {
     EXPECT_EQ(candidate.unboundReferences.front().sourceAssetIdentity,
         "scripts/source.sct");
     EXPECT_EQ(candidate.unboundReferences.front().sourceTarget,
-        SctDocumentReferenceTarget{SctFooterEntryId{91u}});
+        SctDocumentReferenceTarget{SctSupplementaryTextId{91u}});
 }
 
 TEST(SctReconciliationTest, StrongInstructionMatchAnnotatesItsChangeUnit) {
@@ -496,11 +496,64 @@ TEST(SctReconciliationDecisionCodecTest, IsStrictCanonicalAndRoundTrips) {
     EXPECT_FALSE(SctReconciliationDecisionCodec::serialize(missingEvidence));
 
     auto unknown = encoded.value();
-    const auto location = unknown.find("\"schemaVersion\": 1");
+    const auto location = unknown.find("\"schemaVersion\": 2");
     ASSERT_NE(location, std::string::npos);
-    unknown.replace(location, std::string("\"schemaVersion\": 1").size(),
-        "\"schemaVersion\": 2");
+    unknown.replace(location, std::string("\"schemaVersion\": 2").size(),
+        "\"schemaVersion\": 999");
     EXPECT_FALSE(SctReconciliationDecisionCodec::deserialize(unknown));
+}
+
+TEST(SctReconciliationDecisionCodecTest, MigratesSchemaOneFooterEntityTargets) {
+    const auto baseline = document();
+    const auto incoming = document(1);
+    auto sourceRequest = request(baseline, incoming);
+    sourceRequest.decisions.push_back({"pair",
+        SctReconciliationDecisionKind::PairAsset,
+        sourceRequest.baselineAssets.front().locator,
+        sourceRequest.incomingAssets.front().key});
+    const auto reconciled = SctDocumentReconciler::reconcile(sourceRequest);
+    ASSERT_TRUE(reconciled);
+    ASSERT_TRUE(reconciled.value().boundDecisions.has_value());
+    auto artifact = *reconciled.value().boundDecisions;
+    ASSERT_EQ(artifact.assets.size(), 1u);
+    artifact.assets.front().decisions.push_back({"supplementary-pair",
+        SctReconciliationDecisionKind::PairEntity,
+        artifact.assets.front().baselineAsset,
+        artifact.assets.front().incomingAssetKey,
+        SctSupplementaryTextId{41u}, SctSupplementaryTextId{73u}});
+
+    const auto current = SctReconciliationDecisionCodec::serialize(artifact);
+    ASSERT_TRUE(current);
+    auto legacy = current.value();
+    auto version = legacy.find("\"schemaVersion\": 2");
+    ASSERT_NE(version, std::string::npos);
+    legacy.replace(version, std::string("\"schemaVersion\": 2").size(),
+        "\"schemaVersion\": 1");
+    std::size_t position = 0;
+    while ((position = legacy.find("\"supplementary-text\"", position))
+        != std::string::npos) {
+        legacy.replace(position, std::string("\"supplementary-text\"").size(),
+            "\"footer\"");
+        position += std::string("\"footer\"").size();
+    }
+
+    const auto decoded = SctReconciliationDecisionCodec::deserialize(legacy);
+    ASSERT_TRUE(decoded);
+    ASSERT_EQ(decoded.value().assets.size(), 1u);
+    const auto& decisions = decoded.value().assets.front().decisions;
+    const auto migrated = std::ranges::find(decisions, "supplementary-pair",
+        &SctReconciliationDecision::id);
+    ASSERT_NE(migrated, decisions.end());
+    EXPECT_EQ(migrated->baselineEntity,
+        std::optional<SctReconciliationEntityId>{SctSupplementaryTextId{41u}});
+    EXPECT_EQ(migrated->incomingEntity,
+        std::optional<SctReconciliationEntityId>{SctSupplementaryTextId{73u}});
+
+    const auto upgraded = SctReconciliationDecisionCodec::serialize(decoded.value());
+    ASSERT_TRUE(upgraded);
+    EXPECT_NE(upgraded.value().find("\"schemaVersion\": 2"), std::string::npos);
+    EXPECT_NE(upgraded.value().find("\"supplementary-text\""), std::string::npos);
+    EXPECT_EQ(upgraded.value().find("\"footer\""), std::string::npos);
 }
 
 TEST(SctReconciliationDecisionStoreTest, CheckpointsAndLoadsByScope) {

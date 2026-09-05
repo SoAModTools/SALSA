@@ -18,7 +18,7 @@ using SctReconciliationEntityId = std::variant<
     spice::sct::SctSectionId,
     spice::sct::SctInstructionId,
     spice::sct::SctStringId,
-    spice::sct::SctFooterEntryId,
+    spice::sct::SctSupplementaryTextId,
     spice::sct::SctOpaqueAttachmentId,
     SctAuthoredArmId>;
 

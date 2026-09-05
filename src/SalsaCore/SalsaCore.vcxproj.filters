@@ -25,6 +25,7 @@
       <Filter>Application</Filter>
     </ClInclude>
     <ClInclude Include="include\SalsaCore\Application\ExclusiveOperationFlow.h"><Filter>Application</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Application\ShellPresentation.h"><Filter>Application</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Foundation\Diagnostic.h"><Filter>Foundation</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Foundation\Hashing.h"><Filter>Foundation</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Foundation\Result.h"><Filter>Foundation</Filter></ClInclude>

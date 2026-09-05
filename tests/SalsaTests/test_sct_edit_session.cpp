@@ -70,7 +70,7 @@ SctDocument makeMessageDocument() {
             SctMessage{std::nullopt, SctFormattedText{
                 {SctTextChunk{"Indexed"}, noArgumentCommand(SctMessageCommandCode::E)}}},
             SctTextKind::SctString}}});
-    document.footerEntries.push_back({document.allocateFooterEntryId(),
+    document.supplementaryText.push_back({document.allocateSupplementaryTextId(),
         SctTextKind::SctString,
         SctMessage{std::nullopt, SctFormattedText{
             {SctTextChunk{"Footer"}, noArgumentCommand(SctMessageCommandCode::C)}}}});
@@ -407,6 +407,7 @@ TEST(SctEditSession, EnforcesLabelAndReturnAuthoringBoundaries) {
     const auto label = instructions[0].id;
     const auto body = instructions[1].id;
     const auto terminalReturn = instructions[2].id;
+    const auto currentDiagnostics = session.currentDiagnostics();
 
     const auto afterReturn = session.insertInstructionAfter(terminalReturn, 125);
     EXPECT_FALSE(afterReturn.committed);
@@ -438,6 +439,12 @@ TEST(SctEditSession, EnforcesLabelAndReturnAuthoringBoundaries) {
     EXPECT_TRUE(hasCode(moveReturn, "InstructionMoveAcrossReturn"));
 
     EXPECT_EQ(session.currentRevision().value, 1u);
+    const auto afterRejectedEdits = session.currentDiagnostics();
+    ASSERT_EQ(afterRejectedEdits.size(), currentDiagnostics.size());
+    for (std::size_t i = 0; i < currentDiagnostics.size(); ++i) {
+        EXPECT_EQ(afterRejectedEdits[i].code, currentDiagnostics[i].code);
+        EXPECT_EQ(afterRejectedEdits[i].message, currentDiagnostics[i].message);
+    }
     EXPECT_FALSE(session.isDirty());
     EXPECT_FALSE(session.canUndo());
 }
@@ -520,7 +527,7 @@ TEST(SctEditSession, ReplacesIndexedAndFooterMessagesAsAtomicRevisions) {
     ASSERT_EQ(baseline->document->sections.size(), 2u);
     const auto& indexed = std::get<SctStringSectionContent>(
         baseline->document->sections[1].content).string;
-    const auto& footer = baseline->document->footerEntries.front();
+    const auto& footer = baseline->document->supplementaryText.front();
     SctEditSession session(baseline);
 
     const auto indexedProjection = SctMessageAuthoringProfile::project(
@@ -557,7 +564,7 @@ TEST(SctEditSession, ReplacesIndexedAndFooterMessagesAsAtomicRevisions) {
         SctMessageTarget{footer.id}, footerDraft, SctMessageEditKind::Options);
     ASSERT_TRUE(footerEdit.committed);
     EXPECT_EQ(footerEdit.suggestedSelection,
-        (SctNavigationTarget{SctNavigationKind::FooterEntry, footer.id.value()}));
+        (SctNavigationTarget{SctNavigationKind::SupplementaryText, footer.id.value()}));
     EXPECT_EQ(session.currentRevision().value, 3u);
 
     ASSERT_TRUE(session.undo().has_value());
@@ -900,16 +907,17 @@ TEST(SctEditSession, CreatesEditsAndDeletesIndexedAndFooterText) {
     const SctTextTarget stringTarget{SctStringId(createdString.suggestedSelection->id)};
     ASSERT_NE(session.workingState().message(stringTarget), nullptr);
 
-    const auto createdFooter = session.createFooterText(
-        SctCreatedFooterTextKind::Message, std::nullopt);
+    const auto createdFooter = session.createSupplementaryText(
+        SctCreatedSupplementaryTextKind::Message, std::nullopt);
     ASSERT_TRUE(createdFooter.committed);
-    const SctTextTarget footerTarget{SctFooterEntryId(createdFooter.suggestedSelection->id)};
+    const SctTextTarget footerTarget{SctSupplementaryTextId(createdFooter.suggestedSelection->id)};
     ASSERT_NE(session.workingState().message(footerTarget), nullptr);
 
-    const auto rejectedPlain = session.createFooterText(
-        SctCreatedFooterTextKind::PlainText, std::nullopt);
+    const auto rejectedPlain = session.createSupplementaryText(
+        SctCreatedSupplementaryTextKind::PlainText, std::nullopt);
     EXPECT_FALSE(rejectedPlain.committed);
-    EXPECT_TRUE(hasCode(rejectedPlain, "StandaloneFooterPlainTextUnsupported"));
+    EXPECT_TRUE(hasCode(rejectedPlain,
+        "StandaloneSupplementaryPlainTextUnsupported"));
 
     ASSERT_TRUE(session.deleteTextEntity(stringTarget).committed);
     EXPECT_EQ(session.workingState().textValue(stringTarget), nullptr);
@@ -921,24 +929,24 @@ TEST(SctEditSession, MaterializesCombinedSectionAndTextLifecycleJournal) {
     SctEditSession session(loadedSnapshot());
     ASSERT_TRUE(session.createScriptSection("SECOND", std::nullopt, true).committed);
     ASSERT_TRUE(session.createIndexedString("MS_NEW", std::nullopt).committed);
-    ASSERT_TRUE(session.createFooterText(
-        SctCreatedFooterTextKind::Message, std::nullopt).committed);
+    ASSERT_TRUE(session.createSupplementaryText(
+        SctCreatedSupplementaryTextKind::Message, std::nullopt).committed);
     const auto request = session.materializationRequest(41);
     ASSERT_TRUE(request.has_value());
     const auto materialized = SctDocumentMaterializer::materialize(*request);
     ASSERT_TRUE(materialized.succeeded());
     ASSERT_NE(materialized.document, nullptr);
     EXPECT_EQ(materialized.document->sections.size(), 3u);
-    EXPECT_EQ(materialized.document->footerEntries.size(), 1u);
+    EXPECT_EQ(materialized.document->supplementaryText.size(), 1u);
     EXPECT_TRUE(session.installVerifiedMaterialization(materialized));
 }
 
 TEST(SctEditSession, ReplacesOpaqueTextWithOneSemanticRepairRevision) {
     auto document = makeMessageDocument();
-    auto& value = document.footerEntries.front().value;
+    auto& value = document.supplementaryText.front().value;
     value = SctOpaqueText{{'H', 'i', 0}};
     SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
-    const SctTextTarget target{session.workingState().footerEntryOrder().front()};
+    const SctTextTarget target{session.workingState().supplementaryTextOrder().front()};
     const auto before = session.currentRevision();
     const auto repaired = session.replaceTextValue(
         target, SctPlainText{"Hi"}, "Repair opaque text interpretation",
@@ -958,10 +966,10 @@ TEST(SctEditSession, ReplacesOpaqueTextWithOneSemanticRepairRevision) {
 
 TEST(SctEditSession, CurrentDiagnosticsTrackAmbiguousTextRepairAndUndo) {
     auto document = makeMessageDocument();
-    document.footerEntries.front().value = SctOpaqueText{{'H', 'i', 0}};
+    document.supplementaryText.front().value = SctOpaqueText{{'H', 'i', 0}};
     auto snapshot = std::make_shared<SctDocumentSnapshot>(
         *snapshotWith(loadedSnapshot(), std::move(document)));
-    const auto footer = snapshot->document->footerEntries.front().id;
+    const auto footer = snapshot->document->supplementaryText.front().id;
     SctPipelineDiagnostic warning;
     warning.severity = DiagnosticSeverity::Warning;
     warning.stage = SctPipelineStage::Import;
@@ -1170,8 +1178,8 @@ TEST(SctParameterEditing, RepeatedGroupEditsKeepUnboundReferenceOriginsAtTheirVa
 
 TEST(SctParameterEditing, SharedFooterPlainTextUsesAtomicCopyOnWrite) {
     auto document = makeScriptDocument();
-    const auto footer = document.allocateFooterEntryId();
-    document.footerEntries.push_back({footer, SctTextKind::PlainString,
+    const auto footer = document.allocateSupplementaryTextId();
+    document.supplementaryText.push_back({footer, SctTextKind::PlainString,
         SctPlainText{"shared"}});
     auto& instructions = std::get<SctScriptSectionContent>(
         document.sections.front().content).instructions;
@@ -1179,7 +1187,7 @@ TEST(SctParameterEditing, SharedFooterPlainTextUsesAtomicCopyOnWrite) {
         SctInstructionFactoryRequest request;
         request.opcode = 110u;
         request.parameterOverrides.push_back({{0u, std::nullopt},
-            SctFooterEntryReference{footer}});
+            SctSupplementaryTextReference{footer}});
         const auto draft = SctInstructionFactory::createDraft(request);
         EXPECT_TRUE(draft.draft.has_value());
         const auto built = SctInstructionFactory::materialize(document, *draft.draft);
@@ -1194,26 +1202,26 @@ TEST(SctParameterEditing, SharedFooterPlainTextUsesAtomicCopyOnWrite) {
 
     SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
     const SctParameterSite site{first.id, {0u, std::nullopt}};
-    const auto beforeFooterCount = session.workingState().footerEntryOrder().size();
-    const auto edited = session.editReferencedFooterText(site, "private");
+    const auto beforeFooterCount = session.workingState().supplementaryTextOrder().size();
+    const auto edited = session.editReferencedSupplementaryText(site, "private");
     ASSERT_TRUE(edited.committed);
-    EXPECT_EQ(session.workingState().footerEntryOrder().size(), beforeFooterCount + 1u);
+    EXPECT_EQ(session.workingState().supplementaryTextOrder().size(), beforeFooterCount + 1u);
     const auto* parameter = session.workingState().parameter(site);
     ASSERT_NE(parameter, nullptr);
-    const auto privateReference = std::get<SctFooterEntryReference>(parameter->value).target;
+    const auto privateReference = std::get<SctSupplementaryTextReference>(parameter->value).target;
     EXPECT_NE(privateReference, footer);
-    EXPECT_EQ(session.workingState().footerEntryOrder().back(), privateReference);
+    EXPECT_EQ(session.workingState().supplementaryTextOrder().back(), privateReference);
     EXPECT_EQ(std::get<SctPlainText>(
-        session.workingState().footerEntry(privateReference)->value).utf8, "private");
-    EXPECT_EQ(std::get<SctFooterEntryReference>(
+        session.workingState().supplementaryText(privateReference)->value).utf8, "private");
+    EXPECT_EQ(std::get<SctSupplementaryTextReference>(
         session.workingState().parameter({second.id, {0u, std::nullopt}})->value).target,
         footer);
     ASSERT_TRUE(session.undo().has_value());
-    EXPECT_EQ(session.workingState().footerEntryOrder().size(), beforeFooterCount);
-    EXPECT_EQ(std::get<SctFooterEntryReference>(
+    EXPECT_EQ(session.workingState().supplementaryTextOrder().size(), beforeFooterCount);
+    EXPECT_EQ(std::get<SctSupplementaryTextReference>(
         session.workingState().parameter(site)->value).target, footer);
     ASSERT_TRUE(session.redo().has_value());
-    EXPECT_EQ(session.workingState().footerEntryOrder().back(), privateReference);
+    EXPECT_EQ(session.workingState().supplementaryTextOrder().back(), privateReference);
 }
 
 TEST(SctParameterAuthoring, EnforcesConfirmedMasksAndExactConventionalScptDomains) {
@@ -1371,42 +1379,42 @@ TEST(SctInstructionDraft, CreatesOwnedFooterTextAndInstructionAtomically) {
     SctEditSession session(loadedSnapshot());
     auto created = session.createInstructionDraft(110u);
     ASSERT_TRUE(created.draft.has_value());
-    ASSERT_EQ(created.draft->ownedFooterText.size(), 1u);
-    EXPECT_EQ(created.draft->ownedFooterText.front().kind, SctTextKind::PlainString);
-    created.draft->ownedFooterText.front().value = SctPlainText{"owned text"};
+    ASSERT_EQ(created.draft->ownedSupplementaryText.size(), 1u);
+    EXPECT_EQ(created.draft->ownedSupplementaryText.front().kind, SctTextKind::PlainString);
+    created.draft->ownedSupplementaryText.front().value = SctPlainText{"owned text"};
     const auto section = session.workingState().sectionOrder().front();
     const auto anchor = session.workingState().instructionOrder(section).front();
-    const auto beforeFooter = session.workingState().footerEntryOrder().size();
+    const auto beforeFooter = session.workingState().supplementaryTextOrder().size();
 
     const auto inserted = session.createInstructionAfter(anchor, *created.draft);
     ASSERT_TRUE(inserted.committed) << (inserted.diagnostics.empty()
         ? std::string{} : inserted.diagnostics.front().message);
     ASSERT_EQ(inserted.changes.instructions.size(), 1u);
-    ASSERT_EQ(inserted.changes.footerEntries.size(), 1u);
+    ASSERT_EQ(inserted.changes.supplementaryText.size(), 1u);
     const auto instruction = inserted.changes.instructions.front().instruction;
     const auto* value = session.workingState().parameter({instruction, {0u, std::nullopt}});
     ASSERT_NE(value, nullptr);
-    const auto footer = std::get<SctFooterEntryReference>(value->value).target;
-    ASSERT_EQ(session.workingState().footerEntryOrder().size(), beforeFooter + 1u);
-    EXPECT_EQ(std::get<SctPlainText>(session.workingState().footerEntry(footer)->value).utf8,
+    const auto footer = std::get<SctSupplementaryTextReference>(value->value).target;
+    ASSERT_EQ(session.workingState().supplementaryTextOrder().size(), beforeFooter + 1u);
+    EXPECT_EQ(std::get<SctPlainText>(session.workingState().supplementaryText(footer)->value).utf8,
         "owned text");
 
     ASSERT_TRUE(session.undo().has_value());
     EXPECT_EQ(session.workingState().instruction(instruction), nullptr);
-    EXPECT_EQ(session.workingState().footerEntry(footer), nullptr);
+    EXPECT_EQ(session.workingState().supplementaryText(footer), nullptr);
     ASSERT_TRUE(session.redo().has_value());
     EXPECT_NE(session.workingState().instruction(instruction), nullptr);
-    EXPECT_NE(session.workingState().footerEntry(footer), nullptr);
+    EXPECT_NE(session.workingState().supplementaryText(footer), nullptr);
 }
 
 TEST(SctInstructionDraft, CreatesDefaultOwnedFooterMessageWhenRequired) {
     SctEditSession session(loadedSnapshot());
     auto created = session.createInstructionDraft(24u);
     ASSERT_TRUE(created.draft.has_value());
-    ASSERT_EQ(created.draft->ownedFooterText.size(), 1u);
-    EXPECT_EQ(created.draft->ownedFooterText.front().kind, SctTextKind::SctString);
+    ASSERT_EQ(created.draft->ownedSupplementaryText.size(), 1u);
+    EXPECT_EQ(created.draft->ownedSupplementaryText.front().kind, SctTextKind::SctString);
     EXPECT_TRUE(std::holds_alternative<SctMessage>(
-        created.draft->ownedFooterText.front().value));
+        created.draft->ownedSupplementaryText.front().value));
 
     const auto section = session.workingState().sectionOrder().front();
     const auto anchor = session.workingState().instructionOrder(section).front();
@@ -1417,8 +1425,8 @@ TEST(SctInstructionDraft, CreatesDefaultOwnedFooterMessageWhenRequired) {
     const auto* value = session.workingState().parameter(
         {instruction, {0u, std::nullopt}});
     ASSERT_NE(value, nullptr);
-    const auto footer = std::get<SctFooterEntryReference>(value->value).target;
-    const auto* entry = session.workingState().footerEntry(footer);
+    const auto footer = std::get<SctSupplementaryTextReference>(value->value).target;
+    const auto* entry = session.workingState().supplementaryText(footer);
     ASSERT_NE(entry, nullptr);
     EXPECT_EQ(entry->kind, SctTextKind::SctString);
     EXPECT_TRUE(std::holds_alternative<SctMessage>(entry->value));
@@ -1430,34 +1438,34 @@ TEST(SctInstructionDraft, RejectsStaleAndUnresolvedDraftsWithoutPartialCreation)
     ASSERT_TRUE(draft.draft.has_value());
     const auto section = session.workingState().sectionOrder().front();
     const auto anchor = session.workingState().instructionOrder(section).front();
-    const auto beforeFooter = session.workingState().footerEntryOrder().size();
+    const auto beforeFooter = session.workingState().supplementaryTextOrder().size();
 
     ASSERT_TRUE(session.insertInstructionAfter(anchor, 125u).committed);
     const auto stale = session.createInstructionAfter(anchor, *draft.draft);
     EXPECT_FALSE(stale.committed);
     EXPECT_TRUE(hasCode(stale, "InstructionDraftStale"));
-    EXPECT_EQ(session.workingState().footerEntryOrder().size(), beforeFooter);
+    EXPECT_EQ(session.workingState().supplementaryTextOrder().size(), beforeFooter);
 
     auto unresolved = session.createInstructionDraft(110u);
     ASSERT_TRUE(unresolved.draft.has_value());
-    unresolved.draft->ownedFooterText.clear();
+    unresolved.draft->ownedSupplementaryText.clear();
     const auto rejected = session.createInstructionAfter(anchor, *unresolved.draft);
     EXPECT_FALSE(rejected.committed);
     EXPECT_TRUE(hasCode(rejected, "InstructionDraftUnresolved"));
-    EXPECT_EQ(session.workingState().footerEntryOrder().size(), beforeFooter);
+    EXPECT_EQ(session.workingState().supplementaryTextOrder().size(), beforeFooter);
 }
 
-TEST(SctFooterOwnership, DeletesOnlyNewlyOrphanedUnprotectedPlainText) {
+TEST(SctSupplementaryTextOwnership, DeletesOnlyNewlyOrphanedUnprotectedPlainText) {
     auto document = makeScriptDocument();
-    const auto footer = document.allocateFooterEntryId();
-    document.footerEntries.push_back({footer, SctTextKind::PlainString,
+    const auto footer = document.allocateSupplementaryTextId();
+    document.supplementaryText.push_back({footer, SctTextKind::PlainString,
         SctPlainText{"owned"}});
     auto& instructions = std::get<SctScriptSectionContent>(
         document.sections.front().content).instructions;
     SctInstructionFactoryRequest request;
     request.opcode = 110u;
     request.parameterOverrides.push_back({{0u, std::nullopt},
-        SctFooterEntryReference{footer}});
+        SctSupplementaryTextReference{footer}});
     const auto draft = SctInstructionFactory::createDraft(request);
     ASSERT_TRUE(draft.draft.has_value());
     const auto built = SctInstructionFactory::materialize(document, *draft.draft);
@@ -1467,18 +1475,18 @@ TEST(SctFooterOwnership, DeletesOnlyNewlyOrphanedUnprotectedPlainText) {
 
     const auto removed = session.deleteInstruction(built.instruction->id);
     ASSERT_TRUE(removed.committed);
-    EXPECT_EQ(session.workingState().footerEntry(footer), nullptr);
+    EXPECT_EQ(session.workingState().supplementaryText(footer), nullptr);
     ASSERT_TRUE(session.undo().has_value());
-    EXPECT_NE(session.workingState().footerEntry(footer), nullptr);
+    EXPECT_NE(session.workingState().supplementaryText(footer), nullptr);
     EXPECT_NE(session.workingState().instruction(built.instruction->id), nullptr);
 }
 
-TEST(SctFooterOwnership, RetargetingCleansOldTargetButPreservesImportedOrphans) {
+TEST(SctSupplementaryTextOwnership, RetargetingCleansOldTargetButPreservesImportedOrphans) {
     auto document = makeScriptDocument();
-    const auto oldFooter = document.allocateFooterEntryId();
-    const auto newFooter = document.allocateFooterEntryId();
-    const auto importedOrphan = document.allocateFooterEntryId();
-    document.footerEntries = {
+    const auto oldFooter = document.allocateSupplementaryTextId();
+    const auto newFooter = document.allocateSupplementaryTextId();
+    const auto importedOrphan = document.allocateSupplementaryTextId();
+    document.supplementaryText = {
         {oldFooter, SctTextKind::PlainString, SctPlainText{"old"}},
         {newFooter, SctTextKind::PlainString, SctPlainText{"new"}},
         {importedOrphan, SctTextKind::PlainString, SctPlainText{"orphan"}},
@@ -1488,7 +1496,7 @@ TEST(SctFooterOwnership, RetargetingCleansOldTargetButPreservesImportedOrphans) 
     SctInstructionFactoryRequest request;
     request.opcode = 110u;
     request.parameterOverrides.push_back({{0u, std::nullopt},
-        SctFooterEntryReference{oldFooter}});
+        SctSupplementaryTextReference{oldFooter}});
     const auto draft = SctInstructionFactory::createDraft(request);
     ASSERT_TRUE(draft.draft.has_value());
     const auto built = SctInstructionFactory::materialize(document, *draft.draft);
@@ -1498,24 +1506,24 @@ TEST(SctFooterOwnership, RetargetingCleansOldTargetButPreservesImportedOrphans) 
 
     const auto changed = session.replaceParameterValue(
         {built.instruction->id, {0u, std::nullopt}},
-        SctFooterEntryReference{newFooter});
+        SctSupplementaryTextReference{newFooter});
     ASSERT_TRUE(changed.committed);
-    EXPECT_EQ(session.workingState().footerEntry(oldFooter), nullptr);
-    EXPECT_NE(session.workingState().footerEntry(newFooter), nullptr);
-    EXPECT_NE(session.workingState().footerEntry(importedOrphan), nullptr);
+    EXPECT_EQ(session.workingState().supplementaryText(oldFooter), nullptr);
+    EXPECT_NE(session.workingState().supplementaryText(newFooter), nullptr);
+    EXPECT_NE(session.workingState().supplementaryText(importedOrphan), nullptr);
 }
 
-TEST(SctFooterOwnership, OpaqueAnchorsProtectNewlyOrphanedPlainText) {
+TEST(SctSupplementaryTextOwnership, OpaqueAnchorsProtectNewlyOrphanedPlainText) {
     auto document = makeScriptDocument();
-    const auto footer = document.allocateFooterEntryId();
-    document.footerEntries.push_back({footer, SctTextKind::PlainString,
+    const auto footer = document.allocateSupplementaryTextId();
+    document.supplementaryText.push_back({footer, SctTextKind::PlainString,
         SctPlainText{"protected"}});
     auto& instructions = std::get<SctScriptSectionContent>(
         document.sections.front().content).instructions;
     SctInstructionFactoryRequest request;
     request.opcode = 110u;
     request.parameterOverrides.push_back({{0u, std::nullopt},
-        SctFooterEntryReference{footer}});
+        SctSupplementaryTextReference{footer}});
     const auto draft = SctInstructionFactory::createDraft(request);
     ASSERT_TRUE(draft.draft.has_value());
     const auto built = SctInstructionFactory::materialize(document, *draft.draft);
@@ -1531,5 +1539,5 @@ TEST(SctFooterOwnership, OpaqueAnchorsProtectNewlyOrphanedPlainText) {
     SctEditSession session(snapshotWith(loadedSnapshot(), std::move(document)));
 
     ASSERT_TRUE(session.deleteInstruction(built.instruction->id).committed);
-    EXPECT_NE(session.workingState().footerEntry(footer), nullptr);
+    EXPECT_NE(session.workingState().supplementaryText(footer), nullptr);
 }

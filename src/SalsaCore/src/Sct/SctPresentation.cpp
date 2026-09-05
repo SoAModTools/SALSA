@@ -243,7 +243,7 @@ template <typename Range>
     switch (storage) {
     case spice::sct::SctReferenceTargetStorage::Instruction: return "instruction";
     case spice::sct::SctReferenceTargetStorage::IndexedString: return "indexed string";
-    case spice::sct::SctReferenceTargetStorage::FooterEntry: return "footer entry";
+    case spice::sct::SctReferenceTargetStorage::SupplementaryText: return "supplementary text";
     }
     return "unknown";
 }
@@ -275,8 +275,9 @@ template <typename Range>
             role = "Instruction reference"; value = "Instruction " + std::to_string(typed.target.value());
         } else if constexpr (std::is_same_v<T, spice::sct::SctStringReference>) {
             role = "String reference"; value = "String " + std::to_string(typed.target.value());
-        } else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryReference>) {
-            role = "Footer reference"; value = "Footer " + std::to_string(typed.target.value());
+        } else if constexpr (std::is_same_v<T, spice::sct::SctSupplementaryTextReference>) {
+            role = "Supplementary-text reference";
+            value = "Supplementary text " + std::to_string(typed.target.value());
         } else if constexpr (std::is_same_v<T, spice::sct::SctUnresolvedReferenceValue>) {
             role = "Unresolved reference"; value = hexList(typed.encodedWords);
             notes = "Expected " + targetStorageName(typed.expectedTarget.storage);
@@ -388,6 +389,173 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
     return "unknown";
 }
 
+[[nodiscard]] std::string controlFlowKindName(
+    const spice::sct::SctControlFlowKind kind) {
+    using enum spice::sct::SctControlFlowKind;
+    switch (kind) {
+    case Fallthrough: return "fallthrough";
+    case BranchTrue: return "true branch";
+    case BranchFalse: return "false branch";
+    case SwitchCase: return "switch case";
+    case Jump: return "jump";
+    case Call: return "call";
+    case Return: return "return";
+    }
+    return "control flow";
+}
+
+[[nodiscard]] std::string structuredRegionName(
+    const spice::sct::SctStructuredRegionKind kind) {
+    using enum spice::sct::SctStructuredRegionKind;
+    switch (kind) {
+    case If: return "if";
+    case IfElse: return "if / else";
+    case While: return "while";
+    case NaturalLoop: return "loop";
+    case Switch: return "switch";
+    }
+    return "structured region";
+}
+
+[[nodiscard]] std::string rejectionReasonName(
+    const spice::sct::SctStructuredRejectionReason reason) {
+    using enum spice::sct::SctStructuredRejectionReason;
+    switch (reason) {
+    case MissingTarget: return "missing target";
+    case ExternalEntry: return "external entry";
+    case UnsupportedExitShape: return "unsupported exit shape";
+    case NonContiguousCandidate: return "non-contiguous candidate";
+    case OverlappingArms: return "overlapping arms";
+    case AmbiguousSwitchCases: return "ambiguous switch cases";
+    case ClosedComponentWithoutExit: return "closed component without exit";
+    case HistoricalConflict: return "conflicts with current control flow";
+    case UnsupportedHistoricalShape: return "unsupported imported shape";
+    }
+    return "unclassified";
+}
+
+[[nodiscard]] std::string structureEvidenceKindName(
+    const spice::sct::SctStructureEvidenceKind kind) {
+    using enum spice::sct::SctStructureEvidenceKind;
+    switch (kind) {
+    case CurrentControlFlow: return "current control flow";
+    case ConditionalFalseTarget: return "conditional false target";
+    case PreTargetJump: return "jump before false target";
+    case BackwardTerminatorJump: return "backward terminator jump";
+    case CommonForwardExit: return "common forward exit";
+    case PhysicalCaseBoundary: return "physical case boundary";
+    case SharedCaseTarget: return "shared case target";
+    case CaseFallthrough: return "case fallthrough";
+    case ImportedControlFlow: return "imported control flow";
+    case ImportedOpaqueControlFlowGap: return "imported opaque control-flow gap";
+    }
+    return "structure evidence";
+}
+
+[[nodiscard]] SctInspectionLocation instructionLocation(
+    const spice::sct::SctInstructionId instruction) {
+    return SctNavigationTarget{SctNavigationKind::Instruction, instruction.value()};
+}
+
+[[nodiscard]] SctPropertyItem historicalEvidenceProperty(
+    const spice::sct::SctHistoricalStructureCandidate& candidate,
+    const std::size_t ordinal) {
+    SctPropertyItem result{
+        "Evidence " + std::to_string(ordinal + 1u),
+        candidate.suggestedKind
+            ? structuredRegionName(*candidate.suggestedKind)
+            : "control-flow observation",
+        "Imported evidence is explanatory only; current document semantics remain authoritative.",
+        {}};
+    result.children.push_back({"Source instruction",
+        std::to_string(candidate.sourceInstruction.value()), {}, {},
+        instructionLocation(candidate.sourceInstruction)});
+    if (candidate.targetInstruction) {
+        result.children.push_back({"Resolved imported target",
+            std::to_string(candidate.targetInstruction->value()), {}, {},
+            instructionLocation(*candidate.targetInstruction)});
+    } else {
+        result.children.push_back({"Resolved imported target", "(none)", {}, {}});
+    }
+    result.children.push_back({"Unresolved target payload offset",
+        candidate.unresolvedTargetPayloadOffset
+            ? hexValue(*candidate.unresolvedTargetPayloadOffset)
+            : "(none)", {}, {}});
+    result.children.push_back({"Suggested kind",
+        candidate.suggestedKind
+            ? structuredRegionName(*candidate.suggestedKind) : "(none)", {}, {}});
+    if (candidate.suggestedController) {
+        result.children.push_back({"Suggested controller",
+            std::to_string(candidate.suggestedController->value()), {}, {},
+            instructionLocation(*candidate.suggestedController)});
+    } else {
+        result.children.push_back({"Suggested controller", "(none)", {}, {}});
+    }
+    if (candidate.suggestedJoin) {
+        result.children.push_back({"Suggested join",
+            std::to_string(candidate.suggestedJoin->value()), {}, {},
+            instructionLocation(*candidate.suggestedJoin)});
+    } else {
+        result.children.push_back({"Suggested join", "(none)", {}, {}});
+    }
+    result.children.push_back({"Confidence",
+        semanticConfidenceName(candidate.evidenceConfidence), {}, {}});
+    result.children.push_back({"Rejection reason",
+        candidate.rejectionReason
+            ? rejectionReasonName(*candidate.rejectionReason) : "(none)", {}, {}});
+
+    SctPropertyItem evidence{"Opaque and structural evidence",
+        std::to_string(candidate.evidence.size()), {}, {}};
+    for (std::size_t index = 0; index < candidate.evidence.size(); ++index) {
+        const auto& source = candidate.evidence[index];
+        SctPropertyItem item{"Evidence record " + std::to_string(index + 1u),
+            structureEvidenceKindName(source.kind),
+            semanticConfidenceName(source.confidence) + " confidence", {}};
+        if (source.edgeKind)
+            item.children.push_back({"Edge kind", controlFlowKindName(*source.edgeKind), {}, {}});
+        if (source.source) {
+            item.children.push_back({"Source instruction",
+                std::to_string(source.source->value()), {}, {},
+                instructionLocation(*source.source)});
+        }
+        if (source.target) {
+            item.children.push_back({"Target instruction",
+                std::to_string(source.target->value()), {}, {},
+                instructionLocation(*source.target)});
+        }
+        for (const auto attachment : source.opaqueAttachments) {
+            item.children.push_back({"Opaque attachment",
+                std::to_string(attachment.value()), "Imported gap evidence", {},
+                SctInspectionLocation{SctNavigationTarget{
+                    SctNavigationKind::OpaqueAttachment, attachment.value()}}});
+        }
+        evidence.children.push_back(std::move(item));
+    }
+    result.children.push_back(std::move(evidence));
+    return result;
+}
+
+void appendHistoricalEvidence(SctEntityPresentation& presentation,
+    const spice::sct::SctSectionStructure& section,
+    const std::optional<spice::sct::SctInstructionId> sourceInstruction) {
+    SctPropertyItem group{"Imported control-flow evidence", "0",
+        "Import-only evidence; it does not alter current structure.", {}};
+    for (const auto& candidate : section.historicalCandidates) {
+        if (sourceInstruction && candidate.sourceInstruction != *sourceInstruction) continue;
+        group.children.push_back(historicalEvidenceProperty(
+            candidate, group.children.size()));
+    }
+    if (group.children.empty()) return;
+    group.value = std::to_string(group.children.size());
+    presentation.properties.push_back(std::move(group));
+}
+
+void markImportedEvidence(SctOutlineItem& item, const std::size_t count) {
+    item.importedEvidenceCount = count;
+    if (count != 0u)
+        item.secondary += " | Imported evidence: " + std::to_string(count);
+}
+
 [[nodiscard]] std::string opaqueAnchorName(const spice::sct::SctOpaqueAnchor& anchor) {
     return std::visit([](const auto& typed) -> std::string {
         using T = std::decay_t<decltype(typed)>;
@@ -400,7 +568,7 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
         else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return "Indexed string " + std::to_string(typed.value());
         else
-            return "Footer entry " + std::to_string(typed.value());
+            return "Supplementary text " + std::to_string(typed.value());
     }, anchor);
 }
 
@@ -452,8 +620,8 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
                     return SctInspectionLocation{SctNavigationTarget{SctNavigationKind::Instruction, id.value()}};
                 else if constexpr (std::is_same_v<Id, spice::sct::SctStringId>)
                     return SctInspectionLocation{SctNavigationTarget{SctNavigationKind::String, id.value()}};
-                else if constexpr (std::is_same_v<Id, spice::sct::SctFooterEntryId>)
-                    return SctInspectionLocation{SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()}};
+                else if constexpr (std::is_same_v<Id, spice::sct::SctSupplementaryTextId>)
+                    return SctInspectionLocation{SctNavigationTarget{SctNavigationKind::SupplementaryText, id.value()}};
                 else return SctInspectionLocation{SctNavigationTarget{
                     SctNavigationKind::OpaqueAttachment, id.value()}};
             }, typed);
@@ -466,7 +634,7 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
                 using Id = std::decay_t<decltype(id)>;
                 if constexpr (std::is_same_v<Id, spice::sct::SctStringId>)
                     return SctNavigationTarget{SctNavigationKind::String, id.value()};
-                else return SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()};
+                else return SctNavigationTarget{SctNavigationKind::SupplementaryText, id.value()};
             }, typed.text);
         } else {
             return std::nullopt;
@@ -517,6 +685,14 @@ void appendTextProperties(std::vector<SctPropertyItem>& properties,
 std::vector<SctOutlineItem> SctPresentationService::outline(
     const SctDocumentSnapshot& snapshot) {
     std::vector<SctOutlineItem> result;
+    std::unordered_map<std::uint64_t, std::size_t> sectionEvidenceCounts;
+    std::unordered_map<std::uint64_t, std::size_t> instructionEvidenceCounts;
+    for (const auto& structure : snapshot.analysis->structuredControlFlow.sections()) {
+        sectionEvidenceCounts[structure.section.value()] =
+            structure.historicalCandidates.size();
+        for (const auto& candidate : structure.historicalCandidates)
+            ++instructionEvidenceCounts[candidate.sourceInstruction.value()];
+    }
     result.push_back({ "Document", snapshot.provenance->source().descriptor.locator.path().generic_string(),
         { SctNavigationKind::Document, 0 }, {} });
     for (std::size_t sectionIndex = 0; sectionIndex < snapshot.document->sections.size(); ++sectionIndex) {
@@ -524,13 +700,17 @@ std::vector<SctOutlineItem> SctPresentationService::outline(
         SctOutlineItem item{
             "[" + std::to_string(sectionIndex) + "] " + escapedBytes(section.nameBytes),
             sectionKind(section.content), { SctNavigationKind::Section, section.id.value() }, {} };
+        markImportedEvidence(item, sectionEvidenceCounts[section.id.value()]);
         if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(&section.content)) {
             for (const auto& instruction : script->instructions) {
                 auto mnemonic = SctCatalogResolver::resolve(instruction.opcode).mnemonic;
                 if (mnemonic.empty()) mnemonic = "Opcode";
-                item.children.push_back({ mnemonic + " (" + std::to_string(instruction.opcode) + ")",
+                SctOutlineItem instructionItem{ mnemonic + " (" + std::to_string(instruction.opcode) + ")",
                     "Instruction " + std::to_string(instruction.id.value()),
-                    { SctNavigationKind::Instruction, instruction.id.value() }, {} });
+                    { SctNavigationKind::Instruction, instruction.id.value() }, {} };
+                markImportedEvidence(instructionItem,
+                    instructionEvidenceCounts[instruction.id.value()]);
+                item.children.push_back(std::move(instructionItem));
             }
         } else if (const auto* strings = std::get_if<spice::sct::SctStringSectionContent>(&section.content)) {
             item.children.push_back({ "Indexed string", textKindName(strings->string.kind),
@@ -538,12 +718,12 @@ std::vector<SctOutlineItem> SctPresentationService::outline(
         }
         result.push_back(std::move(item));
     }
-    SctOutlineItem footer{ "Footer", std::to_string(snapshot.document->footerEntries.size()) + " entries",
+    SctOutlineItem footer{ "Footer", std::to_string(snapshot.document->supplementaryText.size()) + " entries",
         { SctNavigationKind::FooterGroup, 0 }, {} };
-    for (std::size_t i = 0; i < snapshot.document->footerEntries.size(); ++i) {
-        const auto& entry = snapshot.document->footerEntries[i];
+    for (std::size_t i = 0; i < snapshot.document->supplementaryText.size(); ++i) {
+        const auto& entry = snapshot.document->supplementaryText[i];
         footer.children.push_back({ "[" + std::to_string(i) + "] " + textKindName(entry.kind), {},
-            { SctNavigationKind::FooterEntry, entry.id.value() }, {} });
+            { SctNavigationKind::SupplementaryText, entry.id.value() }, {} });
     }
     result.push_back(std::move(footer));
     SctOutlineItem opaque{ "Opaque attachments",
@@ -661,7 +841,7 @@ SctEntityPresentation SctPresentationService::describe(
             { "Text convention", snapshot.provenance->textConvention.has_value()
                 ? std::string(sctTextConventionName(*snapshot.provenance->textConvention)) : "Unselected / opaque", {}, {} },
             { "Sections", std::to_string(snapshot.document->sections.size()), {}, {} },
-            { "Footer entries", std::to_string(snapshot.document->footerEntries.size()), {}, {} },
+            { "Supplementary text", std::to_string(snapshot.document->supplementaryText.size()), {}, {} },
             { "Opaque attachments", std::to_string(snapshot.document->opaqueAttachments.size()), {}, {} },
         }, {} };
     }
@@ -728,6 +908,9 @@ SctEntityPresentation SctPresentationService::describe(
                     std::to_string(ambiguityCount),
                     "Historical group membership is not singular.", {}});
             }
+            if (const auto* structure =
+                    snapshot.analysis->structuredControlFlow.findSection(section->id))
+                appendHistoricalEvidence(result, *structure, std::nullopt);
             return result;
         }
     }
@@ -765,6 +948,12 @@ SctEntityPresentation SctPresentationService::describe(
                 repeated.children.push_back(std::move(group));
             }
             result.properties.push_back(std::move(repeated));
+            if (const auto* owner = index.owningSection(
+                    *snapshot.document, instruction->id)) {
+                if (const auto* structure = snapshot.analysis->structuredControlFlow
+                        .findSection(owner->id))
+                    appendHistoricalEvidence(result, *structure, instruction->id);
+            }
             return result;
         }
     }
@@ -775,11 +964,11 @@ SctEntityPresentation SctPresentationService::describe(
                 "Section-backed text", string->kind,
                 spice::sct::SctTextStorage::IndexedSection, string->value);
     }
-    if (target.kind == SctNavigationKind::FooterEntry) {
+    if (target.kind == SctNavigationKind::SupplementaryText) {
         if (const auto* entry = index.find(*snapshot.document,
-                spice::sct::SctFooterEntryId(target.id)))
-            return describeText("Footer entry " + std::to_string(entry->id.value()),
-                "Footer text", entry->kind, spice::sct::SctTextStorage::Footer, entry->value);
+                spice::sct::SctSupplementaryTextId(target.id)))
+            return describeText("Supplementary text " + std::to_string(entry->id.value()),
+                "Supplementary text", entry->kind, spice::sct::SctTextStorage::Footer, entry->value);
     }
     if (target.kind == SctNavigationKind::OpaqueAttachment) {
         if (const auto* attachment = index.find(*snapshot.document,
@@ -921,7 +1110,7 @@ SctEntityPresentation SctPresentationService::describe(
         }
     }
     if (target.kind == SctNavigationKind::FooterGroup)
-        return { "Footer", "Physical footer entries", {{ "Entries", std::to_string(snapshot.document->footerEntries.size()), {}, {} }}, {} };
+        return { "Footer", "Physical footer entries", {{ "Entries", std::to_string(snapshot.document->supplementaryText.size()), {}, {} }}, {} };
     if (target.kind == SctNavigationKind::OpaqueGroup)
         return { "Opaque attachments", "Preserved source data", {{ "Attachments", std::to_string(snapshot.document->opaqueAttachments.size()), {}, {} }}, {} };
     return { "Unavailable entity", "The selected entity is not present in this snapshot.", {}, {} };

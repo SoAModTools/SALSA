@@ -1,7 +1,10 @@
 #include "Workspace/WorkspaceOperationController.h"
+#include "SalsaCore/Foundation/Diagnostic.h"
+#include "SalsaCore/Application/ShellPresentation.h"
 #include <QFileInfo>
 #include <QLabel>
 #include <QVBoxLayout>
+#include <ranges>
 namespace salsa::qt {
 WorkspaceOperationController::WorkspaceOperationController(
     WorkspaceController* workspace, const WorkspaceController::Operation operation,
@@ -23,10 +26,21 @@ WorkspaceOperationController::WorkspaceOperationController(
             summaryText_ = message;
             if (summary_) summary_->setText(summaryText_);
             setCancellable(false);
-            if (success && operation_ == WorkspaceController::Operation::Opening) {
+            const bool hasCurrentDiagnostics = std::ranges::any_of(
+                workspace_->diagnostics(), [](const auto& diagnostic) {
+                    return core::isCurrentDiagnosticSeverity(diagnostic.severity);
+                });
+            const auto presentation = core::datasetOperationPresentation(
+                operation_ == WorkspaceController::Operation::Opening,
+                success, cancelled, hasCurrentDiagnostics);
+            if (presentation == core::DatasetOperationPresentation::AwaitRestoration) {
                 awaitingRestoration_ = true;
                 reportProgress(tr("Restoring associated workspace and session"), 0, 0,
                     ExclusiveOperationProgressUnit::Assets);
+                return;
+            }
+            if (presentation == core::DatasetOperationPresentation::Dismiss) {
+                requestDismissal();
                 return;
             }
             raiseEvent(cancelled ? "cancelled" : success ? "complete" : "failed");
@@ -38,7 +52,10 @@ QString WorkspaceOperationController::title() const {
 }
 core::ExclusiveOperationFlowDefinition WorkspaceOperationController::flowDefinition() const {
     using Role = core::ExclusiveOperationPageRole;
-    return {"processing", {{"processing", Role::Processing}, {"summary", Role::Summary}},
+    using Progress = core::ExclusiveOperationProgressVisibility;
+    using Layout = core::ExclusiveOperationPageLayout;
+    return {"processing", {{"processing", Role::Processing, Progress::Visible, Layout::Compact},
+        {"summary", Role::Summary, Progress::Hidden, Layout::Compact}},
         {{"complete", "processing", "complete", "summary"},
          {"failed", "processing", "failed", "summary"},
          {"cancelled", "processing", "cancelled", "summary"}}};
@@ -86,7 +103,15 @@ void WorkspaceOperationController::completeRestoration(const QString& detail) {
     awaitingRestoration_ = false;
     if (!detail.isEmpty()) summaryText_ += QStringLiteral("\n\n") + detail;
     if (summary_) summary_->setText(summaryText_);
-    raiseEvent("complete");
+    const bool hasCurrentDiagnostics = std::ranges::any_of(
+        workspace_->diagnostics(), [](const auto& diagnostic) {
+            return core::isCurrentDiagnosticSeverity(diagnostic.severity);
+        });
+    if (core::restoredDatasetPresentation(hasCurrentDiagnostics, !detail.isEmpty())
+            == core::DatasetOperationPresentation::Dismiss)
+        requestDismissal();
+    else
+        raiseEvent("complete");
 }
 void WorkspaceOperationController::reportRestorationProgress(
     const std::size_t completed, const std::size_t total, const QString& currentItem) {

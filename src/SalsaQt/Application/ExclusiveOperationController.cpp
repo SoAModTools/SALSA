@@ -22,6 +22,7 @@ bool ExclusiveOperationController::cancellable() const noexcept { return cancell
 bool ExclusiveOperationController::finishing() const noexcept { return finishing_; }
 
 void ExclusiveOperationController::raiseEvent(const std::string_view event) {
+    lastRaisedEvent_ = event;
     emit eventRaised(QString::fromUtf8(event.data(), static_cast<qsizetype>(event.size())));
 }
 
@@ -45,6 +46,26 @@ void ExclusiveOperationController::reportProgress(const QString& phase,
 
 void ExclusiveOperationController::reportDiagnostics(const QString& text) {
     emit diagnosticsChanged(text);
+}
+
+void ExclusiveOperationController::reportTerminalActivity(const QString& code,
+    const QString& message, const QString& location) {
+    auto outcome = ExclusiveOperationActivityOutcome::Failed;
+    if (lastRaisedEvent_.find("cancel") != std::string::npos)
+        outcome = ExclusiveOperationActivityOutcome::Cancelled;
+    else if (lastRaisedEvent_ == "complete" || lastRaisedEvent_ == "committed"
+        || lastRaisedEvent_ == "none" || lastRaisedEvent_ == "empty")
+        outcome = ExclusiveOperationActivityOutcome::Completed;
+    emit activityRaised(static_cast<int>(outcome), code, message, location);
+}
+
+void ExclusiveOperationController::requestDismissal() {
+    setCancellable(false);
+    emit dismissalRequested();
+}
+
+std::string_view ExclusiveOperationController::lastRaisedEvent() const noexcept {
+    return lastRaisedEvent_;
 }
 
 }  // namespace salsa::qt

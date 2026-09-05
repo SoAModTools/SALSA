@@ -40,8 +40,12 @@ QString WorkspaceMaintenanceController::title() const {
 }
 core::ExclusiveOperationFlowDefinition WorkspaceMaintenanceController::flowDefinition() const {
     using Role = core::ExclusiveOperationPageRole;
-    return {"processing", {{"processing", Role::Processing}, {"review", Role::Review},
-        {"commit", Role::Commit}, {"summary", Role::Summary}},
+    using Progress = core::ExclusiveOperationProgressVisibility;
+    using Layout = core::ExclusiveOperationPageLayout;
+    return {"processing", {{"processing", Role::Processing, Progress::Visible, Layout::Compact},
+        {"review", Role::Review, Progress::Hidden, Layout::Standard},
+        {"commit", Role::Commit, Progress::Visible, Layout::Compact},
+        {"summary", Role::Summary, Progress::Hidden, Layout::Compact}},
         {{"review", "processing", "review", "review"},
          {"empty", "processing", "empty", "summary"},
          {"failed_assess", "processing", "failed", "summary"},
@@ -71,7 +75,15 @@ QWidget* WorkspaceMaintenanceController::createPage(const std::string_view id, Q
         return page;
     }
     if (id == "commit") return simplePage(parent, &commit_);
-    auto* page = simplePage(parent, &summary_); summary_->setText(summaryText_); return page;
+    auto* page = simplePage(parent, &summary_);
+    summary_->setText(summaryText_);
+    if (!activityReported_) {
+        activityReported_ = true;
+        reportTerminalActivity(mode_ == Mode::Open
+            ? QStringLiteral("WorkspaceOpen") : QStringLiteral("WorkspaceCleanup"),
+            summaryText_, QString::fromStdWString(root_.wstring()));
+    }
+    return page;
 }
 std::optional<ExclusiveOperationAction> WorkspaceMaintenanceController::actionForEdge(
     const std::string_view edge) const {

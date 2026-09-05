@@ -116,7 +116,7 @@ public:
 
 using SctTextTarget = std::variant<
     spice::sct::SctStringId,
-    spice::sct::SctFooterEntryId>;
+    spice::sct::SctSupplementaryTextId>;
 
 using SctMessageTarget = SctTextTarget;
 

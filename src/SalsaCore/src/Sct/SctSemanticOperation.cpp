@@ -31,7 +31,7 @@ struct PrimitiveApplication final {
         if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return SctNavigationTarget{SctNavigationKind::String, id.value()};
         else
-            return SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()};
+            return SctNavigationTarget{SctNavigationKind::SupplementaryText, id.value()};
     }, target);
 }
 
@@ -60,12 +60,12 @@ struct PrimitiveApplication final {
     return nullptr;
 }
 
-[[nodiscard]] spice::sct::SctDocumentFooterEntry* findFooterEntry(
+[[nodiscard]] spice::sct::SctDocumentSupplementaryText* findSupplementaryText(
     spice::sct::SctDocument& document,
-    const spice::sct::SctFooterEntryId id) {
+    const spice::sct::SctSupplementaryTextId id) {
     const auto found = std::ranges::find(
-        document.footerEntries, id, &spice::sct::SctDocumentFooterEntry::id);
-    return found == document.footerEntries.end() ? nullptr : &*found;
+        document.supplementaryText, id, &spice::sct::SctDocumentSupplementaryText::id);
+    return found == document.supplementaryText.end() ? nullptr : &*found;
 }
 
 void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
@@ -81,9 +81,9 @@ void appendChanges(SctEditChangeSet& target, SctEditChangeSet source) {
     target.repeatedGroups.insert(target.repeatedGroups.end(),
         std::make_move_iterator(source.repeatedGroups.begin()),
         std::make_move_iterator(source.repeatedGroups.end()));
-    target.footerEntries.insert(target.footerEntries.end(),
-        std::make_move_iterator(source.footerEntries.begin()),
-        std::make_move_iterator(source.footerEntries.end()));
+    target.supplementaryText.insert(target.supplementaryText.end(),
+        std::make_move_iterator(source.supplementaryText.begin()),
+        std::make_move_iterator(source.supplementaryText.end()));
     target.textValues.insert(target.textValues.end(),
         std::make_move_iterator(source.textValues.begin()),
         std::make_move_iterator(source.textValues.end()));
@@ -632,7 +632,7 @@ template <typename Operation>
             auto* string = findString(document, id);
             return string != nullptr ? &string->value : nullptr;
         } else {
-            auto* entry = findFooterEntry(document, id);
+            auto* entry = findSupplementaryText(document, id);
             return entry != nullptr ? &entry->value : nullptr;
         }
     }, operation.target);
@@ -654,58 +654,60 @@ template <typename Operation>
     };
 }
 
-[[nodiscard]] PrimitiveApplication applyInsertFooter(
+[[nodiscard]] PrimitiveApplication applyInsertSupplementaryText(
     spice::sct::SctDocument& document,
-    const SctInsertFooterEntryAfterOperation& operation) {
-    const auto target = SctNavigationTarget{SctNavigationKind::FooterEntry, operation.entry.id.value()};
-    if (findFooterEntry(document, operation.entry.id) != nullptr)
-        return {.issue = issue("FooterEntryAlreadyExists", "The footer entry ID already exists.", target)};
-    auto destination = document.footerEntries.begin();
+    const SctInsertSupplementaryTextAfterOperation& operation) {
+    const auto target = SctNavigationTarget{SctNavigationKind::SupplementaryText, operation.entry.id.value()};
+    if (findSupplementaryText(document, operation.entry.id) != nullptr)
+        return {.issue = issue("SupplementaryTextAlreadyExists", "The supplementary text ID already exists.", target)};
+    auto destination = document.supplementaryText.begin();
     if (operation.anchor) {
-        const auto anchor = std::ranges::find(document.footerEntries, *operation.anchor,
-            &spice::sct::SctDocumentFooterEntry::id);
-        if (anchor == document.footerEntries.end()) return {.issue = issue("FooterEntryAnchorNotFound", "The footer insertion anchor does not exist.")};
+        const auto anchor = std::ranges::find(document.supplementaryText, *operation.anchor,
+            &spice::sct::SctDocumentSupplementaryText::id);
+        if (anchor == document.supplementaryText.end())
+            return {.issue = issue("SupplementaryTextAnchorNotFound",
+                "The supplementary-text insertion anchor does not exist.")};
         destination = std::next(anchor);
     }
-    while (document.nextFooterEntryIdValue() <= operation.entry.id.value())
-        (void)document.allocateFooterEntryId();
-    document.footerEntries.insert(destination, operation.entry);
-    SctFooterEntryStructuralChange change;
+    while (document.nextSupplementaryTextIdValue() <= operation.entry.id.value())
+        (void)document.allocateSupplementaryTextId();
+    document.supplementaryText.insert(destination, operation.entry);
+    SctSupplementaryTextStructuralChange change;
     change.entry = operation.entry.id;
-    change.after = SctFooterEntryPlacement{operation.anchor};
+    change.after = SctSupplementaryTextPlacement{operation.anchor};
     change.afterValue = operation.entry;
     auto reverse = change;
     reverse.before = reverse.after; reverse.after.reset();
     reverse.beforeValue = reverse.afterValue; reverse.afterValue.reset();
     SctEditChangeSet forward, backward;
-    forward.footerEntries.push_back(std::move(change));
-    backward.footerEntries.push_back(std::move(reverse));
+    forward.supplementaryText.push_back(std::move(change));
+    backward.supplementaryText.push_back(std::move(reverse));
     forward.documentChanged = backward.documentChanged = true;
-    return {SctDeleteFooterEntryOperation{operation.entry.id}, std::move(forward), std::move(backward)};
+    return {SctDeleteSupplementaryTextOperation{operation.entry.id}, std::move(forward), std::move(backward)};
 }
 
-[[nodiscard]] PrimitiveApplication applyDeleteFooter(
-    spice::sct::SctDocument& document, const SctDeleteFooterEntryOperation& operation) {
-    const auto found = std::ranges::find(document.footerEntries, operation.entry,
-        &spice::sct::SctDocumentFooterEntry::id);
-    if (found == document.footerEntries.end()) return {.issue = issue("FooterEntryNotFound", "The deleted footer entry does not exist.")};
-    const auto ordinal = static_cast<std::size_t>(std::distance(document.footerEntries.begin(), found));
-    std::optional<spice::sct::SctFooterEntryId> anchor;
-    if (ordinal != 0u) anchor = document.footerEntries[ordinal - 1u].id;
+[[nodiscard]] PrimitiveApplication applyDeleteSupplementaryText(
+    spice::sct::SctDocument& document, const SctDeleteSupplementaryTextOperation& operation) {
+    const auto found = std::ranges::find(document.supplementaryText, operation.entry,
+        &spice::sct::SctDocumentSupplementaryText::id);
+    if (found == document.supplementaryText.end()) return {.issue = issue("SupplementaryTextNotFound", "The deleted supplementary text does not exist.")};
+    const auto ordinal = static_cast<std::size_t>(std::distance(document.supplementaryText.begin(), found));
+    std::optional<spice::sct::SctSupplementaryTextId> anchor;
+    if (ordinal != 0u) anchor = document.supplementaryText[ordinal - 1u].id;
     auto removed = *found;
-    document.footerEntries.erase(found);
-    SctFooterEntryStructuralChange change;
+    document.supplementaryText.erase(found);
+    SctSupplementaryTextStructuralChange change;
     change.entry = operation.entry;
-    change.before = SctFooterEntryPlacement{anchor};
+    change.before = SctSupplementaryTextPlacement{anchor};
     change.beforeValue = removed;
     auto reverse = change;
     reverse.after = reverse.before; reverse.before.reset();
     reverse.afterValue = reverse.beforeValue; reverse.beforeValue.reset();
     SctEditChangeSet forward, backward;
-    forward.footerEntries.push_back(std::move(change));
-    backward.footerEntries.push_back(std::move(reverse));
+    forward.supplementaryText.push_back(std::move(change));
+    backward.supplementaryText.push_back(std::move(reverse));
     forward.documentChanged = backward.documentChanged = true;
-    return {SctInsertFooterEntryAfterOperation{anchor, std::move(removed)}, std::move(forward), std::move(backward)};
+    return {SctInsertSupplementaryTextAfterOperation{anchor, std::move(removed)}, std::move(forward), std::move(backward)};
 }
 
 [[nodiscard]] PrimitiveApplication applyPrimitive(
@@ -737,10 +739,10 @@ template <typename Operation>
             return applyRepeatedGroup(document, typed);
         else if constexpr (std::is_same_v<T, SctReplaceTextValueOperation>)
             return applyReplaceText(document, typed);
-        else if constexpr (std::is_same_v<T, SctInsertFooterEntryAfterOperation>)
-            return applyInsertFooter(document, typed);
+        else if constexpr (std::is_same_v<T, SctInsertSupplementaryTextAfterOperation>)
+            return applyInsertSupplementaryText(document, typed);
         else
-            return applyDeleteFooter(document, typed);
+            return applyDeleteSupplementaryText(document, typed);
     }, operation);
 }
 

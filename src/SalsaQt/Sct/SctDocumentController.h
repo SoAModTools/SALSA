@@ -7,6 +7,7 @@
 #include "SalsaCore/Sct/SctFragment.h"
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
 #include "SalsaCore/Sct/SctPublication.h"
+#include "Application/InteractionNotice.h"
 
 #include <QFutureWatcher>
 #include <QList>
@@ -148,9 +149,9 @@ public:
         core::SctSectionFolder folder);
     [[nodiscard]] bool removeSectionFolder(const core::AssetLocator& locator,
         core::SctSectionFolderId folder);
-    [[nodiscard]] bool createFooterText(const core::AssetLocator& locator,
-        core::SctCreatedFooterTextKind kind,
-        std::optional<spice::sct::SctFooterEntryId> after);
+    [[nodiscard]] bool createSupplementaryText(const core::AssetLocator& locator,
+        core::SctCreatedSupplementaryTextKind kind,
+        std::optional<spice::sct::SctSupplementaryTextId> after);
     [[nodiscard]] bool deleteTextEntity(const core::AssetLocator& locator,
         const core::SctTextTarget& target);
     [[nodiscard]] bool addVirtualElse(
@@ -251,7 +252,8 @@ signals:
     void focusRequested(const QString& identityKey);
     void operationCompleted(
         const QString& identityKey, bool success, bool cancelled, const QString& message);
-    void editCompleted(const QString& identityKey, bool success, const QString& message);
+    void editCommitted(const QString& identityKey, const QString& message);
+    void editRejected(const InteractionNotice& notice);
     void checkpointCompleted(
         const QString& identityKey, bool success, bool cancelled, const QString& message);
     void publicationCompleted(
@@ -277,6 +279,7 @@ private:
         std::uint64_t checkpointGeneration = 0;
         bool patchConflict = false;
         bool editBlocked = false;
+        std::vector<core::SctPipelineDiagnostic> blockingDiagnostics{};
         std::vector<core::SctPipelineDiagnostic> publicationDiagnostics{};
         std::optional<core::SctPublicationReceipt> lastPublication{};
     };

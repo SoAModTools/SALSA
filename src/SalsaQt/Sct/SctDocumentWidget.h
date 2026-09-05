@@ -11,6 +11,7 @@
 
 #include <QWidget>
 #include <QList>
+#include <QRect>
 
 #include <cstddef>
 #include <memory>
@@ -21,10 +22,7 @@
 #include <functional>
 
 class QComboBox;
-class QCheckBox;
 class QLabel;
-class QLineEdit;
-class QPlainTextEdit;
 class QPushButton;
 class QTextEdit;
 class QTabWidget;
@@ -91,6 +89,7 @@ public:
     void setActiveView(core::SctDocumentView view);
     [[nodiscard]] bool containsTarget(core::SctNavigationTarget target) const;
     [[nodiscard]] QString targetLabel(core::SctNavigationTarget target) const;
+    [[nodiscard]] QRect globalRectForTarget(core::SctNavigationTarget target) const;
     [[nodiscard]] std::optional<InstructionInsertionContext> insertionContext() const;
     [[nodiscard]] std::optional<spice::sct::SctInstructionId> selectedInstruction() const;
     [[nodiscard]] std::vector<spice::sct::SctInstructionId>
@@ -114,14 +113,15 @@ signals:
     void deleteInstructionRequested(const QString& identityKey);
     void moveInstructionRequested(const QString& identityKey, int direction);
     void moveInstructionRangeRequested(const QString& identityKey,
-        const QList<qulonglong>& instructions, qulonglong anchor);
+        const QList<qulonglong>& instructions, qulonglong anchor,
+        const QPoint& globalPosition);
     void editMessageRequested(const QString& identityKey);
     void createScriptSectionRequested(const QString& identityKey);
     void createIndexedStringRequested(const QString& identityKey);
     void renameSectionRequested(const QString& identityKey);
     void deleteSectionRequested(const QString& identityKey);
     void moveSectionRequested(const QString& identityKey, int direction);
-    void createFooterTextRequested(const QString& identityKey, int kind);
+    void createSupplementaryTextRequested(const QString& identityKey, int kind);
     void deleteTextRequested(const QString& identityKey);
     void addElseRequested(const QString& identityKey, qulonglong controller);
     void addCaseRequested(const QString& identityKey, qulonglong controller);
@@ -149,9 +149,6 @@ signals:
         qulonglong instruction, quint32 ordinal, int direction);
     void navigationChanged(const QString& identityKey, int kind, qulonglong id);
     void activeViewChanged(const QString& identityKey, int view);
-    void authoringMetadataRequested(const QString& identityKey, int kind,
-        qulonglong id, const QString& note, bool bookmarked,
-        const QString& bookmarkLabel, int colorRgb);
     void createSectionFolderRequested(const QString& identityKey,
         const QList<qulonglong>& sections);
     void editSectionFolderRequested(const QString& identityKey, qulonglong folder);
@@ -163,7 +160,6 @@ private:
     void markStructuredOutlinePending();
     void syncDocumentButtons();
     void showTarget(core::SctNavigationTarget target);
-    void syncAuthoringEditor(core::SctNavigationTarget target);
     void updateSourceBanner(int sourceStatus);
     void showParameterTable(spice::sct::SctInstructionId instruction,
         const core::SctEditChangeSet* changes = nullptr);
@@ -200,13 +196,6 @@ private:
     QLabel* title_ = nullptr;
     QLabel* subtitle_ = nullptr;
     QTreeWidget* properties_ = nullptr;
-    QPlainTextEdit* authoringNote_ = nullptr;
-    QCheckBox* authoringBookmark_ = nullptr;
-    QLineEdit* authoringBookmarkLabel_ = nullptr;
-    QPushButton* authoringColorButton_ = nullptr;
-    QPushButton* authoringClearColorButton_ = nullptr;
-    QPushButton* authoringApplyButton_ = nullptr;
-    std::optional<std::uint32_t> authoringColor_{};
     std::vector<core::SctVariableAlias> aliases_{};
     std::vector<core::SctEntityAnnotation> annotations_{};
     std::vector<core::SctSectionFolder> folders_{};

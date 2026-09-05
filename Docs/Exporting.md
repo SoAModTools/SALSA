@@ -5,7 +5,7 @@ SALSA keeps editing and publication separate. Editing changes the active documen
 ## Export the active document
 
 1. Activate the SCT document tab you want to export.
-2. Choose **File > Export Active SCT...** or press **Ctrl+Shift+E**.
+2. Choose **Document > Export SCT...** or press **Ctrl+Shift+E**.
 3. Choose a destination file and every required target setting.
 4. Select **Export**.
 

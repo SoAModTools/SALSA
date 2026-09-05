@@ -1,4 +1,5 @@
 #include "SalsaCore/Foundation/Result.h"
+#include "SalsaCore/Application/ActivityLifecycle.h"
 
 #include <gtest/gtest.h>
 
@@ -54,6 +55,38 @@ TEST(ResultTest, SupportsVoidSuccessAndFailure) {
         "cancelled",
         std::nullopt,
     }));
+}
+
+TEST(DiagnosticTest, CurrentIssueSeverityExcludesInformation) {
+    EXPECT_FALSE(isCurrentDiagnosticSeverity(DiagnosticSeverity::Info));
+    EXPECT_TRUE(isCurrentDiagnosticSeverity(DiagnosticSeverity::Warning));
+    EXPECT_TRUE(isCurrentDiagnosticSeverity(DiagnosticSeverity::Error));
+}
+
+TEST(DiagnosticTest, EveryDeclaredCodeHasAStableDisplayName) {
+    const auto last = static_cast<int>(DiagnosticCode::LegacyImportDestinationNotFresh);
+    for (int ordinal = 0; ordinal <= last; ++ordinal) {
+        const auto name = diagnosticCodeName(static_cast<DiagnosticCode>(ordinal));
+        EXPECT_FALSE(name.empty()) << ordinal;
+        EXPECT_NE(name, "Unknown") << ordinal;
+    }
+    EXPECT_EQ(diagnosticCodeName(static_cast<DiagnosticCode>(last + 1)), "Unknown");
+}
+
+TEST(ActivityLifecycleTest, ReportsRaisedResolvedAndReraisedIssues) {
+    IssueActivityTracker<std::string> tracker;
+    auto events = tracker.observe({"warning"});
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].transition, IssueActivityTransition::Raised);
+
+    EXPECT_TRUE(tracker.observe({"warning"}).empty());
+    events = tracker.observe({});
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].transition, IssueActivityTransition::Resolved);
+
+    events = tracker.observe({"warning"});
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].transition, IssueActivityTransition::Reraised);
 }
 
 }  // namespace

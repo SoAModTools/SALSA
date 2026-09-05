@@ -82,7 +82,7 @@ struct SctVariableAlias final {
 };
 
 enum class SctAuthoringTargetKind : std::uint8_t {
-    Document, Section, Instruction, String, FooterEntry, Variable,
+    Document, Section, Instruction, String, SupplementaryText, Variable,
 };
 
 struct SctAuthoringTarget final {

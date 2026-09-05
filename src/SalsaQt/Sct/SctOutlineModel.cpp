@@ -3,10 +3,12 @@
 
 #include "SpiceSCT/SctOpcodeMetadata.h"
 
+#include <QApplication>
 #include <QString>
 #include <QMimeData>
 #include <QBrush>
 #include <QColor>
+#include <QStyle>
 
 #include <algorithm>
 #include <ranges>
@@ -49,6 +51,14 @@ QVariant SctOutlineModel::data(const QModelIndex& modelIndex, const int role) co
     if (role == Qt::UserRole) return static_cast<int>(node->target.kind);
     if (role == Qt::UserRole + 1)
         return QVariant::fromValue<qulonglong>(node->target.id);
+    if (role == Qt::DecorationRole && modelIndex.column() == 0
+        && node->importedEvidenceCount != 0u)
+        return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+    if ((role == Qt::ToolTipRole || role == Qt::AccessibleDescriptionRole)
+        && node->importedEvidenceCount != 0u) {
+        return tr("%1 imported control-flow evidence item(s). Select to inspect.")
+            .arg(node->importedEvidenceCount);
+    }
     if (role == Qt::BackgroundRole) {
         const auto direct = annotationColors_.find(key(node->target).toStdString());
         if (direct != annotationColors_.end())
@@ -184,7 +194,7 @@ void SctOutlineModel::setPresentationMetadata(
         case core::SctAuthoringTargetKind::Section: kind = core::SctNavigationKind::Section; break;
         case core::SctAuthoringTargetKind::Instruction: kind = core::SctNavigationKind::Instruction; break;
         case core::SctAuthoringTargetKind::String: kind = core::SctNavigationKind::String; break;
-        case core::SctAuthoringTargetKind::FooterEntry: kind = core::SctNavigationKind::FooterEntry; break;
+        case core::SctAuthoringTargetKind::SupplementaryText: kind = core::SctNavigationKind::SupplementaryText; break;
         case core::SctAuthoringTargetKind::Variable: continue;
         }
         annotationColors_.emplace(key({kind, annotation.target.id}).toStdString(),
@@ -220,7 +230,7 @@ bool SctOutlineModel::apply(const core::SctEditChangeSet& changes) {
         }
         return false;
     }
-    for (const auto& change : changes.footerEntries)
+    for (const auto& change : changes.supplementaryText)
         if (!applyOne(change)) return false;
     return true;
 }
@@ -297,21 +307,21 @@ bool SctOutlineModel::applyOne(const core::SctSectionStructuralChange& change) {
     return false;
 }
 
-bool SctOutlineModel::applyOne(const core::SctFooterEntryStructuralChange& change) {
+bool SctOutlineModel::applyOne(const core::SctSupplementaryTextStructuralChange& change) {
     auto* footer = nodeFor({core::SctNavigationKind::FooterGroup, 0});
     if (footer == nullptr) return false;
-    const core::SctNavigationTarget target{core::SctNavigationKind::FooterEntry,
+    const core::SctNavigationTarget target{core::SctNavigationKind::SupplementaryText,
         change.entry.value()};
     if (!change.before && change.after && change.afterValue) {
         int row = 0;
         if (change.after->after) {
-            auto* anchor = nodeFor({core::SctNavigationKind::FooterEntry,
+            auto* anchor = nodeFor({core::SctNavigationKind::SupplementaryText,
                 change.after->after->value()});
             if (anchor == nullptr || anchor->parent != footer) return false;
             row = rowOf(anchor) + 1;
         }
         beginInsertRows(indexForNode(footer), row, row);
-        auto node = footerEntryNode(*change.afterValue, footer);
+        auto node = supplementaryTextNode(*change.afterValue, footer);
         auto* raw = node.get();
         footer->children.insert(footer->children.begin() + row, std::move(node));
         nodes_[key(target).toStdString()] = raw;
@@ -451,6 +461,7 @@ std::unique_ptr<SctOutlineModel::Node> SctOutlineModel::makeNode(
     node->label = QString::fromStdString(item.label);
     node->secondary = QString::fromStdString(item.secondary);
     node->target = item.target;
+    node->importedEvidenceCount = item.importedEvidenceCount;
     node->parent = parent;
     for (const auto& child : item.children)
         node->children.push_back(makeNode(child, node.get()));
@@ -546,12 +557,12 @@ std::unique_ptr<SctOutlineModel::Node> SctOutlineModel::sectionNode(
     return node;
 }
 
-std::unique_ptr<SctOutlineModel::Node> SctOutlineModel::footerEntryNode(
-    const spice::sct::SctDocumentFooterEntry& entry, Node* parent) {
+std::unique_ptr<SctOutlineModel::Node> SctOutlineModel::supplementaryTextNode(
+    const spice::sct::SctDocumentSupplementaryText& entry, Node* parent) {
     auto node = std::make_unique<Node>();
     node->label = QStringLiteral("[0] ") + (entry.kind == spice::sct::SctTextKind::SctString
         ? tr("SCT message") : tr("Plain string"));
-    node->target = {core::SctNavigationKind::FooterEntry, entry.id.value()};
+    node->target = {core::SctNavigationKind::SupplementaryText, entry.id.value()};
     node->parent = parent;
     return node;
 }

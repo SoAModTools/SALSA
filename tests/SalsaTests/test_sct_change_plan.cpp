@@ -36,7 +36,7 @@ using namespace spice::sct;
     }
     builder.document().sections.push_back(
         {builder.allocateSectionId(), "SCRIPT", std::move(script)});
-    builder.document().footerEntries.push_back({builder.allocateFooterEntryId(),
+    builder.document().supplementaryText.push_back({builder.allocateSupplementaryTextId(),
         SctTextKind::PlainString, SctPlainText{"before"}});
     return std::move(builder).finish();
 }
@@ -76,7 +76,7 @@ TEST(SctChangePlanTest, BuildsDeterministicMultiScriptEntityPlanAndAppliesSelect
     auto& firstScript = std::get<SctScriptSectionContent>(
         firstWorking.sections.front().content);
     firstScript.instructions[1].skipRefresh = true;
-    std::get<SctPlainText>(firstWorking.footerEntries.front().value).utf8 = "after";
+    std::get<SctPlainText>(firstWorking.supplementaryText.front().value).utf8 = "after";
     auto secondWorking = baseline;
     std::get<SctScriptSectionContent>(secondWorking.sections.front().content)
         .instructions[1].skipRefresh = true;
@@ -97,8 +97,8 @@ TEST(SctChangePlanTest, BuildsDeterministicMultiScriptEntityPlanAndAppliesSelect
     const auto changedInstruction = firstScript.instructions[1].id;
     const auto* instructionUnit = unit(first, SctChangeEntityKind::Instruction,
         changedInstruction.value());
-    const auto* footerUnit = unit(first, SctChangeEntityKind::FooterEntry,
-        firstWorking.footerEntries.front().id.value());
+    const auto* footerUnit = unit(first, SctChangeEntityKind::SupplementaryText,
+        firstWorking.supplementaryText.front().id.value());
     ASSERT_NE(instructionUnit, nullptr);
     ASSERT_NE(footerUnit, nullptr);
 
@@ -116,7 +116,7 @@ TEST(SctChangePlanTest, BuildsDeterministicMultiScriptEntityPlanAndAppliesSelect
         firstApplied.state->document->sections.front().content);
     EXPECT_TRUE(appliedScript.instructions[1].skipRefresh);
     EXPECT_EQ(std::get<SctPlainText>(
-        firstApplied.state->document->footerEntries.front().value).utf8, "before");
+        firstApplied.state->document->supplementaryText.front().value).utf8, "before");
 }
 
 TEST(SctChangePlanTest, FullSelectionRecreatesCanonicalPatch) {
@@ -127,7 +127,7 @@ TEST(SctChangePlanTest, FullSelectionRecreatesCanonicalPatch) {
         working.sections.front().content).instructions;
     instructions[1].skipRefresh = true;
     std::swap(instructions[1], instructions[2]);
-    std::get<SctPlainText>(working.footerEntries.front().value).utf8 = "changed";
+    std::get<SctPlainText>(working.supplementaryText.front().value).utf8 = "changed";
     const std::array inputs{comparison(scriptLocator, baseline, working)};
     const auto built = SctChangePlanService::build(inputs);
     ASSERT_TRUE(built);
@@ -167,9 +167,9 @@ TEST(SctChangePlanTest, PreservesAllocatorOnlyPlanAndMergesConcurrentHighWater) 
     auto currentDocument = baseline;
     (void)currentDocument.allocateInstructionId();
     (void)currentDocument.allocateInstructionId();
-    (void)currentDocument.allocateFooterEntryId();
+    (void)currentDocument.allocateSupplementaryTextId();
     const auto currentInstructionHighWater = currentDocument.nextInstructionIdValue();
-    const auto currentFooterHighWater = currentDocument.nextFooterEntryIdValue();
+    const auto currentFooterHighWater = currentDocument.nextSupplementaryTextIdValue();
     const std::array current{
         SctCurrentScriptState{scriptLocator, state(currentDocument)}};
     const auto applied = SctChangePlanService::apply(built.value(), current,
@@ -180,7 +180,7 @@ TEST(SctChangePlanTest, PreservesAllocatorOnlyPlanAndMergesConcurrentHighWater) 
         proposed.nextSectionIdValue());
     EXPECT_EQ(applied.scripts.front().state->document->nextInstructionIdValue(),
         currentInstructionHighWater);
-    EXPECT_EQ(applied.scripts.front().state->document->nextFooterEntryIdValue(),
+    EXPECT_EQ(applied.scripts.front().state->document->nextSupplementaryTextIdValue(),
         currentFooterHighWater);
 }
 
@@ -191,7 +191,7 @@ TEST(SctChangePlanTest, IsolatesExpectedBeforeConflictAndAppliesCleanEntity) {
     auto& plannedInstructions = std::get<SctScriptSectionContent>(
         planned.sections.front().content).instructions;
     plannedInstructions[1].skipRefresh = true;
-    std::get<SctPlainText>(planned.footerEntries.front().value).utf8 = "planned";
+    std::get<SctPlainText>(planned.supplementaryText.front().value).utf8 = "planned";
     const std::array inputs{comparison(scriptLocator, baseline, planned)};
     const auto built = SctChangePlanService::build(inputs);
     ASSERT_TRUE(built);
@@ -210,7 +210,7 @@ TEST(SctChangePlanTest, IsolatesExpectedBeforeConflictAndAppliesCleanEntity) {
         }));
     ASSERT_TRUE(applied.scripts.front().state.has_value());
     EXPECT_EQ(std::get<SctPlainText>(
-        applied.scripts.front().state->document->footerEntries.front().value).utf8,
+        applied.scripts.front().state->document->supplementaryText.front().value).utf8,
         "planned");
     EXPECT_TRUE(std::get<SctScriptSectionContent>(
         applied.scripts.front().state->document->sections.front().content)
@@ -327,10 +327,10 @@ TEST(SctChangePlanTest, CouplesTextRepairProvenanceToSemanticText) {
     const auto scriptLocator = locator("scripts/text.sct");
     auto baseline = makeDocument();
     const std::vector<std::uint8_t> opaqueBytes{'o', 'p', 'a', 'q', 'u', 'e'};
-    const auto textId = baseline.footerEntries.front().id;
-    baseline.footerEntries.front().value = SctOpaqueText{opaqueBytes};
+    const auto textId = baseline.supplementaryText.front().id;
+    baseline.supplementaryText.front().value = SctOpaqueText{opaqueBytes};
     auto working = baseline;
-    working.footerEntries.front().value = SctPlainText{"repaired"};
+    working.supplementaryText.front().value = SctPlainText{"repaired"};
     const auto opaqueDigest = sha256(std::as_bytes(std::span{opaqueBytes})).value();
     const SctPatchedTextRepair repair{textId,
         {kSctShiftJisByte7FEncoding, SctKnownTextConvention::ShiftJisByte7F,
@@ -340,7 +340,7 @@ TEST(SctChangePlanTest, CouplesTextRepairProvenanceToSemanticText) {
     const auto built = SctChangePlanService::build(inputs);
     ASSERT_TRUE(built);
     const auto& script = built.value().scripts.front();
-    const auto* text = unit(script, SctChangeEntityKind::FooterEntry, textId.value());
+    const auto* text = unit(script, SctChangeEntityKind::SupplementaryText, textId.value());
     const auto* metadata = unit(script, SctChangeEntityKind::TextRepair);
     ASSERT_NE(text, nullptr);
     ASSERT_NE(metadata, nullptr);

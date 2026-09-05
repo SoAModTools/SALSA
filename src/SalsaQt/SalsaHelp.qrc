@@ -1,0 +1,9 @@
+<RCC>
+  <qresource prefix="/help">
+    <file alias="README.md">../../Docs/README.md</file>
+    <file alias="LegacyImport.md">../../Docs/LegacyImport.md</file>
+    <file alias="Exporting.md">../../Docs/Exporting.md</file>
+    <file alias="Parameters.md">../../Docs/Parameters.md</file>
+    <file alias="KeyboardShortcuts.md">../../Docs/KeyboardShortcuts.md</file>
+  </qresource>
+</RCC>

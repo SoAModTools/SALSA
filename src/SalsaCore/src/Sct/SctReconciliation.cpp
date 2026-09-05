@@ -97,7 +97,7 @@ using DecisionProvenance =
             return "instruction:" + std::to_string(id.value());
         else if constexpr (std::is_same_v<T, SctStringId>)
             return "string:" + std::to_string(id.value());
-        else if constexpr (std::is_same_v<T, SctFooterEntryId>)
+        else if constexpr (std::is_same_v<T, SctSupplementaryTextId>)
             return "footer:" + std::to_string(id.value());
         else if constexpr (std::is_same_v<T, SctOpaqueAttachmentId>)
             return "opaque:" + std::to_string(id.value());
@@ -115,8 +115,8 @@ using DecisionProvenance =
             return SctNavigationTarget{SctNavigationKind::Instruction, id.value()};
         else if constexpr (std::is_same_v<T, SctStringId>)
             return SctNavigationTarget{SctNavigationKind::String, id.value()};
-        else if constexpr (std::is_same_v<T, SctFooterEntryId>)
-            return SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()};
+        else if constexpr (std::is_same_v<T, SctSupplementaryTextId>)
+            return SctNavigationTarget{SctNavigationKind::SupplementaryText, id.value()};
         else if constexpr (std::is_same_v<T, SctOpaqueAttachmentId>)
             return SctNavigationTarget{SctNavigationKind::OpaqueAttachment, id.value()};
         else return std::nullopt;
@@ -137,7 +137,7 @@ void remapParameter(SctDocumentParameter& parameter, const IdMaps& maps) {
             value.target = remapped(maps.instructions, value.target);
         else if constexpr (std::is_same_v<T, SctStringReference>)
             value.target = remapped(maps.strings, value.target);
-        else if constexpr (std::is_same_v<T, SctFooterEntryReference>)
+        else if constexpr (std::is_same_v<T, SctSupplementaryTextReference>)
             value.target = remapped(maps.footers, value.target);
     }, parameter.value);
 }
@@ -203,7 +203,7 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
         else if (auto* string = std::get_if<SctStringSectionContent>(&section.content))
             string->string.id = remapped(maps.strings, string->string.id);
     }
-    for (auto& footer : document.footerEntries)
+    for (auto& footer : document.supplementaryText)
         footer.id = remapped(maps.footers, footer.id);
     for (auto& opaque : document.opaqueAttachments) {
         opaque.id = remapped(maps.opaque, opaque.id);
@@ -220,12 +220,12 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
         sectionOrder.push_back(section.id);
     }
     if (!sectionOrder.empty()) patch.sectionOrder = {{}, sectionOrder};
-    std::vector<SctFooterEntryId> footerOrder;
-    for (const auto& footer : state.document->footerEntries) {
-        patch.footerEntries.push_back({std::nullopt, footer});
-        footerOrder.push_back(footer.id);
+    std::vector<SctSupplementaryTextId> supplementaryTextOrder;
+    for (const auto& footer : state.document->supplementaryText) {
+        patch.supplementaryText.push_back({std::nullopt, footer});
+        supplementaryTextOrder.push_back(footer.id);
     }
-    if (!footerOrder.empty()) patch.footerOrder = {{}, footerOrder};
+    if (!supplementaryTextOrder.empty()) patch.supplementaryTextOrder = {{}, supplementaryTextOrder};
     for (const auto& arm : state.authoredArms)
         patch.authoredArms.push_back({std::nullopt, arm});
     for (const auto& repair : state.textRepairs)
@@ -286,7 +286,7 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
         else if (const auto* stringValue = std::get_if<SctStringSectionContent>(&value.content))
             maps.strings.emplace(stringValue->string.id.value(), string++);
     }
-    for (const auto& value : source.document->footerEntries)
+    for (const auto& value : source.document->supplementaryText)
         maps.footers.emplace(value.id.value(), footer++);
     for (const auto& value : source.document->opaqueAttachments)
         maps.opaque.emplace(value.id.value(), opaque++);
@@ -315,7 +315,7 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
             value.target.id = maps.instructions.at(value.target.id); break;
         case SctAuthoringTargetKind::String:
             value.target.id = maps.strings.at(value.target.id); break;
-        case SctAuthoringTargetKind::FooterEntry:
+        case SctAuthoringTargetKind::SupplementaryText:
             value.target.id = maps.footers.at(value.target.id); break;
         default: break;
         }
@@ -364,8 +364,8 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
     return result.str();
 }
 
-[[nodiscard]] std::string footerSignature(
-    const SctDocumentFooterEntry& footer);
+[[nodiscard]] std::string supplementaryTextSignature(
+    const SctDocumentSupplementaryText& footer);
 
 [[nodiscard]] std::string instructionLocalSignature(
     SctDocumentInstruction instruction) {
@@ -377,8 +377,8 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
                 value.target = SctInstructionId{1};
             else if constexpr (std::is_same_v<T, SctStringReference>)
                 value.target = SctStringId{1};
-            else if constexpr (std::is_same_v<T, SctFooterEntryReference>)
-                value.target = SctFooterEntryId{1};
+            else if constexpr (std::is_same_v<T, SctSupplementaryTextReference>)
+                value.target = SctSupplementaryTextId{1};
         }, parameter.value);
     };
     for (auto& parameter : instruction.fixedParameters) normalize(parameter);
@@ -408,10 +408,10 @@ instructionGraphSignatures(const SctDocument& document) {
             strings[string->string.id.value()] = sectionSignature(neutral);
         }
     }
-    for (auto footer : document.footerEntries) {
+    for (auto footer : document.supplementaryText) {
         const auto id = footer.id;
-        footer.id = SctFooterEntryId{1};
-        footers[id.value()] = footerSignature(footer);
+        footer.id = SctSupplementaryTextId{1};
+        footers[id.value()] = supplementaryTextSignature(footer);
     }
     const auto appendReferences = [&](std::ostringstream& output,
                                       const SctDocumentParameter& parameter,
@@ -424,7 +424,7 @@ instructionGraphSignatures(const SctDocument& document) {
             } else if constexpr (std::is_same_v<T, SctStringReference>) {
                 const auto found = strings.find(value.target.value());
                 output << "|s:" << (found == strings.end() ? "missing" : found->second);
-            } else if constexpr (std::is_same_v<T, SctFooterEntryReference>) {
+            } else if constexpr (std::is_same_v<T, SctSupplementaryTextReference>) {
                 const auto found = footers.find(value.target.value());
                 output << "|f:" << (found == footers.end() ? "missing" : found->second);
             }
@@ -452,9 +452,9 @@ instructionGraphSignatures(const SctDocument& document) {
     return signatures;
 }
 
-[[nodiscard]] std::string footerSignature(const SctDocumentFooterEntry& footer) {
+[[nodiscard]] std::string supplementaryTextSignature(const SctDocumentSupplementaryText& footer) {
     auto document = std::make_shared<SctDocument>();
-    document->footerEntries.push_back(footer);
+    document->supplementaryText.push_back(footer);
     return neutralFingerprint({document, {}, {}});
 }
 
@@ -529,8 +529,8 @@ template<typename T, typename Id>
             return findInstruction(*state.document, id) != nullptr;
         else if constexpr (std::is_same_v<T, SctStringId>)
             return findString(*state.document, id) != nullptr;
-        else if constexpr (std::is_same_v<T, SctFooterEntryId>)
-            return findById(state.document->footerEntries, id) != nullptr;
+        else if constexpr (std::is_same_v<T, SctSupplementaryTextId>)
+            return findById(state.document->supplementaryText, id) != nullptr;
         else if constexpr (std::is_same_v<T, SctOpaqueAttachmentId>)
             return findById(state.document->opaqueAttachments, id) != nullptr;
         else return findArm(state.authoredArms, id) != nullptr;
@@ -1088,18 +1088,18 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
         }
         matches.insert(matches.end(), instructionMatches.begin(), instructionMatches.end());
 
-        std::vector<SctDocumentFooterEntry> leftFooters = baselineDocument.footerEntries;
-        std::vector<SctDocumentFooterEntry> rightFooters = incomingDocument.footerEntries;
+        std::vector<SctDocumentSupplementaryText> leftFooters = baselineDocument.supplementaryText;
+        std::vector<SctDocumentSupplementaryText> rightFooters = incomingDocument.supplementaryText;
         std::unordered_set<std::uint64_t> usedLeftFooters, usedRightFooters;
-        applyExplicitPairs<SctFooterEntryId>(decisions, decisionProvenance,
+        applyExplicitPairs<SctSupplementaryTextId>(decisions, decisionProvenance,
             pair.baseline->locator,
             pair.incoming->key, usedLeftFooters, usedRightFooters, matches);
-        matchUniqueExact<SctFooterEntryId>(leftFooters, rightFooters,
-            usedLeftFooters, usedRightFooters, matches, footerSignature);
-        matchMutualUniqueStrong<SctFooterEntryId>(leftFooters, rightFooters,
+        matchUniqueExact<SctSupplementaryTextId>(leftFooters, rightFooters,
+            usedLeftFooters, usedRightFooters, matches, supplementaryTextSignature);
+        matchMutualUniqueStrong<SctSupplementaryTextId>(leftFooters, rightFooters,
             usedLeftFooters, usedRightFooters, matches,
             [](const auto& value) { return std::to_string(static_cast<int>(value.kind)); },
-            "A mutually unique footer storage kind agrees.");
+            "A mutually unique supplementary-text kind agrees.");
 
         std::unordered_set<std::uint64_t> usedLeftStrings, usedRightStrings;
         applyExplicitPairs<SctStringId>(decisions, decisionProvenance,
@@ -1133,7 +1133,7 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
         setMap<SctSectionId>(maps.sections, matches);
         setMap<SctInstructionId>(maps.instructions, matches);
         setMap<SctStringId>(maps.strings, matches);
-        setMap<SctFooterEntryId>(maps.footers, matches);
+        setMap<SctSupplementaryTextId>(maps.footers, matches);
 
         std::unordered_set<std::uint64_t> matchedOpaqueBaseline,
             matchedOpaqueIncoming;
@@ -1164,7 +1164,7 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
         std::uint64_t nextSection = baselineDocument.nextSectionIdValue();
         std::uint64_t nextInstruction = baselineDocument.nextInstructionIdValue();
         std::uint64_t nextString = baselineDocument.nextStringIdValue();
-        std::uint64_t nextFooter = baselineDocument.nextFooterEntryIdValue();
+        std::uint64_t nextSupplementaryText = baselineDocument.nextSupplementaryTextIdValue();
         std::uint64_t nextArm = 1;
         for (const auto& arm : pair.baseline->state.authoredArms)
             nextArm = std::max(nextArm, arm.id.value + 1u);
@@ -1179,9 +1179,9 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
                 if (!maps.strings.contains(string->string.id.value()))
                     maps.strings[string->string.id.value()] = nextString++;
         }
-        for (const auto& footer : incomingDocument.footerEntries)
+        for (const auto& footer : incomingDocument.supplementaryText)
             if (!maps.footers.contains(footer.id.value()))
-                maps.footers[footer.id.value()] = nextFooter++;
+                maps.footers[footer.id.value()] = nextSupplementaryText++;
 
         std::unordered_set<std::uint64_t> usedBaselineArms, usedIncomingArms;
         for (const auto& decision : decisions) {
@@ -1282,10 +1282,10 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
                 }
             }
         }
-        for (const auto& source : baselineDocument.footerEntries) {
+        for (const auto& source : baselineDocument.supplementaryText) {
             if (preMatchedBaselineKeys.contains(entityKey(
                     SctReconciliationEntityId{source.id}))) continue;
-            for (const auto& target : incomingDocument.footerEntries) {
+            for (const auto& target : incomingDocument.supplementaryText) {
                 if (preMatchedIncomingKeys.contains(entityKey(
                         SctReconciliationEntityId{target.id}))) continue;
                 if (source.kind == target.kind) markAmbiguous(source.id, target.id);
@@ -1348,10 +1348,10 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
             pair.incoming->key);
         std::unordered_set<std::uint64_t> matchedBaselineFooters;
         for (const auto& match : matches)
-            if (const auto* value = std::get_if<SctFooterEntryId>(&match.baseline))
+            if (const auto* value = std::get_if<SctSupplementaryTextId>(&match.baseline))
                 matchedBaselineFooters.insert(value->value());
-        mergeUnmatchedBaseline<SctDocumentFooterEntry, SctFooterEntryId>(
-            candidateDocument->footerEntries, baselineDocument.footerEntries,
+        mergeUnmatchedBaseline<SctDocumentSupplementaryText, SctSupplementaryTextId>(
+            candidateDocument->supplementaryText, baselineDocument.supplementaryText,
             matchedBaselineFooters, decisions, decisionProvenance,
             pair.baseline->locator,
             pair.incoming->key);
@@ -1367,8 +1367,8 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
             < baselineDocument.nextInstructionIdValue()) (void)candidateDocument->allocateInstructionId();
         while (candidateDocument->nextStringIdValue()
             < baselineDocument.nextStringIdValue()) (void)candidateDocument->allocateStringId();
-        while (candidateDocument->nextFooterEntryIdValue()
-            < baselineDocument.nextFooterEntryIdValue()) (void)candidateDocument->allocateFooterEntryId();
+        while (candidateDocument->nextSupplementaryTextIdValue()
+            < baselineDocument.nextSupplementaryTextIdValue()) (void)candidateDocument->allocateSupplementaryTextId();
         while (candidateDocument->nextOpaqueAttachmentIdValue()
             < baselineDocument.nextOpaqueAttachmentIdValue()) (void)candidateDocument->allocateOpaqueAttachmentId();
 
@@ -1429,7 +1429,7 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
                 remap(maps.instructions); break;
             case SctAuthoringTargetKind::String:
                 remap(maps.strings); break;
-            case SctAuthoringTargetKind::FooterEntry:
+            case SctAuthoringTargetKind::SupplementaryText:
                 remap(maps.footers); break;
             default: break;
             }
@@ -1531,9 +1531,9 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
                     addUnmatched(stringValue->string.id, SctStringId{
                         maps.strings.at(stringValue->string.id.value())});
         }
-        for (const auto& footer : incomingDocument.footerEntries)
+        for (const auto& footer : incomingDocument.supplementaryText)
             if (!matchedIncomingKeys.contains(entityKey(SctReconciliationEntityId{footer.id})))
-                addUnmatched(footer.id, SctFooterEntryId{maps.footers.at(footer.id.value())});
+                addUnmatched(footer.id, SctSupplementaryTextId{maps.footers.at(footer.id.value())});
         for (const auto& arm : pair.incoming->state.authoredArms)
             if (!matchedIncomingKeys.contains(entityKey(
                     SctReconciliationEntityId{arm.id})))
@@ -1563,7 +1563,7 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
                         SctReconciliationEntityId{stringValue->string.id})))
                     addUnmatchedBaseline(stringValue->string.id);
         }
-        for (const auto& footer : baselineDocument.footerEntries)
+        for (const auto& footer : baselineDocument.supplementaryText)
             if (!matchedBaselineKeys.contains(entityKey(SctReconciliationEntityId{footer.id})))
                 addUnmatchedBaseline(footer.id);
         for (const auto& arm : pair.baseline->state.authoredArms)

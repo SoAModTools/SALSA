@@ -96,11 +96,16 @@ QString LegacyImportController::title() const { return tr("Import Legacy SALSA P
 
 core::ExclusiveOperationFlowDefinition LegacyImportController::flowDefinition() const {
     using Role = core::ExclusiveOperationPageRole;
+    using Progress = core::ExclusiveOperationProgressVisibility;
+    using Layout = core::ExclusiveOperationPageLayout;
     return {"configure",
-        {{"configure", Role::Configuration}, {"processing", Role::Processing},
-         {"review", Role::Review}, {"preparing", Role::Processing},
-         {"commit", Role::Commit}, {"committing", Role::Finishing},
-         {"summary", Role::Summary}},
+        {{"configure", Role::Configuration, Progress::Hidden, Layout::Standard},
+         {"processing", Role::Processing, Progress::Visible, Layout::Compact},
+         {"review", Role::Review, Progress::Hidden, Layout::Expanded},
+         {"preparing", Role::Processing, Progress::Visible, Layout::Compact},
+         {"commit", Role::Commit, Progress::Hidden, Layout::Standard},
+         {"committing", Role::Finishing, Progress::Visible, Layout::Compact},
+         {"summary", Role::Summary, Progress::Hidden, Layout::Compact}},
         {{"convert", "configure", "convert", "processing"},
          {"configure-cancelled", "configure", "cancelled", "summary"},
          {"converted", "processing", "converted", "review"},
@@ -385,6 +390,11 @@ QWidget* LegacyImportController::createSummaryPage(QWidget* parent) {
         summaryStatus_->setText(diagnosticText(conversion_->diagnostics));
     } else {
         summaryStatus_->setText(tr("Import was cancelled. No destination was changed."));
+    }
+    if (!activityReported_) {
+        activityReported_ = true;
+        reportTerminalActivity(QStringLiteral("LegacyImport"), summaryStatus_->text(),
+            source_ ? source_->text() : QString{});
     }
     layout->addWidget(summaryStatus_);
     layout->addStretch();
@@ -691,8 +701,8 @@ void LegacyImportController::startCommit() {
     std::error_code ignored;
     std::filesystem::remove_all(workspaceStage_, ignored);
     setCancellable(false);
-    setFinishing(true);
     raiseEvent("commit");
+    setFinishing(true);
     core::FreshLegacyImportCommitRequest request{*preparation_,
         std::filesystem::path(source_->text().toStdWString()), workspaceStage_, recoveryRegistry_};
     commitWatcher_.setFuture(QtConcurrent::run([this, request = std::move(request)] {

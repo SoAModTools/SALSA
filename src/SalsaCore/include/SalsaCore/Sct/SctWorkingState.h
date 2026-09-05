@@ -67,9 +67,9 @@ public:
     [[nodiscard]] std::vector<SctTextRepairRecord> textRepairProvenances() const;
     [[nodiscard]] const spice::sct::SctMessage* message(
         const SctMessageTarget& target) const noexcept;
-    [[nodiscard]] const spice::sct::SctDocumentFooterEntry* footerEntry(
-        spice::sct::SctFooterEntryId id) const noexcept;
-    [[nodiscard]] std::span<const spice::sct::SctFooterEntryId> footerEntryOrder() const noexcept;
+    [[nodiscard]] const spice::sct::SctDocumentSupplementaryText* supplementaryText(
+        spice::sct::SctSupplementaryTextId id) const noexcept;
+    [[nodiscard]] std::span<const spice::sct::SctSupplementaryTextId> supplementaryTextOrder() const noexcept;
     [[nodiscard]] std::vector<spice::sct::SctInstructionId> inboundReferenceSources(
         const spice::sct::SctDocumentReferenceTarget& target) const;
     [[nodiscard]] std::size_t referenceOccurrenceCount(
@@ -79,7 +79,7 @@ public:
     [[nodiscard]] std::uint64_t nextSectionIdValue() const noexcept;
     [[nodiscard]] std::uint64_t nextInstructionIdValue() const noexcept;
     [[nodiscard]] std::uint64_t nextStringIdValue() const noexcept;
-    [[nodiscard]] std::uint64_t nextFooterEntryIdValue() const noexcept;
+    [[nodiscard]] std::uint64_t nextSupplementaryTextIdValue() const noexcept;
 
     [[nodiscard]] SctWorkingApplication apply(
         const SctSemanticOperationBatch& batch);
@@ -110,13 +110,13 @@ private:
         std::vector<spice::sct::SctOpaqueAttachmentId>> opaqueAttachments_{};
     std::unordered_map<spice::sct::SctStringId, spice::sct::SctTextValue> stringValues_{};
     std::unordered_map<spice::sct::SctStringId, spice::sct::SctTextKind> stringKinds_{};
-    std::unordered_map<spice::sct::SctFooterEntryId, spice::sct::SctDocumentFooterEntry> footerEntries_{};
-    std::vector<spice::sct::SctFooterEntryId> footerOrder_{};
+    std::unordered_map<spice::sct::SctSupplementaryTextId, spice::sct::SctDocumentSupplementaryText> supplementaryText_{};
+    std::vector<spice::sct::SctSupplementaryTextId> supplementaryTextOrder_{};
     std::unordered_map<std::string, SctTextRepairProvenance> textRepairProvenance_{};
     std::uint64_t nextSectionId_ = 1;
     std::uint64_t nextInstructionId_ = 1;
     std::uint64_t nextStringId_ = 1;
-    std::uint64_t nextFooterEntryId_ = 1;
+    std::uint64_t nextSupplementaryTextId_ = 1;
 };
 
 }  // namespace salsa::core

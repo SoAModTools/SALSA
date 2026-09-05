@@ -27,7 +27,7 @@ namespace salsa::core {
 
 enum class SctInstructionMoveDirection { Up, Down };
 enum class SctSectionMoveDirection { Up, Down };
-enum class SctCreatedFooterTextKind { Message, PlainText };
+enum class SctCreatedSupplementaryTextKind { Message, PlainText };
 enum class SctRepeatedGroupMoveDirection { Up, Down };
 
 enum class SctRevisionTransitionKind {
@@ -74,7 +74,7 @@ struct SctInsertableOpcode final {
     auto operator<=>(const SctInsertableOpcode&) const = default;
 };
 
-struct SctOwnedFooterTextDraft final {
+struct SctOwnedSupplementaryTextDraft final {
     spice::sct::SctParameterAddress parameter;
     spice::sct::SctTextKind kind = spice::sct::SctTextKind::PlainString;
     spice::sct::SctTextValue value = spice::sct::SctPlainText{};
@@ -83,7 +83,7 @@ struct SctOwnedFooterTextDraft final {
 struct SctInstructionAuthoringDraft final {
     RevisionId baseRevision{};
     spice::sct::SctInstructionDraft instruction;
-    std::vector<SctOwnedFooterTextDraft> ownedFooterText;
+    std::vector<SctOwnedSupplementaryTextDraft> ownedSupplementaryText;
 };
 
 struct SctInstructionAuthoringDraftResult final {
@@ -179,7 +179,7 @@ public:
     [[nodiscard]] SctEditResult moveRepeatedGroup(
         spice::sct::SctInstructionId instruction, std::uint32_t ordinal,
         SctRepeatedGroupMoveDirection direction);
-    [[nodiscard]] SctEditResult editReferencedFooterText(
+    [[nodiscard]] SctEditResult editReferencedSupplementaryText(
         const spice::sct::SctParameterSite& site, std::string utf8);
     [[nodiscard]] SctEditResult createScriptSection(
         std::string name, std::optional<spice::sct::SctSectionId> after,
@@ -191,9 +191,9 @@ public:
     [[nodiscard]] SctEditResult deleteSection(spice::sct::SctSectionId section);
     [[nodiscard]] SctEditResult moveSection(
         spice::sct::SctSectionId section, SctSectionMoveDirection direction);
-    [[nodiscard]] SctEditResult createFooterText(
-        SctCreatedFooterTextKind kind,
-        std::optional<spice::sct::SctFooterEntryId> after);
+    [[nodiscard]] SctEditResult createSupplementaryText(
+        SctCreatedSupplementaryTextKind kind,
+        std::optional<spice::sct::SctSupplementaryTextId> after);
     [[nodiscard]] SctEditResult deleteTextEntity(const SctTextTarget& target);
     [[nodiscard]] SctEditResult addVirtualElse(
         spice::sct::SctInstructionId controller);
@@ -291,7 +291,7 @@ private:
     };
 
     [[nodiscard]] SctEditResult failure(std::vector<SctPipelineDiagnostic> diagnostics) const;
-    void appendOrphanedFooterPlainTextCleanup(
+    void appendOrphanedSupplementaryPlainTextCleanup(
         SctSemanticOperationBatch& operation) const;
     [[nodiscard]] SctEditResult commit(
         SctSemanticOperationBatch operation,

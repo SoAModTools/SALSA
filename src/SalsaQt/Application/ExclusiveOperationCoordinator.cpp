@@ -15,6 +15,8 @@ bool ExclusiveOperationCoordinator::open(
         focusActive();
         return false;
     }
+    connect(controller.get(), &ExclusiveOperationController::activityRaised,
+        this, &ExclusiveOperationCoordinator::activityRaised);
     lease_ = std::move(*lease);
     auto* dialog = new ExclusiveOperationDialog(std::move(controller), parent);
     dialog_ = dialog;

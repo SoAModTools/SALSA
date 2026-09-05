@@ -253,7 +253,7 @@ template<typename Id>
             return Json{{"kind", "instruction"}, {"id", id.value()}};
         if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return Json{{"kind", "string"}, {"id", id.value()}};
-        return Json{{"kind", "footer"}, {"id", id.value()}};
+        return Json{{"kind", "supplementary-text"}, {"id", id.value()}};
     }, target);
 }
 
@@ -263,7 +263,8 @@ template<typename Id>
     const auto kind = value.at("kind").get<std::string>();
     if (kind == "instruction") return id<spice::sct::SctInstructionId>(value.at("id"));
     if (kind == "string") return id<spice::sct::SctStringId>(value.at("id"));
-    if (kind == "footer") return id<spice::sct::SctFooterEntryId>(value.at("id"));
+    if (kind == "supplementary-text" || kind == "footer")
+        return id<spice::sct::SctSupplementaryTextId>(value.at("id"));
     throw std::runtime_error("reference target kind invalid");
 }
 
@@ -434,8 +435,8 @@ template<typename Id>
             return Json{{"kind", "instructionReference"}, {"target", item.target.value()}};
         else if constexpr (std::is_same_v<T, spice::sct::SctStringReference>)
             return Json{{"kind", "stringReference"}, {"target", item.target.value()}};
-        else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryReference>)
-            return Json{{"kind", "footerReference"}, {"target", item.target.value()}};
+        else if constexpr (std::is_same_v<T, spice::sct::SctSupplementaryTextReference>)
+            return Json{{"kind", "supplementaryTextReference"}, {"target", item.target.value()}};
         else if constexpr (std::is_same_v<T, spice::sct::SctUnresolvedReferenceValue>)
             return Json{{"kind", "unresolvedReference"},
                 {"expected", encodeExpectedTarget(item.expectedTarget)},
@@ -469,9 +470,9 @@ template<typename Id>
         requireObject(value, {"kind", "target"});
         return spice::sct::SctStringReference{id<spice::sct::SctStringId>(value.at("target"))};
     }
-    if (kind == "footerReference") {
+    if (kind == "supplementaryTextReference" || kind == "footerReference") {
         requireObject(value, {"kind", "target"});
-        return spice::sct::SctFooterEntryReference{id<spice::sct::SctFooterEntryId>(value.at("target"))};
+        return spice::sct::SctSupplementaryTextReference{id<spice::sct::SctSupplementaryTextId>(value.at("target"))};
     }
     if (kind == "unresolvedReference") {
         requireObject(value, {"kind", "expected", "words"});
@@ -685,15 +686,16 @@ template<typename Id>
     return result;
 }
 
-[[nodiscard]] Json encodeFooter(const spice::sct::SctDocumentFooterEntry& value) {
+[[nodiscard]] Json encodeSupplementaryText(const spice::sct::SctDocumentSupplementaryText& value) {
     return Json{{"id", value.id.value()}, {"kind", static_cast<std::uint32_t>(value.kind)},
         {"value", encodeText(value.value)}};
 }
 
-[[nodiscard]] spice::sct::SctDocumentFooterEntry parseFooter(const Json& value) {
+[[nodiscard]] spice::sct::SctDocumentSupplementaryText parseSupplementaryText(const Json& value) {
     requireObject(value, {"id", "kind", "value"});
-    return {id<spice::sct::SctFooterEntryId>(value.at("id")),
-        checkedEnum<spice::sct::SctTextKind>(value.at("kind"), 1u, "footer text kind"),
+    return {id<spice::sct::SctSupplementaryTextId>(value.at("id")),
+        checkedEnum<spice::sct::SctTextKind>(
+            value.at("kind"), 1u, "supplementary text kind"),
         parseText(value.at("value"))};
 }
 
@@ -701,7 +703,7 @@ template<typename Id>
     return std::visit([](const auto value) -> Json {
         using T = std::decay_t<decltype(value)>;
         return Json{{"kind", std::is_same_v<T, spice::sct::SctStringId>
-                ? "indexed" : "footer"}, {"id", value.value()}};
+                ? "indexed" : "supplementary"}, {"id", value.value()}};
     }, target);
 }
 
@@ -709,7 +711,8 @@ template<typename Id>
     requireObject(value, {"kind", "id"});
     const auto kind = value.at("kind").get<std::string>();
     if (kind == "indexed") return id<spice::sct::SctStringId>(value.at("id"));
-    if (kind == "footer") return id<spice::sct::SctFooterEntryId>(value.at("id"));
+    if (kind == "supplementary" || kind == "footer")
+        return id<spice::sct::SctSupplementaryTextId>(value.at("id"));
     throw std::runtime_error("text target kind invalid");
 }
 
@@ -784,22 +787,26 @@ template<typename Id>
     return Json{{"nextSectionId", value.nextSectionId},
         {"nextInstructionId", value.nextInstructionId},
         {"nextStringId", value.nextStringId},
-        {"nextFooterEntryId", value.nextFooterEntryId},
+        {"nextSupplementaryTextId", value.nextSupplementaryTextId},
         {"nextOpaqueAttachmentId", value.nextOpaqueAttachmentId}};
 }
 
 [[nodiscard]] SctPatchedAllocatorState parseAllocatorState(const Json& value) {
+    if (!value.is_object()) throw std::runtime_error("allocator state is not an object");
+    const bool legacy = value.contains("nextFooterEntryId");
     requireObject(value, {"nextSectionId", "nextInstructionId", "nextStringId",
-        "nextFooterEntryId", "nextOpaqueAttachmentId"});
+        legacy ? "nextFooterEntryId" : "nextSupplementaryTextId",
+        "nextOpaqueAttachmentId"});
     SctPatchedAllocatorState result{
         value.at("nextSectionId").get<std::uint64_t>(),
         value.at("nextInstructionId").get<std::uint64_t>(),
         value.at("nextStringId").get<std::uint64_t>(),
-        value.at("nextFooterEntryId").get<std::uint64_t>(),
+        value.at(legacy ? "nextFooterEntryId" : "nextSupplementaryTextId")
+            .get<std::uint64_t>(),
         value.at("nextOpaqueAttachmentId").get<std::uint64_t>(),
     };
     if (result.nextSectionId == 0 || result.nextInstructionId == 0
-        || result.nextStringId == 0 || result.nextFooterEntryId == 0
+        || result.nextStringId == 0 || result.nextSupplementaryTextId == 0
         || result.nextOpaqueAttachmentId == 0)
         throw std::runtime_error("allocator state contains an invalid zero value");
     return result;
@@ -823,9 +830,9 @@ template<typename Id>
                         &section.content); text && text->string.id == id)
                     return &text->string.value;
         } else {
-            const auto found = std::ranges::find(document.footerEntries, id,
-                &spice::sct::SctDocumentFooterEntry::id);
-            if (found != document.footerEntries.end()) return &found->value;
+            const auto found = std::ranges::find(document.supplementaryText, id,
+                &spice::sct::SctDocumentSupplementaryText::id);
+            if (found != document.supplementaryText.end()) return &found->value;
         }
         return nullptr;
     }, target);
@@ -880,7 +887,7 @@ template<typename T, typename Id>
 [[nodiscard]] SctPatchedAllocatorState allocatorState(
     const spice::sct::SctDocument& document) {
     return {document.nextSectionIdValue(), document.nextInstructionIdValue(),
-        document.nextStringIdValue(), document.nextFooterEntryIdValue(),
+        document.nextStringIdValue(), document.nextSupplementaryTextIdValue(),
         document.nextOpaqueAttachmentIdValue()};
 }
 
@@ -908,7 +915,7 @@ template<typename T, typename Id>
 }
 
 void advanceAllocators(spice::sct::SctDocument& document) {
-    std::uint64_t maxSection = 0, maxInstruction = 0, maxString = 0, maxFooter = 0,
+    std::uint64_t maxSection = 0, maxInstruction = 0, maxString = 0, maxSupplementaryText = 0,
         maxOpaque = 0;
     for (const auto& section : document.sections) {
         maxSection = std::max(maxSection, section.id.value());
@@ -918,14 +925,14 @@ void advanceAllocators(spice::sct::SctDocument& document) {
         if (const auto* text = std::get_if<spice::sct::SctStringSectionContent>(&section.content))
             maxString = std::max(maxString, text->string.id.value());
     }
-    for (const auto& entry : document.footerEntries)
-        maxFooter = std::max(maxFooter, entry.id.value());
+    for (const auto& entry : document.supplementaryText)
+        maxSupplementaryText = std::max(maxSupplementaryText, entry.id.value());
     for (const auto& attachment : document.opaqueAttachments)
         maxOpaque = std::max(maxOpaque, attachment.id.value());
     while (document.nextSectionIdValue() <= maxSection) (void)document.allocateSectionId();
     while (document.nextInstructionIdValue() <= maxInstruction) (void)document.allocateInstructionId();
     while (document.nextStringIdValue() <= maxString) (void)document.allocateStringId();
-    while (document.nextFooterEntryIdValue() <= maxFooter) (void)document.allocateFooterEntryId();
+    while (document.nextSupplementaryTextIdValue() <= maxSupplementaryText) (void)document.allocateSupplementaryTextId();
     while (document.nextOpaqueAttachmentIdValue() <= maxOpaque)
         (void)document.allocateOpaqueAttachmentId();
 }
@@ -935,7 +942,7 @@ void advanceAllocatorsTo(spice::sct::SctDocument& document,
     if (document.nextSectionIdValue() > target.nextSectionId
         || document.nextInstructionIdValue() > target.nextInstructionId
         || document.nextStringIdValue() > target.nextStringId
-        || document.nextFooterEntryIdValue() > target.nextFooterEntryId
+        || document.nextSupplementaryTextIdValue() > target.nextSupplementaryTextId
         || document.nextOpaqueAttachmentIdValue() > target.nextOpaqueAttachmentId)
         throw std::runtime_error("patched allocator state moves an allocator backward");
     while (document.nextSectionIdValue() < target.nextSectionId)
@@ -944,8 +951,8 @@ void advanceAllocatorsTo(spice::sct::SctDocument& document,
         (void)document.allocateInstructionId();
     while (document.nextStringIdValue() < target.nextStringId)
         (void)document.allocateStringId();
-    while (document.nextFooterEntryIdValue() < target.nextFooterEntryId)
-        (void)document.allocateFooterEntryId();
+    while (document.nextSupplementaryTextIdValue() < target.nextSupplementaryTextId)
+        (void)document.allocateSupplementaryTextId();
     while (document.nextOpaqueAttachmentIdValue() < target.nextOpaqueAttachmentId)
         (void)document.allocateOpaqueAttachmentId();
 }
@@ -955,9 +962,9 @@ void advanceAllocatorsTo(spice::sct::SctDocument& document,
     return encodeSection(left) == encodeSection(right);
 }
 
-[[nodiscard]] bool sameFooter(const spice::sct::SctDocumentFooterEntry& left,
-    const spice::sct::SctDocumentFooterEntry& right) {
-    return encodeFooter(left) == encodeFooter(right);
+[[nodiscard]] bool sameSupplementaryText(const spice::sct::SctDocumentSupplementaryText& left,
+    const spice::sct::SctDocumentSupplementaryText& right) {
+    return encodeSupplementaryText(left) == encodeSupplementaryText(right);
 }
 
 [[nodiscard]] bool sameArm(const SctAuthoredArm& left,
@@ -1061,9 +1068,9 @@ void validateAuthoringState(const spice::sct::SctDocument& document,
                         &section.content);
                     string && string->string.id.value() == target.id) return true;
             return false;
-        case SctAuthoringTargetKind::FooterEntry:
-            return !target.variableKind && findById(document.footerEntries,
-                spice::sct::SctFooterEntryId(target.id)) != nullptr;
+        case SctAuthoringTargetKind::SupplementaryText:
+            return !target.variableKind && findById(document.supplementaryText,
+                spice::sct::SctSupplementaryTextId(target.id)) != nullptr;
         case SctAuthoringTargetKind::Variable:
             return target.variableKind
                 && static_cast<std::uint8_t>(*target.variableKind)
@@ -1136,8 +1143,8 @@ void validateAuthoringState(const spice::sct::SctDocument& document,
 bool SalsaScriptPatch::empty() const noexcept {
     return !allocatorState.has_value()
         && !sectionOrder.has_value() && sections.empty()
-        && scriptSections.empty() && textValues.empty() && !footerOrder.has_value()
-        && footerEntries.empty()
+        && scriptSections.empty() && textValues.empty() && !supplementaryTextOrder.has_value()
+        && supplementaryText.empty()
         && authoredArms.empty() && textRepairs.empty() && unboundReferences.empty()
         && aliases.empty() && annotations.empty() && folders.empty();
 }
@@ -1184,14 +1191,14 @@ Result<std::vector<std::byte>> SalsaScriptPatchCodec::serialize(
             document["textValues"].push_back(Json{{"target", encodeTarget(value.target)},
                 {"before", encodeText(value.beforeValue)},
                 {"after", encodeText(value.afterValue)}});
-        document["footerOrder"] = patch.footerOrder
-            ? Json{{"before", ids(std::span{patch.footerOrder->before})},
-                {"after", ids(std::span{patch.footerOrder->after})}} : Json(nullptr);
-        document["footerEntries"] = Json::array();
-        for (const auto& entry : patch.footerEntries)
-            document["footerEntries"].push_back(Json{
-                {"before", entry.before ? encodeFooter(*entry.before) : Json(nullptr)},
-                {"after", entry.after ? encodeFooter(*entry.after) : Json(nullptr)}});
+        document["supplementaryTextOrder"] = patch.supplementaryTextOrder
+            ? Json{{"before", ids(std::span{patch.supplementaryTextOrder->before})},
+                {"after", ids(std::span{patch.supplementaryTextOrder->after})}} : Json(nullptr);
+        document["supplementaryText"] = Json::array();
+        for (const auto& entry : patch.supplementaryText)
+            document["supplementaryText"].push_back(Json{
+                {"before", entry.before ? encodeSupplementaryText(*entry.before) : Json(nullptr)},
+                {"after", entry.after ? encodeSupplementaryText(*entry.after) : Json(nullptr)}});
         document["authoredArms"] = Json::array();
         for (const auto& arm : patch.authoredArms)
             document["authoredArms"].push_back(Json{
@@ -1244,18 +1251,29 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
     try {
         const std::string_view text(reinterpret_cast<const char*>(bytesValue.data()), bytesValue.size());
         const auto document = Json::parse(text);
-        requireObject(document, {"formatId", "schemaVersion", "sourceTextConvention",
-            "allocatorState", "sectionOrder", "sections", "scriptSections",
-            "textValues", "footerOrder", "footerEntries", "authoredArms", "textRepairs",
-            "unboundReferences", "aliases", "annotations", "folders"});
+        if (!document.is_object() || !document.contains("formatId")
+            || !document.contains("schemaVersion"))
+            throw std::runtime_error("patch header is malformed");
         if (document.at("formatId").get<std::string>() != PayloadType)
             throw std::runtime_error("patch format ID does not match SALSA SCT patches");
-        if (!document.at("schemaVersion").is_number_unsigned()
-            || document.at("schemaVersion").get<std::uint32_t>() != SchemaVersion) {
+        if (!document.at("schemaVersion").is_number_unsigned())
+            throw std::runtime_error("patch schema version is malformed");
+        const auto schemaVersion = document.at("schemaVersion").get<std::uint32_t>();
+        if (schemaVersion != SchemaVersion && schemaVersion != LegacySchemaVersion) {
             return Result<SalsaScriptPatch>::failure(patchError(
                 "The SCT patch schema version is unsupported.",
                 DiagnosticCode::UnsupportedSctPatchSchema));
         }
+        const bool legacy = schemaVersion == LegacySchemaVersion;
+        const std::string supplementaryTextOrderKey =
+            legacy ? "footerOrder" : "supplementaryTextOrder";
+        const std::string supplementaryTextKey =
+            legacy ? "footerEntries" : "supplementaryText";
+        requireObject(document, {"formatId", "schemaVersion", "sourceTextConvention",
+            "allocatorState", "sectionOrder", "sections", "scriptSections",
+            "textValues", supplementaryTextOrderKey, supplementaryTextKey,
+            "authoredArms", "textRepairs", "unboundReferences", "aliases",
+            "annotations", "folders"});
         SalsaScriptPatch patch;
         if (!document.at("sourceTextConvention").is_null())
             patch.sourceTextConvention = checkedEnum<spice::sct::SctKnownTextConvention>(
@@ -1316,20 +1334,20 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
             patch.textValues.push_back({parseTarget(value.at("target")),
                 parseText(value.at("before")), parseText(value.at("after"))});
         }
-        if (!document.at("footerOrder").is_null()) {
-            const auto& value = document.at("footerOrder");
+        if (!document.at(supplementaryTextOrderKey).is_null()) {
+            const auto& value = document.at(supplementaryTextOrderKey);
             requireObject(value, {"before", "after"});
-            patch.footerOrder = SctOrderDelta<spice::sct::SctFooterEntryId>{
-                parseIds<spice::sct::SctFooterEntryId>(value.at("before")),
-                parseIds<spice::sct::SctFooterEntryId>(value.at("after"))};
+            patch.supplementaryTextOrder = SctOrderDelta<spice::sct::SctSupplementaryTextId>{
+                parseIds<spice::sct::SctSupplementaryTextId>(value.at("before")),
+                parseIds<spice::sct::SctSupplementaryTextId>(value.at("after"))};
         }
-        for (const auto& entry : document.at("footerEntries")) {
+        for (const auto& entry : document.at(supplementaryTextKey)) {
             requireObject(entry, {"before", "after"});
-            SctValueDelta<spice::sct::SctDocumentFooterEntry> delta;
-            if (!entry.at("before").is_null()) delta.before = parseFooter(entry.at("before"));
-            if (!entry.at("after").is_null()) delta.after = parseFooter(entry.at("after"));
-            requireDelta(delta, "footer entry");
-            patch.footerEntries.push_back(std::move(delta));
+            SctValueDelta<spice::sct::SctDocumentSupplementaryText> delta;
+            if (!entry.at("before").is_null()) delta.before = parseSupplementaryText(entry.at("before"));
+            if (!entry.at("after").is_null()) delta.after = parseSupplementaryText(entry.at("after"));
+            requireDelta(delta, "supplementary text");
+            patch.supplementaryText.push_back(std::move(delta));
         }
         for (const auto& arm : document.at("authoredArms")) {
             requireObject(arm, {"before", "after"});
@@ -1482,20 +1500,20 @@ Result<SalsaScriptPatch> SalsaScriptPatchService::diff(
         if (!findById(baselineDocument.sections, section.id))
             patch.sections.push_back({std::nullopt, section});
 
-    std::vector<spice::sct::SctFooterEntryId> baselineFooterOrder, workingFooterOrder;
-    for (const auto& entry : baselineDocument.footerEntries) baselineFooterOrder.push_back(entry.id);
-    for (const auto& entry : workingDocument.footerEntries) workingFooterOrder.push_back(entry.id);
-    if (baselineFooterOrder != workingFooterOrder)
-        patch.footerOrder = SctOrderDelta<spice::sct::SctFooterEntryId>{
-            baselineFooterOrder, workingFooterOrder};
-    for (const auto& entry : baselineDocument.footerEntries) {
-        const auto* target = findById(workingDocument.footerEntries, entry.id);
-        if (!target) patch.footerEntries.push_back({entry, std::nullopt});
-        else if (!sameFooter(entry, *target)) patch.footerEntries.push_back({entry, *target});
+    std::vector<spice::sct::SctSupplementaryTextId> baselineSupplementaryTextOrder, workingSupplementaryTextOrder;
+    for (const auto& entry : baselineDocument.supplementaryText) baselineSupplementaryTextOrder.push_back(entry.id);
+    for (const auto& entry : workingDocument.supplementaryText) workingSupplementaryTextOrder.push_back(entry.id);
+    if (baselineSupplementaryTextOrder != workingSupplementaryTextOrder)
+        patch.supplementaryTextOrder = SctOrderDelta<spice::sct::SctSupplementaryTextId>{
+            baselineSupplementaryTextOrder, workingSupplementaryTextOrder};
+    for (const auto& entry : baselineDocument.supplementaryText) {
+        const auto* target = findById(workingDocument.supplementaryText, entry.id);
+        if (!target) patch.supplementaryText.push_back({entry, std::nullopt});
+        else if (!sameSupplementaryText(entry, *target)) patch.supplementaryText.push_back({entry, *target});
     }
-    for (const auto& entry : workingDocument.footerEntries)
-        if (!findById(baselineDocument.footerEntries, entry.id))
-            patch.footerEntries.push_back({std::nullopt, entry});
+    for (const auto& entry : workingDocument.supplementaryText)
+        if (!findById(baselineDocument.supplementaryText, entry.id))
+            patch.supplementaryText.push_back({std::nullopt, entry});
 
     if (baselineDocument.opaqueAttachments.size() != workingDocument.opaqueAttachments.size()
         || !std::ranges::equal(baselineDocument.opaqueAttachments,
@@ -1569,7 +1587,7 @@ Result<SalsaScriptPatch> SalsaScriptPatchService::diff(
             return (value.before ? value.before->id : value.after->id).value();
         });
     std::ranges::sort(patch.textValues, {}, [](const auto& value) { return targetKey(value.target); });
-    std::ranges::sort(patch.footerEntries, {}, [](const auto& value) {
+    std::ranges::sort(patch.supplementaryText, {}, [](const auto& value) {
         return (value.before ? value.before->id : value.after->id).value();
     });
     std::ranges::sort(patch.authoredArms, {}, [](const auto& value) {
@@ -1641,20 +1659,21 @@ Result<SctSemanticState> SalsaScriptPatchService::apply(
             if (!current || !sameText(*current, change.beforeValue))
                 throw std::runtime_error("text expected-before state does not match");
         }
-        if (patch.footerOrder) {
-            std::vector<spice::sct::SctFooterEntryId> order;
-            for (const auto& entry : source.footerEntries) order.push_back(entry.id);
-            if (order != patch.footerOrder->before)
-                throw std::runtime_error("footer order expected-before state does not match");
+        if (patch.supplementaryTextOrder) {
+            std::vector<spice::sct::SctSupplementaryTextId> order;
+            for (const auto& entry : source.supplementaryText) order.push_back(entry.id);
+            if (order != patch.supplementaryTextOrder->before)
+                throw std::runtime_error(
+                    "supplementary-text order expected-before state does not match");
         }
-        for (const auto& change : patch.footerEntries) {
-            requireDelta(change, "footer entry");
+        for (const auto& change : patch.supplementaryText) {
+            requireDelta(change, "supplementary text");
             const auto id = change.before ? change.before->id : change.after->id;
-            const auto* current = findById(source.footerEntries, id);
+            const auto* current = findById(source.supplementaryText, id);
             if (change.before) {
-                if (!current || !sameFooter(*current, *change.before))
-                    throw std::runtime_error("footer entry expected-before state does not match");
-            } else if (current) throw std::runtime_error("inserted footer entry already exists");
+                if (!current || !sameSupplementaryText(*current, *change.before))
+                    throw std::runtime_error("supplementary text expected-before state does not match");
+            } else if (current) throw std::runtime_error("inserted supplementary text already exists");
         }
         for (const auto& change : patch.authoredArms) {
             requireDelta(change, "authored arm");
@@ -1749,26 +1768,27 @@ Result<SctSemanticState> SalsaScriptPatchService::apply(
                             return true;
                         }
                 } else {
-                    auto* entry = findMutableById(document->footerEntries, target);
+                    auto* entry = findMutableById(document->supplementaryText, target);
                     if (entry) { entry->value = change.afterValue; return true; }
                 }
                 return false;
             }, change.target);
             if (!replaced) throw std::runtime_error("patched text target is missing");
         }
-        for (const auto& change : patch.footerEntries) {
+        for (const auto& change : patch.supplementaryText) {
             const auto id = change.before ? change.before->id : change.after->id;
-            auto* existing = findMutableById(document->footerEntries, id);
+            auto* existing = findMutableById(document->supplementaryText, id);
             if (change.before && change.after) *existing = *change.after;
             else if (change.before)
-                std::erase_if(document->footerEntries,
+                std::erase_if(document->supplementaryText,
                     [&](const auto& value) { return value.id == id; });
-            else document->footerEntries.push_back(*change.after);
+            else document->supplementaryText.push_back(*change.after);
         }
         if (patch.sectionOrder && !reorder(document->sections, patch.sectionOrder->after))
             throw std::runtime_error("section order does not match patched entities");
-        if (patch.footerOrder && !reorder(document->footerEntries, patch.footerOrder->after))
-            throw std::runtime_error("footer order does not match patched entities");
+        if (patch.supplementaryTextOrder && !reorder(document->supplementaryText, patch.supplementaryTextOrder->after))
+            throw std::runtime_error(
+                "supplementary-text order does not match patched entities");
         advanceAllocators(*document);
         if (patch.allocatorState) advanceAllocatorsTo(*document, *patch.allocatorState->after);
 
@@ -1831,9 +1851,11 @@ Result<SctSemanticState> SalsaScriptPatchService::apply(
 SctPatchedLoadResult SctPatchCheckpointService::load(
     const GameProjectContext& project, const SctPatchStore* store,
     const SctBaselineStore* baselines, const AssetLocator& locator,
-    const std::stop_token stopToken) {
+    const std::stop_token stopToken,
+    spice::sct::SctParseTraceObserver traceObserver) {
     SctPatchedLoadResult result;
-    result.load = SctDocumentLoader::load(project, locator, stopToken);
+    result.load = SctDocumentLoader::load(
+        project, locator, stopToken, std::move(traceObserver));
     result.baseline = result.load.document;
     if (!result.load.succeeded() || store == nullptr || stopToken.stop_requested())
         return result;
@@ -1859,7 +1881,9 @@ SctPatchedLoadResult SctPatchCheckpointService::load(
         return result;
     }
     if (envelope.payload.type != SalsaScriptPatchCodec::PayloadType
-        || envelope.payload.schemaVersion != SalsaScriptPatchCodec::SchemaVersion) {
+        || (envelope.payload.schemaVersion != SalsaScriptPatchCodec::SchemaVersion
+            && envelope.payload.schemaVersion
+                != SalsaScriptPatchCodec::LegacySchemaVersion)) {
         result.patchConflict = true;
         result.load.infrastructureDiagnostics.push_back(patchError(
             "The saved SCT patch payload type or schema is unsupported.",

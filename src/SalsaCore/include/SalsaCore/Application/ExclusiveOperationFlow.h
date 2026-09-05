@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <compare>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace salsa::core {
@@ -19,9 +21,40 @@ enum class ExclusiveOperationPageRole {
     Summary,
 };
 
+enum class ExclusiveOperationProgressVisibility {
+    Hidden,
+    Visible,
+};
+
+enum class ExclusiveOperationPageLayout {
+    Compact,
+    Standard,
+    Expanded,
+};
+
+struct ExclusiveOperationLogicalSize final {
+    int width = 0;
+    int height = 0;
+    auto operator<=>(const ExclusiveOperationLogicalSize&) const = default;
+};
+
+[[nodiscard]] ExclusiveOperationLogicalSize resolveExclusiveOperationSize(
+    ExclusiveOperationPageLayout layout,
+    ExclusiveOperationLogicalSize pageMinimum,
+    ExclusiveOperationLogicalSize availableScreen,
+    std::optional<ExclusiveOperationLogicalSize> currentSize = std::nullopt) noexcept;
+
 struct ExclusiveOperationPageNode final {
+    ExclusiveOperationPageNode(std::string pageId, ExclusiveOperationPageRole pageRole,
+        ExclusiveOperationProgressVisibility pageProgress,
+        ExclusiveOperationPageLayout pageLayout)
+        : id(std::move(pageId)), role(pageRole), progress(pageProgress),
+          layout(pageLayout) {}
+
     std::string id;
-    ExclusiveOperationPageRole role = ExclusiveOperationPageRole::Processing;
+    ExclusiveOperationPageRole role;
+    ExclusiveOperationProgressVisibility progress;
+    ExclusiveOperationPageLayout layout;
 };
 
 struct ExclusiveOperationPageEdge final {

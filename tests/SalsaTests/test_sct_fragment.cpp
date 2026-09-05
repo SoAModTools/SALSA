@@ -139,9 +139,9 @@ TEST(SctFragment, RoundTripsDeterministicallyAndRejectsUnsupportedSchemas) {
     auto unsupported = first.value();
     auto text = std::string(reinterpret_cast<const char*>(unsupported.data()),
         unsupported.size());
-    const auto marker = text.find("\"schemaVersion\": 2");
+    const auto marker = text.find("\"schemaVersion\": 3");
     ASSERT_NE(marker, std::string::npos);
-    text.replace(marker, std::string("\"schemaVersion\": 2").size(),
+    text.replace(marker, std::string("\"schemaVersion\": 3").size(),
         "\"schemaVersion\": 9");
     const auto bytes = std::as_bytes(std::span{text.data(), text.size()});
     const auto rejected = SctFragmentCodec::deserialize(bytes);
@@ -149,6 +149,53 @@ TEST(SctFragment, RoundTripsDeterministicallyAndRejectsUnsupportedSchemas) {
     ASSERT_FALSE(rejected.diagnostics().empty());
     EXPECT_EQ(rejected.diagnostics().front().code,
         DiagnosticCode::UnsupportedSctFragmentSchema);
+}
+
+TEST(SctFragment, MigratesSchemaTwoFooterDependencies) {
+    const auto source = makeFragmentDocument();
+    SctWorkingState state(source.document);
+    const SctStructuredAuthoringState authoring;
+    const std::array selected{source.instructions[2]};
+    const auto captured = SctFragmentService::captureInstructions(
+        state, authoring, "scripts/source.sct", selected);
+    ASSERT_TRUE(captured);
+    ASSERT_EQ(captured.value().dependencies.size(), 1u);
+    auto fragment = captured.value();
+    fragment.instructions.front().fixedParameters.front().value =
+        SctSupplementaryTextReference{SctSupplementaryTextId{77u}};
+    fragment.dependencies.front().target = SctSupplementaryTextId{77u};
+    fragment.dependencies.front().expectedTarget =
+        {SctReferenceTargetStorage::SupplementaryText, SctTextKind::PlainString};
+    fragment.dependencies.front().targetNameBytes = "legacy footer";
+
+    const auto current = SctFragmentCodec::serialize(fragment);
+    ASSERT_TRUE(current);
+    std::string legacy(reinterpret_cast<const char*>(current.value().data()),
+        current.value().size());
+    auto version = legacy.find("\"schemaVersion\": 3");
+    ASSERT_NE(version, std::string::npos);
+    legacy.replace(version, std::string("\"schemaVersion\": 3").size(),
+        "\"schemaVersion\": 2");
+    auto targetKind = legacy.find("\"supplementary-text\"");
+    ASSERT_NE(targetKind, std::string::npos);
+    legacy.replace(targetKind, std::string("\"supplementary-text\"").size(),
+        "\"footer\"");
+
+    const auto legacyBytes = std::as_bytes(std::span{legacy.data(), legacy.size()});
+    const auto decoded = SctFragmentCodec::deserialize(legacyBytes);
+    ASSERT_TRUE(decoded);
+    ASSERT_EQ(decoded.value().dependencies.size(), 1u);
+    EXPECT_EQ(decoded.value().dependencies.front().target,
+        SctDocumentReferenceTarget{SctSupplementaryTextId{77u}});
+    EXPECT_EQ(decoded.value().dependencies.front().targetNameBytes,
+        std::optional<std::string>{"legacy footer"});
+    const auto migrated = SctFragmentCodec::serialize(decoded.value());
+    ASSERT_TRUE(migrated);
+    const std::string migratedText(
+        reinterpret_cast<const char*>(migrated.value().data()), migrated.value().size());
+    EXPECT_NE(migratedText.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(migratedText.find("\"supplementary-text\""), std::string::npos);
+    EXPECT_EQ(migratedText.find("\"footer\""), std::string::npos);
 }
 
 TEST(SctFragment, PasteRemapsInternalReferencesAndPreservesSameDocumentDependencies) {

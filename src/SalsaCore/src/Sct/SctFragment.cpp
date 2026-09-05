@@ -57,9 +57,9 @@ using Json = nlohmann::ordered_json;
                 spice::sct::SctReferenceTargetStorage::IndexedString,
                 state.stringKind(id)};
         else {
-            const auto* entry = state.footerEntry(id);
+            const auto* entry = state.supplementaryText(id);
             return spice::sct::SctExpectedReferenceTarget{
-                spice::sct::SctReferenceTargetStorage::FooterEntry,
+                spice::sct::SctReferenceTargetStorage::SupplementaryText,
                 entry ? std::optional{entry->kind} : std::nullopt};
         }
     }, target);
@@ -115,7 +115,7 @@ void visitParameters(const spice::sct::SctDocumentInstruction& instruction, Fn&&
         using T = std::decay_t<decltype(typed)>;
         if constexpr (std::is_same_v<T, spice::sct::SctInstructionReference>
             || std::is_same_v<T, spice::sct::SctStringReference>
-            || std::is_same_v<T, spice::sct::SctFooterEntryReference>)
+            || std::is_same_v<T, spice::sct::SctSupplementaryTextReference>)
             return typed.target;
         return std::nullopt;
     }, value);
@@ -302,7 +302,7 @@ void collectDependencies(SctSemanticFragment& fragment, const SctWorkingState& s
             return Json{{"kind", "instruction"}, {"id", id.value()}};
         if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return Json{{"kind", "string"}, {"id", id.value()}};
-        return Json{{"kind", "footer"}, {"id", id.value()}};
+        return Json{{"kind", "supplementary-text"}, {"id", id.value()}};
     }, target);
 }
 
@@ -313,7 +313,8 @@ void collectDependencies(SctSemanticFragment& fragment, const SctWorkingState& s
     if (id == 0u) throw std::runtime_error("reference ID zero is invalid");
     if (kind == "instruction") return spice::sct::SctInstructionId{id};
     if (kind == "string") return spice::sct::SctStringId{id};
-    if (kind == "footer") return spice::sct::SctFooterEntryId{id};
+    if (kind == "supplementary-text" || kind == "footer")
+        return spice::sct::SctSupplementaryTextId{id};
     throw std::runtime_error("reference kind is invalid");
 }
 
@@ -574,7 +575,7 @@ Result<SctFragmentPastePlan> SctFragmentService::planPaste(
                         return spice::sct::SctInstructionReference{id};
                     else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
                         return spice::sct::SctStringReference{id};
-                    else return spice::sct::SctFooterEntryReference{id};
+                    else return spice::sct::SctSupplementaryTextReference{id};
                 }, *internal);
                 return;
             }
@@ -789,7 +790,8 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
             throw std::runtime_error("fragment has missing or unknown fields");
         if (document.at("formatId").get<std::string>() != FormatId)
             throw std::runtime_error("fragment format ID is invalid");
-        if (document.at("schemaVersion").get<std::uint32_t>() != SchemaVersion)
+        const auto schemaVersion = document.at("schemaVersion").get<std::uint32_t>();
+        if (schemaVersion != SchemaVersion && schemaVersion != LegacySchemaVersion)
             return Result<SctSemanticFragment>::failure(fragmentError(
                 "The semantic fragment schema version is unsupported.",
                 DiagnosticCode::UnsupportedSctFragmentSchema));
@@ -804,8 +806,8 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
         const auto& decodedPatch = payload.value();
         if (decodedPatch.sourceTextConvention || decodedPatch.allocatorState
             || decodedPatch.sectionOrder || !decodedPatch.scriptSections.empty()
-            || !decodedPatch.textValues.empty() || decodedPatch.footerOrder
-            || !decodedPatch.footerEntries.empty() || !decodedPatch.textRepairs.empty()
+            || !decodedPatch.textValues.empty() || decodedPatch.supplementaryTextOrder
+            || !decodedPatch.supplementaryText.empty() || !decodedPatch.textRepairs.empty()
             || !decodedPatch.unboundReferences.empty() || !decodedPatch.aliases.empty())
             throw std::runtime_error("fragment payload contains unrelated patch data");
         SctSemanticFragment fragment;
@@ -858,7 +860,7 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
             dependency.target = decodeReferenceTarget(encoded.at("target"));
             const auto storage = encoded.at("expectedStorage").get<std::uint32_t>();
             if (storage > static_cast<std::uint32_t>(
-                    spice::sct::SctReferenceTargetStorage::FooterEntry))
+                    spice::sct::SctReferenceTargetStorage::SupplementaryText))
                 throw std::runtime_error("fragment dependency storage is invalid");
             dependency.expectedTarget.storage =
                 static_cast<spice::sct::SctReferenceTargetStorage>(storage);
@@ -875,7 +877,7 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
                     return spice::sct::SctReferenceTargetStorage::Instruction;
                 if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
                     return spice::sct::SctReferenceTargetStorage::IndexedString;
-                return spice::sct::SctReferenceTargetStorage::FooterEntry;
+                return spice::sct::SctReferenceTargetStorage::SupplementaryText;
             }, dependency.target);
             if (dependency.expectedTarget.storage != targetStorage)
                 throw std::runtime_error(

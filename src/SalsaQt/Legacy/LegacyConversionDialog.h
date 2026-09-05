@@ -96,6 +96,7 @@ private:
     std::filesystem::path workspaceStage_{};
     std::filesystem::path recoveryRegistry_{};
     Completion completion_{};
+    bool activityReported_ = false;
 };
 
 }  // namespace salsa::qt

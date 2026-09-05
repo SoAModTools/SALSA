@@ -25,9 +25,9 @@ struct SctSectionPlacement final {
     auto operator<=>(const SctSectionPlacement&) const = default;
 };
 
-struct SctFooterEntryPlacement final {
-    std::optional<spice::sct::SctFooterEntryId> after{};
-    auto operator<=>(const SctFooterEntryPlacement&) const = default;
+struct SctSupplementaryTextPlacement final {
+    std::optional<spice::sct::SctSupplementaryTextId> after{};
+    auto operator<=>(const SctSupplementaryTextPlacement&) const = default;
 };
 
 struct SctSectionStructuralChange final {
@@ -40,12 +40,12 @@ struct SctSectionStructuralChange final {
     std::optional<spice::sct::SctDocumentSection> afterValue{};
 };
 
-struct SctFooterEntryStructuralChange final {
-    spice::sct::SctFooterEntryId entry;
-    std::optional<SctFooterEntryPlacement> before{};
-    std::optional<SctFooterEntryPlacement> after{};
-    std::optional<spice::sct::SctDocumentFooterEntry> beforeValue{};
-    std::optional<spice::sct::SctDocumentFooterEntry> afterValue{};
+struct SctSupplementaryTextStructuralChange final {
+    spice::sct::SctSupplementaryTextId entry;
+    std::optional<SctSupplementaryTextPlacement> before{};
+    std::optional<SctSupplementaryTextPlacement> after{};
+    std::optional<spice::sct::SctDocumentSupplementaryText> beforeValue{};
+    std::optional<spice::sct::SctDocumentSupplementaryText> afterValue{};
 };
 
 struct SctTextValueChange final {
@@ -114,7 +114,7 @@ struct SctEditChangeSet final {
     std::vector<SctInstructionStructuralChange> instructions{};
     std::vector<SctParameterValueChange> parameters{};
     std::vector<SctRepeatedGroupStructuralChange> repeatedGroups{};
-    std::vector<SctFooterEntryStructuralChange> footerEntries{};
+    std::vector<SctSupplementaryTextStructuralChange> supplementaryText{};
     std::vector<SctTextValueChange> textValues{};
     std::vector<SctNavigationTarget> modified{};
     std::vector<SctStructuredAuthoringChange> structuredAuthoring{};
@@ -167,13 +167,13 @@ struct SctReplaceTextValueOperation final {
 // semantic SCT text variant.
 using SctReplaceMessageOperation = SctReplaceTextValueOperation;
 
-struct SctInsertFooterEntryAfterOperation final {
-    std::optional<spice::sct::SctFooterEntryId> anchor{};
-    spice::sct::SctDocumentFooterEntry entry;
+struct SctInsertSupplementaryTextAfterOperation final {
+    std::optional<spice::sct::SctSupplementaryTextId> anchor{};
+    spice::sct::SctDocumentSupplementaryText entry;
 };
 
-struct SctDeleteFooterEntryOperation final {
-    spice::sct::SctFooterEntryId entry;
+struct SctDeleteSupplementaryTextOperation final {
+    spice::sct::SctSupplementaryTextId entry;
 };
 
 struct SctReplaceInstructionOperation final {
@@ -217,8 +217,8 @@ using SctPrimitiveOperation = std::variant<
     SctDeleteRepeatedGroupOperation,
     SctRelocateRepeatedGroupOperation,
     SctReplaceTextValueOperation,
-    SctInsertFooterEntryAfterOperation,
-    SctDeleteFooterEntryOperation>;
+    SctInsertSupplementaryTextAfterOperation,
+    SctDeleteSupplementaryTextOperation>;
 
 struct SctSemanticOperationBatch final {
     std::vector<SctPrimitiveOperation> operations{};

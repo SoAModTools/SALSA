@@ -51,8 +51,12 @@ SctPublicationController::SctPublicationController(SctDocumentController* docume
 QString SctPublicationController::title() const { return tr("Export Active SCT Document"); }
 core::ExclusiveOperationFlowDefinition SctPublicationController::flowDefinition() const {
     using Role = core::ExclusiveOperationPageRole;
-    return {"configure", {{"configure", Role::Configuration}, {"review", Role::Review},
-        {"processing", Role::Processing}, {"summary", Role::Summary}},
+    using Progress = core::ExclusiveOperationProgressVisibility;
+    using Layout = core::ExclusiveOperationPageLayout;
+    return {"configure", {{"configure", Role::Configuration, Progress::Hidden, Layout::Standard},
+        {"review", Role::Review, Progress::Hidden, Layout::Standard},
+        {"processing", Role::Processing, Progress::Visible, Layout::Compact},
+        {"summary", Role::Summary, Progress::Hidden, Layout::Compact}},
         {{"direct", "configure", "start", "processing"},
          {"review", "configure", "review", "review"},
          {"cancel_config", "configure", "cancelled", "summary"},

@@ -58,10 +58,14 @@ QString SctRebaseController::title() const { return tr("Rebase Stale Patches"); 
 
 core::ExclusiveOperationFlowDefinition SctRebaseController::flowDefinition() const {
     using Role = core::ExclusiveOperationPageRole;
+    using Progress = core::ExclusiveOperationProgressVisibility;
+    using Layout = core::ExclusiveOperationPageLayout;
     return {"processing",
-        {{"processing", Role::Processing}, {"review", Role::Review},
-         {"editor", Role::Review}, {"commit", Role::Commit},
-         {"summary", Role::Summary}},
+        {{"processing", Role::Processing, Progress::Visible, Layout::Compact},
+         {"review", Role::Review, Progress::Hidden, Layout::Standard},
+         {"editor", Role::Review, Progress::Hidden, Layout::Expanded},
+         {"commit", Role::Commit, Progress::Visible, Layout::Compact},
+         {"summary", Role::Summary, Progress::Hidden, Layout::Compact}},
         {{"prepared", "processing", "prepared", "review"},
          {"none", "processing", "none", "summary"},
          {"failed", "processing", "failed", "summary"},
@@ -197,6 +201,10 @@ QWidget* SctRebaseController::createSummaryPage(QWidget* parent) {
     auto* page = new QWidget(parent);
     summaryStatus_ = new QLabel(summary_, page);
     summaryStatus_->setWordWrap(true);
+    if (!activityReported_) {
+        activityReported_ = true;
+        reportTerminalActivity(QStringLiteral("PatchRebase"), summary_);
+    }
     auto* layout = new QVBoxLayout(page);
     layout->addWidget(summaryStatus_);
     layout->addStretch();

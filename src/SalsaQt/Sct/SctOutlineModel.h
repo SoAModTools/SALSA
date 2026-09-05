@@ -7,6 +7,7 @@
 #include <QAbstractItemModel>
 #include <QList>
 
+#include <cstddef>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -61,6 +62,7 @@ private:
         QString label{};
         QString secondary{};
         core::SctNavigationTarget target{};
+        std::size_t importedEvidenceCount = 0;
         Node* parent = nullptr;
         std::vector<std::unique_ptr<Node>> children{};
     };
@@ -77,14 +79,14 @@ private:
     [[nodiscard]] bool applyOne(
         const core::SctInstructionStructuralChange& change);
     [[nodiscard]] bool applyOne(const core::SctSectionStructuralChange& change);
-    [[nodiscard]] bool applyOne(const core::SctFooterEntryStructuralChange& change);
+    [[nodiscard]] bool applyOne(const core::SctSupplementaryTextStructuralChange& change);
     [[nodiscard]] int insertionRow(
         Node& section, const core::SctInstructionPlacement& placement) const;
     [[nodiscard]] int sectionInsertionRow(const core::SctSectionPlacement& placement) const;
     [[nodiscard]] static std::unique_ptr<Node> sectionNode(
         const spice::sct::SctDocumentSection& section, Node* parent = nullptr);
-    [[nodiscard]] static std::unique_ptr<Node> footerEntryNode(
-        const spice::sct::SctDocumentFooterEntry& entry, Node* parent);
+    [[nodiscard]] static std::unique_ptr<Node> supplementaryTextNode(
+        const spice::sct::SctDocumentSupplementaryText& entry, Node* parent);
     void refreshSectionLabels();
     void refreshFooterLabels();
 

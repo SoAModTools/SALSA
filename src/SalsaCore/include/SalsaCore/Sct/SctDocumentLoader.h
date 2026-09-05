@@ -9,6 +9,7 @@
 #include "SpiceSCT/SctDocumentImporter.h"
 #include "SpiceSCT/SctDocumentWorkflow.h"
 #include "SpiceSCT/SctModel.h"
+#include "SpiceSCT/SctParser.h"
 #include "SpiceSCT/SctTextContract.h"
 #include "SpiceSCT/SctTextEvidence.h"
 
@@ -29,7 +30,7 @@ enum class SctNavigationKind {
     Section,
     Instruction,
     String,
-    FooterEntry,
+    SupplementaryText,
     OpaqueAttachment,
     FooterGroup,
     OpaqueGroup,
@@ -101,7 +102,8 @@ public:
     [[nodiscard]] static SctLoadResult load(
         const GameProjectContext& project,
         const AssetLocator& locator,
-        std::stop_token stopToken = {});
+        std::stop_token stopToken = {},
+        spice::sct::SctParseTraceObserver traceObserver = {});
 
     [[nodiscard]] static SctLoadResult materialize(
         std::shared_ptr<const SctSourceInspection> inspection,

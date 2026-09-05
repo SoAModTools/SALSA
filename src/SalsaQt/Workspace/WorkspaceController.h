@@ -31,11 +31,11 @@ public:
 
     [[nodiscard]] bool openDataset(const QString& rootPath);
     [[nodiscard]] bool refresh();
-    void closeWorkspace();
+    void closeDataset();
     void cancel();
     void selectAsset(std::optional<core::AssetLocator> locator);
 
-    [[nodiscard]] bool hasWorkspace() const noexcept;
+    [[nodiscard]] bool hasDataset() const noexcept;
     [[nodiscard]] bool busy() const noexcept;
     [[nodiscard]] Operation operation() const noexcept;
     [[nodiscard]] const core::DatasetContext* dataset() const noexcept;
@@ -46,7 +46,7 @@ public:
     [[nodiscard]] std::optional<core::LocalGameProject> projectSnapshot() const;
 
 signals:
-    void workspaceChanged();
+    void datasetChanged();
     void selectionChanged();
     void diagnosticsChanged();
     void operationStateChanged();
@@ -66,7 +66,7 @@ private:
     void beginOperation(Operation operation);
     void handleProgress(std::uint64_t generation, const core::DatasetScanProgress& progress);
     void onOperationFinished();
-    void clearWorkspaceState();
+    void clearDatasetState();
 
     QFutureWatcher<core::Result<core::LocalGameProject>> watcher_{};
     std::optional<core::LocalGameProject> project_{};

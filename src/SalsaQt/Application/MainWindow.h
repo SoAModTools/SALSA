@@ -8,6 +8,8 @@
 #include "SalsaCore/Sct/SctAuthoringCatalog.h"
 
 #include <QMainWindow>
+#include <QByteArray>
+#include <QPoint>
 #include <QPointer>
 #include <QStringList>
 
@@ -26,21 +28,27 @@ class QTableView;
 class QTableWidget;
 class QTabWidget;
 class QToolButton;
+class QToolBar;
 class QTreeView;
 class QTimer;
 
 namespace salsa::qt {
 
 class ExclusiveOperationCoordinator;
+class DisabledActionHintPresenter;
+class HelpWindow;
 class DiagnosticsModel;
-class DiagnosticJournalModel;
+class ActivityLogModel;
+struct InteractionNotice;
+class TransientNoticePresenter;
 class SctDocumentController;
 struct SctDocumentUpdate;
 class SctDocumentWidget;
 class SctMessageEditorWidget;
+class SctMetadataEditorWidget;
 class SctScptEditorWidget;
 class SctSemanticNavigatorWidget;
-class WorkspaceDetailsWidget;
+class DatasetOverviewWidget;
 class WorkspaceModel;
 class WorkspaceOperationController;
 class WorkspaceMaintenanceController;
@@ -75,8 +83,17 @@ private:
         std::optional<core::SctNavigationTarget> target{};
         bool operator==(const NavigationEntry&) const = default;
     };
+    struct ActionAvailability final {
+        bool enabled = false;
+        QString reason{};
+    };
 
     void buildUi();
+    void applyActionAvailability(QAction* action, ActionAvailability availability);
+    void syncDatasetOverview();
+    void syncWindowTitle();
+    void showHelpTopic(const QString& topic);
+    void resetWindowLayout();
     void connectWorkspace();
     void chooseDataset();
     void convertLegacyProject();
@@ -91,6 +108,8 @@ private:
     void removeSelectedVariableAlias();
     void editSelectedVariableMetadata();
     void reloadAuthoringDocks();
+    [[nodiscard]] bool flushMetadataEditor();
+    [[nodiscard]] bool syncMetadataEditor();
     [[nodiscard]] bool saveWorkspaceAuthoring();
     void loadWorkspaceAuthoring();
     [[nodiscard]] bool openPatchWorkspace(
@@ -106,6 +125,7 @@ private:
     void syncSelection();
     void syncDiagnostics();
     void queueDiagnosticsSync();
+    void showInteractionNotice(InteractionNotice notice);
     void syncActions();
     void activateSelectedAsset();
     void syncDocument(const QString& identityKey, const SctDocumentUpdate& update);
@@ -146,9 +166,10 @@ private:
     void renameSelectedSection();
     void deleteSelectedSection();
     void moveSelectedSection(core::SctSectionMoveDirection direction);
-    void createFooterText(core::SctCreatedFooterTextKind kind);
+    void createSupplementaryText(core::SctCreatedSupplementaryTextKind kind);
     void deleteSelectedText();
     [[nodiscard]] bool flushMessageEditor();
+    [[nodiscard]] bool flushPendingEditors();
     [[nodiscard]] bool prepareScptEditor(
         const std::optional<core::AssetLocator>& locator = std::nullopt);
     void undoActiveDocument();
@@ -169,6 +190,7 @@ private:
         const QString& action, PendingLifecycle pending = PendingLifecycle::None);
     void continuePendingLifecycle(
         const QString& identityKey, bool success, bool cancelled);
+    void closeDataset();
     void rebuildRecentMenu();
     void recordRecentDataset(const QString& canonicalRoot);
     void attemptRestoreDataset();
@@ -198,8 +220,11 @@ private:
     SctDocumentController* documentController_ = nullptr;
     WorkspaceModel* workspaceModel_ = nullptr;
     DiagnosticsModel* diagnosticsModel_ = nullptr;
-    DiagnosticJournalModel* diagnosticJournalModel_ = nullptr;
-    WorkspaceDetailsWidget* details_ = nullptr;
+    ActivityLogModel* activityLogModel_ = nullptr;
+    TransientNoticePresenter* noticePresenter_ = nullptr;
+    DisabledActionHintPresenter* actionHints_ = nullptr;
+    HelpWindow* helpWindow_ = nullptr;
+    DatasetOverviewWidget* details_ = nullptr;
     QTabWidget* tabs_ = nullptr;
     QTreeView* projectTree_ = nullptr;
     QTableView* diagnosticsView_ = nullptr;
@@ -213,8 +238,10 @@ private:
     QDockWidget* snippetLibraryDock_ = nullptr;
     QDockWidget* aliasDock_ = nullptr;
     QDockWidget* bookmarkDock_ = nullptr;
+    QDockWidget* metadataDock_ = nullptr;
     SctSemanticNavigatorWidget* semanticNavigator_ = nullptr;
     SctMessageEditorWidget* messageEditor_ = nullptr;
+    SctMetadataEditorWidget* metadataEditor_ = nullptr;
     SctScptEditorWidget* scptEditor_ = nullptr;
     QLineEdit* snippetSearch_ = nullptr;
     QListWidget* snippetList_ = nullptr;
@@ -225,6 +252,7 @@ private:
     QPushButton* deleteSnippetButton_ = nullptr;
     QProgressBar* progressBar_ = nullptr;
     QToolButton* cancelButton_ = nullptr;
+    QToolBar* editingToolbar_ = nullptr;
     QAction* openAction_ = nullptr;
     QAction* convertLegacyProjectAction_ = nullptr;
     QAction* closeWorkspaceAction_ = nullptr;
@@ -247,6 +275,7 @@ private:
     QAction* saveSnippetAction_ = nullptr;
     QAction* navigationBackAction_ = nullptr;
     QAction* navigationForwardAction_ = nullptr;
+    QAction* datasetOverviewAction_ = nullptr;
     QAction* editMessageAction_ = nullptr;
     QAction* createScriptSectionAction_ = nullptr;
     QAction* createIndexedStringAction_ = nullptr;
@@ -254,7 +283,7 @@ private:
     QAction* deleteSectionAction_ = nullptr;
     QAction* moveSectionUpAction_ = nullptr;
     QAction* moveSectionDownAction_ = nullptr;
-    QAction* createFooterMessageAction_ = nullptr;
+    QAction* createSupplementaryTextMessageAction_ = nullptr;
     QAction* deleteTextAction_ = nullptr;
     QAction* insertInstructionAction_ = nullptr;
     QAction* deleteInstructionAction_ = nullptr;
@@ -267,6 +296,7 @@ private:
     QAction* logStructureAnalysisAction_ = nullptr;
     QMenu* recentMenu_ = nullptr;
     QMenu* developerMenu_ = nullptr;
+    QByteArray defaultWindowState_{};
     QStringList recentDatasets_{};
     QStringList patchWorkspaceAssociations_{};
     QString lastDataset_{};
@@ -293,6 +323,7 @@ private:
     bool showSemanticControlFlowInstructions_ = false;
     bool structureAnalysisTimingsEnabled_ = false;
     bool restoringTabAfterCommitFailure_ = false;
+    bool restoringMetadataTransition_ = false;
     bool replayingNavigation_ = false;
     std::vector<NavigationEntry> navigationHistory_{};
     std::size_t navigationHistoryIndex_ = 0;
@@ -300,6 +331,7 @@ private:
     std::optional<core::AssetLocator> pendingLifecycleDocument_{};
     std::vector<core::AssetLocator> pendingLifecycleSaves_{};
     QString pendingDatasetRoot_{};
+    std::optional<QPoint> pendingInteractionPosition_{};
     Mode mode_ = Mode::Application;
 };
 

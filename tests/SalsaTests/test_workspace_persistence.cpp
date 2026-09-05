@@ -221,6 +221,40 @@ TEST(WorkspaceSessionTest, RoundTripsTypedCheckpointContext) {
     EXPECT_EQ(WorkspaceSessionCodec::serialize(decoded.value()).value(), encoded.value());
 }
 
+TEST(WorkspaceSessionTest, MigratesSchemaOneFooterEntryTargets) {
+    WorkspaceSessionState state;
+    state.workspaceId = "12345678-1234-4234-9234-123456789abc";
+    const auto locator = testLocator(L"scripts/A.sct");
+    const SctNavigationTarget target{SctNavigationKind::SupplementaryText, 42u};
+    state.documents = {{locator, SctDocumentView::Semantic, target}};
+    state.activeDocument = locator;
+    state.navigation = {{locator, target}};
+
+    const auto current = WorkspaceSessionCodec::serialize(state);
+    ASSERT_TRUE(current);
+    auto legacy = current.value();
+    auto version = legacy.find("\"schemaVersion\": 2");
+    ASSERT_NE(version, std::string::npos);
+    legacy.replace(version, std::string("\"schemaVersion\": 2").size(),
+        "\"schemaVersion\": 1");
+    std::size_t position = 0;
+    while ((position = legacy.find("supplementary-text", position))
+        != std::string::npos) {
+        legacy.replace(position, std::string("supplementary-text").size(),
+            "footer-entry");
+        position += std::string("footer-entry").size();
+    }
+
+    const auto decoded = WorkspaceSessionCodec::deserialize(legacy);
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value(), state);
+    const auto migrated = WorkspaceSessionCodec::serialize(decoded.value());
+    ASSERT_TRUE(migrated);
+    EXPECT_NE(migrated.value().find("\"schemaVersion\": 2"), std::string::npos);
+    EXPECT_NE(migrated.value().find("supplementary-text"), std::string::npos);
+    EXPECT_EQ(migrated.value().find("footer-entry"), std::string::npos);
+}
+
 TEST(WorkspaceSessionTest, RejectsInconsistentAndMismatchedState) {
     WorkspaceSessionState invalid;
     invalid.workspaceId = "12345678-1234-4234-9234-123456789abc";
@@ -242,7 +276,7 @@ TEST(WorkspaceSessionTest, RejectsInconsistentAndMismatchedState) {
 TEST(WorkspaceSessionTest, RejectsCorruptAndUnsupportedOptionalState) {
     EXPECT_FALSE(WorkspaceSessionCodec::deserialize("not-json"));
     const auto unsupported = WorkspaceSessionCodec::deserialize(
-        "{\"formatId\":\"jahorta.salsa.session\",\"schemaVersion\":2,"
+        "{\"formatId\":\"jahorta.salsa.session\",\"schemaVersion\":999,"
         "\"workspaceId\":\"12345678-1234-4234-9234-123456789abc\","
         "\"documents\":[],\"activeDocument\":null,"
         "\"selectedProjectAsset\":null,\"expandedProjectDirectories\":[],"

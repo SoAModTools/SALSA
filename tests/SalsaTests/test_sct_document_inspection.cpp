@@ -652,6 +652,64 @@ TEST(SctPresentation, ShowsImportedContextForBetweenInstructionOpaqueGap) {
     EXPECT_EQ(interpretations.front()->children.front().name, "Control-flow gap");
 }
 
+TEST(SctPresentation, AttachesEligibleImportedControlFlowEvidenceToCurrentEntities) {
+    const auto imported = SctDocumentImporter::import(importedGapParse());
+    ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
+    ASSERT_TRUE(evidence.has_value());
+    auto document = std::move(*imported.document);
+    const auto sectionId = document.sections.front().id;
+    auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    ASSERT_GE(instructions.size(), 2u);
+    const auto sourceId = instructions.front().id;
+    instructions.front().fixedParameters = {
+        {0u, SctInstructionReference{sourceId}},
+    };
+    const auto snapshot = snapshotWithEvidence(std::move(document), *evidence);
+    const auto* structure = snapshot.analysis->structuredControlFlow.findSection(sectionId);
+    ASSERT_NE(structure, nullptr);
+    ASSERT_EQ(structure->historicalCandidates.size(), 1u);
+
+    const auto outline = SctPresentationService::outline(snapshot);
+    const auto section = std::ranges::find_if(outline, [sectionId](const auto& item) {
+        return item.target == SctNavigationTarget{
+            SctNavigationKind::Section, sectionId.value()};
+    });
+    ASSERT_NE(section, outline.end());
+    EXPECT_EQ(section->importedEvidenceCount, 1u);
+    EXPECT_NE(section->secondary.find("Imported evidence: 1"), std::string::npos);
+    const auto source = std::ranges::find_if(section->children, [sourceId](const auto& item) {
+        return item.target == SctNavigationTarget{
+            SctNavigationKind::Instruction, sourceId.value()};
+    });
+    ASSERT_NE(source, section->children.end());
+    EXPECT_EQ(source->importedEvidenceCount, 1u);
+    EXPECT_NE(source->secondary.find("Imported evidence: 1"), std::string::npos);
+
+    const auto sectionPresentation = SctPresentationService::describe(snapshot,
+        {SctNavigationKind::Section, sectionId.value()});
+    const auto sectionEvidence = propertiesNamed(
+        sectionPresentation, "Imported control-flow evidence");
+    ASSERT_EQ(sectionEvidence.size(), 1u);
+    EXPECT_EQ(sectionEvidence.front()->value, "1");
+
+    const auto instructionPresentation = SctPresentationService::describe(snapshot,
+        {SctNavigationKind::Instruction, sourceId.value()});
+    const auto instructionEvidence = propertiesNamed(
+        instructionPresentation, "Imported control-flow evidence");
+    ASSERT_EQ(instructionEvidence.size(), 1u);
+    EXPECT_EQ(instructionEvidence.front()->value, "1");
+    EXPECT_EQ(propertiesNamed(instructionPresentation, "Suggested kind").size(), 1u);
+    EXPECT_EQ(propertiesNamed(
+        instructionPresentation, "Resolved imported target").size(), 1u);
+    EXPECT_EQ(propertiesNamed(
+        instructionPresentation, "Unresolved target payload offset").size(), 1u);
+    EXPECT_EQ(propertiesNamed(instructionPresentation, "Confidence").size(), 1u);
+    EXPECT_EQ(propertiesNamed(instructionPresentation, "Rejection reason").size(), 1u);
+    EXPECT_GE(propertiesNamed(instructionPresentation, "Opaque attachment").size(), 1u);
+}
+
 TEST(SctPresentation, ShowsWithinInstructionSourceNeighborhoodWithoutInventingOwnership) {
     SctDocument document;
     const auto section = document.allocateSectionId();

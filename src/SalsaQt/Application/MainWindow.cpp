@@ -1,7 +1,12 @@
 #include "Application/MainWindow.h"
 #include "Application/ExclusiveOperationCoordinator.h"
+#include "Application/DisabledActionHintPresenter.h"
+#include "Application/HelpWindow.h"
+#include "Application/SalsaLogging.h"
+#include "Application/TransientNoticePresenter.h"
 
 #include "SalsaCore/Application/ApplicationInfo.h"
+#include "SalsaCore/Application/ShellPresentation.h"
 #include "SalsaCore/Legacy/LegacyFreshImport.h"
 #include "SalsaCore/Legacy/LegacyMetadataPromotion.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
@@ -13,13 +18,14 @@
 #include "Sct/SctRebaseDialog.h"
 #include "Sct/SctExportDialog.h"
 #include "Sct/SctMessageEditorWidget.h"
+#include "Sct/SctMetadataEditorWidget.h"
 #include "Sct/SctScptEditorWidget.h"
 #include "Sct/SctSemanticNavigatorWidget.h"
 #include "Legacy/LegacyConversionDialog.h"
 #include "Ui/UiConstants.h"
-#include "Workspace/DiagnosticJournalModel.h"
+#include "Workspace/ActivityLogModel.h"
 #include "Workspace/DiagnosticsModel.h"
-#include "Workspace/WorkspaceDetailsWidget.h"
+#include "Workspace/DatasetOverviewWidget.h"
 #include "Workspace/WorkspaceModel.h"
 #include "Workspace/WorkspaceOperationController.h"
 #include "Workspace/WorkspaceMaintenanceController.h"
@@ -89,6 +95,24 @@ namespace {
 constexpr int SettingsStateVersion = 1;
 constexpr qsizetype MaximumRecentDatasets = 10;
 
+[[nodiscard]] QString shellBlockReasonText(
+    const core::ShellActionBlockReason reason) {
+    switch (reason) {
+    case core::ShellActionBlockReason::None: return {};
+    case core::ShellActionBlockReason::OperationActive:
+        return QObject::tr("Wait for the current operation to finish.");
+    case core::ShellActionBlockReason::DatasetRequired:
+        return QObject::tr("Open a dataset first.");
+    case core::ShellActionBlockReason::WorkspaceRequired:
+        return QObject::tr("Open or create a workspace first.");
+    case core::ShellActionBlockReason::DocumentsMustClose:
+        return QObject::tr("Close all SCT documents first.");
+    case core::ShellActionBlockReason::NoRecentDatasets:
+        return QObject::tr("No recent datasets are available.");
+    }
+    return {};
+}
+
 [[nodiscard]] bool hasTextEditingFocus() {
     const auto* focus = QApplication::focusWidget();
     return focus != nullptr && (focus->inherits("QLineEdit")
@@ -125,8 +149,8 @@ constexpr qsizetype MaximumRecentDatasets = 10;
             return QObject::tr("Instruction %1").arg(typed.target.value());
         } else if constexpr (std::is_same_v<T, spice::sct::SctStringReference>) {
             return QObject::tr("Indexed string %1").arg(typed.target.value());
-        } else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryReference>) {
-            return QObject::tr("Footer entry %1").arg(typed.target.value());
+        } else if constexpr (std::is_same_v<T, spice::sct::SctSupplementaryTextReference>) {
+            return QObject::tr("Supplementary text %1").arg(typed.target.value());
         } else if constexpr (std::is_same_v<T,
                 spice::sct::SctUnresolvedReferenceValue>) {
             return QObject::tr("Choose a compatible target");
@@ -147,7 +171,7 @@ constexpr qsizetype MaximumRecentDatasets = 10;
         else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return spice::sct::SctStringReference{id};
         else
-            return spice::sct::SctFooterEntryReference{id};
+            return spice::sct::SctSupplementaryTextReference{id};
     }, target);
 }
 
@@ -171,10 +195,10 @@ constexpr qsizetype MaximumRecentDatasets = 10;
         || !update.transition.has_value()) return false;
     const auto& changes = update.transition->changes;
     if (!changes.sections.empty() || !changes.instructions.empty()
-        || !changes.footerEntries.empty() || changes.textValues.empty()) return false;
+        || !changes.supplementaryText.empty() || changes.textValues.empty()) return false;
     return std::ranges::all_of(changes.modified, [](const auto target) {
         return target.kind == core::SctNavigationKind::String
-            || target.kind == core::SctNavigationKind::FooterEntry;
+            || target.kind == core::SctNavigationKind::SupplementaryText;
     });
 }
 
@@ -184,7 +208,7 @@ constexpr qsizetype MaximumRecentDatasets = 10;
         || !update.transition.has_value()) return false;
     const auto& changes = update.transition->changes;
     return !changes.sections.empty() || !changes.instructions.empty()
-        || !changes.footerEntries.empty();
+        || !changes.supplementaryText.empty();
 }
 
 [[nodiscard]] bool affectsMessageTarget(
@@ -197,7 +221,7 @@ constexpr qsizetype MaximumRecentDatasets = 10;
         if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return core::SctNavigationTarget{core::SctNavigationKind::String, id.value()};
         else
-            return core::SctNavigationTarget{core::SctNavigationKind::FooterEntry, id.value()};
+            return core::SctNavigationTarget{core::SctNavigationKind::SupplementaryText, id.value()};
     }, target);
     return std::ranges::find(update.transition->changes.modified, navigation)
         != update.transition->changes.modified.end();
@@ -257,7 +281,7 @@ bool MainWindow::installSemanticCandidate(
 std::optional<core::SctSemanticState> MainWindow::captureSemanticCandidate(
     const core::AssetLocator& locator) {
     if (mode_ != Mode::IsolatedDocumentEditor
-        || !prepareScptEditor(locator) || !flushMessageEditor()) return std::nullopt;
+        || !prepareScptEditor(locator) || !flushPendingEditors()) return std::nullopt;
     return documentController_->semanticState(locator);
 }
 
@@ -271,7 +295,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         event->ignore();
         return;
     }
-    if (!prepareScptEditor() || !flushMessageEditor() || !confirmDiscardAll(
+    if (!prepareScptEditor() || !flushPendingEditors() || !confirmDiscardAll(
             tr("exit SALSA"), PendingLifecycle::Exit)) {
         event->ignore();
         return;
@@ -289,8 +313,10 @@ void MainWindow::buildUi() {
     documentController_ = new SctDocumentController(this);
     workspaceModel_ = new WorkspaceModel(this);
     diagnosticsModel_ = new DiagnosticsModel(this);
-    diagnosticJournalModel_ = new DiagnosticJournalModel(this);
-    details_ = new WorkspaceDetailsWidget(this);
+    activityLogModel_ = new ActivityLogModel(this);
+    noticePresenter_ = new TransientNoticePresenter(this);
+    actionHints_ = new DisabledActionHintPresenter(this);
+    details_ = new DatasetOverviewWidget(this);
     tabs_ = new QTabWidget(this);
     tabs_->setTabsClosable(true);
     tabs_->setMovable(true);
@@ -305,7 +331,7 @@ void MainWindow::buildUi() {
     projectTree_->setSelectionMode(QAbstractItemView::SingleSelection);
     projectTree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
 
-    projectDock_ = new QDockWidget(tr("Project Explorer"), this);
+    projectDock_ = new QDockWidget(tr("Dataset Explorer"), this);
     projectDock_->setObjectName(QStringLiteral("ProjectExplorerDock"));
     projectDock_->setWidget(projectTree_);
     addDockWidget(Qt::LeftDockWidgetArea, projectDock_);
@@ -328,7 +354,7 @@ void MainWindow::buildUi() {
     addDockWidget(Qt::BottomDockWidgetArea, diagnosticsDock_);
 
     activityLogView_ = new QTableView(this);
-    activityLogView_->setModel(diagnosticJournalModel_);
+    activityLogView_->setModel(activityLogModel_);
     activityLogView_->setAlternatingRowColors(true);
     activityLogView_->setSelectionBehavior(QAbstractItemView::SelectRows);
     activityLogView_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
@@ -352,6 +378,55 @@ void MainWindow::buildUi() {
     semanticNavigatorDock_->setObjectName(QStringLiteral("SemanticNavigatorDock"));
     semanticNavigatorDock_->setWidget(semanticNavigator_);
     addDockWidget(Qt::RightDockWidgetArea, semanticNavigatorDock_);
+
+    metadataEditor_ = new SctMetadataEditorWidget(this);
+    metadataEditor_->setCommitHandler([this](const core::AssetLocator& locator,
+            const core::SctNavigationTarget target,
+            const SctMetadataDraft& draft) {
+        const auto commitAtMetadataDock = [this](auto&& commit) {
+            if (metadataDock_ != nullptr) pendingInteractionPosition_ =
+                metadataDock_->mapToGlobal(QPoint(16, 32));
+            const bool accepted = commit();
+            pendingInteractionPosition_.reset();
+            return accepted;
+        };
+        if (target.kind == core::SctNavigationKind::SectionFolder) {
+            const auto state = documentController_->semanticState(locator);
+            if (!state) return false;
+            const auto found = std::ranges::find(state->folders, target.id,
+                [](const auto& folder) { return folder.id.value; });
+            if (found == state->folders.end()) return false;
+            auto folder = *found;
+            folder.note = draft.note;
+            folder.bookmarkLabel = draft.bookmarkLabel;
+            folder.colorRgb = draft.colorRgb;
+            return commitAtMetadataDock([&] {
+                return documentController_->updateSectionFolder(locator, std::move(folder));
+            });
+        }
+        std::optional<core::SctAuthoringTargetKind> kind;
+        switch (target.kind) {
+        case core::SctNavigationKind::Document: kind = core::SctAuthoringTargetKind::Document; break;
+        case core::SctNavigationKind::Section: kind = core::SctAuthoringTargetKind::Section; break;
+        case core::SctNavigationKind::Instruction: kind = core::SctAuthoringTargetKind::Instruction; break;
+        case core::SctNavigationKind::String: kind = core::SctAuthoringTargetKind::String; break;
+        case core::SctNavigationKind::SupplementaryText: kind = core::SctAuthoringTargetKind::SupplementaryText; break;
+        default: break;
+        }
+        if (!kind) return false;
+        core::SctEntityAnnotation annotation{{*kind, target.id}};
+        annotation.note = draft.note;
+        annotation.bookmarkLabel = draft.bookmarkLabel;
+        annotation.colorRgb = draft.colorRgb;
+        return commitAtMetadataDock([&] {
+            return documentController_->setAnnotation(locator, std::move(annotation));
+        });
+    });
+    metadataDock_ = new QDockWidget(tr("Metadata"), this);
+    metadataDock_->setObjectName(QStringLiteral("SctMetadataDock"));
+    metadataDock_->setWidget(metadataEditor_);
+    addDockWidget(Qt::RightDockWidgetArea, metadataDock_);
+    tabifyDockWidget(semanticNavigatorDock_, metadataDock_);
 
     messageEditor_ = new SctMessageEditorWidget(this);
     messageEditor_->setCommitHandler(
@@ -427,7 +502,7 @@ void MainWindow::buildUi() {
     aliasTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     auto* aliasButtons = new QHBoxLayout;
     auto* addDocumentAlias = new QPushButton(tr("Add document"), aliasPane);
-    auto* addProjectAlias = new QPushButton(tr("Add project"), aliasPane);
+    auto* addProjectAlias = new QPushButton(tr("Add workspace"), aliasPane);
     auto* removeAlias = new QPushButton(tr("Remove"), aliasPane);
     editAliasMetadataButton_ = new QPushButton(tr("Metadata..."), aliasPane);
     aliasButtons->addWidget(addDocumentAlias);
@@ -455,6 +530,7 @@ void MainWindow::buildUi() {
     addDockWidget(Qt::RightDockWidgetArea, bookmarkDock_);
     tabifyDockWidget(semanticNavigatorDock_, bookmarkDock_);
     bookmarkDock_->hide();
+    metadataDock_->raise();
 
     connect(addDocumentAlias, &QPushButton::clicked, this,
         [this] { addVariableAlias(false); });
@@ -505,55 +581,12 @@ void MainWindow::buildUi() {
     convertLegacyProjectAction_ = fileMenu->addAction(
         tr("Import &Legacy Project..."));
     fileMenu->addSeparator();
-    saveAction_ = fileMenu->addAction(tr("&Save Document"));
-    saveAction_->setShortcut(QKeySequence::Save);
-    exportAction_ = fileMenu->addAction(tr("&Export Active SCT..."));
-    exportAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
     closeWorkspaceAction_ = fileMenu->addAction(tr("&Close Dataset"));
     fileMenu->addSeparator();
     auto* exitAction = fileMenu->addAction(tr("E&xit"));
     exitAction->setShortcut(QKeySequence::Quit);
 
-    auto* projectMenu = menuBar()->addMenu(tr("&Project"));
-    associatePatchWorkspaceAction_ = projectMenu->addAction(
-        tr("Open or Create &Workspace..."));
-    disconnectPatchWorkspaceAction_ = projectMenu->addAction(
-        tr("Close Workspace"));
-    projectMenu->addSeparator();
-    rebasePatchesAction_ = projectMenu->addAction(
-        tr("Rebase Stale Patches..."));
-    cleanWorkspaceEvidenceAction_ = projectMenu->addAction(
-        tr("Clean Workspace Recovery Evidence..."));
-    promoteLegacyMetadataAction_ = projectMenu->addAction(
-        tr("Promote Retained Legacy Metadata..."));
-    editInstructionCatalogAction_ = projectMenu->addAction(
-        tr("Instruction Catalog..."));
-    editProjectOpcodeColorsAction_ = projectMenu->addAction(
-        tr("Project Opcode Colors..."));
-    projectMenu->addSeparator();
-    refreshAction_ = projectMenu->addAction(tr("&Refresh Dataset"));
-    refreshAction_->setShortcut(QKeySequence::Refresh);
-    projectMenu->addSeparator();
-    createScriptSectionAction_ = projectMenu->addAction(tr("New Script Section..."));
-    createIndexedStringAction_ = projectMenu->addAction(tr("New Indexed String..."));
-    renameSectionAction_ = projectMenu->addAction(tr("Rename Section..."));
-    deleteSectionAction_ = projectMenu->addAction(tr("Delete Script Section"));
-    moveSectionUpAction_ = projectMenu->addAction(tr("Move Section Up"));
-    moveSectionDownAction_ = projectMenu->addAction(tr("Move Section Down"));
-    projectMenu->addSeparator();
-    createFooterMessageAction_ = projectMenu->addAction(tr("New Footer Message"));
-    deleteTextAction_ = projectMenu->addAction(tr("Delete Text Entity"));
-
     auto* editMenu = menuBar()->addMenu(tr("&Edit"));
-    navigationBackAction_ = editMenu->addAction(tr("&Back"));
-    navigationBackAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Left));
-    navigationBackAction_->setIcon(QIcon::fromTheme(QStringLiteral("go-previous"),
-        style()->standardIcon(QStyle::SP_ArrowBack)));
-    navigationForwardAction_ = editMenu->addAction(tr("&Forward"));
-    navigationForwardAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Right));
-    navigationForwardAction_->setIcon(QIcon::fromTheme(QStringLiteral("go-next"),
-        style()->standardIcon(QStyle::SP_ArrowForward)));
-    editMenu->addSeparator();
     undoAction_ = editMenu->addAction(tr("&Undo"));
     undoAction_->setShortcut(QKeySequence::Undo);
     undoAction_->setIcon(QIcon::fromTheme(QStringLiteral("edit-undo"),
@@ -571,39 +604,108 @@ void MainWindow::buildUi() {
     pasteAction_->setShortcut(QKeySequence::Paste);
     duplicateAction_ = editMenu->addAction(tr("&Duplicate"));
     duplicateAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
-    saveSnippetAction_ = editMenu->addAction(tr("Save Selection as Snippet..."));
-    editMenu->addSeparator();
-    editMessageAction_ = editMenu->addAction(tr("Edit &Text"));
-    editMenu->addSeparator();
-    insertInstructionAction_ = editMenu->addAction(tr("&Insert Instruction..."));
-    insertInstructionAction_->setShortcut(QKeySequence(Qt::Key_Insert));
     deleteInstructionAction_ = editMenu->addAction(tr("&Delete Selection"));
     deleteInstructionAction_->setShortcut(QKeySequence::Delete);
-    moveInstructionUpAction_ = editMenu->addAction(tr("Move Instruction &Up"));
-    moveInstructionUpAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Up));
-    moveInstructionDownAction_ = editMenu->addAction(tr("Move Instruction &Down"));
-    moveInstructionDownAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Down));
+    saveSnippetAction_ = editMenu->addAction(tr("Save Selection as Snippet..."));
 
-    auto* editToolbar = addToolBar(tr("Editing"));
-    editToolbar->setObjectName(QStringLiteral("EditingToolbar"));
-    editToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    editToolbar->addAction(navigationBackAction_);
-    editToolbar->addAction(navigationForwardAction_);
-    editToolbar->addSeparator();
-    editToolbar->addAction(undoAction_);
-    editToolbar->addAction(redoAction_);
+    auto* navigateMenu = menuBar()->addMenu(tr("&Navigate"));
+    navigationBackAction_ = navigateMenu->addAction(tr("&Back"));
+    navigationBackAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Left));
+    navigationBackAction_->setIcon(QIcon::fromTheme(QStringLiteral("go-previous"),
+        style()->standardIcon(QStyle::SP_ArrowBack)));
+    navigationForwardAction_ = navigateMenu->addAction(tr("&Forward"));
+    navigationForwardAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Right));
+    navigationForwardAction_->setIcon(QIcon::fromTheme(QStringLiteral("go-next"),
+        style()->standardIcon(QStyle::SP_ArrowForward)));
+    navigateMenu->addSeparator();
+    datasetOverviewAction_ = navigateMenu->addAction(tr("Dataset &Overview"));
+    navigateMenu->addAction(semanticNavigatorDock_->toggleViewAction());
+    navigateMenu->addAction(bookmarkDock_->toggleViewAction());
+
+    auto* documentMenu = menuBar()->addMenu(tr("&Document"));
+    saveAction_ = documentMenu->addAction(tr("&Save Patch Checkpoint"));
+    saveAction_->setShortcut(QKeySequence::Save);
+    exportAction_ = documentMenu->addAction(tr("&Export SCT..."));
+    exportAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
+    documentMenu->addSeparator();
+    editMessageAction_ = documentMenu->addAction(tr("Edit &Text"));
+    insertInstructionAction_ = documentMenu->addAction(tr("&Insert Instruction..."));
+    insertInstructionAction_->setShortcut(QKeySequence(Qt::Key_Insert));
+    moveInstructionUpAction_ = documentMenu->addAction(tr("Move Instruction &Up"));
+    moveInstructionUpAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Up));
+    moveInstructionDownAction_ = documentMenu->addAction(tr("Move Instruction &Down"));
+    moveInstructionDownAction_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Down));
+    documentMenu->addSeparator();
+    createScriptSectionAction_ = documentMenu->addAction(tr("New Script Section..."));
+    createIndexedStringAction_ = documentMenu->addAction(tr("New Indexed String..."));
+    renameSectionAction_ = documentMenu->addAction(tr("Rename Section..."));
+    deleteSectionAction_ = documentMenu->addAction(tr("Delete Script Section"));
+    moveSectionUpAction_ = documentMenu->addAction(tr("Move Section Up"));
+    moveSectionDownAction_ = documentMenu->addAction(tr("Move Section Down"));
+    documentMenu->addSeparator();
+    createSupplementaryTextMessageAction_ = documentMenu->addAction(
+        tr("New Supplementary Message"));
+    deleteTextAction_ = documentMenu->addAction(tr("Delete Text Entity"));
+    documentMenu->addSeparator();
+    editInstructionCatalogAction_ = documentMenu->addAction(
+        tr("Personal Instruction Catalog..."));
+
+    auto* workspaceMenu = menuBar()->addMenu(tr("&Workspace"));
+    associatePatchWorkspaceAction_ = workspaceMenu->addAction(
+        tr("Open or Create &Workspace..."));
+    disconnectPatchWorkspaceAction_ = workspaceMenu->addAction(tr("Close Workspace"));
+    workspaceMenu->addSeparator();
+    refreshAction_ = workspaceMenu->addAction(tr("&Refresh Dataset"));
+    refreshAction_->setShortcut(QKeySequence::Refresh);
+    rebasePatchesAction_ = workspaceMenu->addAction(tr("Rebase Stale Patches..."));
+    editProjectOpcodeColorsAction_ = workspaceMenu->addAction(
+        tr("Workspace Opcode Colors..."));
+    auto* legacyMenu = workspaceMenu->addMenu(tr("Legacy Migration"));
+    promoteLegacyMetadataAction_ = legacyMenu->addAction(
+        tr("Promote Retained Legacy Metadata..."));
+    auto* maintenanceMenu = workspaceMenu->addMenu(tr("Maintenance"));
+    cleanWorkspaceEvidenceAction_ = maintenanceMenu->addAction(
+        tr("Clean Workspace Recovery Evidence..."));
+
+    editingToolbar_ = addToolBar(tr("Editing"));
+    editingToolbar_->setObjectName(QStringLiteral("EditingToolbar"));
+    editingToolbar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    editingToolbar_->addAction(navigationBackAction_);
+    editingToolbar_->addAction(navigationForwardAction_);
+    editingToolbar_->addSeparator();
+    editingToolbar_->addAction(undoAction_);
+    editingToolbar_->addAction(redoAction_);
 
     auto* viewMenu = menuBar()->addMenu(tr("&View"));
-    viewMenu->addAction(projectDock_->toggleViewAction());
-    viewMenu->addAction(diagnosticsDock_->toggleViewAction());
-    viewMenu->addAction(activityLogDock_->toggleViewAction());
-    viewMenu->addAction(semanticNavigatorDock_->toggleViewAction());
-    viewMenu->addAction(messageEditorDock_->toggleViewAction());
-    viewMenu->addAction(scptEditorDock_->toggleViewAction());
-    viewMenu->addAction(snippetLibraryDock_->toggleViewAction());
-    viewMenu->addAction(aliasDock_->toggleViewAction());
-    viewMenu->addAction(bookmarkDock_->toggleViewAction());
-    viewMenu->addAction(editToolbar->toggleViewAction());
+    auto* panelsMenu = viewMenu->addMenu(tr("Panels"));
+    panelsMenu->addAction(projectDock_->toggleViewAction());
+    panelsMenu->addAction(metadataDock_->toggleViewAction());
+    panelsMenu->addSeparator();
+    panelsMenu->addAction(diagnosticsDock_->toggleViewAction());
+    panelsMenu->addAction(activityLogDock_->toggleViewAction());
+    panelsMenu->addAction(semanticNavigatorDock_->toggleViewAction());
+    panelsMenu->addAction(messageEditorDock_->toggleViewAction());
+    panelsMenu->addAction(scptEditorDock_->toggleViewAction());
+    panelsMenu->addAction(snippetLibraryDock_->toggleViewAction());
+    panelsMenu->addAction(aliasDock_->toggleViewAction());
+    panelsMenu->addAction(bookmarkDock_->toggleViewAction());
+    auto* toolbarsMenu = viewMenu->addMenu(tr("Toolbars"));
+    toolbarsMenu->addAction(editingToolbar_->toggleViewAction());
+    viewMenu->addSeparator();
+    auto* resetLayoutAction = viewMenu->addAction(tr("Reset Window Layout..."));
+
+    auto* helpMenu = menuBar()->addMenu(tr("&Help"));
+    auto* userGuideAction = helpMenu->addAction(tr("SALSA User Guide"));
+    userGuideAction->setShortcut(QKeySequence::HelpContents);
+    auto* legacyHelpAction = helpMenu->addAction(tr("Importing Legacy Projects"));
+    auto* exportHelpAction = helpMenu->addAction(tr("Exporting SCT"));
+    auto* shortcutsHelpAction = helpMenu->addAction(tr("Keyboard Shortcuts"));
+    helpMenu->addSeparator();
+    auto* aboutAction = helpMenu->addAction(tr("About SALSA"));
+
+    for (auto* menu : {fileMenu, editMenu, navigateMenu, documentMenu, workspaceMenu,
+            legacyMenu, maintenanceMenu, viewMenu, panelsMenu, toolbarsMenu, helpMenu})
+        actionHints_->registerMenu(menu);
 
 #if defined(_DEBUG)
     developerMenu_ = menuBar()->addMenu(tr("DEV"));
@@ -720,18 +822,12 @@ void MainWindow::buildUi() {
     connect(editProjectOpcodeColorsAction_, &QAction::triggered,
         this, &MainWindow::editProjectOpcodeColors);
     connect(closeWorkspaceAction_, &QAction::triggered, this, [this]() {
-        if (!prepareScptEditor() || !flushMessageEditor() || !confirmDiscardAll(
+        if (!prepareScptEditor() || !flushPendingEditors() || !confirmDiscardAll(
                 tr("close the dataset"), PendingLifecycle::CloseDataset)) return;
-        scptEditor_->clear();
-        messageEditor_->clear();
-        saveWorkspaceSession();
-        documentController_->closeAll();
-        detachPatchWorkspace(false);
-        controller_->closeWorkspace();
-        statusBar()->showMessage(tr("Dataset closed."), 5000);
+        closeDataset();
     });
     connect(refreshAction_, &QAction::triggered, this, [this]() {
-        if (!flushMessageEditor()) return;
+        if (!flushPendingEditors()) return;
         (void)exclusiveOperations_->open(std::make_unique<WorkspaceOperationController>(
             controller_, WorkspaceController::Operation::Refreshing), this);
     });
@@ -740,8 +836,48 @@ void MainWindow::buildUi() {
         documentController_->cancel();
     });
     connect(exitAction, &QAction::triggered, this, &QWidget::close);
+    connect(datasetOverviewAction_, &QAction::triggered, this, [this] {
+        tabs_->setCurrentIndex(0);
+        tabs_->setFocus();
+    });
+    connect(resetLayoutAction, &QAction::triggered, this, &MainWindow::resetWindowLayout);
+    connect(userGuideAction, &QAction::triggered, this,
+        [this] { showHelpTopic(QStringLiteral("README.md")); });
+    connect(legacyHelpAction, &QAction::triggered, this,
+        [this] { showHelpTopic(QStringLiteral("LegacyImport.md")); });
+    connect(exportHelpAction, &QAction::triggered, this,
+        [this] { showHelpTopic(QStringLiteral("Exporting.md")); });
+    connect(shortcutsHelpAction, &QAction::triggered, this,
+        [this] { showHelpTopic(QStringLiteral("KeyboardShortcuts.md")); });
+    connect(aboutAction, &QAction::triggered, this, [this] {
+        QMessageBox::about(this, tr("About SALSA"), tr(
+            "<b>SALSA %1</b><br>Skies of Arcadia Legends script authoring.")
+            .arg(QApplication::applicationVersion()));
+    });
+    connect(details_, &DatasetOverviewWidget::openDatasetRequested,
+        openAction_, &QAction::trigger);
+    connect(details_, &DatasetOverviewWidget::importLegacyProjectRequested,
+        convertLegacyProjectAction_, &QAction::trigger);
+    connect(details_, &DatasetOverviewWidget::associateWorkspaceRequested,
+        associatePatchWorkspaceAction_, &QAction::trigger);
+    connect(details_, &DatasetOverviewWidget::openSelectedAssetRequested,
+        this, &MainWindow::activateSelectedAsset);
     connect(exclusiveOperations_, &ExclusiveOperationCoordinator::activeChanged,
-        this, [this] { syncActions(); });
+        this, [this] { syncActions(); (void)syncMetadataEditor(); });
+    connect(exclusiveOperations_, &ExclusiveOperationCoordinator::activityRaised,
+        this, [this](const int outcome, const QString& code,
+                const QString& message, const QString& location) {
+            auto converted = ActivityOutcome::Failed;
+            switch (static_cast<ExclusiveOperationActivityOutcome>(outcome)) {
+            case ExclusiveOperationActivityOutcome::Completed:
+                converted = ActivityOutcome::Completed; break;
+            case ExclusiveOperationActivityOutcome::Failed:
+                converted = ActivityOutcome::Failed; break;
+            case ExclusiveOperationActivityOutcome::Cancelled:
+                converted = ActivityOutcome::Cancelled; break;
+            }
+            activityLogModel_->appendOperation(converted, code, message, location);
+        });
     connect(undoAction_, &QAction::triggered, this, &MainWindow::undoActiveDocument);
     connect(redoAction_, &QAction::triggered, this, &MainWindow::redoActiveDocument);
     connect(cutAction_, &QAction::triggered, this, &MainWindow::cutSelection);
@@ -771,8 +907,8 @@ void MainWindow::buildUi() {
     connect(moveSectionDownAction_, &QAction::triggered, this, [this]() {
         moveSelectedSection(core::SctSectionMoveDirection::Down);
     });
-    connect(createFooterMessageAction_, &QAction::triggered, this, [this]() {
-        createFooterText(core::SctCreatedFooterTextKind::Message);
+    connect(createSupplementaryTextMessageAction_, &QAction::triggered, this, [this]() {
+        createSupplementaryText(core::SctCreatedSupplementaryTextKind::Message);
     });
     connect(deleteTextAction_, &QAction::triggered, this, &MainWindow::deleteSelectedText);
     connect(insertInstructionAction_, &QAction::triggered, this, &MainWindow::insertInstruction);
@@ -823,6 +959,17 @@ void MainWindow::buildUi() {
     });
     connect(tabs_, &QTabWidget::tabCloseRequested, this, &MainWindow::closeDocumentTab);
     connect(tabs_, &QTabWidget::currentChanged, this, [this](int) {
+        if (restoringMetadataTransition_) return;
+        if (!flushMetadataEditor()) {
+            const auto& binding = metadataEditor_->binding();
+            if (binding) {
+                restoringMetadataTransition_ = true;
+                focusDocument(QString::fromStdString(binding->locator.identityKey()));
+                restoringMetadataTransition_ = false;
+                (void)syncMetadataEditor();
+            }
+            return;
+        }
         if (!restoringTabAfterCommitFailure_ && messageEditor_->hasBinding()) {
             auto* active = activeDocumentWidget();
             const auto& bound = messageEditor_->boundLocator();
@@ -842,6 +989,7 @@ void MainWindow::buildUi() {
         syncSemanticNavigator();
         syncEditActions();
         reloadAuthoringDocks();
+        (void)syncMetadataEditor();
         recordActiveNavigation();
         scheduleWorkspaceSessionSave();
     });
@@ -886,10 +1034,24 @@ void MainWindow::buildUi() {
     pasteSnippetButton_->setEnabled(false);
     deleteSnippetButton_->setEnabled(false);
     reloadSnippets();
+
+    projectDock_->show();
+    metadataDock_->show();
+    metadataDock_->raise();
+    diagnosticsDock_->hide();
+    activityLogDock_->hide();
+    semanticNavigatorDock_->hide();
+    messageEditorDock_->hide();
+    scptEditorDock_->hide();
+    snippetLibraryDock_->hide();
+    aliasDock_->hide();
+    bookmarkDock_->hide();
+    editingToolbar_->show();
+    defaultWindowState_ = saveState(SettingsStateVersion);
 }
 
 void MainWindow::connectWorkspace() {
-    connect(controller_, &WorkspaceController::workspaceChanged, this, &MainWindow::syncWorkspace);
+    connect(controller_, &WorkspaceController::datasetChanged, this, &MainWindow::syncWorkspace);
     connect(controller_, &WorkspaceController::selectionChanged, this, &MainWindow::syncSelection);
     connect(controller_, &WorkspaceController::diagnosticsChanged, this, &MainWindow::syncDiagnostics);
     connect(controller_, &WorkspaceController::operationStateChanged, this, [this]() {
@@ -1010,43 +1172,29 @@ void MainWindow::connectWorkspace() {
                 cancelButton_->hide();
             }
             statusBar()->showMessage(message, 8000);
-            if (!success && !cancelled
-                && !(exclusiveOperations_ && exclusiveOperations_->active())) {
-                diagnosticsDock_->show();
-                diagnosticsDock_->raise();
-            }
-            diagnosticJournalModel_->appendActivity(
-                cancelled ? QStringLiteral("SctOperationCancelled")
-                    : success ? QStringLiteral("SctOperationCompleted")
-                        : QStringLiteral("SctOperationFailed"),
-                message, identityKey);
+            activityLogModel_->appendOperation(
+                cancelled ? ActivityOutcome::Cancelled
+                    : success ? ActivityOutcome::Completed : ActivityOutcome::Failed,
+                QStringLiteral("SctOperation"), message, identityKey);
             syncDiagnostics();
             syncActions();
             continueWorkspaceSessionRestore(
                 identityKey, success, cancelled, message);
         });
-    connect(documentController_, &SctDocumentController::editCompleted,
-        this, [this](const QString&, const bool success, const QString& message) {
+    connect(documentController_, &SctDocumentController::editCommitted,
+        this, [this](const QString&, const QString& message) {
             statusBar()->showMessage(message, 8000);
-            if (!success) {
-                diagnosticsDock_->show();
-                diagnosticsDock_->raise();
-                syncDiagnostics();
-            }
         });
+    connect(documentController_, &SctDocumentController::editRejected,
+        this, &MainWindow::showInteractionNotice);
     connect(documentController_, &SctDocumentController::checkpointCompleted,
         this, [this](const QString& identityKey, const bool success, const bool cancelled,
             const QString& message) {
-            diagnosticJournalModel_->appendActivity(
-                cancelled ? QStringLiteral("CheckpointCancelled")
-                    : success ? QStringLiteral("CheckpointCompleted")
-                        : QStringLiteral("CheckpointFailed"),
-                message, identityKey);
+            activityLogModel_->appendOperation(
+                cancelled ? ActivityOutcome::Cancelled
+                    : success ? ActivityOutcome::Completed : ActivityOutcome::Failed,
+                QStringLiteral("Checkpoint"), message, identityKey);
             statusBar()->showMessage(message, 8000);
-            if (!success && !cancelled) {
-                diagnosticsDock_->show();
-                diagnosticsDock_->raise();
-            }
             rebuildDocumentTabTitles();
             syncDiagnostics();
             syncActions();
@@ -1067,16 +1215,13 @@ void MainWindow::connectWorkspace() {
             progressBar_->hide();
             cancelButton_->hide();
             statusBar()->showMessage(message, 10000);
-            diagnosticJournalModel_->appendActivity(
-                cancelled ? QStringLiteral("PublicationCancelled")
-                    : success ? QStringLiteral("PublicationCompleted")
-                        : QStringLiteral("PublicationFailed"),
-                message, identityKey);
+            activityLogModel_->appendOperation(
+                cancelled ? ActivityOutcome::Cancelled
+                    : success ? ActivityOutcome::Completed : ActivityOutcome::Failed,
+                QStringLiteral("Publication"), message, identityKey);
             syncDiagnostics();
             syncActions();
             if (!success && !cancelled) {
-                diagnosticsDock_->show();
-                diagnosticsDock_->raise();
                 if (!documentController_->failureDiagnostics().empty()
                     && !(exclusiveOperations_ && exclusiveOperations_->active())) {
                     QMessageBox::warning(this, tr("SCT export failed"), message);
@@ -1091,6 +1236,7 @@ void MainWindow::connectWorkspace() {
 
 void MainWindow::convertLegacyProject() {
     if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
+    if (!flushPendingEditors()) return;
     (void)exclusiveOperations_->open(std::make_unique<LegacyImportController>(
         [this](const QString source, const QString workspace) {
             rememberPatchWorkspaceAssociation(source, workspace);
@@ -1114,7 +1260,7 @@ void MainWindow::chooseDataset() {
 void MainWindow::openDataset(const QString& rootPath) {
     if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
     pendingDatasetRoot_ = rootPath;
-    if (!prepareScptEditor() || !flushMessageEditor()
+    if (!prepareScptEditor() || !flushPendingEditors()
         || !confirmDiscardAll(tr("open another dataset"),
             PendingLifecycle::OpenDataset)) return;
     saveWorkspaceSession();
@@ -1170,7 +1316,7 @@ void MainWindow::rebaseStalePatches() {
     if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
     if (patchWorkspace_ == nullptr || controller_->busy()
         || documentController_->busy() || documentController_->isPublishing()) return;
-    if (!prepareScptEditor() || !flushMessageEditor()) return;
+    if (!prepareScptEditor() || !flushPendingEditors()) return;
     const auto dirty = documentController_->dirtyLocators();
     if (!confirmDiscardAll(tr("rebase stale patches"),
             PendingLifecycle::RebasePatches)) return;
@@ -1361,7 +1507,7 @@ void MainWindow::addVariableAlias(const bool projectScope) {
     auto* document = activeDocumentWidget();
     if (!projectScope && !document) return;
     QDialog dialog(this);
-    dialog.setWindowTitle(projectScope ? tr("Add project alias")
+    dialog.setWindowTitle(projectScope ? tr("Add workspace alias")
                                        : tr("Add document alias"));
     auto* layout = new QFormLayout(&dialog);
     auto* kind = new QComboBox(&dialog);
@@ -1394,7 +1540,7 @@ void MainWindow::addVariableAlias(const bool projectScope) {
         else found->alias = normalizedAlias;
         const auto encoded = core::SctAuthoringCatalogCodec::serializeWorkspace(candidate);
         if (!encoded) {
-            QMessageBox::warning(this, tr("Invalid project alias"),
+            QMessageBox::warning(this, tr("Invalid workspace alias"),
                 QString::fromStdString(encoded.diagnostics().front().message));
             return;
         }
@@ -1495,7 +1641,7 @@ void MainWindow::editSelectedVariableMetadata() {
 void MainWindow::editProjectOpcodeColors() {
     if (!patchWorkspace_) return;
     QDialog dialog(this);
-    dialog.setWindowTitle(tr("Project Opcode Colors"));
+    dialog.setWindowTitle(tr("Workspace Opcode Colors"));
     auto* layout = new QVBoxLayout(&dialog);
     auto* table = new QTableWidget(0, 2, &dialog);
     table->setHorizontalHeaderLabels({tr("Opcode"), tr("Color")});
@@ -1556,6 +1702,69 @@ void MainWindow::editProjectOpcodeColors() {
     if (!saveWorkspaceAuthoring()) workspaceAuthoring_ = previous;
 }
 
+bool MainWindow::flushMetadataEditor() {
+    return metadataEditor_ == nullptr || metadataEditor_->flush();
+}
+
+bool MainWindow::syncMetadataEditor() {
+    if (metadataEditor_ == nullptr) return true;
+    auto* document = activeDocumentWidget();
+    if (document == nullptr || !document->currentTarget()) {
+        metadataEditor_->setEditingEnabled(false);
+        return metadataEditor_->setBinding(std::nullopt);
+    }
+    const auto state = documentController_->semanticState(document->locator());
+    if (!state) {
+        metadataEditor_->setEditingEnabled(false);
+        return metadataEditor_->setBinding(std::nullopt);
+    }
+    const auto target = *document->currentTarget();
+    SctMetadataDraft draft;
+    bool supported = false;
+    if (target.kind == core::SctNavigationKind::SectionFolder) {
+        const auto found = std::ranges::find(state->folders, target.id,
+            [](const auto& folder) { return folder.id.value; });
+        if (found != state->folders.end()) {
+            draft.note = found->note;
+            draft.bookmarkLabel = found->bookmarkLabel;
+            draft.colorRgb = found->colorRgb;
+            supported = true;
+        }
+    } else {
+        std::optional<core::SctAuthoringTargetKind> kind;
+        switch (target.kind) {
+        case core::SctNavigationKind::Document: kind = core::SctAuthoringTargetKind::Document; break;
+        case core::SctNavigationKind::Section: kind = core::SctAuthoringTargetKind::Section; break;
+        case core::SctNavigationKind::Instruction: kind = core::SctAuthoringTargetKind::Instruction; break;
+        case core::SctNavigationKind::String: kind = core::SctAuthoringTargetKind::String; break;
+        case core::SctNavigationKind::SupplementaryText: kind = core::SctAuthoringTargetKind::SupplementaryText; break;
+        default: break;
+        }
+        if (kind) {
+            const auto found = std::ranges::find(state->annotations,
+                core::SctAuthoringTarget{*kind, target.id},
+                &core::SctEntityAnnotation::target);
+            if (found != state->annotations.end()) {
+                draft.note = found->note;
+                draft.bookmarkLabel = found->bookmarkLabel;
+                draft.colorRgb = found->colorRgb;
+            }
+            supported = true;
+        }
+    }
+    if (!supported) {
+        metadataEditor_->setEditingEnabled(false);
+        return metadataEditor_->setBinding(std::nullopt);
+    }
+    const bool editable = patchWorkspace_ != nullptr
+        && !controller_->busy() && !documentController_->busy()
+        && !(exclusiveOperations_ && exclusiveOperations_->active())
+        && documentController_->structurallyValid(document->locator());
+    metadataEditor_->setEditingEnabled(editable);
+    return metadataEditor_->setBinding(SctMetadataBinding{
+        document->locator(), target, document->targetLabel(target), std::move(draft)});
+}
+
 void MainWindow::reloadAuthoringDocks() {
     if (!aliasTable_ || !bookmarkTable_) return;
     aliasTable_->setRowCount(0);
@@ -1564,7 +1773,7 @@ void MainWindow::reloadAuthoringDocks() {
         : std::optional<core::SctSemanticState>{};
     const auto appendAlias = [&](const bool project, const core::SctVariableAlias& alias) {
         const auto row = aliasTable_->rowCount(); aliasTable_->insertRow(row);
-        auto* scope = new QTableWidgetItem(project ? tr("Project") : tr("Document"));
+        auto* scope = new QTableWidgetItem(project ? tr("Workspace") : tr("Document"));
         scope->setData(Qt::UserRole, project);
         const auto kindName = [&] {
             switch (alias.variable.kind) {
@@ -1628,7 +1837,7 @@ void MainWindow::reloadAuthoringDocks() {
                 case core::SctNavigationKind::Section: return tr("Section");
                 case core::SctNavigationKind::Instruction: return tr("Instruction");
                 case core::SctNavigationKind::String: return tr("String");
-                case core::SctNavigationKind::FooterEntry: return tr("Footer entry");
+                case core::SctNavigationKind::SupplementaryText: return tr("Supplementary text");
                 case core::SctNavigationKind::SectionFolder: return tr("Section folder");
                 case core::SctNavigationKind::Variable: return tr("Variable");
                 default: return tr("Entity");
@@ -1648,7 +1857,7 @@ void MainWindow::reloadAuthoringDocks() {
             case core::SctAuthoringTargetKind::Section: kind = core::SctNavigationKind::Section; break;
             case core::SctAuthoringTargetKind::Instruction: kind = core::SctNavigationKind::Instruction; break;
             case core::SctAuthoringTargetKind::String: kind = core::SctNavigationKind::String; break;
-            case core::SctAuthoringTargetKind::FooterEntry: kind = core::SctNavigationKind::FooterEntry; break;
+            case core::SctAuthoringTargetKind::SupplementaryText: kind = core::SctNavigationKind::SupplementaryText; break;
             case core::SctAuthoringTargetKind::Variable:
                 if (!annotation.target.variableKind) continue;
                 appendBookmark(core::SctNavigationKind::Variable,
@@ -1799,7 +2008,7 @@ void MainWindow::rememberPatchWorkspaceAssociation(
 }
 
 void MainWindow::saveActiveDocument() {
-    if (!flushMessageEditor()) return;
+    if (!flushPendingEditors()) return;
     auto* widget = activeDocumentWidget();
     if (widget == nullptr) return;
     if (documentController_->saveDocument(widget->locator())) {
@@ -1816,7 +2025,7 @@ void MainWindow::exportActiveDocument() {
     if (exclusiveOperations_->active()) { exclusiveOperations_->focusActive(); return; }
     auto* widget = activeDocumentWidget();
     if (widget == nullptr || !prepareScptEditor(widget->locator())
-        || !flushMessageEditor()) return;
+        || !flushPendingEditors()) return;
     const auto project = controller_->projectSnapshot();
     const auto snapshot = documentController_->snapshot(widget->locator());
     if (!project || !snapshot || !snapshot->provenance) return;
@@ -1832,16 +2041,97 @@ void MainWindow::exportActiveDocument() {
         sourcePath, lastExportDirectory_), this);
 }
 
+void MainWindow::applyActionAvailability(
+    QAction* action, ActionAvailability availability) {
+    if (action == nullptr) return;
+    action->setEnabled(availability.enabled);
+    DisabledActionHintPresenter::setReason(
+        action, availability.enabled ? QString{} : std::move(availability.reason));
+}
+
+void MainWindow::syncDatasetOverview() {
+    if (details_ == nullptr) return;
+    if (patchWorkspace_) {
+        details_->setWorkspace(
+            QString::fromStdWString(patchWorkspace_->descriptor().root.wstring()),
+            QString::fromStdString(patchWorkspace_->descriptor().workspaceId));
+    } else {
+        details_->clearWorkspace();
+    }
+    const auto open = documentController_->openLocators();
+    const auto dirty = documentController_->dirtyLocators();
+    const auto conflicts = std::ranges::count_if(open, [this](const auto& locator) {
+        return documentController_->patchConflict(locator);
+    });
+    details_->setSessionCounts(open.size(), dirty.size(),
+        static_cast<std::size_t>(conflicts));
+
+    const bool exclusive = exclusiveOperations_ && exclusiveOperations_->active();
+    const bool shellAvailable = !exclusive && !controller_->busy()
+        && !documentController_->busy() && !documentController_->isPublishing();
+    const bool hasDataset = controller_->hasDataset();
+    const bool workspaceAvailable = shellAvailable && hasDataset && open.empty();
+    QString workspaceReason;
+    if (!shellAvailable) workspaceReason = tr("Wait for the current operation to finish.");
+    else if (!hasDataset) workspaceReason = tr("Open a dataset first.");
+    else if (!open.empty()) workspaceReason = tr(
+        "Close all SCT documents before opening or creating a workspace.");
+    const bool hasSelection = controller_->selectedLocator().has_value();
+    const bool assetAvailable = shellAvailable && hasSelection;
+    const auto assetReason = hasSelection && !assetAvailable
+        ? tr("Wait for the current operation to finish.") : QString{};
+    details_->setPrimaryActionAvailability(shellAvailable, workspaceAvailable,
+        workspaceReason, assetAvailable, assetReason);
+}
+
+void MainWindow::syncWindowTitle() {
+    QString documentName;
+    bool modified = false;
+    if (const auto* widget = activeDocumentWidget()) {
+        documentName = QString::fromStdWString(widget->locator().path().filename().wstring());
+        modified = documentController_->isDirty(widget->locator());
+    }
+    QString datasetName;
+    if (const auto* dataset = controller_->dataset()) {
+        datasetName = QFileInfo(QString::fromStdWString(dataset->root.wstring())).fileName();
+        if (datasetName.isEmpty()) datasetName = QString::fromStdWString(dataset->root.wstring());
+    }
+    const auto applicationName = core::applicationName();
+    const auto datasetUtf8 = datasetName.toUtf8();
+    const auto documentUtf8 = documentName.toUtf8();
+    const auto title = core::composeShellWindowTitle(applicationName,
+        {datasetUtf8.constData(), static_cast<std::size_t>(datasetUtf8.size())},
+        {documentUtf8.constData(), static_cast<std::size_t>(documentUtf8.size())}, modified);
+    setWindowTitle(QString::fromUtf8(title.data(), static_cast<qsizetype>(title.size())));
+}
+
+void MainWindow::showHelpTopic(const QString& topic) {
+    if (helpWindow_ == nullptr) helpWindow_ = new HelpWindow(this);
+    helpWindow_->showTopic(topic);
+    helpWindow_->show();
+    helpWindow_->raise();
+    helpWindow_->activateWindow();
+}
+
+void MainWindow::resetWindowLayout() {
+    const auto answer = QMessageBox::question(this, tr("Reset window layout?"), tr(
+        "Restore the default panels and editing toolbar? The window size and position, "
+        "open dataset, and documents will not change."));
+    if (answer != QMessageBox::Yes) return;
+    restoreState(defaultWindowState_, SettingsStateVersion);
+    statusBar()->showMessage(tr("Window panels and toolbars were reset."), 5000);
+}
+
 void MainWindow::syncWorkspace() {
     const auto* dataset = controller_->dataset();
     const auto* catalog = controller_->catalog();
     if (dataset == nullptr || catalog == nullptr) {
         workspaceModel_->clear();
-        details_->clear();
+        details_->clearDataset();
         projectTree_->setEnabled(false);
     } else {
         workspaceModel_->setSnapshot(*catalog);
-        details_->setWorkspace(*dataset, *catalog);
+        details_->setDataset(*dataset, *catalog);
         projectTree_->setEnabled(true);
         projectTree_->collapseAll();
         if (controller_->selectedLocator().has_value()) {
@@ -1865,33 +2155,23 @@ void MainWindow::syncSelection() {
 
 void MainWindow::syncDiagnostics() {
     auto workspaceDiagnostics = controller_->diagnostics();
-    workspaceDiagnostics.insert(workspaceDiagnostics.end(),
-        documentController_->failureDiagnostics().begin(),
-        documentController_->failureDiagnostics().end());
     std::vector<core::SctPipelineDiagnostic> documentDiagnostics;
     if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->currentWidget())) {
-        for (const auto& failure : documentController_->failurePipelineDiagnostics()) {
-            if (!failure.locator || *failure.locator == widget->locator())
-                documentDiagnostics.push_back(failure);
-        }
         auto current = documentController_->currentDiagnostics(widget->locator());
         documentDiagnostics.insert(documentDiagnostics.end(),
             std::make_move_iterator(current.begin()),
             std::make_move_iterator(current.end()));
-    } else {
-        for (const auto& failure : documentController_->failurePipelineDiagnostics())
-            if (!failure.locator) documentDiagnostics.push_back(failure);
     }
     diagnosticsModel_->setCombinedDiagnostics(workspaceDiagnostics, documentDiagnostics);
 
-    auto globalDocumentDiagnostics = documentController_->failurePipelineDiagnostics();
+    std::vector<core::SctPipelineDiagnostic> globalDocumentDiagnostics;
     for (const auto& locator : documentController_->openLocators()) {
         auto current = documentController_->currentDiagnostics(locator);
         globalDocumentDiagnostics.insert(globalDocumentDiagnostics.end(),
             std::make_move_iterator(current.begin()),
             std::make_move_iterator(current.end()));
     }
-    diagnosticJournalModel_->observe(DiagnosticsModel::rowsFor(
+    activityLogModel_->observeIssues(DiagnosticsModel::rowsFor(
         workspaceDiagnostics, globalDocumentDiagnostics));
 }
 
@@ -1904,11 +2184,45 @@ void MainWindow::queueDiagnosticsSync() {
         timer.start();
         syncDiagnostics();
         if (editTimingsEnabled_) {
-            qInfo().noquote() << QStringLiteral(
+            qCInfo(salsaSctEditLog).noquote() << QStringLiteral(
                 "SALSA edit timing: diagnostics-delivery=%1us")
                 .arg(timer.nsecsElapsed() / 1000);
         }
     });
+}
+
+void MainWindow::showInteractionNotice(InteractionNotice notice) {
+    if (pendingInteractionPosition_ && !notice.globalPosition)
+        notice.globalPosition = pendingInteractionPosition_;
+    if (notice.prominent) {
+        activityLogModel_->appendOperation(
+            notice.code == QStringLiteral("BackgroundVerificationRestored")
+                ? ActivityOutcome::Completed : ActivityOutcome::Failed,
+            QStringLiteral("EditVerification"), notice.message,
+            notice.documentIdentity);
+    }
+    if (notice.globalPosition) {
+        noticePresenter_->showNotice(notice);
+        return;
+    }
+    auto* widget = activeDocumentWidget();
+    if (widget == nullptr
+        || QString::fromStdString(widget->locator().identityKey())
+            != notice.documentIdentity) {
+        noticePresenter_->showNotice(notice);
+        return;
+    }
+    const QPointer<SctDocumentWidget> guarded(widget);
+    if (notice.target) {
+        const auto target = *notice.target;
+        noticePresenter_->showNotice(notice, [guarded, target] {
+            return guarded ? guarded->globalRectForTarget(target) : QRect{};
+        });
+    } else {
+        noticePresenter_->showNotice(notice, [guarded] {
+            return guarded ? QRect(guarded->mapToGlobal(QPoint{}), guarded->size()) : QRect{};
+        });
+    }
 }
 
 void MainWindow::syncSemanticNavigator() {
@@ -1929,43 +2243,51 @@ void MainWindow::syncActions() {
     const bool busy = controller_->busy() || documentController_->busy();
     const bool publishing = documentController_->isPublishing();
     const bool exclusive = exclusiveOperations_ && exclusiveOperations_->active();
-    const bool hasDataset = controller_->hasWorkspace();
+    const bool hasDataset = controller_->hasDataset();
     const bool hasOpenDocuments = !documentController_->openLocators().empty();
-    openAction_->setEnabled(!busy && !publishing && !exclusive);
-    recentMenu_->setEnabled(!busy && !publishing && !exclusive && !recentDatasets_.isEmpty());
-    convertLegacyProjectAction_->setEnabled(!busy && !publishing && !exclusive);
-    closeWorkspaceAction_->setEnabled(!exclusive && (hasDataset || busy || publishing));
-    associatePatchWorkspaceAction_->setEnabled(
-        hasDataset && !busy && !publishing && !exclusive && !hasOpenDocuments);
-    disconnectPatchWorkspaceAction_->setEnabled(
-        patchWorkspace_ != nullptr && !busy && !publishing && !exclusive && !hasOpenDocuments);
-    rebasePatchesAction_->setEnabled(
-        patchWorkspace_ != nullptr && hasDataset && !busy && !publishing && !exclusive);
-    cleanWorkspaceEvidenceAction_->setEnabled(
-        patchWorkspace_ != nullptr && !busy && !publishing && !exclusive);
-    promoteLegacyMetadataAction_->setEnabled(patchWorkspace_ != nullptr
-        && !busy && !publishing && !exclusive && !hasOpenDocuments);
-    editInstructionCatalogAction_->setEnabled(!busy && !publishing && !exclusive);
-    editProjectOpcodeColorsAction_->setEnabled(
-        patchWorkspace_ != nullptr && !busy && !publishing && !exclusive);
-    refreshAction_->setEnabled(hasDataset && !busy && !publishing && !exclusive);
+    const core::ShellPresentationState shellState{
+        .operationActive = busy || publishing || exclusive,
+        .datasetLoaded = hasDataset,
+        .workspaceAssociated = patchWorkspace_ != nullptr,
+        .documentsOpen = hasOpenDocuments,
+        .recentDatasetsAvailable = !recentDatasets_.isEmpty(),
+    };
+    const auto applyShell = [this, &shellState](QAction* action,
+            const core::ShellAction shellAction) {
+        const auto reason = core::shellActionBlockReason(shellAction, shellState);
+        applyActionAvailability(action, {
+            reason == core::ShellActionBlockReason::None,
+            shellBlockReasonText(reason)});
+    };
+    applyShell(openAction_, core::ShellAction::OpenDataset);
+    applyShell(recentMenu_->menuAction(), core::ShellAction::OpenRecentDataset);
+    recentMenu_->setEnabled(recentMenu_->menuAction()->isEnabled());
+    applyShell(convertLegacyProjectAction_, core::ShellAction::ImportLegacyProject);
+    applyShell(closeWorkspaceAction_, core::ShellAction::CloseDataset);
+    applyShell(associatePatchWorkspaceAction_, core::ShellAction::AssociateWorkspace);
+    applyShell(disconnectPatchWorkspaceAction_, core::ShellAction::CloseWorkspace);
+    applyShell(rebasePatchesAction_, core::ShellAction::RebasePatches);
+    applyShell(cleanWorkspaceEvidenceAction_, core::ShellAction::CleanWorkspaceEvidence);
+    applyShell(promoteLegacyMetadataAction_, core::ShellAction::PromoteLegacyMetadata);
+    applyShell(editInstructionCatalogAction_, core::ShellAction::EditPersonalCatalog);
+    applyShell(editProjectOpcodeColorsAction_, core::ShellAction::EditWorkspaceAppearance);
+    applyShell(refreshAction_, core::ShellAction::RefreshDataset);
     projectTree_->setEnabled(hasDataset && !busy && !publishing && !exclusive);
     messageEditor_->setEnabled(!busy && !exclusive);
     syncEditActions();
     if (mode_ == Mode::IsolatedDocumentEditor) {
-        openAction_->setEnabled(false);
+        const auto isolated = tr("This command is unavailable in the isolated document editor.");
+        for (auto* action : {openAction_, recentMenu_->menuAction(),
+                convertLegacyProjectAction_, closeWorkspaceAction_,
+                associatePatchWorkspaceAction_, disconnectPatchWorkspaceAction_,
+                rebasePatchesAction_, cleanWorkspaceEvidenceAction_,
+                promoteLegacyMetadataAction_, refreshAction_, saveAction_, exportAction_})
+            applyActionAvailability(action, {false, isolated});
         recentMenu_->setEnabled(false);
-        closeWorkspaceAction_->setEnabled(false);
-        associatePatchWorkspaceAction_->setEnabled(false);
-        disconnectPatchWorkspaceAction_->setEnabled(false);
-        rebasePatchesAction_->setEnabled(false);
-        cleanWorkspaceEvidenceAction_->setEnabled(false);
-        promoteLegacyMetadataAction_->setEnabled(false);
-        refreshAction_->setEnabled(false);
-        saveAction_->setEnabled(false);
-        exportAction_->setEnabled(false);
         projectTree_->setEnabled(false);
     }
+    syncDatasetOverview();
+    syncWindowTitle();
 }
 
 SctDocumentWidget* MainWindow::activeDocumentWidget() const {
@@ -2098,8 +2420,12 @@ void MainWindow::syncNavigationActions() {
     const bool canForward = !navigationHistory_.empty()
         && navigationHistoryIndex_ + 1u < navigationHistory_.size();
     const bool exclusive = exclusiveOperations_ && exclusiveOperations_->active();
-    navigationBackAction_->setEnabled(canBack && !exclusive);
-    navigationForwardAction_->setEnabled(canForward && !exclusive);
+    applyActionAvailability(navigationBackAction_, {canBack && !exclusive,
+        exclusive ? tr("Wait for the current operation to finish.")
+                  : tr("There is no earlier visited location.")});
+    applyActionAvailability(navigationForwardAction_, {canForward && !exclusive,
+        exclusive ? tr("Wait for the current operation to finish.")
+                  : tr("There is no later visited location.")});
     navigationBackAction_->setToolTip(canBack
         ? tr("Back to %1 (Alt+Left)").arg(
             navigationEntryLabel(navigationHistory_[navigationHistoryIndex_ - 1u]))
@@ -2117,15 +2443,36 @@ void MainWindow::syncEditActions() {
         && !controller_->busy() && !documentController_->busy() && !exclusive;
     const bool editable = available
         && documentController_->structurallyValid(widget->locator());
-    saveAction_->setEnabled(available && patchWorkspace_ != nullptr
+    const auto unavailableReason = exclusive || controller_->busy()
+            || documentController_->busy() || documentController_->isPublishing()
+        ? tr("Wait for the current operation to finish.")
+        : widget == nullptr ? tr("Open an SCT document first.")
+        : !documentController_->structurallyValid(widget->locator())
+            ? tr("Resolve the current document errors before editing.") : QString{};
+    const bool canSave = available && patchWorkspace_ != nullptr
         && documentController_->isDirty(widget->locator())
         && !documentController_->isSaving(widget->locator())
         && !documentController_->patchConflict(widget->locator())
         && !documentController_->isPublishing()
         && documentController_->sourceStatus(widget->locator())
-            == SctDocumentController::SourceStatus::Current);
-    exportAction_->setEnabled(editable && !documentController_->isPublishing()
-        && !documentController_->isSaving(widget->locator()));
+            == SctDocumentController::SourceStatus::Current;
+    QString saveReason = unavailableReason;
+    if (saveReason.isEmpty() && patchWorkspace_ == nullptr)
+        saveReason = tr("Open or create a workspace to save patch checkpoints.");
+    else if (saveReason.isEmpty() && !documentController_->isDirty(widget->locator()))
+        saveReason = tr("The active document has no changes to checkpoint.");
+    else if (saveReason.isEmpty() && documentController_->isSaving(widget->locator()))
+        saveReason = tr("A patch checkpoint is already being saved.");
+    else if (saveReason.isEmpty() && documentController_->patchConflict(widget->locator()))
+        saveReason = tr("Rebase the document's patch conflict before saving.");
+    else if (saveReason.isEmpty() && documentController_->sourceStatus(widget->locator())
+            != SctDocumentController::SourceStatus::Current)
+        saveReason = tr("Refresh and reconcile the changed source before saving.");
+    applyActionAvailability(saveAction_, {canSave, saveReason});
+    const bool canExport = editable && !documentController_->isPublishing()
+        && !documentController_->isSaving(widget->locator());
+    applyActionAvailability(exportAction_, {canExport, unavailableReason.isEmpty()
+        ? tr("Wait for the active document operation to finish.") : unavailableReason});
     for (int i = 1; i < tabs_->count(); ++i) {
         if (auto* document = qobject_cast<SctDocumentWidget*>(tabs_->widget(i))) {
             document->setEditingEnabled(!controller_->busy() && !documentController_->busy()
@@ -2138,51 +2485,77 @@ void MainWindow::syncEditActions() {
         ? documentController_->undoDescription(widget->locator()) : std::nullopt;
     const auto redoDescription = available
         ? documentController_->redoDescription(widget->locator()) : std::nullopt;
-    undoAction_->setEnabled(available && documentController_->canUndo(widget->locator()));
-    redoAction_->setEnabled(available && documentController_->canRedo(widget->locator()));
+    const bool canUndo = available && documentController_->canUndo(widget->locator());
+    const bool canRedo = available && documentController_->canRedo(widget->locator());
+    applyActionAvailability(undoAction_, {canUndo,
+        unavailableReason.isEmpty() ? tr("There is nothing to undo.") : unavailableReason});
+    applyActionAvailability(redoAction_, {canRedo,
+        unavailableReason.isEmpty() ? tr("There is nothing to redo.") : unavailableReason});
     undoAction_->setText(tr("&Undo"));
     redoAction_->setText(tr("&Redo"));
     undoAction_->setToolTip(undoDescription.has_value()
         ? tr("Undo %1").arg(QString::fromStdString(*undoDescription)) : tr("Undo"));
     redoAction_->setToolTip(redoDescription.has_value()
         ? tr("Redo %1").arg(QString::fromStdString(*redoDescription)) : tr("Redo"));
-    editMessageAction_->setEnabled(editable && widget->canEditSelectedMessage());
+    applyActionAvailability(editMessageAction_, {
+        editable && widget->canEditSelectedMessage(), unavailableReason.isEmpty()
+            ? tr("Select an editable text entity first.") : unavailableReason});
     const bool fragmentShortcutContext = !hasTextEditingFocus();
     const bool fragmentSelection = editable && fragmentShortcutContext
         && (!widget->selectedInstructions().empty()
             || !widget->selectedSections().empty());
-    cutAction_->setEnabled(fragmentSelection);
-    copyAction_->setEnabled(fragmentSelection);
-    duplicateAction_->setEnabled(fragmentSelection);
-    saveSnippetAction_->setEnabled(fragmentSelection);
+    const auto selectionReason = unavailableReason.isEmpty()
+        ? fragmentShortcutContext ? tr("Select one or more instructions or sections first.")
+            : tr("Finish editing the active text field first.") : unavailableReason;
+    applyActionAvailability(cutAction_, {fragmentSelection, selectionReason});
+    applyActionAvailability(copyAction_, {fragmentSelection, selectionReason});
+    applyActionAvailability(duplicateAction_, {fragmentSelection, selectionReason});
+    applyActionAvailability(saveSnippetAction_, {fragmentSelection, selectionReason});
     const auto fragmentMime = QString::fromLatin1(
         core::SctFragmentCodec::MimeType.data(),
         static_cast<qsizetype>(core::SctFragmentCodec::MimeType.size()));
     const auto* clipboardData = QApplication::clipboard()->mimeData();
-    pasteAction_->setEnabled(editable && fragmentShortcutContext
+    const bool canPaste = editable && fragmentShortcutContext
         && clipboardData != nullptr
-        && clipboardData->hasFormat(fragmentMime));
+        && clipboardData->hasFormat(fragmentMime);
+    applyActionAvailability(pasteAction_, {canPaste, unavailableReason.isEmpty()
+        ? !fragmentShortcutContext ? tr("Finish editing the active text field first.")
+            : tr("The clipboard does not contain SALSA instructions or sections.")
+        : unavailableReason});
     if (snippetList_ != nullptr) {
         const bool snippetSelected = snippetList_->currentRow() >= 0;
         pasteSnippetButton_->setEnabled(editable && snippetSelected);
         deleteSnippetButton_->setEnabled(!exclusive && snippetSelected);
     }
-    createScriptSectionAction_->setEnabled(editable);
-    createIndexedStringAction_->setEnabled(editable);
+    applyActionAvailability(createScriptSectionAction_, {editable, unavailableReason});
+    applyActionAvailability(createIndexedStringAction_, {editable, unavailableReason});
     const bool sectionSelected = editable && widget->selectedSection().has_value();
-    renameSectionAction_->setEnabled(sectionSelected);
-    deleteSectionAction_->setEnabled(sectionSelected);
-    moveSectionUpAction_->setEnabled(sectionSelected);
-    moveSectionDownAction_->setEnabled(sectionSelected);
-    createFooterMessageAction_->setEnabled(editable);
-    deleteTextAction_->setEnabled(editable && widget->selectedTextTarget().has_value());
-    insertInstructionAction_->setEnabled(editable && widget->insertionContext().has_value());
-    deleteInstructionAction_->setEnabled(editable && widget->canDeleteSelected());
-    moveInstructionUpAction_->setEnabled(editable
-        && widget->canMoveSelected(core::SctInstructionMoveDirection::Up));
-    moveInstructionDownAction_->setEnabled(editable
-        && widget->canMoveSelected(core::SctInstructionMoveDirection::Down));
+    const auto sectionReason = unavailableReason.isEmpty()
+        ? tr("Select a script section first.") : unavailableReason;
+    for (auto* action : {renameSectionAction_, deleteSectionAction_,
+            moveSectionUpAction_, moveSectionDownAction_})
+        applyActionAvailability(action, {sectionSelected, sectionReason});
+    applyActionAvailability(createSupplementaryTextMessageAction_, {editable, unavailableReason});
+    applyActionAvailability(deleteTextAction_, {
+        editable && widget->selectedTextTarget().has_value(), unavailableReason.isEmpty()
+            ? tr("Select a text entity first.") : unavailableReason});
+    applyActionAvailability(insertInstructionAction_, {
+        editable && widget->insertionContext().has_value(), unavailableReason.isEmpty()
+            ? tr("Select an instruction or section insertion point first.") : unavailableReason});
+    applyActionAvailability(deleteInstructionAction_, {
+        editable && widget->canDeleteSelected(), unavailableReason.isEmpty()
+            ? tr("The current selection cannot be deleted.") : unavailableReason});
+    applyActionAvailability(moveInstructionUpAction_, {editable
+        && widget->canMoveSelected(core::SctInstructionMoveDirection::Up),
+        unavailableReason.isEmpty() ? tr("The current instruction cannot move up.")
+                                    : unavailableReason});
+    applyActionAvailability(moveInstructionDownAction_, {editable
+        && widget->canMoveSelected(core::SctInstructionMoveDirection::Down),
+        unavailableReason.isEmpty() ? tr("The current instruction cannot move down.")
+                                    : unavailableReason});
     syncNavigationActions();
+    syncDatasetOverview();
+    syncWindowTitle();
 }
 
 std::optional<core::SctInstructionAuthoringDraft>
@@ -2267,7 +2640,7 @@ MainWindow::chooseInstructionDraft(
         QComboBox* choices = nullptr;
         QCheckBox* acceptSuggestion = nullptr;
         std::vector<core::SctReferenceCandidate> candidates{};
-        bool newFooterMessageChoice = false;
+        bool newSupplementaryTextMessageChoice = false;
         QString initialText{};
     };
 
@@ -2310,28 +2683,28 @@ MainWindow::chooseInstructionDraft(
             role += tr(" (group %1)").arg(*parameter.address.repeatedGroupOrdinal + 1u);
         table->setItem(static_cast<int>(i), 0, new QTableWidgetItem(role));
 
-        const auto owned = std::ranges::find(draft.ownedFooterText,
-            parameter.address, &core::SctOwnedFooterTextDraft::parameter);
-        if (owned != draft.ownedFooterText.end()) {
+        const auto owned = std::ranges::find(draft.ownedSupplementaryText,
+            parameter.address, &core::SctOwnedSupplementaryTextDraft::parameter);
+        if (owned != draft.ownedSupplementaryText.end()) {
             row.ownedTextIndex = static_cast<std::size_t>(
-                std::distance(draft.ownedFooterText.begin(), owned));
+                std::distance(draft.ownedSupplementaryText.begin(), owned));
             if (owned->kind == spice::sct::SctTextKind::PlainString) {
                 row.line = new QLineEdit(&editor);
-                row.line->setPlaceholderText(tr("Instruction-owned footer text"));
+                row.line->setPlaceholderText(tr("Instruction-owned supplementary text"));
                 if (const auto* plain = std::get_if<spice::sct::SctPlainText>(&owned->value))
                     row.line->setText(QString::fromStdString(plain->utf8));
                 row.initialText = row.line->text();
                 table->setCellWidget(static_cast<int>(i), 1, row.line);
                 table->setItem(static_cast<int>(i), 2,
-                    new QTableWidgetItem(tr("A private footer entry is created with the instruction.")));
+                    new QTableWidgetItem(tr("A private supplementary text is created with the instruction.")));
             } else {
                 row.choices = new QComboBox(&editor);
-                row.choices->addItem(tr("Create a new default footer message"));
+                row.choices->addItem(tr("Create a new default supplementary message"));
                 row.candidates = documentController_->draftReferenceCandidates(
                     locator, opcode, parameter.address);
                 for (const auto& candidate : row.candidates)
                     row.choices->addItem(QString::fromStdString(candidate.label));
-                row.newFooterMessageChoice = true;
+                row.newSupplementaryTextMessageChoice = true;
                 table->setCellWidget(static_cast<int>(i), 1, row.choices);
                 table->setItem(static_cast<int>(i), 2,
                     new QTableWidgetItem(tr("Choose an existing message or create a new default one.")));
@@ -2354,7 +2727,7 @@ MainWindow::chooseInstructionDraft(
                         using T = std::decay_t<decltype(typed)>;
                         if constexpr (std::is_same_v<T, spice::sct::SctInstructionReference>
                             || std::is_same_v<T, spice::sct::SctStringReference>
-                            || std::is_same_v<T, spice::sct::SctFooterEntryReference>)
+                            || std::is_same_v<T, spice::sct::SctSupplementaryTextReference>)
                             return typed.target;
                         return std::nullopt;
                     }, *effective);
@@ -2405,7 +2778,7 @@ MainWindow::chooseInstructionDraft(
         for (const auto& row : rows) {
             auto& parameter = candidate.instruction.parameters[row.parameterIndex];
             if (row.ownedTextIndex) {
-                auto& ownedText = candidate.ownedFooterText[*row.ownedTextIndex];
+                auto& ownedText = candidate.ownedSupplementaryText[*row.ownedTextIndex];
                 if (ownedText.kind == spice::sct::SctTextKind::PlainString) {
                     ownedText.value = spice::sct::SctPlainText{
                         row.line->text().toStdString()};
@@ -2457,7 +2830,7 @@ MainWindow::chooseInstructionDraft(
         if (error.isEmpty()) {
             std::ranges::sort(removeOwned, std::greater{});
             for (const auto index : removeOwned)
-                candidate.ownedFooterText.erase(candidate.ownedFooterText.begin() + index);
+                candidate.ownedSupplementaryText.erase(candidate.ownedSupplementaryText.begin() + index);
             return candidate;
         }
         QMessageBox::warning(&editor, tr("Incomplete Instruction Draft"), error);
@@ -2992,15 +3365,15 @@ void MainWindow::moveSelectedSection(const core::SctSectionMoveDirection directi
         (void)documentController_->moveSection(widget->locator(), *section, direction);
 }
 
-void MainWindow::createFooterText(const core::SctCreatedFooterTextKind kind) {
+void MainWindow::createSupplementaryText(const core::SctCreatedSupplementaryTextKind kind) {
     auto* widget = activeDocumentWidget();
     if (widget == nullptr) return;
-    std::optional<spice::sct::SctFooterEntryId> after;
+    std::optional<spice::sct::SctSupplementaryTextId> after;
     if (const auto target = widget->selectedTextTarget()) {
-        if (const auto* footer = std::get_if<spice::sct::SctFooterEntryId>(&*target))
+        if (const auto* footer = std::get_if<spice::sct::SctSupplementaryTextId>(&*target))
             after = *footer;
     }
-    (void)documentController_->createFooterText(widget->locator(), kind, after);
+    (void)documentController_->createSupplementaryText(widget->locator(), kind, after);
 }
 
 void MainWindow::deleteSelectedText() {
@@ -3047,6 +3420,10 @@ bool MainWindow::flushMessageEditor() {
     return messageEditor_ == nullptr || messageEditor_->flushPending();
 }
 
+bool MainWindow::flushPendingEditors() {
+    return flushMetadataEditor() && flushMessageEditor();
+}
+
 bool MainWindow::prepareScptEditor(
     const std::optional<core::AssetLocator>& locator) {
     if (scptEditor_ == nullptr || !scptEditor_->boundLocator()) return true;
@@ -3055,13 +3432,13 @@ bool MainWindow::prepareScptEditor(
 }
 
 void MainWindow::undoActiveDocument() {
-    if (!flushMessageEditor()) return;
+    if (!flushPendingEditors()) return;
     if (auto* widget = activeDocumentWidget())
         (void)documentController_->undo(widget->locator());
 }
 
 void MainWindow::redoActiveDocument() {
-    if (!flushMessageEditor()) return;
+    if (!flushPendingEditors()) return;
     if (auto* widget = activeDocumentWidget())
         (void)documentController_->redo(widget->locator());
 }
@@ -3188,13 +3565,7 @@ void MainWindow::continuePendingLifecycle(
     if (action == PendingLifecycle::CloseDocument && document.has_value()) {
         documentController_->closeDocument(*document);
     } else if (action == PendingLifecycle::CloseDataset) {
-        scptEditor_->clear();
-        messageEditor_->clear();
-        saveWorkspaceSession();
-        documentController_->closeAll();
-        detachPatchWorkspace(false);
-        controller_->closeWorkspace();
-        statusBar()->showMessage(tr("Dataset closed."), 5000);
+        closeDataset();
     } else if (action == PendingLifecycle::OpenDataset) {
         const auto root = std::exchange(pendingDatasetRoot_, {});
         QTimer::singleShot(0, this, [this, root] { openDataset(root); });
@@ -3203,6 +3574,18 @@ void MainWindow::continuePendingLifecycle(
     } else if (action == PendingLifecycle::Exit) {
         QTimer::singleShot(0, this, &QWidget::close);
     }
+}
+
+void MainWindow::closeDataset() {
+    scptEditor_->clear();
+    messageEditor_->clear();
+    saveWorkspaceSession();
+    documentController_->closeAll();
+    detachPatchWorkspace(false);
+    controller_->closeDataset();
+    lastDataset_.clear();
+    QSettings{}.setValue(QStringLiteral("workspace/lastDataset"), QString{});
+    statusBar()->showMessage(tr("Dataset closed."), 5000);
 }
 
 void MainWindow::activateSelectedAsset() {
@@ -3249,7 +3632,7 @@ void MainWindow::syncDocument(
         tabs_->addTab(widget, QString::fromStdWString(found->path().filename().wstring()));
         connect(widget, &SctDocumentWidget::textConventionRequested, this,
             [this, widget](const QString&, const int convention) {
-                if (!prepareScptEditor(widget->locator()) || !flushMessageEditor()
+                if (!prepareScptEditor(widget->locator()) || !flushPendingEditors()
                     || !confirmDiscardDocument(widget->locator(), tr("change text interpretation"))) return;
                 scptEditor_->clear();
                 messageEditor_->clear();
@@ -3258,7 +3641,7 @@ void MainWindow::syncDocument(
             });
         connect(widget, &SctDocumentWidget::reloadRequested, this,
             [this, widget](const QString&) {
-                if (!prepareScptEditor(widget->locator()) || !flushMessageEditor()
+                if (!prepareScptEditor(widget->locator()) || !flushPendingEditors()
                     || !confirmDiscardDocument(widget->locator(), tr("reload the document"))) return;
                 scptEditor_->clear();
                 messageEditor_->clear();
@@ -3269,55 +3652,24 @@ void MainWindow::syncDocument(
             [this](const QString&) { syncDiagnostics(); syncEditActions(); });
         connect(widget, &SctDocumentWidget::navigationChanged, this,
             [this, widget](const QString&, const int kind, const qulonglong id) {
-                recordNavigation({widget->locator(), core::SctNavigationTarget{
-                    static_cast<core::SctNavigationKind>(kind), id}});
+                if (restoringMetadataTransition_) return;
+                const core::SctNavigationTarget target{
+                    static_cast<core::SctNavigationKind>(kind), id};
+                if (!syncMetadataEditor()) {
+                    const auto& binding = metadataEditor_->binding();
+                    if (binding && binding->locator == widget->locator()) {
+                        restoringMetadataTransition_ = true;
+                        widget->selectTarget(binding->target);
+                        restoringMetadataTransition_ = false;
+                    }
+                    return;
+                }
+                recordNavigation({widget->locator(), target});
             });
         connect(widget, &SctDocumentWidget::activeViewChanged, this,
             [this](const QString&, int) { scheduleWorkspaceSessionSave(); });
         connect(widget, &SctDocumentWidget::editContextChanged,
             this, &MainWindow::syncEditActions);
-        connect(widget, &SctDocumentWidget::authoringMetadataRequested,
-            this, [this, widget](const QString&, const int kind, const qulonglong id,
-                const QString& note, const bool bookmarked,
-                const QString& bookmarkLabel, const int colorRgb) {
-                const auto navigation = static_cast<core::SctNavigationKind>(kind);
-                if (navigation == core::SctNavigationKind::SectionFolder) {
-                    const auto state = documentController_->semanticState(widget->locator());
-                    if (!state) return;
-                    const auto found = std::ranges::find(state->folders, id,
-                        [](const auto& folder) { return folder.id.value; });
-                    if (found == state->folders.end()) return;
-                    auto folder = *found;
-                    folder.note = note.isEmpty() ? std::nullopt
-                        : std::optional{note.toStdString()};
-                    folder.bookmarkLabel = bookmarked
-                        ? std::optional{bookmarkLabel.toStdString()} : std::nullopt;
-                    folder.colorRgb = colorRgb < 0 ? std::nullopt
-                        : std::optional{static_cast<std::uint32_t>(colorRgb)};
-                    (void)documentController_->updateSectionFolder(
-                        widget->locator(), std::move(folder));
-                    return;
-                }
-                std::optional<core::SctAuthoringTargetKind> targetKind;
-                switch (navigation) {
-                case core::SctNavigationKind::Document: targetKind = core::SctAuthoringTargetKind::Document; break;
-                case core::SctNavigationKind::Section: targetKind = core::SctAuthoringTargetKind::Section; break;
-                case core::SctNavigationKind::Instruction: targetKind = core::SctAuthoringTargetKind::Instruction; break;
-                case core::SctNavigationKind::String: targetKind = core::SctAuthoringTargetKind::String; break;
-                case core::SctNavigationKind::FooterEntry: targetKind = core::SctAuthoringTargetKind::FooterEntry; break;
-                default: break;
-                }
-                if (!targetKind) return;
-                core::SctEntityAnnotation annotation{{*targetKind, id}};
-                annotation.note = note.isEmpty() ? std::nullopt
-                    : std::optional{note.toStdString()};
-                annotation.bookmarkLabel = bookmarked
-                    ? std::optional{bookmarkLabel.toStdString()} : std::nullopt;
-                annotation.colorRgb = colorRgb < 0 ? std::nullopt
-                    : std::optional{static_cast<std::uint32_t>(colorRgb)};
-                (void)documentController_->setAnnotation(
-                    widget->locator(), std::move(annotation));
-            });
         connect(widget, &SctDocumentWidget::createSectionFolderRequested,
             this, [this, widget](const QString&, const QList<qulonglong>& ids) {
                 bool accepted = false;
@@ -3394,13 +3746,15 @@ void MainWindow::syncDocument(
             });
         connect(widget, &SctDocumentWidget::moveInstructionRangeRequested,
             this, [this, widget](const QString&, const QList<qulonglong>& values,
-                const qulonglong anchor) {
+                const qulonglong anchor, const QPoint& globalPosition) {
                 std::vector<spice::sct::SctInstructionId> instructions;
                 instructions.reserve(static_cast<std::size_t>(values.size()));
                 for (const auto value : values)
                     instructions.emplace_back(value);
+                pendingInteractionPosition_ = globalPosition;
                 (void)documentController_->moveInstructionsAfter(widget->locator(),
                     instructions, spice::sct::SctInstructionId(anchor));
+                pendingInteractionPosition_.reset();
             });
         connect(widget, &SctDocumentWidget::editMessageRequested,
             this, [this](const QString&) { editSelectedMessage(); });
@@ -3410,7 +3764,7 @@ void MainWindow::syncDocument(
                     static_cast<core::SctNavigationKind>(kind), id};
                 widget->selectTarget(target);
                 if (target.kind == core::SctNavigationKind::String
-                    || target.kind == core::SctNavigationKind::FooterEntry)
+                    || target.kind == core::SctNavigationKind::SupplementaryText)
                     editSelectedMessage();
             });
         connect(widget, &SctDocumentWidget::advancedScptRequested,
@@ -3544,9 +3898,9 @@ void MainWindow::syncDocument(
             this, [this](const QString&, const int direction) {
                 moveSelectedSection(static_cast<core::SctSectionMoveDirection>(direction));
             });
-        connect(widget, &SctDocumentWidget::createFooterTextRequested,
+        connect(widget, &SctDocumentWidget::createSupplementaryTextRequested,
             this, [this](const QString&, const int kind) {
-                createFooterText(static_cast<core::SctCreatedFooterTextKind>(kind));
+                createSupplementaryText(static_cast<core::SctCreatedSupplementaryTextKind>(kind));
             });
         connect(widget, &SctDocumentWidget::deleteTextRequested,
             this, [this](const QString&) { deleteSelectedText(); });
@@ -3637,6 +3991,7 @@ void MainWindow::syncDocument(
         widget->setAuthoringMetadata(state->aliases, state->annotations,
             state->folders, workspaceAuthoring_.opcodeColors);
     reloadAuthoringDocks();
+    (void)syncMetadataEditor();
     if (!messageEditor_->isCommitting() && messageEditor_->boundLocator().has_value()
         && *messageEditor_->boundLocator() == *found
         && messageEditor_->boundTarget().has_value()
@@ -3689,7 +4044,7 @@ void MainWindow::closeDocumentTab(const int index) {
         if (scptEditor_->boundLocator().has_value()
             && *scptEditor_->boundLocator() == widget->locator()
             && !scptEditor_->prepareToClear()) return;
-        if (!flushMessageEditor()
+        if (!flushPendingEditors()
             || !confirmDiscardDocument(widget->locator(), tr("close the document"),
                 PendingLifecycle::CloseDocument)) return;
         documentController_->closeDocument(widget->locator());
@@ -3724,6 +4079,7 @@ void MainWindow::rebuildDocumentTabTitles() {
         tabs_->setTabText(tabIndex, title);
         tabs_->setTabToolTip(tabIndex, path);
     }
+    syncWindowTitle();
 }
 
 void MainWindow::scheduleWorkspaceSessionSave() {
@@ -3958,7 +4314,8 @@ void MainWindow::finishWorkspaceSessionRestore() {
         : tr("Workspace restored with %1 stale or unavailable item(s).")
             .arg(workspaceRestoreMessages_.size());
     if (activeDatasetOperation_)
-        activeDatasetOperation_->completeRestoration(restorationSummary);
+        activeDatasetOperation_->completeRestoration(
+            workspaceRestoreMessages_.isEmpty() ? QString{} : restorationSummary);
     if (activeWorkspaceMaintenance_)
         activeWorkspaceMaintenance_->completeRestoration(restorationSummary);
     workspaceRestoreMessages_.clear();
@@ -3974,9 +4331,13 @@ void MainWindow::rebuildRecentMenu() {
             openDataset(root);
         });
     }
-    recentMenu_->setEnabled(!controller_->busy() && !documentController_->busy()
+    const bool available = !controller_->busy() && !documentController_->busy()
         && !(exclusiveOperations_ && exclusiveOperations_->active())
-        && !recentDatasets_.isEmpty());
+        && !documentController_->isPublishing() && !recentDatasets_.isEmpty();
+    applyActionAvailability(recentMenu_->menuAction(), {available,
+        recentDatasets_.isEmpty() ? tr("No recent datasets are available.")
+                                  : tr("Wait for the current operation to finish.")});
+    recentMenu_->setEnabled(available);
 }
 
 void MainWindow::recordRecentDataset(const QString& canonicalRoot) {
@@ -4002,7 +4363,7 @@ void MainWindow::recordRecentDataset(const QString& canonicalRoot) {
 }
 
 void MainWindow::attemptRestoreDataset() {
-    if (lastDataset_.isEmpty() || controller_->busy() || controller_->hasWorkspace()) return;
+    if (lastDataset_.isEmpty() || controller_->busy() || controller_->hasDataset()) return;
     restoringDataset_ = true;
     auto operation = std::make_unique<WorkspaceOperationController>(
         controller_, WorkspaceController::Operation::Opening, lastDataset_);
@@ -4088,16 +4449,13 @@ void MainWindow::handleOperationCompleted(
     progressBar_->hide();
     cancelButton_->hide();
     statusBar()->showMessage(message, 8000);
-    diagnosticJournalModel_->appendActivity(
-        cancelled ? QStringLiteral("DatasetOperationCancelled")
-            : success ? QStringLiteral("DatasetOperationCompleted")
-                : QStringLiteral("DatasetOperationFailed"),
-        message);
+    activityLogModel_->appendOperation(
+        cancelled ? ActivityOutcome::Cancelled
+            : success ? ActivityOutcome::Completed : ActivityOutcome::Failed,
+        QStringLiteral("DatasetOperation"), message);
     syncActions();
 
     if (!success && !cancelled) {
-        diagnosticsDock_->show();
-        diagnosticsDock_->raise();
         if (operation == WorkspaceController::Operation::Opening && !wasRestoreAttempt
             && !(exclusiveOperations_ && exclusiveOperations_->active())) {
             QMessageBox::warning(this, tr("Dataset could not be opened"), message);

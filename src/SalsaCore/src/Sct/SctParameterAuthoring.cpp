@@ -252,22 +252,22 @@ SctParameterRowPresentation projectParameter(const SctWorkingState& state,
             }
             result.editor = SctInlineParameterEditorKind::Reference;
             result.navigation = SctNavigationTarget{SctNavigationKind::String, typed.target.value()};
-        } else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryReference>) {
-            result.value = "Footer entry " + std::to_string(typed.target.value());
+        } else if constexpr (std::is_same_v<T, spice::sct::SctSupplementaryTextReference>) {
+            result.value = "Supplementary text " + std::to_string(typed.target.value());
             result.editor = SctInlineParameterEditorKind::Reference;
-            result.navigation = SctNavigationTarget{SctNavigationKind::FooterEntry, typed.target.value()};
-            const auto* entry = state.footerEntry(typed.target);
+            result.navigation = SctNavigationTarget{SctNavigationKind::SupplementaryText, typed.target.value()};
+            const auto* entry = state.supplementaryText(typed.target);
             const auto* plain = entry == nullptr ? nullptr
                 : std::get_if<spice::sct::SctPlainText>(&entry->value);
             if (entry != nullptr && entry->kind == spice::sct::SctTextKind::PlainString
                 && plain != nullptr && plain->utf8.find('\n') == std::string::npos) {
                 result.value = plain->utf8;
-                result.editor = SctInlineParameterEditorKind::PlainFooterText;
-                result.inlineFooterText = typed.target;
+                result.editor = SctInlineParameterEditorKind::PlainSupplementaryText;
+                result.inlineSupplementaryText = typed.target;
                 appendNote(state.referenceOccurrenceCount(
                     spice::sct::SctDocumentReferenceTarget{typed.target}) > 1u
-                    ? "Shared footer text; editing creates a private copy."
-                    : "Plain footer text.");
+                    ? "Shared supplementary text; editing creates a private copy."
+                    : "Plain supplementary text.");
             } else if (entry != nullptr) {
                 if (const auto* message = std::get_if<spice::sct::SctMessage>(&entry->value))
                     result.value += " — " + preview(*message);
@@ -476,7 +476,7 @@ bool SctParameterAuthoringService::equivalent(
             return value.words == other.words;
         else if constexpr (std::is_same_v<T, spice::sct::SctInstructionReference>
             || std::is_same_v<T, spice::sct::SctStringReference>
-            || std::is_same_v<T, spice::sct::SctFooterEntryReference>)
+            || std::is_same_v<T, spice::sct::SctSupplementaryTextReference>)
             return value.target == other.target;
         else if constexpr (std::is_same_v<T, spice::sct::SctUnresolvedReferenceValue>)
             return value.expectedTarget == other.expectedTarget
@@ -519,10 +519,10 @@ SctParameterAuthoringService::referenceCandidates(
                         + std::to_string(content->string.id.value())});
             }
         } else {
-            for (const auto id : state.footerEntryOrder()) {
-                const auto* entry = state.footerEntry(id);
+            for (const auto id : state.supplementaryTextOrder()) {
+                const auto* entry = state.supplementaryText(id);
                 if (entry != nullptr && entry->kind == schema->textReference->kind)
-                    result.push_back({id, "Footer entry " + std::to_string(id.value())});
+                    result.push_back({id, "Supplementary text " + std::to_string(id.value())});
             }
         }
     }

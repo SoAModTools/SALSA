@@ -63,7 +63,7 @@ const core::SctCatalogOpcodeOverride* overrideFor(
 SctCatalogEditorDialog::SctCatalogEditorDialog(
     core::SctPersonalCatalog catalog, QWidget* parent)
     : QDialog(parent), catalog_(std::move(catalog)) {
-    setWindowTitle(tr("Instruction Catalog"));
+    setWindowTitle(tr("Personal Instruction Catalog"));
     resize(1180, 720);
     auto* layout = new QVBoxLayout(this);
     tree_ = new QTreeWidget(this);

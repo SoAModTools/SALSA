@@ -19,7 +19,7 @@ enum class SctInlineParameterEditorKind {
     ConventionalScpt,
     TerminatedWords,
     Reference,
-    PlainFooterText,
+    PlainSupplementaryText,
     AdvancedScpt,
 };
 
@@ -31,7 +31,7 @@ struct SctParameterRowPresentation final {
     SctInlineParameterEditorKind editor = SctInlineParameterEditorKind::ReadOnly;
     std::optional<SctInlineParameterEditorKind> replacementEditor{};
     std::optional<SctNavigationTarget> navigation{};
-    std::optional<spice::sct::SctFooterEntryId> inlineFooterText{};
+    std::optional<spice::sct::SctSupplementaryTextId> inlineSupplementaryText{};
 };
 
 struct SctRepeatedGroupPresentation final {

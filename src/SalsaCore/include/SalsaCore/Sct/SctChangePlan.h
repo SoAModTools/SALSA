@@ -13,7 +13,7 @@ enum class SctChangeCategory {
     Structure,
     Instruction,
     Text,
-    Footer,
+    SupplementaryText,
     AuthoringMetadata,
     Preservation,
 };
@@ -29,7 +29,7 @@ enum class SctChangeEntityKind {
     Section,
     Instruction,
     IndexedString,
-    FooterEntry,
+    SupplementaryText,
     AuthoredArm,
     TextRepair,
     UnboundReference,

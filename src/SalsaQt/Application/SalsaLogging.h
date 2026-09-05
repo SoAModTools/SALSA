@@ -1,0 +1,8 @@
+#pragma once
+
+#include <QLoggingCategory>
+
+Q_DECLARE_LOGGING_CATEGORY(salsaOperationsLog)
+Q_DECLARE_LOGGING_CATEGORY(salsaSctParserLog)
+Q_DECLARE_LOGGING_CATEGORY(salsaSctEditLog)
+Q_DECLARE_LOGGING_CATEGORY(salsaSctStructureLog)

@@ -113,13 +113,13 @@ bool WorkspaceController::refresh() {
     return true;
 }
 
-void WorkspaceController::closeWorkspace() {
+void WorkspaceController::closeDataset() {
     if (busy()) {
         stopSource_.request_stop();
         ++generation_;
     }
-    clearWorkspaceState();
-    emit workspaceChanged();
+    clearDatasetState();
+    emit datasetChanged();
     emit selectionChanged();
     emit diagnosticsChanged();
     emit operationStateChanged();
@@ -149,7 +149,7 @@ void WorkspaceController::selectAsset(std::optional<core::AssetLocator> locator)
     emit selectionChanged();
 }
 
-bool WorkspaceController::hasWorkspace() const noexcept {
+bool WorkspaceController::hasDataset() const noexcept {
     return project_.has_value();
 }
 
@@ -222,7 +222,7 @@ void WorkspaceController::onOperationFinished() {
 
     if (generation != generation_) {
         emit operationCompleted(
-            completedOperation, false, true, tr("Workspace closed."));
+            completedOperation, false, true, tr("Dataset closed."));
         return;
     }
 
@@ -234,10 +234,8 @@ void WorkspaceController::onOperationFinished() {
     }
 
     if (!result) {
-        diagnostics_ = result.diagnostics();
-        emit diagnosticsChanged();
         emit operationCompleted(
-            completedOperation, false, false, firstErrorMessage(diagnostics_));
+            completedOperation, false, false, firstErrorMessage(result.diagnostics()));
         return;
     }
 
@@ -267,7 +265,7 @@ void WorkspaceController::onOperationFinished() {
         selectedLocator_.reset();
     }
 
-    emit workspaceChanged();
+    emit datasetChanged();
     emit selectionChanged();
     emit diagnosticsChanged();
     if (completedOperation == Operation::Opening) {
@@ -276,7 +274,7 @@ void WorkspaceController::onOperationFinished() {
     emit operationCompleted(completedOperation, true, false, message);
 }
 
-void WorkspaceController::clearWorkspaceState() {
+void WorkspaceController::clearDatasetState() {
     project_.reset();
     selectedLocator_.reset();
     diagnostics_.clear();

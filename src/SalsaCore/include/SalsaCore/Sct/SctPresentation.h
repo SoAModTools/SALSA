@@ -6,6 +6,7 @@
 
 #include "SpiceSCT/SctDocumentIndex.h"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -17,6 +18,7 @@ struct SctOutlineItem final {
     std::string secondary{};
     SctNavigationTarget target{};
     std::vector<SctOutlineItem> children{};
+    std::size_t importedEvidenceCount = 0;
 };
 
 struct SctPropertyItem final {

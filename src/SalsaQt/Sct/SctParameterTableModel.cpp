@@ -87,7 +87,7 @@ Qt::ItemFlags SctParameterTableModel::flags(const QModelIndex& modelIndex) const
         case Kind::EncodedUnsigned: case Kind::EncodedSigned: case Kind::EncodedHex:
         case Kind::ConventionalScpt:
         case Kind::TerminatedWords:
-        case Kind::PlainFooterText:
+        case Kind::PlainSupplementaryText:
             result |= Qt::ItemIsEditable;
             break;
         default: break;

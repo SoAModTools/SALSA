@@ -76,7 +76,7 @@ using Json = nlohmann::ordered_json;
     case SctNavigationKind::Section: return "section";
     case SctNavigationKind::Instruction: return "instruction";
     case SctNavigationKind::String: return "string";
-    case SctNavigationKind::FooterEntry: return "footer-entry";
+    case SctNavigationKind::SupplementaryText: return "supplementary-text";
     case SctNavigationKind::OpaqueAttachment: return "opaque-attachment";
     case SctNavigationKind::FooterGroup: return "footer-group";
     case SctNavigationKind::OpaqueGroup: return "opaque-group";
@@ -92,7 +92,8 @@ using Json = nlohmann::ordered_json;
     if (value == "section") return SctNavigationKind::Section;
     if (value == "instruction") return SctNavigationKind::Instruction;
     if (value == "string") return SctNavigationKind::String;
-    if (value == "footer-entry") return SctNavigationKind::FooterEntry;
+    if (value == "supplementary-text" || value == "footer-entry")
+        return SctNavigationKind::SupplementaryText;
     if (value == "opaque-attachment") return SctNavigationKind::OpaqueAttachment;
     if (value == "footer-group") return SctNavigationKind::FooterGroup;
     if (value == "opaque-group") return SctNavigationKind::OpaqueGroup;
@@ -232,7 +233,8 @@ Result<WorkspaceSessionState> WorkspaceSessionCodec::deserialize(
             return Result<WorkspaceSessionState>::failure(sessionError(
                 "The workspace session header is invalid."));
         }
-        if (root.at("schemaVersion").get<std::uint64_t>() != SchemaVersion)
+        const auto schemaVersion = root.at("schemaVersion").get<std::uint64_t>();
+        if (schemaVersion != SchemaVersion && schemaVersion != LegacySchemaVersion)
             return Result<WorkspaceSessionState>::failure(sessionError(
                 "The workspace session schema is unsupported.", std::nullopt,
                 DiagnosticCode::UnsupportedPersistenceSchemaVersion));

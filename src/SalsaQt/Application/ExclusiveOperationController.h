@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 
 class QWidget;
@@ -27,6 +28,8 @@ enum class ExclusiveOperationActionRole {
     Primary,
     Destructive,
 };
+
+enum class ExclusiveOperationActivityOutcome { Completed, Failed, Cancelled };
 
 struct ExclusiveOperationAction final {
     QString label;
@@ -59,8 +62,11 @@ signals:
     void progressChanged(const QString& phase, quint64 completed, quint64 total,
         int unit, const QString& currentItem);
     void diagnosticsChanged(const QString& text);
+    void activityRaised(int outcome, const QString& code,
+        const QString& message, const QString& location);
     void cancellationChanged(bool cancellable);
     void finishingChanged(bool finishing);
+    void dismissalRequested();
 
 protected:
     void raiseEvent(std::string_view event);
@@ -70,10 +76,15 @@ protected:
         std::uint64_t total, ExclusiveOperationProgressUnit unit,
         const QString& currentItem = {});
     void reportDiagnostics(const QString& text);
+    void reportTerminalActivity(const QString& code, const QString& message,
+        const QString& location = {});
+    void requestDismissal();
+    [[nodiscard]] std::string_view lastRaisedEvent() const noexcept;
 
 private:
     bool cancellable_ = true;
     bool finishing_ = false;
+    std::string lastRaisedEvent_{};
 };
 
 }  // namespace salsa::qt

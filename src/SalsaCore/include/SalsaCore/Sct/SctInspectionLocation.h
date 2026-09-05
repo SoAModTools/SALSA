@@ -32,8 +32,8 @@ inspectionLocationForDiagnostic(
                     return SctNavigationTarget{SctNavigationKind::Instruction, id.value()};
                 else if constexpr (std::is_same_v<Id, spice::sct::SctStringId>)
                     return SctNavigationTarget{SctNavigationKind::String, id.value()};
-                else if constexpr (std::is_same_v<Id, spice::sct::SctFooterEntryId>)
-                    return SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()};
+                else if constexpr (std::is_same_v<Id, spice::sct::SctSupplementaryTextId>)
+                    return SctNavigationTarget{SctNavigationKind::SupplementaryText, id.value()};
                 else return SctNavigationTarget{
                     SctNavigationKind::OpaqueAttachment, id.value()};
             }, typed);
@@ -46,7 +46,7 @@ inspectionLocationForDiagnostic(
                 using Id = std::decay_t<decltype(id)>;
                 if constexpr (std::is_same_v<Id, spice::sct::SctStringId>)
                     return SctNavigationTarget{SctNavigationKind::String, id.value()};
-                else return SctNavigationTarget{SctNavigationKind::FooterEntry, id.value()};
+                else return SctNavigationTarget{SctNavigationKind::SupplementaryText, id.value()};
             }, typed.text);
         } else {
             return std::nullopt;
@@ -84,8 +84,8 @@ inspectionLocationForDiagnostic(
                     return "instruction " + std::to_string(id.value());
                 else if constexpr (std::is_same_v<Id, spice::sct::SctStringId>)
                     return "indexed string " + std::to_string(id.value());
-                else if constexpr (std::is_same_v<Id, spice::sct::SctFooterEntryId>)
-                    return "footer entry " + std::to_string(id.value());
+                else if constexpr (std::is_same_v<Id, spice::sct::SctSupplementaryTextId>)
+                    return "supplementary text " + std::to_string(id.value());
                 else return "opaque attachment " + std::to_string(id.value());
             }, typed);
         } else if constexpr (std::is_same_v<T, spice::sct::SctParameterSite>) {
@@ -103,7 +103,7 @@ inspectionLocationForDiagnostic(
                 using Id = std::decay_t<decltype(id)>;
                 if constexpr (std::is_same_v<Id, spice::sct::SctStringId>)
                     return "indexed string " + std::to_string(id.value());
-                else return "footer entry " + std::to_string(id.value());
+                else return "supplementary text " + std::to_string(id.value());
             }, typed.text);
             const auto region = typed.region == spice::sct::SctTextRegion::Header
                 ? "header" : "body";
@@ -160,7 +160,7 @@ inspectionLocationForDiagnostic(
         } else if constexpr (std::is_same_v<T, spice::sct::SctStringId>) {
             return { SctNavigationKind::String, typed.value() };
         } else {
-            return { SctNavigationKind::FooterEntry, typed.value() };
+            return { SctNavigationKind::SupplementaryText, typed.value() };
         }
     }, anchor);
 }

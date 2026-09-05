@@ -4,6 +4,7 @@
 #include "SalsaCore/Sct/SctSemanticOperation.h"
 #include "SalsaCore/Sct/SctStructuredAuthoring.h"
 #include "SalsaCore/Sct/SctDocumentMaterializer.h"
+#include "SpiceSCT/SctParser.h"
 
 #include <cstdint>
 #include <memory>
@@ -54,7 +55,7 @@ struct SctPatchedAllocatorState final {
     std::uint64_t nextSectionId = 1;
     std::uint64_t nextInstructionId = 1;
     std::uint64_t nextStringId = 1;
-    std::uint64_t nextFooterEntryId = 1;
+    std::uint64_t nextSupplementaryTextId = 1;
     std::uint64_t nextOpaqueAttachmentId = 1;
     auto operator<=>(const SctPatchedAllocatorState&) const = default;
 };
@@ -89,8 +90,8 @@ struct SalsaScriptPatch final {
     std::vector<SctValueDelta<spice::sct::SctDocumentSection>> sections{};
     std::vector<SctPatchedScriptSection> scriptSections{};
     std::vector<SctPatchedTextValue> textValues{};
-    std::optional<SctOrderDelta<spice::sct::SctFooterEntryId>> footerOrder{};
-    std::vector<SctValueDelta<spice::sct::SctDocumentFooterEntry>> footerEntries{};
+    std::optional<SctOrderDelta<spice::sct::SctSupplementaryTextId>> supplementaryTextOrder{};
+    std::vector<SctValueDelta<spice::sct::SctDocumentSupplementaryText>> supplementaryText{};
     std::vector<SctValueDelta<SctAuthoredArm>> authoredArms{};
     std::vector<SctPatchedTextRepairDelta> textRepairs{};
     std::vector<SctPatchedUnboundReferenceDelta> unboundReferences{};
@@ -114,7 +115,8 @@ struct SctPatchApplication final {
 class SalsaScriptPatchCodec final {
 public:
     static constexpr std::string_view PayloadType = "jahorta.salsa.sct-script-patch";
-    static constexpr std::uint32_t SchemaVersion = 5;
+    static constexpr std::uint32_t SchemaVersion = 6;
+    static constexpr std::uint32_t LegacySchemaVersion = 5;
 
     [[nodiscard]] static Result<std::vector<std::byte>> serialize(
         const SalsaScriptPatch& patch);
@@ -174,7 +176,8 @@ public:
         const SctPatchStore* store,
         const SctBaselineStore* baselines,
         const AssetLocator& locator,
-        std::stop_token stopToken = {});
+        std::stop_token stopToken = {},
+        spice::sct::SctParseTraceObserver traceObserver = {});
 
     [[nodiscard]] static SctCheckpointResult checkpoint(
         const SctCheckpointRequest& request,

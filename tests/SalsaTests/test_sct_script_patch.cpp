@@ -71,7 +71,7 @@ private:
     const auto terminalReturn = document.allocateInstructionId();
     const auto textSection = document.allocateSectionId();
     const auto string = document.allocateStringId();
-    const auto footer = document.allocateFooterEntryId();
+    const auto footer = document.allocateSupplementaryTextId();
 
     document.sections.push_back({scriptSection, "M00001",
         SctScriptSectionContent{{
@@ -82,7 +82,7 @@ private:
         SctStringSectionContent{{string, SctOpaqueText{{
             'o', 'p', 'a', 'q', 'u', 'e', '-', 's', 'o', 'u', 'r', 'c', 'e'}},
             SctTextKind::PlainString}}});
-    document.footerEntries.push_back({footer, SctTextKind::PlainString,
+    document.supplementaryText.push_back({footer, SctTextKind::PlainString,
         SctPlainText{"footer-original"}});
     return document;
 }
@@ -242,9 +242,9 @@ TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
     indexed.string.value = SctMessage{std::optional<std::string>{"Speaker"},
         SctFormattedText{{SctTextChunk{"Hello"},
             SctInlineCommand{SctMessageCommandCode::E, SctNoCommandArgument{}}}}};
-    std::get<SctPlainText>(working.footerEntries[0].value).utf8 = "footer-edited";
-    const auto secondFooter = working.allocateFooterEntryId();
-    working.footerEntries.push_back({secondFooter, SctTextKind::PlainString,
+    std::get<SctPlainText>(working.supplementaryText[0].value).utf8 = "footer-edited";
+    const auto secondFooter = working.allocateSupplementaryTextId();
+    working.supplementaryText.push_back({secondFooter, SctTextKind::PlainString,
         SctPlainText{"second"}});
 
     const SctAuthoredArm arm{
@@ -286,7 +286,7 @@ TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
     ASSERT_EQ(patch.value().scriptSections.size(), 1u);
     EXPECT_EQ(patch.value().scriptSections.front().section, working.sections[0].id);
     ASSERT_EQ(patch.value().textValues.size(), 1u);
-    ASSERT_EQ(patch.value().footerEntries.size(), 2u);
+    ASSERT_EQ(patch.value().supplementaryText.size(), 2u);
 
     const auto encoded = SalsaScriptPatchCodec::serialize(patch.value());
     ASSERT_TRUE(encoded);
@@ -315,9 +315,9 @@ TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
     ASSERT_TRUE(std::holds_alternative<SctMessage>(appliedIndexed.string.value));
     EXPECT_EQ(std::get<SctMessage>(appliedIndexed.string.value).headerUtf8,
         std::optional<std::string>{"Speaker"});
-    ASSERT_EQ(applied.value().document->footerEntries.size(), 2u);
+    ASSERT_EQ(applied.value().document->supplementaryText.size(), 2u);
     EXPECT_EQ(std::get<SctPlainText>(
-        applied.value().document->footerEntries[0].value).utf8, "footer-edited");
+        applied.value().document->supplementaryText[0].value).utf8, "footer-edited");
     EXPECT_EQ(applied.value().authoredArms, std::vector<SctAuthoredArm>{arm});
     ASSERT_EQ(applied.value().textRepairs.size(), 1u);
     EXPECT_EQ(applied.value().textRepairs.front().provenance, repair.provenance);
@@ -353,7 +353,7 @@ TEST(SalsaScriptPatchTest, PreservesAllocatorHighWaterAfterTransientEdits) {
     const auto discardedSection = working.allocateSectionId();
     const auto discardedInstruction = working.allocateInstructionId();
     const auto discardedString = working.allocateStringId();
-    const auto discardedFooter = working.allocateFooterEntryId();
+    const auto discardedFooter = working.allocateSupplementaryTextId();
     const auto discardedOpaque = working.allocateOpaqueAttachmentId();
     (void)discardedSection;
     (void)discardedInstruction;
@@ -375,13 +375,13 @@ TEST(SalsaScriptPatchTest, PreservesAllocatorHighWaterAfterTransientEdits) {
         working.nextInstructionIdValue());
     EXPECT_EQ(applied.value().document->nextStringIdValue(),
         working.nextStringIdValue());
-    EXPECT_EQ(applied.value().document->nextFooterEntryIdValue(),
-        working.nextFooterEntryIdValue());
+    EXPECT_EQ(applied.value().document->nextSupplementaryTextIdValue(),
+        working.nextSupplementaryTextIdValue());
     EXPECT_EQ(applied.value().document->nextOpaqueAttachmentIdValue(),
         working.nextOpaqueAttachmentIdValue());
 }
 
-TEST(SalsaScriptPatchTest, RoundTripsV5ScptProgramsAndStringGroupMarkers) {
+TEST(SalsaScriptPatchTest, RoundTripsV6ScptProgramsAndStringGroupMarkers) {
     SalsaScriptPatch patch;
     SctDocumentInstruction instruction{SctInstructionId{1u}, 125u};
     instruction.fixedParameters.push_back({7u, SctUnresolvedReferenceValue{
@@ -407,7 +407,7 @@ TEST(SalsaScriptPatchTest, RoundTripsV5ScptProgramsAndStringGroupMarkers) {
     ASSERT_TRUE(encoded);
     const std::string json(reinterpret_cast<const char*>(encoded.value().data()),
         encoded.value().size());
-    EXPECT_NE(json.find("\"schemaVersion\": 5"), std::string::npos);
+    EXPECT_NE(json.find("\"schemaVersion\": 6"), std::string::npos);
     EXPECT_NE(json.find("\"stringGroupMarker\""), std::string::npos);
     EXPECT_NE(json.find("\"stackOverwrite\""), std::string::npos);
     EXPECT_NE(json.find("\"inert\""), std::string::npos);
@@ -441,6 +441,86 @@ TEST(SalsaScriptPatchTest, RoundTripsV5ScptProgramsAndStringGroupMarkers) {
     EXPECT_EQ(origin.sourceTargetNameBytes, expectedTargetName);
 }
 
+TEST(SalsaScriptPatchTest, MigratesSchemaFiveFooterDataToSchemaSixSupplementaryText) {
+    SalsaScriptPatch patch;
+    patch.allocatorState = SctValueDelta<SctPatchedAllocatorState>{
+        SctPatchedAllocatorState{2u, 3u, 4u, 12u, 5u},
+        SctPatchedAllocatorState{2u, 3u, 4u, 13u, 5u}};
+    patch.supplementaryTextOrder =
+        SctOrderDelta<SctSupplementaryTextId>{{SctSupplementaryTextId{11u}},
+            {SctSupplementaryTextId{11u}, SctSupplementaryTextId{12u}}};
+    patch.supplementaryText.push_back({std::nullopt,
+        SctDocumentSupplementaryText{SctSupplementaryTextId{12u},
+            SctTextKind::PlainString, SctPlainText{"migrated footer text"}}});
+    patch.textValues.push_back({SctSupplementaryTextId{11u},
+        SctPlainText{"before"}, SctPlainText{"after"}});
+    SctDocumentInstruction reference{SctInstructionId{2u}, 9u};
+    reference.fixedParameters.push_back(
+        {0u, SctSupplementaryTextReference{SctSupplementaryTextId{11u}}});
+    patch.sections.push_back({std::nullopt,
+        SctDocumentSection{SctSectionId{1u}, "SCRIPT",
+            SctScriptSectionContent{{reference}}}});
+    patch.annotations.push_back({std::nullopt,
+        SctEntityAnnotation{{SctAuthoringTargetKind::SupplementaryText, 11u},
+            "legacy note", std::nullopt, 0x123456u}});
+
+    const auto current = SalsaScriptPatchCodec::serialize(patch);
+    ASSERT_TRUE(current);
+    std::string legacy(reinterpret_cast<const char*>(current.value().data()),
+        current.value().size());
+    const auto replaceAll = [&](const std::string_view from,
+                                const std::string_view to) {
+        std::size_t position = 0;
+        while ((position = legacy.find(from, position)) != std::string::npos) {
+            legacy.replace(position, from.size(), to);
+            position += to.size();
+        }
+    };
+    replaceAll("\"schemaVersion\": 6", "\"schemaVersion\": 5");
+    replaceAll("\"nextSupplementaryTextId\"", "\"nextFooterEntryId\"");
+    replaceAll("\"supplementaryTextOrder\"", "\"footerOrder\"");
+    replaceAll("\"supplementaryText\": [", "\"footerEntries\": [");
+    replaceAll("\"supplementaryTextReference\"", "\"footerReference\"");
+    replaceAll("\"supplementary-text\"", "\"footer\"");
+    replaceAll("\"supplementary\"", "\"footer\"");
+
+    const auto decoded = SalsaScriptPatchCodec::deserialize(patchBytes(legacy));
+    ASSERT_TRUE(decoded) << decoded.diagnostics().front().message;
+    ASSERT_TRUE(decoded.value().allocatorState.has_value());
+    EXPECT_EQ(decoded.value().allocatorState->after->nextSupplementaryTextId, 13u);
+    ASSERT_TRUE(decoded.value().supplementaryTextOrder.has_value());
+    EXPECT_EQ(decoded.value().supplementaryTextOrder->after,
+        (std::vector<SctSupplementaryTextId>{
+            SctSupplementaryTextId{11u}, SctSupplementaryTextId{12u}}));
+    ASSERT_EQ(decoded.value().supplementaryText.size(), 1u);
+    ASSERT_TRUE(decoded.value().supplementaryText.front().after.has_value());
+    EXPECT_EQ(decoded.value().supplementaryText.front().after->id,
+        SctSupplementaryTextId{12u});
+    EXPECT_EQ(std::get<SctPlainText>(
+        decoded.value().supplementaryText.front().after->value).utf8,
+        "migrated footer text");
+    EXPECT_EQ(decoded.value().textValues.front().target,
+        SctTextTarget{SctSupplementaryTextId{11u}});
+    const auto& decodedReference = std::get<SctScriptSectionContent>(
+        decoded.value().sections.front().after->content).instructions.front();
+    EXPECT_EQ(std::get<SctSupplementaryTextReference>(
+        decodedReference.fixedParameters.front().value).target,
+        SctSupplementaryTextId{11u});
+    ASSERT_EQ(decoded.value().annotations.size(), 1u);
+    EXPECT_EQ(decoded.value().annotations.front().after->target.kind,
+        SctAuthoringTargetKind::SupplementaryText);
+
+    const auto migrated = SalsaScriptPatchCodec::serialize(decoded.value());
+    ASSERT_TRUE(migrated);
+    const std::string migratedText(
+        reinterpret_cast<const char*>(migrated.value().data()), migrated.value().size());
+    EXPECT_NE(migratedText.find("\"schemaVersion\": 6"), std::string::npos);
+    EXPECT_NE(migratedText.find("\"supplementaryTextOrder\""), std::string::npos);
+    EXPECT_NE(migratedText.find("\"supplementaryText\""), std::string::npos);
+    EXPECT_EQ(migratedText.find("\"footerOrder\""), std::string::npos);
+    EXPECT_EQ(migratedText.find("\"footerEntries\""), std::string::npos);
+}
+
 TEST(SalsaScriptPatchTest, RejectsUnknownFieldsVersionsAndInvalidTargets) {
     const auto encoded = SalsaScriptPatchCodec::serialize(SalsaScriptPatch{});
     ASSERT_TRUE(encoded);
@@ -453,9 +533,9 @@ TEST(SalsaScriptPatchTest, RejectsUnknownFieldsVersionsAndInvalidTargets) {
 
     std::string wrongVersion(reinterpret_cast<const char*>(encoded.value().data()),
         encoded.value().size());
-    const auto version = wrongVersion.find("\"schemaVersion\": 5");
+    const auto version = wrongVersion.find("\"schemaVersion\": 6");
     ASSERT_NE(version, std::string::npos);
-    wrongVersion.replace(version, std::string("\"schemaVersion\": 5").size(),
+    wrongVersion.replace(version, std::string("\"schemaVersion\": 6").size(),
         "\"schemaVersion\": 2");
     const auto unsupported = SalsaScriptPatchCodec::deserialize(patchBytes(wrongVersion));
     ASSERT_FALSE(unsupported);

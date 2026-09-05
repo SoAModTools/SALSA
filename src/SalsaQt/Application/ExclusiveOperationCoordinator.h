@@ -28,6 +28,8 @@ public:
 
 signals:
     void activeChanged(bool active);
+    void activityRaised(int outcome, const QString& code,
+        const QString& message, const QString& location);
 
 private:
     core::ExclusiveOperationGate gate_{};

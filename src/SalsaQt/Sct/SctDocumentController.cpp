@@ -1,4 +1,5 @@
 #include "Sct/SctDocumentController.h"
+#include "Application/SalsaLogging.h"
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QElapsedTimer>
@@ -24,6 +25,24 @@ namespace {
     return found == result.infrastructureDiagnostics.end()
         ? SctDocumentController::tr("The SCT document could not be opened.")
         : QString::fromStdString(found->message);
+}
+
+[[nodiscard]] spice::sct::SctParseTraceObserver parserTraceObserver() {
+    if (!salsaSctParserLog().isInfoEnabled()) return {};
+    return [](const spice::sct::SctParseTraceEvent& event) {
+        using enum spice::sct::SctParseTracePhase;
+        const auto message = [phase = event.phase] {
+            switch (phase) {
+            case Starting: return SctDocumentController::tr("Starting SCT parse.");
+            case Compression: return SctDocumentController::tr("Inspecting SCT compression.");
+            case SectionIndex: return SctDocumentController::tr("Reading the SCT section index.");
+            case InstructionTraversal: return SctDocumentController::tr("Walking SCT instructions.");
+            case Complete: return SctDocumentController::tr("SCT parse complete.");
+            }
+            return SctDocumentController::tr("SCT parser phase changed.");
+        }();
+        qCInfo(salsaSctParserLog).noquote() << message;
+    };
 }
 
 }  // namespace
@@ -72,7 +91,8 @@ bool SctDocumentController::openDocument(
     watcher_.setFuture(QtConcurrent::run(
         [project = std::move(project), locator, token, workspace = std::move(workspace)]() {
             return core::SctPatchCheckpointService::load(
-                project, workspace.get(), workspace.get(), locator, token);
+                project, workspace.get(), workspace.get(), locator, token,
+                parserTraceObserver());
         }));
     return true;
 }
@@ -86,7 +106,8 @@ bool SctDocumentController::reloadDocument(
     watcher_.setFuture(QtConcurrent::run(
         [project = std::move(project), locator, token, workspace = std::move(workspace)]() {
             return core::SctPatchCheckpointService::load(
-                project, workspace.get(), workspace.get(), locator, token);
+                project, workspace.get(), workspace.get(), locator, token,
+                parserTraceObserver());
         }));
     return true;
 }
@@ -98,7 +119,8 @@ bool SctDocumentController::adoptRebasedDocument(
     if (busy() || state->materializationWatcher || state->checkpointWatcher
         || state->session->isDirty() || workspace_ == nullptr) return false;
     auto reopened = core::SctPatchCheckpointService::load(
-        project, workspace_.get(), workspace_.get(), locator);
+        project, workspace_.get(), workspace_.get(), locator, {},
+        parserTraceObserver());
     if (!reopened.load.succeeded() || !reopened.baseline
         || !reopened.patchApplied || reopened.patchConflict) {
         failureDiagnostics_ = reopened.load.infrastructureDiagnostics;
@@ -123,7 +145,7 @@ bool SctDocumentController::adoptRebasedDocument(
         SctDocumentUpdateKind::Replacement,
         state->session->currentSnapshot(), std::nullopt,
         state->session->semanticProjection()});
-    emit editCompleted(identity(locator), true,
+    emit editCommitted(identity(locator),
         tr("The rebased patch was adopted as one undoable document change."));
     return true;
 }
@@ -339,10 +361,10 @@ std::vector<core::SctPipelineDiagnostic> SctDocumentController::currentDiagnosti
     const core::AssetLocator& locator) const {
     const auto* state = findState(locator);
     if (state == nullptr) return {};
-    auto result = state->session->currentDiagnostics();
-    result.insert(result.end(), state->publicationDiagnostics.begin(),
-        state->publicationDiagnostics.end());
-    return result;
+    auto diagnostics = state->session->currentDiagnostics();
+    if (state->editBlocked) diagnostics.insert(diagnostics.end(),
+        state->blockingDiagnostics.begin(), state->blockingDiagnostics.end());
+    return diagnostics;
 }
 
 std::shared_ptr<const core::SctSemanticEditorProjection>
@@ -636,7 +658,7 @@ bool SctDocumentController::retargetParameter(
             return spice::sct::SctInstructionReference{id};
         else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return spice::sct::SctStringReference{id};
-        else return spice::sct::SctFooterEntryReference{id};
+        else return spice::sct::SctSupplementaryTextReference{id};
     }, target);
     return replaceParameterValue(locator, site, std::move(value));
 }
@@ -757,12 +779,12 @@ bool SctDocumentController::removeSectionFolder(const core::AssetLocator& locato
             tr("Section folder removed."));
 }
 
-bool SctDocumentController::createFooterText(
-    const core::AssetLocator& locator, const core::SctCreatedFooterTextKind kind,
-    const std::optional<spice::sct::SctFooterEntryId> after) {
+bool SctDocumentController::createSupplementaryText(
+    const core::AssetLocator& locator, const core::SctCreatedSupplementaryTextKind kind,
+    const std::optional<spice::sct::SctSupplementaryTextId> after) {
     auto* state = findState(locator);
     return state != nullptr && !busy() && !state->editBlocked && applyEditResult(*state,
-        state->session->createFooterText(kind, after), tr("Footer text created."));
+        state->session->createSupplementaryText(kind, after), tr("Supplementary text created."));
 }
 
 bool SctDocumentController::deleteTextEntity(
@@ -940,13 +962,18 @@ bool SctDocumentController::applyEditResult(
     core::SctEditResult result,
     QString successMessage) {
     failureDiagnostics_.clear();
-    failurePipelineDiagnostics_ = result.diagnostics;
     const auto key = identity(state.locator);
     if (!result.committed) {
-        const auto message = result.diagnostics.empty()
+        InteractionNotice notice;
+        notice.code = result.diagnostics.empty()
+            ? QStringLiteral("EditRejected")
+            : QString::fromStdString(result.diagnostics.front().code);
+        notice.message = result.diagnostics.empty()
             ? tr("The edit could not be applied.")
             : QString::fromStdString(result.diagnostics.front().message);
-        emit editCompleted(key, false, message);
+        notice.documentIdentity = key;
+        if (!result.diagnostics.empty()) notice.target = result.diagnostics.front().target;
+        emit editRejected(notice);
         return false;
     }
     state.publicationDiagnostics.clear();
@@ -960,7 +987,7 @@ bool SctDocumentController::applyEditResult(
         result.transition,
         state.session->semanticProjection()});
     if (editTimingsEnabled_) {
-        qInfo().noquote() << QStringLiteral(
+        qCInfo(salsaSctEditLog).noquote() << QStringLiteral(
             "SALSA edit timing %1: preflight=%2us journal=%3us model-notification=%4us")
             .arg(key).arg(result.preflightMicroseconds)
             .arg(result.journalMicroseconds)
@@ -979,7 +1006,7 @@ bool SctDocumentController::applyEditResult(
         }
         emit selectionRangeRequested(key, kinds, ids);
     }
-    emit editCompleted(key, true, std::move(successMessage));
+    emit editCommitted(key, std::move(successMessage));
     if (result.changes.documentChanged) requestMaterialization(state);
     return true;
 }
@@ -1023,7 +1050,7 @@ void SctDocumentController::finishMaterialization(
     auto result = completedWatcher->result();
     completedWatcher->deleteLater();
     if (editTimingsEnabled_) {
-        qInfo().noquote() << QStringLiteral(
+        qCInfo(salsaSctEditLog).noquote() << QStringLiteral(
             "SALSA materialization timing %1 generation %2: replay=%3us validation=%4us analysis=%5us")
             .arg(QString::fromStdString(identityKey)).arg(generation)
             .arg(result.timings.replayMicroseconds)
@@ -1041,7 +1068,7 @@ void SctDocumentController::finishMaterialization(
                 issues += section.issues.size();
             }
         }
-        qInfo().noquote() << QStringLiteral(
+        qCInfo(salsaSctStructureLog).noquote() << QStringLiteral(
             "SALSA structure analysis %1 generation %2: aggregate-analysis=%3us sections=%4 blocks=%5 regions=%6 issues=%7")
             .arg(QString::fromStdString(identityKey)).arg(generation)
             .arg(result.timings.analysisMicroseconds)
@@ -1072,8 +1099,9 @@ void SctDocumentController::finishMaterialization(
             diagnostic.locator = state.locator;
             failurePipelineDiagnostics_.push_back(std::move(diagnostic));
         }
+        state.blockingDiagnostics = failurePipelineDiagnostics_;
         auto rollback = state.session->rejectToVerifiedRevision(
-            result.baseRevision, failurePipelineDiagnostics_);
+            result.baseRevision, state.blockingDiagnostics);
         if (rollback.has_value() && rollback->transition.has_value()) {
             emit documentChanged(QString::fromStdString(identityKey), SctDocumentUpdate{
                 SctDocumentUpdateKind::RevisionTransition,
@@ -1081,11 +1109,23 @@ void SctDocumentController::finishMaterialization(
                 state.session->semanticProjection()});
             state.requestedMaterializationRevision = rollback->revision;
             state.editBlocked = false;
-            emit editCompleted(QString::fromStdString(identityKey), false,
-                tr("Background verification rejected the edit and restored the last verified revision."));
+            state.blockingDiagnostics.clear();
+            failurePipelineDiagnostics_.clear();
+            InteractionNotice notice;
+            notice.code = QStringLiteral("BackgroundVerificationRestored");
+            notice.message = tr(
+                "Background verification rejected the edit and restored the last verified revision.");
+            notice.documentIdentity = QString::fromStdString(identityKey);
+            notice.prominent = true;
+            emit editRejected(notice);
         } else {
-            emit editCompleted(QString::fromStdString(identityKey), false,
-                tr("Background verification rejected the current revision; editing is paused."));
+            InteractionNotice notice;
+            notice.code = QStringLiteral("BackgroundVerificationBlocked");
+            notice.message = tr(
+                "Background verification rejected the current revision; editing is paused.");
+            notice.documentIdentity = QString::fromStdString(identityKey);
+            notice.prominent = true;
+            emit editRejected(notice);
         }
     }
 

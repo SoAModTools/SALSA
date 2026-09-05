@@ -97,8 +97,8 @@ using Json = nlohmann::ordered_json;
             kind = "instruction"; value = id.value();
         } else if constexpr (std::is_same_v<T, spice::sct::SctStringId>) {
             kind = "string"; value = id.value();
-        } else if constexpr (std::is_same_v<T, spice::sct::SctFooterEntryId>) {
-            kind = "footer"; value = id.value();
+        } else if constexpr (std::is_same_v<T, spice::sct::SctSupplementaryTextId>) {
+            kind = "supplementary-text"; value = id.value();
         } else if constexpr (std::is_same_v<T, spice::sct::SctOpaqueAttachmentId>) {
             kind = "opaque"; value = id.value();
         } else {
@@ -118,7 +118,8 @@ using Json = nlohmann::ordered_json;
     if (kind == "section") return spice::sct::SctSectionId{id};
     if (kind == "instruction") return spice::sct::SctInstructionId{id};
     if (kind == "string") return spice::sct::SctStringId{id};
-    if (kind == "footer") return spice::sct::SctFooterEntryId{id};
+    if (kind == "supplementary-text" || kind == "footer")
+        return spice::sct::SctSupplementaryTextId{id};
     if (kind == "opaque") return spice::sct::SctOpaqueAttachmentId{id};
     if (kind == "authored-arm") return SctAuthoredArmId{id};
     throw std::runtime_error("a reconciliation entity kind is unsupported");
@@ -284,7 +285,8 @@ Result<SctReconciliationDecisionArtifact> SctReconciliationDecisionCodec::deseri
             || !root.at("formatId").is_string()
             || root.at("formatId").get<std::string>() != FormatId
             || !root.at("schemaVersion").is_number_unsigned()
-            || root.at("schemaVersion").get<std::uint32_t>() != SchemaVersion
+            || (root.at("schemaVersion").get<std::uint32_t>() != SchemaVersion
+                && root.at("schemaVersion").get<std::uint32_t>() != LegacySchemaVersion)
             || !root.at("decisionScopeId").is_string()
             || !root.at("targetScopeKey").is_string()
             || !root.at("reconciliationContractVersion").is_number_unsigned()

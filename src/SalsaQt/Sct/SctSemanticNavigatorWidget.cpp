@@ -163,8 +163,9 @@ struct TreeState final {
         return SctSemanticNavigatorWidget::tr("Expected instruction reference");
     case spice::sct::SctReferenceTargetStorage::IndexedString:
         return SctSemanticNavigatorWidget::tr("Expected indexed-string reference");
-    case spice::sct::SctReferenceTargetStorage::FooterEntry:
-        return SctSemanticNavigatorWidget::tr("Expected footer-entry reference");
+    case spice::sct::SctReferenceTargetStorage::SupplementaryText:
+        return SctSemanticNavigatorWidget::tr(
+            "Expected supplementary-text reference");
     }
     return SctSemanticNavigatorWidget::tr("Expected reference");
 }
@@ -178,7 +179,7 @@ struct TreeState final {
         else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return { core::SctNavigationKind::String, typed.value() };
         else
-            return { core::SctNavigationKind::FooterEntry, typed.value() };
+            return { core::SctNavigationKind::SupplementaryText, typed.value() };
     }, target);
 }
 
@@ -191,7 +192,7 @@ struct TreeState final {
         else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return SctSemanticNavigatorWidget::tr("Indexed string %1").arg(typed.value());
         else
-            return SctSemanticNavigatorWidget::tr("Footer entry %1").arg(typed.value());
+            return SctSemanticNavigatorWidget::tr("Supplementary text %1").arg(typed.value());
     }, target);
 }
 
@@ -240,7 +241,7 @@ struct TreeState final {
         else if constexpr (std::is_same_v<T, spice::sct::SctStringId>)
             return SctSemanticNavigatorWidget::tr("Indexed string %1").arg(typed.value());
         else
-            return SctSemanticNavigatorWidget::tr("Footer entry %1").arg(typed.value());
+            return SctSemanticNavigatorWidget::tr("Supplementary text %1").arg(typed.value());
     }, anchor);
     return { name, core::navigationTargetForOpaqueAnchor(anchor) };
 }

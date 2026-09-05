@@ -58,5 +58,6 @@ private:
     QString summaryText_{};
     bool started_ = false;
     bool awaitingRestoration_ = false;
+    bool activityReported_ = false;
 };
 }  // namespace salsa::qt

@@ -86,7 +86,7 @@ namespace {
     if (local.affectsOrder && incoming.affectsOrder)
         return SctMergeConflictKind::IncompatibleOrder;
     if (local.entityKind == SctChangeEntityKind::IndexedString
-        || local.entityKind == SctChangeEntityKind::FooterEntry)
+        || local.entityKind == SctChangeEntityKind::SupplementaryText)
         return SctMergeConflictKind::TextOwnership;
     if (local.entityKind == SctChangeEntityKind::OpaquePreservation)
         return SctMergeConflictKind::OpaquePreservation;

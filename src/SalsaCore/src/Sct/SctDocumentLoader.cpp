@@ -112,7 +112,8 @@ std::optional<spice::sct::SctKnownTextConvention> recommendedSctTextConvention(
 SctLoadResult SctDocumentLoader::load(
     const GameProjectContext& project,
     const AssetLocator& locator,
-    const std::stop_token stopToken) {
+    const std::stop_token stopToken,
+    spice::sct::SctParseTraceObserver traceObserver) {
     SctLoadResult result;
     if (stopToken.stop_requested()) {
         result.cancelled = true;
@@ -135,16 +136,17 @@ SctLoadResult SctDocumentLoader::load(
     const auto bytes = std::span<const std::uint8_t>(
         reinterpret_cast<const std::uint8_t*>(source.bytes.data()), source.bytes.size());
     spice::sct::SctParser parser;
+    spice::sct::SctParseOptions parseOptions;
+    parseOptions.traceObserver = std::move(traceObserver);
     auto parsed = std::make_shared<spice::sct::SctParseResult>(
-        parser.parse(bytes, locator.identityKey()));
+        parser.parse(bytes, locator.identityKey(), std::move(parseOptions)));
 
     auto inspection = std::make_shared<SctSourceInspection>(SctSourceInspection{
         std::move(source), project.dataset().identity.fingerprint,
         std::move(parsed), {}, {} });
     for (const auto& parserDiagnostic : inspection->parsed->diagnostics) {
         SctPipelineDiagnostic diagnostic;
-        diagnostic.severity = inspection->parsed->parseOk
-            ? DiagnosticSeverity::Warning : DiagnosticSeverity::Error;
+        diagnostic.severity = severityOf(parserDiagnostic.severity);
         diagnostic.stage = SctPipelineStage::Parse;
         diagnostic.code = "ParserDiagnostic";
         diagnostic.message = parserDiagnostic.message;

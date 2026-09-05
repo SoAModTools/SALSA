@@ -57,7 +57,11 @@
     <ClCompile Include="Application\ExclusiveOperationController.cpp" />
     <ClCompile Include="Application\ExclusiveOperationCoordinator.cpp" />
     <ClCompile Include="Application\ExclusiveOperationDialog.cpp" />
+    <ClCompile Include="Application\DisabledActionHintPresenter.cpp" />
+    <ClCompile Include="Application\HelpWindow.cpp" />
     <ClCompile Include="Application\MainWindow.cpp" />
+    <ClCompile Include="Application\SalsaLogging.cpp" />
+    <ClCompile Include="Application\TransientNoticePresenter.cpp" />
     <ClCompile Include="Legacy\LegacyConversionDialog.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Sct\SctDocumentController.cpp" />
@@ -68,15 +72,16 @@
     <ClCompile Include="Sct\SctOutlineModel.cpp" />
     <ClCompile Include="Sct\SctStructuredOutlineModel.cpp" />
     <ClCompile Include="Sct\SctMessageEditorWidget.cpp" />
+    <ClCompile Include="Sct\SctMetadataEditorWidget.cpp" />
     <ClCompile Include="Sct\SctParameterTableModel.cpp" />
     <ClCompile Include="Sct\SctScptEditorWidget.cpp" />
     <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp" />
     <ClCompile Include="Workspace\DiagnosticsModel.cpp" />
-    <ClCompile Include="Workspace\DiagnosticJournalModel.cpp" />
+    <ClCompile Include="Workspace\ActivityLogModel.cpp" />
     <ClCompile Include="Workspace\WorkspaceController.cpp" />
     <ClCompile Include="Workspace\WorkspaceOperationController.cpp" />
     <ClCompile Include="Workspace\WorkspaceMaintenanceController.cpp" />
-    <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp" />
+    <ClCompile Include="Workspace\DatasetOverviewWidget.cpp" />
     <ClCompile Include="Workspace\WorkspaceModel.cpp" />
     <QtMoc Include="Application\ExclusiveOperationController.h" />
     <QtMoc Include="Application\ExclusiveOperationCoordinator.h" />
@@ -93,17 +98,26 @@
     <QtMoc Include="Sct\SctOutlineModel.h" />
     <QtMoc Include="Sct\SctStructuredOutlineModel.h" />
     <QtMoc Include="Sct\SctMessageEditorWidget.h" />
+    <ClInclude Include="Sct\SctMetadataEditorWidget.h" />
     <QtMoc Include="Sct\SctParameterTableModel.h" />
     <QtMoc Include="Sct\SctScptEditorWidget.h" />
     <QtMoc Include="Sct\SctSemanticNavigatorWidget.h" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Application\MainWindow.h" />
+    <ClInclude Include="Application\DisabledActionHintPresenter.h" />
+    <ClInclude Include="Application\HelpWindow.h" />
+    <ClInclude Include="Application\InteractionNotice.h" />
+    <ClInclude Include="Application\SalsaLogging.h" />
+    <ClInclude Include="Application\TransientNoticePresenter.h" />
     <ClInclude Include="Workspace\DiagnosticsModel.h" />
-    <ClInclude Include="Workspace\DiagnosticJournalModel.h" />
+    <ClInclude Include="Workspace\ActivityLogModel.h" />
     <ClInclude Include="Ui\UiConstants.h" />
-    <ClInclude Include="Workspace\WorkspaceDetailsWidget.h" />
+    <QtMoc Include="Workspace\DatasetOverviewWidget.h" />
     <ClInclude Include="Workspace\WorkspaceModel.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <QtRcc Include="SalsaHelp.qrc" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\third-party\SPICE\Compression\Compression.vcxproj">
