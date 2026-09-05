@@ -21,7 +21,10 @@
 #include <functional>
 
 class QComboBox;
+class QCheckBox;
 class QLabel;
+class QLineEdit;
+class QPlainTextEdit;
 class QPushButton;
 class QTextEdit;
 class QTabWidget;
@@ -75,6 +78,11 @@ public:
     void setEditingEnabled(bool enabled);
     void setSemanticProjection(
         std::shared_ptr<const core::SctSemanticEditorProjection> projection);
+    void setAuthoringMetadata(
+        std::vector<core::SctVariableAlias> aliases,
+        std::vector<core::SctEntityAnnotation> annotations,
+        std::vector<core::SctSectionFolder> folders,
+        std::vector<core::SctOpcodeColor> opcodeColors);
     void setStructuredDeveloperOptions(
         bool showBasicBlocks, bool showRejectedEvidence,
         bool showControlFlowInstructions = false);
@@ -141,6 +149,13 @@ signals:
         qulonglong instruction, quint32 ordinal, int direction);
     void navigationChanged(const QString& identityKey, int kind, qulonglong id);
     void activeViewChanged(const QString& identityKey, int view);
+    void authoringMetadataRequested(const QString& identityKey, int kind,
+        qulonglong id, const QString& note, bool bookmarked,
+        const QString& bookmarkLabel, int colorRgb);
+    void createSectionFolderRequested(const QString& identityKey,
+        const QList<qulonglong>& sections);
+    void editSectionFolderRequested(const QString& identityKey, qulonglong folder);
+    void removeSectionFolderRequested(const QString& identityKey, qulonglong folder);
 
 private:
     void rebuildOutline();
@@ -148,6 +163,7 @@ private:
     void markStructuredOutlinePending();
     void syncDocumentButtons();
     void showTarget(core::SctNavigationTarget target);
+    void syncAuthoringEditor(core::SctNavigationTarget target);
     void updateSourceBanner(int sourceStatus);
     void showParameterTable(spice::sct::SctInstructionId instruction,
         const core::SctEditChangeSet* changes = nullptr);
@@ -184,6 +200,17 @@ private:
     QLabel* title_ = nullptr;
     QLabel* subtitle_ = nullptr;
     QTreeWidget* properties_ = nullptr;
+    QPlainTextEdit* authoringNote_ = nullptr;
+    QCheckBox* authoringBookmark_ = nullptr;
+    QLineEdit* authoringBookmarkLabel_ = nullptr;
+    QPushButton* authoringColorButton_ = nullptr;
+    QPushButton* authoringClearColorButton_ = nullptr;
+    QPushButton* authoringApplyButton_ = nullptr;
+    std::optional<std::uint32_t> authoringColor_{};
+    std::vector<core::SctVariableAlias> aliases_{};
+    std::vector<core::SctEntityAnnotation> annotations_{};
+    std::vector<core::SctSectionFolder> folders_{};
+    std::vector<core::SctOpcodeColor> opcodeColors_{};
     QTreeView* parameterTable_ = nullptr;
     SctParameterTableModel* parameterTableModel_ = nullptr;
     ParameterPresentationProvider parameterPresentationProvider_{};

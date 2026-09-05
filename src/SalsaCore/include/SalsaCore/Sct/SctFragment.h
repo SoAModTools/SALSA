@@ -32,6 +32,8 @@ struct SctSemanticFragment final {
     std::vector<spice::sct::SctDocumentInstruction> instructions{};
     std::vector<spice::sct::SctDocumentSection> sections{};
     std::vector<SctAuthoredArm> authoredArms{};
+    std::vector<SctEntityAnnotation> annotations{};
+    std::vector<SctSectionFolder> folders{};
     std::vector<SctFragmentDependency> dependencies{};
 };
 
@@ -51,7 +53,7 @@ struct SctFragmentPastePlan final {
 class SctFragmentCodec final {
 public:
     static constexpr std::string_view FormatId = "jahorta.salsa.sct-fragment";
-    static constexpr std::uint32_t SchemaVersion = 1;
+    static constexpr std::uint32_t SchemaVersion = 2;
     static constexpr std::size_t MaximumBytes = 64u * 1024u * 1024u;
     static constexpr std::string_view MimeType =
         "application/vnd.jahorta.salsa.sct-fragment+json";

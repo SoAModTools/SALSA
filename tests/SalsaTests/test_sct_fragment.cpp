@@ -139,9 +139,9 @@ TEST(SctFragment, RoundTripsDeterministicallyAndRejectsUnsupportedSchemas) {
     auto unsupported = first.value();
     auto text = std::string(reinterpret_cast<const char*>(unsupported.data()),
         unsupported.size());
-    const auto marker = text.find("\"schemaVersion\": 1");
+    const auto marker = text.find("\"schemaVersion\": 2");
     ASSERT_NE(marker, std::string::npos);
-    text.replace(marker, std::string("\"schemaVersion\": 1").size(),
+    text.replace(marker, std::string("\"schemaVersion\": 2").size(),
         "\"schemaVersion\": 9");
     const auto bytes = std::as_bytes(std::span{text.data(), text.size()});
     const auto rejected = SctFragmentCodec::deserialize(bytes);
@@ -219,12 +219,26 @@ TEST(SctFragment, CrossDocumentPasteCreatesUnresolvedValuesWithDurableOrigin) {
 TEST(SctFragment, CapturesSupportedSectionKindsAndSuggestsDeterministicNames) {
     const auto source = makeFragmentDocument();
     SctWorkingState state(source.document);
-    const SctStructuredAuthoringState authoring;
     const std::array selected{source.stringSection, source.markerSection};
+    const std::array annotations{SctEntityAnnotation{
+        {SctAuthoringTargetKind::String, source.string.value()}, "Translator note",
+        "Review", 0x123456u}};
+    const std::array folders{SctSectionFolder{{1}, std::nullopt, "Text",
+        {source.stringSection, source.markerSection}, "Folder note", "Folder mark",
+        0x654321u}};
+    const std::array aliases{SctVariableAlias{
+        {salsa::core::SctVariableKind::Byte, 3}, "NotCopied"}};
+    const SctStructuredAuthoringState authoring({}, {}, aliases, annotations, folders);
     const auto fragment = SctFragmentService::captureSections(
         state, authoring, "source", selected);
     ASSERT_TRUE(fragment);
     ASSERT_EQ(fragment.value().sections.size(), 2u);
+    ASSERT_EQ(fragment.value().annotations.size(), 1u);
+    EXPECT_EQ(fragment.value().annotations.front().note, "Translator note");
+    EXPECT_FALSE(fragment.value().annotations.front().bookmarkLabel.has_value());
+    ASSERT_EQ(fragment.value().folders.size(), 1u);
+    EXPECT_EQ(fragment.value().folders.front().note, "Folder note");
+    EXPECT_FALSE(fragment.value().folders.front().bookmarkLabel.has_value());
 
     const auto names = SctFragmentService::suggestSectionNames(state, fragment.value());
     ASSERT_EQ(names.size(), 2u);

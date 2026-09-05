@@ -73,6 +73,7 @@
     <ClCompile Include="test_sct_baseline_store.cpp" />
     <ClCompile Include="test_sct_change_plan.cpp" />
     <ClCompile Include="test_sct_script_patch.cpp" />
+    <ClCompile Include="test_sct_authoring_catalog.cpp" />
     <ClCompile Include="test_sct_structured_authoring.cpp" />
     <ClCompile Include="test_sct_workspace_rebase.cpp" />
     <ClCompile Include="test_workspace_persistence.cpp" />

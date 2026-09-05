@@ -137,6 +137,17 @@ public:
         spice::sct::SctSectionId section);
     [[nodiscard]] bool moveSection(const core::AssetLocator& locator,
         spice::sct::SctSectionId section, core::SctSectionMoveDirection direction);
+    [[nodiscard]] bool setVariableAlias(const core::AssetLocator& locator,
+        core::SctVariableKey variable, std::optional<std::string> alias);
+    [[nodiscard]] bool setAnnotation(const core::AssetLocator& locator,
+        core::SctEntityAnnotation annotation);
+    [[nodiscard]] bool createSectionFolder(const core::AssetLocator& locator,
+        std::string name, std::span<const spice::sct::SctSectionId> sections,
+        std::optional<core::SctSectionFolderId> parent = std::nullopt);
+    [[nodiscard]] bool updateSectionFolder(const core::AssetLocator& locator,
+        core::SctSectionFolder folder);
+    [[nodiscard]] bool removeSectionFolder(const core::AssetLocator& locator,
+        core::SctSectionFolderId folder);
     [[nodiscard]] bool createFooterText(const core::AssetLocator& locator,
         core::SctCreatedFooterTextKind kind,
         std::optional<spice::sct::SctFooterEntryId> after);

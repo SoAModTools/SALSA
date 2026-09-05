@@ -3,8 +3,11 @@
 
 #include "SalsaCore/Application/ApplicationInfo.h"
 #include "SalsaCore/Legacy/LegacyFreshImport.h"
+#include "SalsaCore/Legacy/LegacyMetadataPromotion.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
+#include "Sct/SctCatalogEditorDialog.h"
 #include "Sct/SctDocumentController.h"
 #include "Sct/SctDocumentWidget.h"
 #include "Sct/SctRebaseDialog.h"
@@ -23,8 +26,10 @@
 #include "SpiceSCT/SctInstructionFactory.h"
 
 #include <QAction>
+#include <QBrush>
 #include <QCloseEvent>
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
@@ -35,6 +40,7 @@
 #include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -49,11 +55,13 @@
 #include <QMimeData>
 #include <QMessageBox>
 #include <QProgressBar>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QSpinBox>
 #include <QStyle>
 #include <QTableView>
 #include <QTableWidget>
@@ -206,6 +214,13 @@ MainWindow::MainWindow(const Mode mode, QWidget* parent)
     setWindowTitle(QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size())));
     resize(1100, 700);
 
+    personalCatalogPath_ = std::filesystem::path(QDir(
+        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)).filePath(
+        QStringLiteral("sct-catalog-v1.json")).toStdWString());
+    if (const auto loaded = core::SctPersonalCatalogStore(personalCatalogPath_).load(); loaded)
+        personalCatalog_ = loaded.value();
+    core::SctCatalogResolver::install(
+        std::make_shared<const core::SctPersonalCatalog>(personalCatalog_));
     buildUi();
     connectWorkspace();
     if (mode_ == Mode::Application) restoreApplicationSettings();
@@ -401,6 +416,88 @@ void MainWindow::buildUi() {
     tabifyDockWidget(semanticNavigatorDock_, snippetLibraryDock_);
     snippetLibraryDock_->hide();
 
+    auto* aliasPane = new QWidget(this);
+    auto* aliasLayout = new QVBoxLayout(aliasPane);
+    aliasLayout->setContentsMargins(6, 6, 6, 6);
+    aliasTable_ = new QTableWidget(0, 4, aliasPane);
+    aliasTable_->setHorizontalHeaderLabels(
+        {tr("Scope"), tr("Kind"), tr("Index"), tr("Alias")});
+    aliasTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    aliasTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    aliasTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    auto* aliasButtons = new QHBoxLayout;
+    auto* addDocumentAlias = new QPushButton(tr("Add document"), aliasPane);
+    auto* addProjectAlias = new QPushButton(tr("Add project"), aliasPane);
+    auto* removeAlias = new QPushButton(tr("Remove"), aliasPane);
+    editAliasMetadataButton_ = new QPushButton(tr("Metadata..."), aliasPane);
+    aliasButtons->addWidget(addDocumentAlias);
+    aliasButtons->addWidget(addProjectAlias);
+    aliasButtons->addWidget(removeAlias);
+    aliasButtons->addWidget(editAliasMetadataButton_);
+    aliasLayout->addWidget(aliasTable_, 1);
+    aliasLayout->addLayout(aliasButtons);
+    aliasDock_ = new QDockWidget(tr("Variable Aliases"), this);
+    aliasDock_->setObjectName(QStringLiteral("VariableAliasesDock"));
+    aliasDock_->setWidget(aliasPane);
+    addDockWidget(Qt::RightDockWidgetArea, aliasDock_);
+    tabifyDockWidget(semanticNavigatorDock_, aliasDock_);
+    aliasDock_->hide();
+
+    bookmarkTable_ = new QTableWidget(0, 3, this);
+    bookmarkTable_->setHorizontalHeaderLabels(
+        {tr("Document"), tr("Entity"), tr("Label")});
+    bookmarkTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    bookmarkTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    bookmarkTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    bookmarkDock_ = new QDockWidget(tr("Bookmarks"), this);
+    bookmarkDock_->setObjectName(QStringLiteral("BookmarksDock"));
+    bookmarkDock_->setWidget(bookmarkTable_);
+    addDockWidget(Qt::RightDockWidgetArea, bookmarkDock_);
+    tabifyDockWidget(semanticNavigatorDock_, bookmarkDock_);
+    bookmarkDock_->hide();
+
+    connect(addDocumentAlias, &QPushButton::clicked, this,
+        [this] { addVariableAlias(false); });
+    connect(addProjectAlias, &QPushButton::clicked, this,
+        [this] { addVariableAlias(true); });
+    connect(removeAlias, &QPushButton::clicked,
+        this, &MainWindow::removeSelectedVariableAlias);
+    connect(editAliasMetadataButton_, &QPushButton::clicked,
+        this, &MainWindow::editSelectedVariableMetadata);
+    connect(aliasTable_, &QTableWidget::itemSelectionChanged, this, [this] {
+        const auto row = aliasTable_->currentRow();
+        editAliasMetadataButton_->setEnabled(row >= 0
+            && !aliasTable_->item(row, 0)->data(Qt::UserRole).toBool());
+    });
+    editAliasMetadataButton_->setEnabled(false);
+    connect(bookmarkTable_, &QTableWidget::cellDoubleClicked,
+        this, [this](const int row, int) {
+            const auto identity = bookmarkTable_->item(row, 0)->data(Qt::UserRole).toString();
+            const auto kind = bookmarkTable_->item(row, 1)->data(Qt::UserRole).toInt();
+            const auto id = bookmarkTable_->item(row, 1)->data(Qt::UserRole + 1).toULongLong();
+            focusDocument(identity);
+            if (static_cast<core::SctNavigationKind>(kind)
+                    == core::SctNavigationKind::Variable) {
+                const auto variableKind = bookmarkTable_->item(row, 1)
+                    ->data(Qt::UserRole + 2).toInt();
+                aliasDock_->show();
+                aliasDock_->raise();
+                for (int aliasRow = 0; aliasRow < aliasTable_->rowCount(); ++aliasRow) {
+                    if (!aliasTable_->item(aliasRow, 0)->data(Qt::UserRole).toBool()
+                        && aliasTable_->item(aliasRow, 1)->data(Qt::UserRole).toInt()
+                            == variableKind
+                        && aliasTable_->item(aliasRow, 2)->data(Qt::UserRole).toULongLong()
+                            == id) {
+                        aliasTable_->selectRow(aliasRow);
+                        break;
+                    }
+                }
+                return;
+            }
+            if (auto* widget = activeDocumentWidget())
+                widget->selectTarget({static_cast<core::SctNavigationKind>(kind), id});
+        });
+
     auto* fileMenu = menuBar()->addMenu(tr("&File"));
     openAction_ = fileMenu->addAction(tr("&Open Dataset..."));
     openAction_->setShortcut(QKeySequence::Open);
@@ -427,6 +524,12 @@ void MainWindow::buildUi() {
         tr("Rebase Stale Patches..."));
     cleanWorkspaceEvidenceAction_ = projectMenu->addAction(
         tr("Clean Workspace Recovery Evidence..."));
+    promoteLegacyMetadataAction_ = projectMenu->addAction(
+        tr("Promote Retained Legacy Metadata..."));
+    editInstructionCatalogAction_ = projectMenu->addAction(
+        tr("Instruction Catalog..."));
+    editProjectOpcodeColorsAction_ = projectMenu->addAction(
+        tr("Project Opcode Colors..."));
     projectMenu->addSeparator();
     refreshAction_ = projectMenu->addAction(tr("&Refresh Dataset"));
     refreshAction_->setShortcut(QKeySequence::Refresh);
@@ -498,6 +601,8 @@ void MainWindow::buildUi() {
     viewMenu->addAction(messageEditorDock_->toggleViewAction());
     viewMenu->addAction(scptEditorDock_->toggleViewAction());
     viewMenu->addAction(snippetLibraryDock_->toggleViewAction());
+    viewMenu->addAction(aliasDock_->toggleViewAction());
+    viewMenu->addAction(bookmarkDock_->toggleViewAction());
     viewMenu->addAction(editToolbar->toggleViewAction());
 
 #if defined(_DEBUG)
@@ -608,6 +713,12 @@ void MainWindow::buildUi() {
         this, &MainWindow::rebaseStalePatches);
     connect(cleanWorkspaceEvidenceAction_, &QAction::triggered,
         this, &MainWindow::cleanWorkspaceEvidence);
+    connect(promoteLegacyMetadataAction_, &QAction::triggered,
+        this, &MainWindow::promoteLegacyMetadata);
+    connect(editInstructionCatalogAction_, &QAction::triggered,
+        this, &MainWindow::editInstructionCatalog);
+    connect(editProjectOpcodeColorsAction_, &QAction::triggered,
+        this, &MainWindow::editProjectOpcodeColors);
     connect(closeWorkspaceAction_, &QAction::triggered, this, [this]() {
         if (!prepareScptEditor() || !flushMessageEditor() || !confirmDiscardAll(
                 tr("close the dataset"), PendingLifecycle::CloseDataset)) return;
@@ -730,6 +841,7 @@ void MainWindow::buildUi() {
         syncDiagnostics();
         syncSemanticNavigator();
         syncEditActions();
+        reloadAuthoringDocks();
         recordActiveNavigation();
         scheduleWorkspaceSessionSave();
     });
@@ -1035,6 +1147,7 @@ void MainWindow::associatePatchWorkspace() {
             patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
                 std::move(opened));
             documentController_->setWorkspace(patchWorkspace_);
+            loadWorkspaceAuthoring();
             reloadSnippets();
             const auto* current = controller_->dataset();
             if (current) rememberPatchWorkspaceAssociation(
@@ -1094,6 +1207,464 @@ void MainWindow::cleanWorkspaceEvidence() {
         [this] { syncActions(); }), this);
 }
 
+void MainWindow::promoteLegacyMetadata() {
+    if (!patchWorkspace_ || !documentController_->openLocators().empty()) return;
+    const auto root = patchWorkspace_->componentPath(
+        patchWorkspace_->descriptor().components.importState);
+    QStringList capsuleIds;
+    std::error_code issue;
+    for (const auto& entry : std::filesystem::directory_iterator(root, issue)) {
+        if (issue) break;
+        if (!entry.is_regular_file(issue) || issue || entry.path().extension() != L".json") {
+            issue.clear();
+            continue;
+        }
+        capsuleIds.push_back(QString::fromStdWString(entry.path().stem().wstring()));
+    }
+    capsuleIds.sort(Qt::CaseInsensitive);
+    if (issue || capsuleIds.isEmpty()) {
+        QMessageBox::information(this, tr("Promote Legacy Metadata"),
+            issue ? tr("The legacy import-state directory could not be inspected.")
+                  : tr("This workspace has no retained legacy import state."));
+        return;
+    }
+    bool accepted = capsuleIds.size() == 1;
+    const auto capsuleId = capsuleIds.size() == 1 ? capsuleIds.front()
+        : QInputDialog::getItem(this, tr("Promote Legacy Metadata"),
+            tr("Retained import"), capsuleIds, 0, false, &accepted);
+    if (!accepted) return;
+
+    core::LegacyMetadataPromotionRegistry registry;
+    const auto registered = core::registerBuiltInLegacyMetadataPromotionAdapters(registry);
+    if (!registered) {
+        QMessageBox::warning(this, tr("Promotion unavailable"),
+            QString::fromStdString(registered.diagnostics().front().message));
+        return;
+    }
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const auto preview = core::LegacyMetadataPromotionService::preview(
+        *patchWorkspace_, capsuleId.toStdString(), registry);
+    QApplication::restoreOverrideCursor();
+    if (!preview) {
+        QMessageBox::warning(this, tr("Promotion preview failed"),
+            QString::fromStdString(preview.diagnostics().front().message));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Promote Retained Legacy Metadata"));
+    dialog.resize(900, 540);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* explanation = new QLabel(tr(
+        "Select compatible metadata to copy from the immutable v7 capsule. Conflicts and unsupported fields remain retained for later features."), &dialog);
+    explanation->setWordWrap(true);
+    auto* table = new QTableWidget(static_cast<int>(preview.value().items.size()), 4, &dialog);
+    table->setHorizontalHeaderLabels({tr("Apply"), tr("Owner"), tr("Field"), tr("Status")});
+    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    for (int row = 0; row < table->rowCount(); ++row) {
+        const auto& item = preview.value().items[static_cast<std::size_t>(row)];
+        auto* selected = new QTableWidgetItem;
+        selected->setData(Qt::UserRole, QString::fromStdString(item.record.recordId));
+        const bool eligible = item.assessment.eligible && !item.assessment.conflict;
+        selected->setCheckState(eligible ? Qt::Checked : Qt::Unchecked);
+        if (!eligible) selected->setFlags(selected->flags() & ~Qt::ItemIsEnabled);
+        table->setItem(row, 0, selected);
+        table->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(
+            item.record.scriptOrdinal
+                ? item.record.owner + " " + std::to_string(*item.record.scriptOrdinal)
+                : item.record.owner)));
+        table->setItem(row, 2, new QTableWidgetItem(QString::fromStdString(item.record.field)));
+        table->setItem(row, 3, new QTableWidgetItem(QString::fromStdString(
+            item.assessment.reason.empty() ? item.record.reason : item.assessment.reason)));
+    }
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Apply
+        | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Apply)->setEnabled(preview.value().hasEligible());
+    layout->addWidget(explanation);
+    layout->addWidget(table, 1);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    std::vector<std::string> selected;
+    for (int row = 0; row < table->rowCount(); ++row)
+        if (table->item(row, 0)->checkState() == Qt::Checked)
+            selected.push_back(table->item(row, 0)->data(Qt::UserRole).toString().toStdString());
+    if (selected.empty()) return;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const auto result = core::LegacyMetadataPromotionService::promote(
+        *patchWorkspace_, preview.value(), selected, registry);
+    QApplication::restoreOverrideCursor();
+    if (!result.applied) {
+        QMessageBox::warning(this, tr("Promotion failed"), result.diagnostics.empty()
+            ? tr("The selected legacy metadata was not applied.")
+            : QString::fromStdString(result.diagnostics.front().message));
+        return;
+    }
+    loadWorkspaceAuthoring();
+    statusBar()->showMessage(tr("Promoted %1 legacy metadata records.")
+        .arg(result.appliedRecordIds.size()), 8000);
+}
+
+void MainWindow::editInstructionCatalog() {
+    if (exclusiveOperations_ && exclusiveOperations_->active()) {
+        exclusiveOperations_->focusActive();
+        return;
+    }
+    SctCatalogEditorDialog dialog(personalCatalog_, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const auto saved = core::SctPersonalCatalogStore(personalCatalogPath_).save(
+        dialog.catalog());
+    if (!saved) {
+        QMessageBox::warning(this, tr("Catalog could not be saved"),
+            QString::fromStdString(saved.diagnostics().front().message));
+        return;
+    }
+    personalCatalog_ = dialog.catalog();
+    core::SctCatalogResolver::install(
+        std::make_shared<const core::SctPersonalCatalog>(personalCatalog_));
+    for (int index = 1; index < tabs_->count(); ++index) {
+        if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index)))
+            widget->setSnapshot(documentController_->snapshot(widget->locator()),
+                static_cast<int>(documentController_->sourceStatus(widget->locator())));
+    }
+    statusBar()->showMessage(tr("Personal instruction catalog saved."), 5000);
+}
+
+bool MainWindow::saveWorkspaceAuthoring() {
+    if (!patchWorkspace_) return false;
+    const auto path = patchWorkspace_->componentPath(
+        patchWorkspace_->descriptor().components.authoring / L"workspace.json");
+    const auto saved = core::SctWorkspaceAuthoringStore(path).save(workspaceAuthoring_);
+    if (!saved) {
+        QMessageBox::warning(this, tr("Workspace metadata could not be saved"),
+            QString::fromStdString(saved.diagnostics().front().message));
+        return false;
+    }
+    reloadAuthoringDocks();
+    return true;
+}
+
+void MainWindow::loadWorkspaceAuthoring() {
+    workspaceAuthoring_ = {};
+    if (!patchWorkspace_) { reloadAuthoringDocks(); return; }
+    const auto path = patchWorkspace_->componentPath(
+        patchWorkspace_->descriptor().components.authoring / L"workspace.json");
+    const auto loaded = core::SctWorkspaceAuthoringStore(path).load();
+    if (loaded) workspaceAuthoring_ = loaded.value();
+    else statusBar()->showMessage(QString::fromStdString(
+        loaded.diagnostics().front().message), 12000);
+    reloadAuthoringDocks();
+}
+
+void MainWindow::addVariableAlias(const bool projectScope) {
+    auto* document = activeDocumentWidget();
+    if (!projectScope && !document) return;
+    QDialog dialog(this);
+    dialog.setWindowTitle(projectScope ? tr("Add project alias")
+                                       : tr("Add document alias"));
+    auto* layout = new QFormLayout(&dialog);
+    auto* kind = new QComboBox(&dialog);
+    kind->addItem(tr("Bit"), static_cast<int>(core::SctVariableKind::Bit));
+    kind->addItem(tr("Byte"), static_cast<int>(core::SctVariableKind::Byte));
+    kind->addItem(tr("Integer"), static_cast<int>(core::SctVariableKind::Integer));
+    kind->addItem(tr("Float"), static_cast<int>(core::SctVariableKind::Float));
+    auto* index = new QSpinBox(&dialog);
+    index->setRange(0, (std::numeric_limits<int>::max)());
+    auto* alias = new QLineEdit(&dialog);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok
+        | QDialogButtonBox::Cancel, &dialog);
+    layout->addRow(tr("Variable kind"), kind);
+    layout->addRow(tr("Index"), index);
+    layout->addRow(tr("Alias"), alias);
+    layout->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted || alias->text().trimmed().isEmpty()) return;
+    const core::SctVariableKey key{
+        static_cast<core::SctVariableKind>(kind->currentData().toInt()),
+        static_cast<std::uint32_t>(index->value())};
+    const auto normalizedAlias = alias->text().trimmed().toStdString();
+    if (projectScope) {
+        auto candidate = workspaceAuthoring_;
+        const auto found = std::ranges::find(candidate.projectAliases,
+            key, &core::SctVariableAlias::variable);
+        if (found == candidate.projectAliases.end())
+            candidate.projectAliases.push_back({key, normalizedAlias});
+        else found->alias = normalizedAlias;
+        const auto encoded = core::SctAuthoringCatalogCodec::serializeWorkspace(candidate);
+        if (!encoded) {
+            QMessageBox::warning(this, tr("Invalid project alias"),
+                QString::fromStdString(encoded.diagnostics().front().message));
+            return;
+        }
+        const auto previous = workspaceAuthoring_;
+        workspaceAuthoring_ = std::move(candidate);
+        if (!saveWorkspaceAuthoring()) workspaceAuthoring_ = previous;
+    } else {
+        (void)documentController_->setVariableAlias(document->locator(), key,
+            normalizedAlias);
+    }
+}
+
+void MainWindow::removeSelectedVariableAlias() {
+    const auto row = aliasTable_->currentRow();
+    if (row < 0) return;
+    const auto key = core::SctVariableKey{
+        static_cast<core::SctVariableKind>(
+            aliasTable_->item(row, 1)->data(Qt::UserRole).toInt()),
+        aliasTable_->item(row, 2)->data(Qt::UserRole).toUInt()};
+    if (aliasTable_->item(row, 0)->data(Qt::UserRole).toBool()) {
+        auto candidate = workspaceAuthoring_;
+        std::erase_if(candidate.projectAliases,
+            [&](const auto& alias) { return alias.variable == key; });
+        const auto previous = workspaceAuthoring_;
+        workspaceAuthoring_ = std::move(candidate);
+        if (!saveWorkspaceAuthoring()) workspaceAuthoring_ = previous;
+    } else if (auto* document = activeDocumentWidget()) {
+        (void)documentController_->setVariableAlias(document->locator(), key, std::nullopt);
+    }
+}
+
+void MainWindow::editSelectedVariableMetadata() {
+    const auto row = aliasTable_->currentRow();
+    auto* document = activeDocumentWidget();
+    if (row < 0 || document == nullptr
+        || aliasTable_->item(row, 0)->data(Qt::UserRole).toBool()) return;
+    const core::SctVariableKey variable{
+        static_cast<core::SctVariableKind>(
+            aliasTable_->item(row, 1)->data(Qt::UserRole).toInt()),
+        aliasTable_->item(row, 2)->data(Qt::UserRole).toUInt()};
+    const core::SctAuthoringTarget target{core::SctAuthoringTargetKind::Variable,
+        variable.index, variable.kind};
+    std::optional<core::SctEntityAnnotation> current;
+    if (const auto state = documentController_->semanticState(document->locator())) {
+        const auto found = std::ranges::find(state->annotations, target,
+            &core::SctEntityAnnotation::target);
+        if (found != state->annotations.end()) current = *found;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Variable Metadata"));
+    auto* layout = new QFormLayout(&dialog);
+    auto* note = new QPlainTextEdit(&dialog);
+    note->setPlainText(current && current->note
+        ? QString::fromStdString(*current->note) : QString{});
+    auto* bookmark = new QCheckBox(tr("Bookmark this variable"), &dialog);
+    bookmark->setChecked(current && current->bookmarkLabel.has_value());
+    auto* label = new QLineEdit(&dialog);
+    label->setText(current && current->bookmarkLabel
+        ? QString::fromStdString(*current->bookmarkLabel) : QString{});
+    label->setEnabled(bookmark->isChecked());
+    auto color = current ? current->colorRgb : std::optional<std::uint32_t>{};
+    auto* colorButton = new QPushButton(color
+        ? QStringLiteral("#%1").arg(*color, 6, 16, QLatin1Char('0')).toUpper()
+        : tr("Choose color..."), &dialog);
+    auto* clearColor = new QPushButton(tr("Clear"), &dialog);
+    auto* colorRow = new QHBoxLayout;
+    colorRow->addWidget(colorButton); colorRow->addWidget(clearColor);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save
+        | QDialogButtonBox::Cancel, &dialog);
+    layout->addRow(tr("Note"), note);
+    layout->addRow(bookmark);
+    layout->addRow(tr("Bookmark label"), label);
+    layout->addRow(tr("Row accent"), colorRow);
+    layout->addRow(buttons);
+    connect(bookmark, &QCheckBox::toggled, label, &QWidget::setEnabled);
+    connect(colorButton, &QPushButton::clicked, &dialog, [&] {
+        const auto selected = QColorDialog::getColor(color
+            ? QColor::fromRgb(*color) : QColor{}, &dialog, tr("Variable row accent"));
+        if (!selected.isValid()) return;
+        color = selected.rgb() & 0xffffffu;
+        colorButton->setText(QStringLiteral("#%1")
+            .arg(*color, 6, 16, QLatin1Char('0')).toUpper());
+    });
+    connect(clearColor, &QPushButton::clicked, &dialog, [&] {
+        color.reset(); colorButton->setText(tr("Choose color..."));
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    core::SctEntityAnnotation annotation{target};
+    if (!note->toPlainText().isEmpty()) annotation.note = note->toPlainText().toStdString();
+    if (bookmark->isChecked()) annotation.bookmarkLabel = label->text().toStdString();
+    annotation.colorRgb = color;
+    (void)documentController_->setAnnotation(document->locator(), std::move(annotation));
+}
+
+void MainWindow::editProjectOpcodeColors() {
+    if (!patchWorkspace_) return;
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Project Opcode Colors"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* table = new QTableWidget(0, 2, &dialog);
+    table->setHorizontalHeaderLabels({tr("Opcode"), tr("Color")});
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    const auto append = [&](const core::SctOpcodeColor color) {
+        const auto row = table->rowCount(); table->insertRow(row);
+        table->setItem(row, 0, new QTableWidgetItem(QString::number(color.opcode)));
+        table->setItem(row, 1, new QTableWidgetItem(
+            QStringLiteral("#%1").arg(color.colorRgb, 6, 16, QLatin1Char('0')).toUpper()));
+    };
+    for (const auto color : workspaceAuthoring_.opcodeColors) append(color);
+    auto* actions = new QHBoxLayout;
+    auto* add = new QPushButton(tr("Add"), &dialog);
+    auto* remove = new QPushButton(tr("Remove"), &dialog);
+    actions->addWidget(add); actions->addWidget(remove); actions->addStretch(1);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save
+        | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(table); layout->addLayout(actions); layout->addWidget(buttons);
+    connect(add, &QPushButton::clicked, &dialog, [&, this] {
+        bool accepted = false;
+        const auto opcode = QInputDialog::getInt(&dialog, tr("Opcode"), tr("Opcode"),
+            0, 0, 65535, 1, &accepted);
+        if (!accepted || !spice::sct::findSctOpcodeSchema(
+                static_cast<std::uint16_t>(opcode))) return;
+        const auto color = QColorDialog::getColor({}, &dialog, tr("Opcode color"));
+        if (color.isValid()) append({static_cast<std::uint16_t>(opcode),
+            color.rgb() & 0xffffffu});
+    });
+    connect(remove, &QPushButton::clicked, &dialog, [table] {
+        if (table->currentRow() >= 0) table->removeRow(table->currentRow());
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    std::vector<core::SctOpcodeColor> colors;
+    for (int row = 0; row < table->rowCount(); ++row) {
+        bool opcodeValid = false, colorValid = false;
+        const auto opcode = table->item(row, 0)->text().toUShort(&opcodeValid);
+        auto text = table->item(row, 1)->text().trimmed();
+        if (text.startsWith(QLatin1Char('#'))) text.removeFirst();
+        const auto color = text.toUInt(&colorValid, 16);
+        if (!opcodeValid || !colorValid || text.size() != 6) {
+            QMessageBox::warning(this, tr("Invalid opcode color"),
+                tr("Each row needs a valid opcode and #RRGGBB color.")); return;
+        }
+        colors.push_back({opcode, color});
+    }
+    auto candidate = workspaceAuthoring_;
+    candidate.opcodeColors = std::move(colors);
+    const auto encoded = core::SctAuthoringCatalogCodec::serializeWorkspace(candidate);
+    if (!encoded) {
+        QMessageBox::warning(this, tr("Invalid opcode colors"),
+            QString::fromStdString(encoded.diagnostics().front().message));
+        return;
+    }
+    const auto previous = workspaceAuthoring_;
+    workspaceAuthoring_ = std::move(candidate);
+    if (!saveWorkspaceAuthoring()) workspaceAuthoring_ = previous;
+}
+
+void MainWindow::reloadAuthoringDocks() {
+    if (!aliasTable_ || !bookmarkTable_) return;
+    aliasTable_->setRowCount(0);
+    const auto activeState = activeDocumentWidget()
+        ? documentController_->semanticState(activeDocumentWidget()->locator())
+        : std::optional<core::SctSemanticState>{};
+    const auto appendAlias = [&](const bool project, const core::SctVariableAlias& alias) {
+        const auto row = aliasTable_->rowCount(); aliasTable_->insertRow(row);
+        auto* scope = new QTableWidgetItem(project ? tr("Project") : tr("Document"));
+        scope->setData(Qt::UserRole, project);
+        const auto kindName = [&] {
+            switch (alias.variable.kind) {
+            case core::SctVariableKind::Bit: return tr("Bit");
+            case core::SctVariableKind::Byte: return tr("Byte");
+            case core::SctVariableKind::Integer: return tr("Integer");
+            case core::SctVariableKind::Float: return tr("Float");
+            }
+            return tr("Unknown");
+        }();
+        auto* kind = new QTableWidgetItem(kindName);
+        kind->setData(Qt::UserRole, static_cast<int>(alias.variable.kind));
+        auto* index = new QTableWidgetItem(QString::number(alias.variable.index));
+        index->setData(Qt::UserRole, alias.variable.index);
+        aliasTable_->setItem(row, 0, scope); aliasTable_->setItem(row, 1, kind);
+        aliasTable_->setItem(row, 2, index);
+        aliasTable_->setItem(row, 3, new QTableWidgetItem(QString::fromStdString(alias.alias)));
+        if (!project && activeState) {
+            const core::SctAuthoringTarget target{core::SctAuthoringTargetKind::Variable,
+                alias.variable.index, alias.variable.kind};
+            const auto annotation = std::ranges::find(activeState->annotations, target,
+                &core::SctEntityAnnotation::target);
+            if (annotation != activeState->annotations.end()) {
+                for (int column = 0; column < aliasTable_->columnCount(); ++column) {
+                    if (annotation->colorRgb)
+                        aliasTable_->item(row, column)->setBackground(
+                            QBrush(QColor::fromRgb(*annotation->colorRgb)));
+                    if (annotation->note)
+                        aliasTable_->item(row, column)->setToolTip(
+                            QString::fromStdString(*annotation->note));
+                }
+            }
+        }
+    };
+    for (const auto& alias : workspaceAuthoring_.projectAliases) appendAlias(true, alias);
+    if (auto* document = activeDocumentWidget()) {
+        if (const auto state = documentController_->semanticState(document->locator()))
+            for (const auto& alias : state->aliases) appendAlias(false, alias);
+    }
+    bookmarkTable_->setRowCount(0);
+    for (const auto& locator : documentController_->openLocators()) {
+        const auto state = documentController_->semanticState(locator);
+        if (!state) continue;
+        const auto appendBookmark = [&](const core::SctNavigationKind kind,
+                                        const std::uint64_t id,
+                                        const std::string& label,
+                                        const std::optional<core::SctVariableKind> variableKind
+                                            = std::nullopt) {
+            const auto row = bookmarkTable_->rowCount(); bookmarkTable_->insertRow(row);
+            auto* document = new QTableWidgetItem(
+                QString::fromStdWString(locator.path().filename().wstring()));
+            document->setData(Qt::UserRole, QString::fromStdString(locator.identityKey()));
+            auto* entity = new QTableWidgetItem(QString::number(static_cast<int>(kind)));
+            entity->setData(Qt::UserRole, static_cast<int>(kind));
+            entity->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(id));
+            if (variableKind)
+                entity->setData(Qt::UserRole + 2, static_cast<int>(*variableKind));
+            const auto entityName = [&] {
+                switch (kind) {
+                case core::SctNavigationKind::Document: return tr("Document");
+                case core::SctNavigationKind::Section: return tr("Section");
+                case core::SctNavigationKind::Instruction: return tr("Instruction");
+                case core::SctNavigationKind::String: return tr("String");
+                case core::SctNavigationKind::FooterEntry: return tr("Footer entry");
+                case core::SctNavigationKind::SectionFolder: return tr("Section folder");
+                case core::SctNavigationKind::Variable: return tr("Variable");
+                default: return tr("Entity");
+                }
+            }();
+            entity->setText(entityName);
+            bookmarkTable_->setItem(row, 0, document);
+            bookmarkTable_->setItem(row, 1, entity);
+            bookmarkTable_->setItem(row, 2, new QTableWidgetItem(
+                label.empty() ? tr("(entity label)") : QString::fromStdString(label)));
+        };
+        for (const auto& annotation : state->annotations) {
+            if (!annotation.bookmarkLabel) continue;
+            core::SctNavigationKind kind;
+            switch (annotation.target.kind) {
+            case core::SctAuthoringTargetKind::Document: kind = core::SctNavigationKind::Document; break;
+            case core::SctAuthoringTargetKind::Section: kind = core::SctNavigationKind::Section; break;
+            case core::SctAuthoringTargetKind::Instruction: kind = core::SctNavigationKind::Instruction; break;
+            case core::SctAuthoringTargetKind::String: kind = core::SctNavigationKind::String; break;
+            case core::SctAuthoringTargetKind::FooterEntry: kind = core::SctNavigationKind::FooterEntry; break;
+            case core::SctAuthoringTargetKind::Variable:
+                if (!annotation.target.variableKind) continue;
+                appendBookmark(core::SctNavigationKind::Variable,
+                    annotation.target.id, *annotation.bookmarkLabel,
+                    annotation.target.variableKind);
+                continue;
+            }
+            appendBookmark(kind, annotation.target.id, *annotation.bookmarkLabel);
+        }
+        for (const auto& folder : state->folders)
+            if (folder.bookmarkLabel)
+                appendBookmark(core::SctNavigationKind::SectionFolder,
+                    folder.id.value, *folder.bookmarkLabel);
+    }
+}
+
 bool MainWindow::openPatchWorkspace(
     const QString& workspaceRoot, const bool allowConfirmation) {
     const auto* dataset = controller_->dataset();
@@ -1147,6 +1718,7 @@ bool MainWindow::openPatchWorkspace(
     patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
         std::move(opened).takeValue());
     documentController_->setWorkspace(patchWorkspace_);
+    loadWorkspaceAuthoring();
     reloadSnippets();
     rememberPatchWorkspaceAssociation(
         QString::fromStdWString(dataset->root.wstring()), workspaceRoot);
@@ -1173,12 +1745,16 @@ void MainWindow::detachPatchWorkspace(const bool saveSession) {
     workspaceRestoreMessages_.clear();
     documentController_->setWorkspace(nullptr);
     patchWorkspace_.reset();
+    workspaceAuthoring_ = {};
+    reloadAuthoringDocks();
     reloadSnippets();
 }
 
 void MainWindow::restorePatchWorkspaceAssociation() {
     documentController_->setWorkspace(nullptr);
     patchWorkspace_.reset();
+    workspaceAuthoring_ = {};
+    reloadAuthoringDocks();
     reloadSnippets();
     const auto* dataset = controller_->dataset();
     if (dataset == nullptr) return;
@@ -1367,6 +1943,11 @@ void MainWindow::syncActions() {
         patchWorkspace_ != nullptr && hasDataset && !busy && !publishing && !exclusive);
     cleanWorkspaceEvidenceAction_->setEnabled(
         patchWorkspace_ != nullptr && !busy && !publishing && !exclusive);
+    promoteLegacyMetadataAction_->setEnabled(patchWorkspace_ != nullptr
+        && !busy && !publishing && !exclusive && !hasOpenDocuments);
+    editInstructionCatalogAction_->setEnabled(!busy && !publishing && !exclusive);
+    editProjectOpcodeColorsAction_->setEnabled(
+        patchWorkspace_ != nullptr && !busy && !publishing && !exclusive);
     refreshAction_->setEnabled(hasDataset && !busy && !publishing && !exclusive);
     projectTree_->setEnabled(hasDataset && !busy && !publishing && !exclusive);
     messageEditor_->setEnabled(!busy && !exclusive);
@@ -1379,6 +1960,7 @@ void MainWindow::syncActions() {
         disconnectPatchWorkspaceAction_->setEnabled(false);
         rebasePatchesAction_->setEnabled(false);
         cleanWorkspaceEvidenceAction_->setEnabled(false);
+        promoteLegacyMetadataAction_->setEnabled(false);
         refreshAction_->setEnabled(false);
         saveAction_->setEnabled(false);
         exportAction_->setEnabled(false);
@@ -1620,10 +2202,10 @@ MainWindow::chooseInstructionDraft(
         if (schema.opcode == 9u
             || schema.documentRole == spice::sct::SctOpcodeDocumentRole::FoldedModifier)
             continue;
-        const auto mnemonic = schema.semantic.mnemonic.empty()
+        const auto resolved = core::SctCatalogResolver::resolve(schema.opcode);
+        const auto mnemonic = resolved.mnemonic.empty()
             ? tr("Opcode %1").arg(schema.opcode)
-            : QString::fromUtf8(schema.semantic.mnemonic.data(),
-                static_cast<qsizetype>(schema.semantic.mnemonic.size()));
+            : QString::fromStdString(resolved.mnemonic);
         auto* item = new QListWidgetItem(
             QStringLiteral("%1  %2").arg(schema.opcode, 3, 10, QLatin1Char('0'))
                 .arg(mnemonic), list);
@@ -1690,12 +2272,10 @@ MainWindow::chooseInstructionDraft(
     };
 
     QDialog editor(this);
-    const auto* selectedSchema = spice::sct::findSctOpcodeSchema(opcode);
-    const auto selectedName = selectedSchema != nullptr
-            && !selectedSchema->semantic.mnemonic.empty()
-        ? QString::fromUtf8(selectedSchema->semantic.mnemonic.data(),
-            static_cast<qsizetype>(selectedSchema->semantic.mnemonic.size()))
-        : tr("Opcode %1").arg(opcode);
+    const auto selectedEntry = core::SctCatalogResolver::resolve(opcode);
+    const auto selectedName = selectedEntry.mnemonic.empty()
+        ? tr("Opcode %1").arg(opcode)
+        : QString::fromStdString(selectedEntry.mnemonic);
     editor.setWindowTitle(tr("Configure %1").arg(selectedName));
     editor.resize(820, 480);
     auto* editorLayout = new QVBoxLayout(&editor);
@@ -2696,6 +3276,114 @@ void MainWindow::syncDocument(
             [this](const QString&, int) { scheduleWorkspaceSessionSave(); });
         connect(widget, &SctDocumentWidget::editContextChanged,
             this, &MainWindow::syncEditActions);
+        connect(widget, &SctDocumentWidget::authoringMetadataRequested,
+            this, [this, widget](const QString&, const int kind, const qulonglong id,
+                const QString& note, const bool bookmarked,
+                const QString& bookmarkLabel, const int colorRgb) {
+                const auto navigation = static_cast<core::SctNavigationKind>(kind);
+                if (navigation == core::SctNavigationKind::SectionFolder) {
+                    const auto state = documentController_->semanticState(widget->locator());
+                    if (!state) return;
+                    const auto found = std::ranges::find(state->folders, id,
+                        [](const auto& folder) { return folder.id.value; });
+                    if (found == state->folders.end()) return;
+                    auto folder = *found;
+                    folder.note = note.isEmpty() ? std::nullopt
+                        : std::optional{note.toStdString()};
+                    folder.bookmarkLabel = bookmarked
+                        ? std::optional{bookmarkLabel.toStdString()} : std::nullopt;
+                    folder.colorRgb = colorRgb < 0 ? std::nullopt
+                        : std::optional{static_cast<std::uint32_t>(colorRgb)};
+                    (void)documentController_->updateSectionFolder(
+                        widget->locator(), std::move(folder));
+                    return;
+                }
+                std::optional<core::SctAuthoringTargetKind> targetKind;
+                switch (navigation) {
+                case core::SctNavigationKind::Document: targetKind = core::SctAuthoringTargetKind::Document; break;
+                case core::SctNavigationKind::Section: targetKind = core::SctAuthoringTargetKind::Section; break;
+                case core::SctNavigationKind::Instruction: targetKind = core::SctAuthoringTargetKind::Instruction; break;
+                case core::SctNavigationKind::String: targetKind = core::SctAuthoringTargetKind::String; break;
+                case core::SctNavigationKind::FooterEntry: targetKind = core::SctAuthoringTargetKind::FooterEntry; break;
+                default: break;
+                }
+                if (!targetKind) return;
+                core::SctEntityAnnotation annotation{{*targetKind, id}};
+                annotation.note = note.isEmpty() ? std::nullopt
+                    : std::optional{note.toStdString()};
+                annotation.bookmarkLabel = bookmarked
+                    ? std::optional{bookmarkLabel.toStdString()} : std::nullopt;
+                annotation.colorRgb = colorRgb < 0 ? std::nullopt
+                    : std::optional{static_cast<std::uint32_t>(colorRgb)};
+                (void)documentController_->setAnnotation(
+                    widget->locator(), std::move(annotation));
+            });
+        connect(widget, &SctDocumentWidget::createSectionFolderRequested,
+            this, [this, widget](const QString&, const QList<qulonglong>& ids) {
+                bool accepted = false;
+                const auto name = QInputDialog::getText(this, tr("Create section folder"),
+                    tr("Folder name"), QLineEdit::Normal, {}, &accepted).trimmed();
+                if (!accepted || name.isEmpty()) return;
+                std::vector<spice::sct::SctSectionId> sections;
+                for (const auto id : ids) sections.emplace_back(id);
+                std::optional<core::SctSectionFolderId> parent;
+                if (const auto state = documentController_->semanticState(widget->locator())) {
+                    const core::SctSectionFolder* narrowest = nullptr;
+                    for (const auto& folder : state->folders) {
+                        if (!std::ranges::all_of(sections, [&](const auto section) {
+                                return std::ranges::find(folder.sections, section)
+                                    != folder.sections.end();
+                            })) continue;
+                        if (narrowest == nullptr
+                            || folder.sections.size() < narrowest->sections.size())
+                            narrowest = &folder;
+                    }
+                    if (narrowest) parent = narrowest->id;
+                }
+                (void)documentController_->createSectionFolder(
+                    widget->locator(), name.toStdString(), sections, parent);
+            });
+        connect(widget, &SctDocumentWidget::editSectionFolderRequested,
+            this, [this, widget](const QString&, const qulonglong id) {
+                const auto state = documentController_->semanticState(widget->locator());
+                if (!state) return;
+                const auto found = std::ranges::find(state->folders, id,
+                    [](const auto& folder) { return folder.id.value; });
+                if (found == state->folders.end()) return;
+                QDialog dialog(this);
+                dialog.setWindowTitle(tr("Edit Section Folder"));
+                auto* layout = new QFormLayout(&dialog);
+                auto* name = new QLineEdit(QString::fromStdString(found->name), &dialog);
+                auto* parent = new QComboBox(&dialog);
+                parent->addItem(tr("(top level)"), QVariant::fromValue<qulonglong>(0));
+                for (const auto& candidate : state->folders) {
+                    if (candidate.id == found->id) continue;
+                    parent->addItem(QString::fromStdString(candidate.name),
+                        QVariant::fromValue<qulonglong>(candidate.id.value));
+                    if (found->parent && *found->parent == candidate.id)
+                        parent->setCurrentIndex(parent->count() - 1);
+                }
+                auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save
+                    | QDialogButtonBox::Cancel, &dialog);
+                layout->addRow(tr("Name"), name);
+                layout->addRow(tr("Parent folder"), parent);
+                layout->addRow(buttons);
+                connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+                connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+                if (dialog.exec() != QDialog::Accepted || name->text().trimmed().isEmpty()) return;
+                auto updated = *found;
+                updated.name = name->text().trimmed().toStdString();
+                const auto parentId = parent->currentData().toULongLong();
+                updated.parent = parentId == 0 ? std::nullopt
+                    : std::optional{core::SctSectionFolderId{parentId}};
+                (void)documentController_->updateSectionFolder(
+                    widget->locator(), std::move(updated));
+            });
+        connect(widget, &SctDocumentWidget::removeSectionFolderRequested,
+            this, [this, widget](const QString&, const qulonglong id) {
+                (void)documentController_->removeSectionFolder(
+                    widget->locator(), core::SctSectionFolderId{id});
+            });
         connect(widget, &SctDocumentWidget::insertInstructionRequested,
             this, [this](const QString&) { insertInstruction(); });
         connect(widget, &SctDocumentWidget::deleteInstructionRequested,
@@ -2945,6 +3633,10 @@ void MainWindow::syncDocument(
     }
     widget->setSemanticProjection(update.semanticProjection != nullptr
         ? update.semanticProjection : documentController_->semanticProjection(*found));
+    if (const auto state = documentController_->semanticState(*found))
+        widget->setAuthoringMetadata(state->aliases, state->annotations,
+            state->folders, workspaceAuthoring_.opcodeColors);
+    reloadAuthoringDocks();
     if (!messageEditor_->isCommitting() && messageEditor_->boundLocator().has_value()
         && *messageEditor_->boundLocator() == *found
         && messageEditor_->boundTarget().has_value()

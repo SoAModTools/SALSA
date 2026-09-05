@@ -232,6 +232,12 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
         patch.textRepairs.push_back({repair.target, std::nullopt, repair.provenance});
     for (const auto& origin : state.unboundReferences)
         patch.unboundReferences.push_back({origin.site, std::nullopt, origin});
+    for (const auto& alias : state.aliases)
+        patch.aliases.push_back({std::nullopt, alias});
+    for (const auto& annotation : state.annotations)
+        patch.annotations.push_back({std::nullopt, annotation});
+    for (const auto& folder : state.folders)
+        patch.folders.push_back({std::nullopt, folder});
     return patch;
 }
 
@@ -300,6 +306,26 @@ void remapDocument(SctDocument& document, const IdMaps& maps) {
     }
     for (auto value : source.unboundReferences)
         result.unboundReferences.push_back(remapOriginSite(std::move(value), maps));
+    result.aliases = source.aliases;
+    for (auto value : source.annotations) {
+        switch (value.target.kind) {
+        case SctAuthoringTargetKind::Section:
+            value.target.id = maps.sections.at(value.target.id); break;
+        case SctAuthoringTargetKind::Instruction:
+            value.target.id = maps.instructions.at(value.target.id); break;
+        case SctAuthoringTargetKind::String:
+            value.target.id = maps.strings.at(value.target.id); break;
+        case SctAuthoringTargetKind::FooterEntry:
+            value.target.id = maps.footers.at(value.target.id); break;
+        default: break;
+        }
+        result.annotations.push_back(std::move(value));
+    }
+    for (auto value : source.folders) {
+        for (auto& sectionId : value.sections)
+            sectionId = SctSectionId{maps.sections.at(sectionId.value())};
+        result.folders.push_back(std::move(value));
+    }
     return result;
 }
 
@@ -1384,6 +1410,48 @@ Result<SctReconciliationResult> SctDocumentReconciler::reconcile(
         }
         std::ranges::sort(candidate.unboundReferences, {},
             &SctUnboundReferenceOrigin::site);
+        candidate.aliases = pair.incoming->state.aliases;
+        for (const auto& alias : pair.baseline->state.aliases)
+            if (std::ranges::find(candidate.aliases, alias.variable,
+                    &SctVariableAlias::variable) == candidate.aliases.end())
+                candidate.aliases.push_back(alias);
+        for (auto annotation : pair.incoming->state.annotations) {
+            bool retained = true;
+            const auto remap = [&](const auto& mapping) {
+                const auto found = mapping.find(annotation.target.id);
+                if (found == mapping.end()) retained = false;
+                else annotation.target.id = found->second;
+            };
+            switch (annotation.target.kind) {
+            case SctAuthoringTargetKind::Section:
+                remap(maps.sections); break;
+            case SctAuthoringTargetKind::Instruction:
+                remap(maps.instructions); break;
+            case SctAuthoringTargetKind::String:
+                remap(maps.strings); break;
+            case SctAuthoringTargetKind::FooterEntry:
+                remap(maps.footers); break;
+            default: break;
+            }
+            if (retained) candidate.annotations.push_back(std::move(annotation));
+        }
+        for (const auto& annotation : pair.baseline->state.annotations)
+            if (std::ranges::find(candidate.annotations, annotation.target,
+                    &SctEntityAnnotation::target) == candidate.annotations.end())
+                candidate.annotations.push_back(annotation);
+        for (auto folder : pair.incoming->state.folders) {
+            std::vector<SctSectionId> remapped;
+            for (const auto sectionId : folder.sections)
+                if (const auto found = maps.sections.find(sectionId.value());
+                    found != maps.sections.end())
+                    remapped.emplace_back(found->second);
+            folder.sections = std::move(remapped);
+            if (!folder.sections.empty()) candidate.folders.push_back(std::move(folder));
+        }
+        for (const auto& folder : pair.baseline->state.folders)
+            if (std::ranges::find(candidate.folders, folder.id,
+                    &SctSectionFolder::id) == candidate.folders.end())
+                candidate.folders.push_back(folder);
 
         SctReconciledScript script{pair.baseline->locator, pair.incoming->key};
         script.candidate = candidate;

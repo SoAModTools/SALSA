@@ -1,4 +1,5 @@
 #include "Sct/SctStructuredOutlineModel.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 
 #include "SpiceSCT/SctOpcodeMetadata.h"
 
@@ -286,13 +287,12 @@ void SctStructuredOutlineModel::appendInstruction(Node& parent,
         core::SctNavigationKind::Instruction, instruction.value()};
     node->editContext = std::move(context);
     const auto* value = snapshot_->analysis->entities.find(*snapshot_->document, instruction);
-    const auto* schema = value == nullptr ? nullptr
-        : spice::sct::findSctOpcodeSchema(value->opcode);
+    const auto resolved = value == nullptr ? core::SctResolvedCatalogEntry{}
+        : core::SctCatalogResolver::resolve(value->opcode);
     node->label = value == nullptr ? tr("Unavailable instruction")
         : QStringLiteral("%1 (%2)")
-            .arg(schema == nullptr ? tr("Opcode")
-                : QString::fromUtf8(schema->semantic.mnemonic.data(),
-                    static_cast<qsizetype>(schema->semantic.mnemonic.size())))
+            .arg(resolved.mnemonic.empty() ? tr("Opcode")
+                : QString::fromStdString(resolved.mnemonic))
             .arg(value->opcode);
     node->secondary = tr("Instruction %1").arg(instruction.value());
     parent.children.push_back(std::move(node));
@@ -450,11 +450,10 @@ void SctStructuredOutlineModel::appendAuthoredArms() {
                 child->parent = node.get();
                 child->target = core::SctNavigationTarget{
                     core::SctNavigationKind::Instruction, instruction.id.value()};
-                const auto* schema = spice::sct::findSctOpcodeSchema(instruction.opcode);
-                child->label = schema == nullptr
+                const auto resolved = core::SctCatalogResolver::resolve(instruction.opcode);
+                child->label = resolved.mnemonic.empty()
                     ? tr("Opcode %1").arg(instruction.opcode)
-                    : QString::fromUtf8(schema->semantic.mnemonic.data(),
-                        static_cast<qsizetype>(schema->semantic.mnemonic.size()));
+                    : QString::fromStdString(resolved.mnemonic);
                 child->secondary = tr("Instruction %1").arg(instruction.id.value());
                 child->editContext = node->editContext;
                 node->children.push_back(std::move(child));

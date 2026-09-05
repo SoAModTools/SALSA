@@ -1,4 +1,5 @@
 #include "Sct/SctSemanticNavigatorWidget.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 #include "Ui/UiConstants.h"
 
 #include "SpiceSCT/SctDocumentAnalysis.h"
@@ -51,11 +52,10 @@ struct TreeState final {
 }
 
 [[nodiscard]] QString opcodeName(const std::uint16_t opcode) {
-    const auto* schema = spice::sct::findSctOpcodeSchema(opcode);
-    const auto mnemonic = schema != nullptr && !schema->semantic.mnemonic.empty()
-        ? QString::fromUtf8(schema->semantic.mnemonic.data(),
-            static_cast<qsizetype>(schema->semantic.mnemonic.size()))
-        : SctSemanticNavigatorWidget::tr("Unknown opcode");
+    const auto resolved = core::SctCatalogResolver::resolve(opcode);
+    const auto mnemonic = resolved.mnemonic.empty()
+        ? SctSemanticNavigatorWidget::tr("Unknown opcode")
+        : QString::fromStdString(resolved.mnemonic);
     return QStringLiteral("%1 (%2)").arg(mnemonic).arg(opcode);
 }
 

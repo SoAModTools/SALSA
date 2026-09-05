@@ -5,6 +5,7 @@
 #include "SalsaCore/Persistence/WorkspaceSession.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctFragment.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 
 #include <QMainWindow>
 #include <QPointer>
@@ -22,6 +23,7 @@ class QMenu;
 class QProgressBar;
 class QPushButton;
 class QTableView;
+class QTableWidget;
 class QTabWidget;
 class QToolButton;
 class QTreeView;
@@ -82,6 +84,15 @@ private:
     void associatePatchWorkspace();
     void rebaseStalePatches();
     void cleanWorkspaceEvidence();
+    void promoteLegacyMetadata();
+    void editInstructionCatalog();
+    void editProjectOpcodeColors();
+    void addVariableAlias(bool projectScope);
+    void removeSelectedVariableAlias();
+    void editSelectedVariableMetadata();
+    void reloadAuthoringDocks();
+    [[nodiscard]] bool saveWorkspaceAuthoring();
+    void loadWorkspaceAuthoring();
     [[nodiscard]] bool openPatchWorkspace(
         const QString& workspaceRoot, bool allowConfirmation);
     void disconnectPatchWorkspace();
@@ -200,11 +211,16 @@ private:
     QDockWidget* messageEditorDock_ = nullptr;
     QDockWidget* scptEditorDock_ = nullptr;
     QDockWidget* snippetLibraryDock_ = nullptr;
+    QDockWidget* aliasDock_ = nullptr;
+    QDockWidget* bookmarkDock_ = nullptr;
     SctSemanticNavigatorWidget* semanticNavigator_ = nullptr;
     SctMessageEditorWidget* messageEditor_ = nullptr;
     SctScptEditorWidget* scptEditor_ = nullptr;
     QLineEdit* snippetSearch_ = nullptr;
     QListWidget* snippetList_ = nullptr;
+    QTableWidget* aliasTable_ = nullptr;
+    QTableWidget* bookmarkTable_ = nullptr;
+    QPushButton* editAliasMetadataButton_ = nullptr;
     QPushButton* pasteSnippetButton_ = nullptr;
     QPushButton* deleteSnippetButton_ = nullptr;
     QProgressBar* progressBar_ = nullptr;
@@ -219,6 +235,9 @@ private:
     QAction* disconnectPatchWorkspaceAction_ = nullptr;
     QAction* rebasePatchesAction_ = nullptr;
     QAction* cleanWorkspaceEvidenceAction_ = nullptr;
+    QAction* promoteLegacyMetadataAction_ = nullptr;
+    QAction* editInstructionCatalogAction_ = nullptr;
+    QAction* editProjectOpcodeColorsAction_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
     QAction* cutAction_ = nullptr;
@@ -253,6 +272,9 @@ private:
     QString lastDataset_{};
     QString lastExportDirectory_{};
     std::shared_ptr<const core::LocalSalsaWorkspace> patchWorkspace_{};
+    core::SctPersonalCatalog personalCatalog_{};
+    std::filesystem::path personalCatalogPath_{};
+    core::SctWorkspaceAuthoringState workspaceAuthoring_{};
     struct LoadedSnippet final {
         bool workspace = false;
         core::SctSnippet snippet{};

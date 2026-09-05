@@ -2,6 +2,7 @@
 
 #include "SalsaCore/Sct/SctPresentation.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 
 #include <QAbstractItemModel>
 #include <QList>
@@ -35,6 +36,10 @@ public:
 
     void resetFrom(const std::vector<core::SctOutlineItem>& outline,
         const spice::sct::SctDocument& document);
+    void setPresentationMetadata(
+        std::span<const core::SctEntityAnnotation> annotations,
+        std::span<const core::SctSectionFolder> folders,
+        std::span<const core::SctOpcodeColor> opcodeColors);
     [[nodiscard]] bool apply(const core::SctEditChangeSet& changes);
     [[nodiscard]] std::optional<core::SctNavigationTarget> target(
         const QModelIndex& index) const noexcept;
@@ -87,6 +92,8 @@ private:
     std::unordered_map<std::string, Node*> nodes_{};
     std::unordered_map<std::uint64_t, spice::sct::SctDocumentInstruction>
         instructionValues_{};
+    std::unordered_map<std::string, std::uint32_t> annotationColors_{};
+    std::unordered_map<std::uint16_t, std::uint32_t> opcodeColors_{};
 };
 
 }  // namespace salsa::qt

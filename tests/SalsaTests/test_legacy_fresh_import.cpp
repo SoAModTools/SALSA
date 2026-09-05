@@ -4,6 +4,7 @@
 #include "SalsaCore/Legacy/LegacyMetadataPromotion.h"
 #include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
 #include "SalsaCore/Project/LocalGameProject.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 
 #include <Windows.h>
 #include <gtest/gtest.h>
@@ -107,18 +108,46 @@ void writeFile(const std::filesystem::path& path,
 [[nodiscard]] std::filesystem::path makeFreshImportCapsule(
     const std::filesystem::path& parent,
     const std::vector<FixtureScript>& fixtureScripts,
-    const bool invalidInstructionColors = false) {
+    const bool invalidInstructionColors = false,
+    const bool includeAuthoringMetadata = false) {
     const auto root = parent / L"input.salsa-legacy";
     const std::string sourceContents(123, 'p');
     writeFile(parent / L"fixture.prj", sourceContents);
+    const auto legacyString = [](const std::string_view text) {
+        return nlohmann::ordered_json::array({5,
+            nlohmann::ordered_json::binary(std::vector<std::uint8_t>(
+                text.begin(), text.end()))});
+    };
+    const auto legacyInteger = [](const std::int64_t value) {
+        return nlohmann::ordered_json::array({3, std::to_string(value)});
+    };
+    const auto legacyList = [](const std::uint64_t id,
+        nlohmann::ordered_json items = nlohmann::ordered_json::array()) {
+        return nlohmann::ordered_json::array({7, id, std::move(items)});
+    };
+    const auto legacyDictionary = [](const std::uint64_t id,
+        nlohmann::ordered_json items = nlohmann::ordered_json::array()) {
+        return nlohmann::ordered_json::array({11, id, std::move(items)});
+    };
+    auto projectAliases = legacyDictionary(1);
+    auto projectColors = legacyDictionary(2);
+    if (includeAuthoringMetadata) {
+        projectAliases = legacyDictionary(1, nlohmann::ordered_json::array({
+            nlohmann::ordered_json::array({legacyString("BitVar"),
+                legacyDictionary(2, nlohmann::ordered_json::array({
+                    nlohmann::ordered_json::array({legacyInteger(4),
+                        legacyDictionary(3, nlohmann::ordered_json::array({
+                            nlohmann::ordered_json::array({legacyString("alias"),
+                                legacyString("ProjectFlag")})}))})}))})}));
+        projectColors = legacyDictionary(4, nlohmann::ordered_json::array({
+            nlohmann::ordered_json::array({legacyInteger(12), legacyString("#123456")})}));
+    }
     nlohmann::ordered_json projectRecord{
         {"formatId", "jahorta.salsa.legacy-project-record"}, {"schemaVersion", 2},
         {"fieldDispositions", nlohmann::ordered_json::object()},
-        {"fields", {{"global_variables", nlohmann::ordered_json::array(
-                        {11, 1, nlohmann::ordered_json::array()})},
+        {"fields", {{"global_variables", std::move(projectAliases)},
                     {"version", nlohmann::ordered_json::array({3, "7"})},
-                    {"inst_id_colors", nlohmann::ordered_json::array(
-                        {11, 2, nlohmann::ordered_json::array()})}}},
+                    {"inst_id_colors", std::move(projectColors)}}},
         {"normalizations", nlohmann::ordered_json::array()},
         {"diagnostics", nlohmann::ordered_json::array()}};
     if (invalidInstructionColors)
@@ -141,20 +170,9 @@ void writeFile(const std::filesystem::path& path,
     for (std::uint32_t ordinal = 0; ordinal < fixtureScripts.size(); ++ordinal) {
         const auto& fixture = fixtureScripts[ordinal];
         actionRequired = actionRequired || !fixture.accepted;
+        const std::uint64_t addedParameterNodes =
+            fixture.littleEndianScptOverride ? 3u : 0u;
         const auto nullValue = nlohmann::ordered_json::array({1});
-        const auto legacyString = [](const std::string_view text) {
-            return nlohmann::ordered_json::array({5,
-                nlohmann::ordered_json::binary(std::vector<std::uint8_t>(
-                    text.begin(), text.end()))});
-        };
-        const auto legacyList = [](const std::uint64_t id,
-            nlohmann::ordered_json items = nlohmann::ordered_json::array()) {
-            return nlohmann::ordered_json::array({7, id, std::move(items)});
-        };
-        const auto legacyDictionary = [](const std::uint64_t id,
-            nlohmann::ordered_json items = nlohmann::ordered_json::array()) {
-            return nlohmann::ordered_json::array({11, id, std::move(items)});
-        };
         const auto legacyBytes = [](std::vector<std::uint8_t> bytes) {
             return nlohmann::ordered_json::array(
                 {6, nlohmann::ordered_json::binary(std::move(bytes))});
@@ -164,14 +182,28 @@ void writeFile(const std::filesystem::path& path,
             {"sect_list", nullValue}, {"string_garbage", nullValue},
             {"unused_sections", nullValue}, {"errors", nullValue},
             {"error_sections", nullValue}, {"variables", nullValue}};
+        if (includeAuthoringMetadata) {
+            sidecar["variables"] = legacyDictionary(21 + addedParameterNodes,
+                nlohmann::ordered_json::array({
+                    nlohmann::ordered_json::array({legacyString("IntVar"),
+                        legacyDictionary(22 + addedParameterNodes, nlohmann::ordered_json::array({
+                            nlohmann::ordered_json::array({legacyInteger(7),
+                                legacyDictionary(23 + addedParameterNodes, nlohmann::ordered_json::array({
+                                    nlohmann::ordered_json::array({legacyString("alias"),
+                                        legacyString("LocalCounter")})}))})}))})}));
+            const auto groupChildren = legacyList(19 + addedParameterNodes);
+            const auto group = legacyDictionary(18 + addedParameterNodes,
+                nlohmann::ordered_json::array({nlohmann::ordered_json::array({
+                    legacyString("main|group"), groupChildren})}));
+            sidecar["sect_tree"] = legacyList(17 + addedParameterNodes,
+                nlohmann::ordered_json::array({group}));
+        }
         nlohmann::ordered_json diagnostics = nlohmann::ordered_json::array();
         if (!fixture.accepted) diagnostics.push_back({{"code", "fixture-failure"},
             {"path", "script"}, {"message", "Synthetic script failure."}});
         nlohmann::ordered_json ir = nullptr;
         if (fixture.accepted) {
             const auto instructionId = std::string{"fixture-instruction"};
-            const std::uint64_t addedParameterNodes =
-                fixture.littleEndianScptOverride ? 3u : 0u;
             auto opcode = std::string{"12"};
             auto parameters = legacyDictionary(7);
             if (fixture.littleEndianScptOverride) {
@@ -214,7 +246,8 @@ void writeFile(const std::filesystem::path& path,
             auto sectionPairs = nlohmann::ordered_json::array();
             sectionPairs.push_back(nlohmann::ordered_json::array(
                 {legacyString("main"), std::move(section)}));
-            sidecar["sect_list"] = legacyList(17 + addedParameterNodes,
+            sidecar["sect_list"] = legacyList(17 + addedParameterNodes
+                    + (includeAuthoringMetadata ? 3u : 0u),
                 nlohmann::ordered_json::array({legacyString("main")}));
             ir = {{"header", nullValue}, {"footer", nullValue},
                 {"string_groups", nullValue}, {"strings", nullValue},
@@ -710,6 +743,90 @@ TEST(LegacyFreshImportTest, TypedMetadataPromotionIsAtomicAndIdempotent) {
     ASSERT_NE(applied, after.value().items.end());
     EXPECT_EQ(applied->record.disposition, LegacyMetadataDisposition::Applied);
     EXPECT_FALSE(applied->assessment.eligible);
+}
+
+TEST(LegacyFreshImportTest, BuiltInPromotionAppliesV7AliasesColorsAndSectionFolders) {
+    FreshImportTemporaryDirectory temporary;
+    const auto capsule = makeFreshImportCapsule(
+        temporary.path(), {{"A001A", "A001A"}}, false, true);
+    const auto request = requestFor(temporary, capsule);
+    auto prepared = LegacyFreshImportPreparer::prepare(
+        request, temporary.path() / L"source-stage");
+    ASSERT_TRUE(prepared) << prepared.diagnostics().front().message;
+    const auto committed = LegacyFreshImportCommitService::commit({prepared.value(),
+        temporary.path() / L"fixture.prj", temporary.path() / L"workspace-stage",
+        temporary.path() / L"recovery"});
+    ASSERT_TRUE(committed.succeeded()) << (committed.diagnostics.empty()
+        ? "no diagnostic" : committed.diagnostics.front().message);
+    auto workspace = LocalSalsaWorkspace::openOrCreate(
+        request.workspaceDirectory, *committed.dataset);
+    ASSERT_TRUE(workspace);
+    LegacyMetadataPromotionRegistry registry;
+    ASSERT_TRUE(registerBuiltInLegacyMetadataPromotionAdapters(registry));
+    auto preview = LegacyMetadataPromotionService::preview(
+        workspace.value(), prepared.value().plan.capsuleId, registry);
+    ASSERT_TRUE(preview) << preview.diagnostics().front().message;
+    std::vector<std::string> aliasRecords;
+    for (const auto& item : preview.value().items)
+        if (item.assessment.eligible && !item.assessment.conflict
+            && (item.record.kind == LegacyMetadataKind::ProjectVariableAliases
+                || item.record.kind == LegacyMetadataKind::ScriptVariableAliases))
+            aliasRecords.push_back(item.record.recordId);
+    ASSERT_EQ(aliasRecords.size(), 2u);
+    const auto promotedAliases = LegacyMetadataPromotionService::promote(
+        workspace.value(), preview.value(), aliasRecords, registry);
+    ASSERT_TRUE(promotedAliases.applied) << (promotedAliases.diagnostics.empty()
+        ? "no diagnostic" : promotedAliases.diagnostics.front().message);
+
+    auto workspaceMetadata = SctWorkspaceAuthoringStore(
+        request.workspaceDirectory / L"authoring" / L"workspace.json").load();
+    ASSERT_TRUE(workspaceMetadata);
+    ASSERT_EQ(workspaceMetadata.value().projectAliases.size(), 1u);
+    EXPECT_EQ(workspaceMetadata.value().projectAliases.front().alias, "ProjectFlag");
+    EXPECT_TRUE(workspaceMetadata.value().opcodeColors.empty());
+
+    auto locator = AssetLocator::fromRelativePath(L"A001A.sct");
+    ASSERT_TRUE(locator);
+    auto project = LocalGameProject::inspect({request.sourceDirectory,
+        committed.dataset->identity.platform, committed.dataset->identity.region});
+    ASSERT_TRUE(project);
+    auto loaded = SctPatchCheckpointService::load(
+        project.value(), &workspace.value(), &workspace.value(), locator.value());
+    ASSERT_TRUE(loaded.load.succeeded());
+    ASSERT_FALSE(loaded.patchConflict);
+    ASSERT_EQ(loaded.aliases.size(), 1u);
+    EXPECT_EQ(loaded.aliases.front().alias, "LocalCounter");
+    EXPECT_TRUE(loaded.folders.empty());
+
+    preview = LegacyMetadataPromotionService::preview(
+        workspace.value(), prepared.value().plan.capsuleId, registry);
+    ASSERT_TRUE(preview) << preview.diagnostics().front().message;
+    std::vector<std::string> presentationRecords;
+    for (const auto& item : preview.value().items)
+        if (item.assessment.eligible && !item.assessment.conflict
+            && (item.record.kind == LegacyMetadataKind::OpcodeColors
+                || item.record.kind == LegacyMetadataKind::SectionGroups))
+            presentationRecords.push_back(item.record.recordId);
+    ASSERT_EQ(presentationRecords.size(), 2u);
+    const auto promotedPresentation = LegacyMetadataPromotionService::promote(
+        workspace.value(), preview.value(), presentationRecords, registry);
+    ASSERT_TRUE(promotedPresentation.applied) << (
+        promotedPresentation.diagnostics.empty() ? "no diagnostic"
+            : promotedPresentation.diagnostics.front().message);
+
+    workspaceMetadata = SctWorkspaceAuthoringStore(
+        request.workspaceDirectory / L"authoring" / L"workspace.json").load();
+    ASSERT_TRUE(workspaceMetadata);
+    ASSERT_EQ(workspaceMetadata.value().opcodeColors.size(), 1u);
+    EXPECT_EQ(workspaceMetadata.value().opcodeColors.front(),
+        (SctOpcodeColor{12, 0x123456u}));
+    loaded = SctPatchCheckpointService::load(
+        project.value(), &workspace.value(), &workspace.value(), locator.value());
+    ASSERT_TRUE(loaded.load.succeeded());
+    ASSERT_FALSE(loaded.patchConflict);
+    ASSERT_EQ(loaded.folders.size(), 1u);
+    EXPECT_EQ(loaded.folders.front().name, "main");
+    ASSERT_EQ(loaded.folders.front().sections.size(), 1u);
 }
 
 TEST(LegacyFreshImportTest, ValidatesOptionalPrivateOrganicCapsuleWithoutWriting) {

@@ -7,17 +7,23 @@
 #include "SpiceSCT/SctDocumentIndex.h"
 
 #include <QComboBox>
+#include <QCheckBox>
 #include <QColor>
+#include <QColorDialog>
+#include <QFormLayout>
 #include <QFont>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QPainter>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QStyle>
 #include <QScrollBar>
@@ -217,6 +223,27 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     properties_->header()->resizeSection(0, 180);
     properties_->header()->resizeSection(1, 240);
     properties_->header()->resizeSection(2, 280);
+    auto* authoring = new QGroupBox(tr("Authoring metadata"), details);
+    auto* authoringLayout = new QFormLayout(authoring);
+    authoringNote_ = new QPlainTextEdit(authoring);
+    authoringNote_->setPlaceholderText(tr("Plain multiline note"));
+    authoringNote_->setMaximumHeight(90);
+    authoringBookmark_ = new QCheckBox(tr("Bookmark this entity"), authoring);
+    authoringBookmarkLabel_ = new QLineEdit(authoring);
+    authoringBookmarkLabel_->setPlaceholderText(tr("Optional bookmark label"));
+    auto* colorRow = new QHBoxLayout;
+    authoringColorButton_ = new QPushButton(tr("Choose color..."), authoring);
+    authoringClearColorButton_ = new QPushButton(tr("Clear color"), authoring);
+    colorRow->addWidget(authoringColorButton_);
+    colorRow->addWidget(authoringClearColorButton_);
+    colorRow->addStretch(1);
+    authoringApplyButton_ = new QPushButton(tr("Apply metadata"), authoring);
+    authoringApplyButton_->setEnabled(false);
+    authoringLayout->addRow(tr("Note"), authoringNote_);
+    authoringLayout->addRow(QString{}, authoringBookmark_);
+    authoringLayout->addRow(tr("Bookmark label"), authoringBookmarkLabel_);
+    authoringLayout->addRow(tr("Row accent"), colorRow);
+    authoringLayout->addRow(QString{}, authoringApplyButton_);
     parameterTable_ = new QTreeView(details);
     parameterTableModel_ = new SctParameterTableModel(parameterTable_);
     parameterTable_->setModel(parameterTableModel_);
@@ -246,6 +273,7 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     detailsLayout->addWidget(title_);
     detailsLayout->addWidget(subtitle_);
     detailsLayout->addWidget(properties_, 1);
+    detailsLayout->addWidget(authoring);
     detailsLayout->addWidget(parameterTable_, 1);
     detailsLayout->addWidget(preview_);
     splitter->addWidget(outlinePane);
@@ -265,6 +293,29 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
             emit becameActive(QString::fromStdString(locator_.identityKey()));
             emit editContextChanged();
         });
+    connect(authoringBookmark_, &QCheckBox::toggled,
+        authoringBookmarkLabel_, &QWidget::setEnabled);
+    connect(authoringColorButton_, &QPushButton::clicked, this, [this] {
+        const auto initial = authoringColor_
+            ? QColor::fromRgb(*authoringColor_) : palette().color(QPalette::Highlight);
+        const auto selected = QColorDialog::getColor(initial, this,
+            tr("Choose row accent"));
+        if (!selected.isValid()) return;
+        authoringColor_ = selected.rgb() & 0xffffffu;
+        authoringColorButton_->setText(selected.name(QColor::HexRgb).toUpper());
+    });
+    connect(authoringClearColorButton_, &QPushButton::clicked, this, [this] {
+        authoringColor_.reset();
+        authoringColorButton_->setText(tr("Choose color..."));
+    });
+    connect(authoringApplyButton_, &QPushButton::clicked, this, [this] {
+        if (!currentTarget_) return;
+        emit authoringMetadataRequested(QString::fromStdString(locator_.identityKey()),
+            static_cast<int>(currentTarget_->kind), currentTarget_->id,
+            authoringNote_->toPlainText(), authoringBookmark_->isChecked(),
+            authoringBookmarkLabel_->text(), authoringColor_
+                ? static_cast<int>(*authoringColor_) : -1);
+    });
     connect(outline_->selectionModel(), &QItemSelectionModel::selectionChanged,
         this, [this] {
             syncDocumentButtons();
@@ -648,6 +699,9 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
         auto* deleteSection = menu.addAction(tr("Delete Script Section"));
         auto* moveSectionUp = menu.addAction(tr("Move Section Up"));
         auto* moveSectionDown = menu.addAction(tr("Move Section Down"));
+        auto* createFolder = menu.addAction(tr("Group Sections in Folder..."));
+        auto* editFolder = menu.addAction(tr("Edit Section Folder..."));
+        auto* removeFolder = menu.addAction(tr("Remove Section Folder"));
         auto* createFooterMessage = menu.addAction(tr("New Footer Message"));
         auto* deleteText = menu.addAction(tr("Delete Text Entity"));
         const bool hasSection = selectedSection().has_value();
@@ -658,6 +712,12 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
         deleteSection->setEnabled(editingEnabled_ && hasSection);
         moveSectionUp->setEnabled(editingEnabled_ && hasSection);
         moveSectionDown->setEnabled(editingEnabled_ && hasSection);
+        const auto sections = selectedSections();
+        createFolder->setEnabled(editingEnabled_ && !sections.empty());
+        editFolder->setEnabled(editingEnabled_ && currentTarget_
+            && currentTarget_->kind == core::SctNavigationKind::SectionFolder);
+        removeFolder->setEnabled(editingEnabled_ && currentTarget_
+            && currentTarget_->kind == core::SctNavigationKind::SectionFolder);
         createFooterMessage->setEnabled(editingEnabled_);
         deleteText->setEnabled(editingEnabled_ && hasText);
         menu.addSeparator();
@@ -694,6 +754,24 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
         connect(moveSectionDown, &QAction::triggered, this, [this]() {
             emit moveSectionRequested(QString::fromStdString(locator_.identityKey()),
                 static_cast<int>(core::SctSectionMoveDirection::Down));
+        });
+        connect(createFolder, &QAction::triggered, this, [this, sections]() {
+            QList<qulonglong> values;
+            for (const auto section : sections) values.push_back(section.value());
+            emit createSectionFolderRequested(
+                QString::fromStdString(locator_.identityKey()), values);
+        });
+        connect(removeFolder, &QAction::triggered, this, [this]() {
+            if (currentTarget_ && currentTarget_->kind
+                    == core::SctNavigationKind::SectionFolder)
+                emit removeSectionFolderRequested(
+                    QString::fromStdString(locator_.identityKey()), currentTarget_->id);
+        });
+        connect(editFolder, &QAction::triggered, this, [this]() {
+            if (currentTarget_ && currentTarget_->kind
+                    == core::SctNavigationKind::SectionFolder)
+                emit editSectionFolderRequested(
+                    QString::fromStdString(locator_.identityKey()), currentTarget_->id);
         });
         connect(createFooterMessage, &QAction::triggered, this, [this]() {
             emit createFooterTextRequested(QString::fromStdString(locator_.identityKey()),
@@ -924,8 +1002,22 @@ bool SctDocumentWidget::selectLocation(
 void SctDocumentWidget::setEditingEnabled(const bool enabled) {
     if (editingEnabled_ == enabled) return;
     editingEnabled_ = enabled;
+    authoringApplyButton_->setEnabled(enabled);
     syncDocumentButtons();
     emit editContextChanged();
+}
+
+void SctDocumentWidget::setAuthoringMetadata(
+    std::vector<core::SctVariableAlias> aliases,
+    std::vector<core::SctEntityAnnotation> annotations,
+    std::vector<core::SctSectionFolder> folders,
+    std::vector<core::SctOpcodeColor> opcodeColors) {
+    aliases_ = std::move(aliases);
+    annotations_ = std::move(annotations);
+    folders_ = std::move(folders);
+    opcodeColors_ = std::move(opcodeColors);
+    rebuildOutline();
+    if (currentTarget_) syncAuthoringEditor(*currentTarget_);
 }
 
 void SctDocumentWidget::setSemanticProjection(
@@ -1116,8 +1208,9 @@ bool SctDocumentWidget::canMoveSelected(const core::SctInstructionMoveDirection 
 void SctDocumentWidget::rebuildOutline() {
     const auto retained = currentTarget_;
     if (!snapshot_ || !snapshot_->document) return;
-    outlineModel_->resetFrom(core::SctPresentationService::outline(*snapshot_),
+    outlineModel_->resetFrom(core::SctPresentationService::outline(*snapshot_, folders_),
         *snapshot_->document);
+    outlineModel_->setPresentationMetadata(annotations_, folders_, opcodeColors_);
     outline_->collapseAll();
     auto selected = retained.has_value()
         ? outlineModel_->indexForTarget(*retained) : QModelIndex{};
@@ -1169,6 +1262,22 @@ void SctDocumentWidget::markStructuredOutlinePending() {
 
 void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
     if (!snapshot_) return;
+    if (target.kind == core::SctNavigationKind::SectionFolder) {
+        const auto found = std::ranges::find(folders_, target.id,
+            [](const auto& folder) { return folder.id.value; });
+        if (found == folders_.end()) return;
+        title_->setText(QString::fromStdString(found->name));
+        subtitle_->setText(tr("Section folder"));
+        propertyLocations_.clear();
+        properties_->clear();
+        auto* count = new QTreeWidgetItem(properties_);
+        count->setText(0, tr("Direct sections"));
+        count->setText(1, QString::number(found->sections.size()));
+        parameterTable_->hide();
+        preview_->hide();
+        syncAuthoringEditor(target);
+        return;
+    }
     if (target.kind == core::SctNavigationKind::Instruction
         && (!index_
             || index_->find(*snapshot_->document,
@@ -1188,6 +1297,7 @@ void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
             showParameterTable(instruction->id);
             preview_->clear();
             preview_->hide();
+            syncAuthoringEditor(target);
             return;
         }
     }
@@ -1218,6 +1328,52 @@ void SctDocumentWidget::showTarget(const core::SctNavigationTarget target) {
         cursor.insertText(QString::fromStdString(run.text), format);
     }
     preview_->setVisible(!presentation.preview.empty());
+    syncAuthoringEditor(target);
+}
+
+void SctDocumentWidget::syncAuthoringEditor(
+    const core::SctNavigationTarget target) {
+    std::optional<std::string> note;
+    std::optional<std::string> bookmark;
+    std::optional<std::uint32_t> color;
+    if (target.kind == core::SctNavigationKind::SectionFolder) {
+        const auto found = std::ranges::find(folders_, target.id,
+            [](const auto& folder) { return folder.id.value; });
+        if (found != folders_.end()) {
+            note = found->note;
+            bookmark = found->bookmarkLabel;
+            color = found->colorRgb;
+        }
+    } else {
+        std::optional<core::SctAuthoringTargetKind> kind;
+        switch (target.kind) {
+        case core::SctNavigationKind::Document: kind = core::SctAuthoringTargetKind::Document; break;
+        case core::SctNavigationKind::Section: kind = core::SctAuthoringTargetKind::Section; break;
+        case core::SctNavigationKind::Instruction: kind = core::SctAuthoringTargetKind::Instruction; break;
+        case core::SctNavigationKind::String: kind = core::SctAuthoringTargetKind::String; break;
+        case core::SctNavigationKind::FooterEntry: kind = core::SctAuthoringTargetKind::FooterEntry; break;
+        default: break;
+        }
+        if (kind) {
+            const auto found = std::ranges::find(annotations_,
+                core::SctAuthoringTarget{*kind, target.id},
+                &core::SctEntityAnnotation::target);
+            if (found != annotations_.end()) {
+                note = found->note;
+                bookmark = found->bookmarkLabel;
+                color = found->colorRgb;
+            }
+        }
+    }
+    authoringNote_->setPlainText(note ? QString::fromStdString(*note) : QString{});
+    authoringBookmark_->setChecked(bookmark.has_value());
+    authoringBookmarkLabel_->setText(bookmark
+        ? QString::fromStdString(*bookmark) : QString{});
+    authoringBookmarkLabel_->setEnabled(bookmark.has_value());
+    authoringColor_ = color;
+    authoringColorButton_->setText(color
+        ? QStringLiteral("#%1").arg(*color, 6, 16, QLatin1Char('0')).toUpper()
+        : tr("Choose color..."));
 }
 
 void SctDocumentWidget::showParameterTable(

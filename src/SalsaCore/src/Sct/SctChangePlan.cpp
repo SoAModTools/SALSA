@@ -52,6 +52,21 @@ template<typename T>
             ? std::to_string(*site.parameter.repeatedGroupOrdinal) : "fixed");
 }
 
+[[nodiscard]] std::string aliasKey(const SctVariableKey& key) {
+    return "alias:" + std::to_string(static_cast<unsigned>(key.kind)) + ':'
+        + std::to_string(key.index);
+}
+
+[[nodiscard]] std::string annotationKey(const SctAuthoringTarget& target) {
+    return "annotation:" + std::to_string(static_cast<unsigned>(target.kind)) + ':'
+        + std::to_string(target.id) + ':'
+        + (target.variableKind ? std::to_string(static_cast<unsigned>(*target.variableKind)) : "-");
+}
+
+[[nodiscard]] std::string folderKey(const SctSectionFolderId id) {
+    return "folder:" + std::to_string(id.value);
+}
+
 [[nodiscard]] bool sameOpaque(const spice::sct::SctOpaqueAttachment& left,
     const spice::sct::SctOpaqueAttachment& right) {
     return left.id == right.id && left.bytes == right.bytes
@@ -235,6 +250,12 @@ void addOrMergeUnit(SctScriptChangePlan& script,
     for (const auto& repair : patch.textRepairs) result.insert(repairKey(repair.target));
     for (const auto& origin : patch.unboundReferences)
         result.insert(unboundKey(origin.site));
+    for (const auto& value : patch.aliases)
+        result.insert(aliasKey((value.before ? value.before : value.after)->variable));
+    for (const auto& value : patch.annotations)
+        result.insert(annotationKey((value.before ? value.before : value.after)->target));
+    for (const auto& value : patch.folders)
+        result.insert(folderKey((value.before ? value.before : value.after)->id));
     if (patch.sectionOrder)
         for (const auto id : orderAffected(patch.sectionOrder->before, patch.sectionOrder->after))
             result.insert(idKey("section", id));
@@ -300,6 +321,15 @@ void addOrMergeUnit(SctScriptChangePlan& script,
     for (const auto& value : plan.completePatch.unboundReferences)
         if (selectedKeys.contains(unboundKey(value.site)))
             result.unboundReferences.push_back(value);
+    for (const auto& value : plan.completePatch.aliases)
+        if (selectedKeys.contains(aliasKey((value.before ? value.before : value.after)->variable)))
+            result.aliases.push_back(value);
+    for (const auto& value : plan.completePatch.annotations)
+        if (selectedKeys.contains(annotationKey((value.before ? value.before : value.after)->target)))
+            result.annotations.push_back(value);
+    for (const auto& value : plan.completePatch.folders)
+        if (selectedKeys.contains(folderKey((value.before ? value.before : value.after)->id)))
+            result.folders.push_back(value);
 
     if (plan.completePatch.sectionOrder && current.document) {
         std::unordered_set<spice::sct::SctSectionId> selected;
@@ -482,6 +512,39 @@ Result<SctChangePlan> SctChangePlanService::build(
                     : "Add unbound reference provenance";
                 unit.target = SctNavigationTarget{SctNavigationKind::Instruction,
                     value.site.instruction.value()};
+                addOrMergeUnit(script, byKey, std::move(unit), identity);
+            }
+            for (const auto& value : script.completePatch.aliases) {
+                const auto& record = *(value.before ? value.before : value.after);
+                SctChangeUnit unit;
+                unit.entityKey = aliasKey(record.variable);
+                unit.category = SctChangeCategory::AuthoringMetadata;
+                unit.entityKind = SctChangeEntityKind::VariableAlias;
+                unit.summary = value.before
+                    ? (value.after ? "Change variable alias" : "Remove variable alias")
+                    : "Add variable alias";
+                addOrMergeUnit(script, byKey, std::move(unit), identity);
+            }
+            for (const auto& value : script.completePatch.annotations) {
+                const auto& record = *(value.before ? value.before : value.after);
+                SctChangeUnit unit;
+                unit.entityKey = annotationKey(record.target);
+                unit.category = SctChangeCategory::AuthoringMetadata;
+                unit.entityKind = SctChangeEntityKind::EntityAnnotation;
+                unit.summary = value.before
+                    ? (value.after ? "Change entity annotation" : "Remove entity annotation")
+                    : "Add entity annotation";
+                addOrMergeUnit(script, byKey, std::move(unit), identity);
+            }
+            for (const auto& value : script.completePatch.folders) {
+                const auto& record = *(value.before ? value.before : value.after);
+                SctChangeUnit unit;
+                unit.entityKey = folderKey(record.id);
+                unit.category = SctChangeCategory::AuthoringMetadata;
+                unit.entityKind = SctChangeEntityKind::SectionFolder;
+                unit.summary = value.before
+                    ? (value.after ? "Change section folder" : "Remove section folder")
+                    : "Add section folder";
                 addOrMergeUnit(script, byKey, std::move(unit), identity);
             }
             if (script.completePatch.allocatorState) {

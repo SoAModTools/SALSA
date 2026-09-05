@@ -249,4 +249,57 @@ TEST(SctStructuredAuthoring, MaterializerRejectsAnUnmetAuthoredArmPostcondition)
     }));
 }
 
+TEST(SctStructuredAuthoring, MetadataEditsAreTypedUndoableAndValidated) {
+    const auto fixture = ifWithoutElse();
+    SctEditSession session(fixture.snapshot);
+    ASSERT_TRUE(session.setVariableAlias(
+        {salsa::core::SctVariableKind::Byte, 4}, "DoorState").committed);
+    EXPECT_FALSE(session.setVariableAlias(
+        {salsa::core::SctVariableKind::Bit, 8}, "doorstate").committed);
+
+    const SctAuthoringTarget target{SctAuthoringTargetKind::Instruction,
+        fixture.controller.value()};
+    ASSERT_TRUE(session.setAnnotation({target, "Triggers the scene.",
+        std::string{}, 0x224466u}).committed);
+    ASSERT_EQ(session.annotations().size(), 1u);
+    EXPECT_EQ(session.annotations().front().note, "Triggers the scene.");
+    EXPECT_TRUE(session.annotations().front().bookmarkLabel.has_value());
+    EXPECT_FALSE(session.setAnnotation({
+        {SctAuthoringTargetKind::Variable, 0u,
+            static_cast<salsa::core::SctVariableKind>(0xffu)},
+        "Invalid variable kind"}).committed);
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_TRUE(session.annotations().empty());
+    ASSERT_TRUE(session.redo().has_value());
+    EXPECT_EQ(session.annotations().front().colorRgb, 0x224466u);
+}
+
+TEST(SctStructuredAuthoring, SectionFoldersRequireContiguousPhysicalRanges) {
+    SctDocument document;
+    const auto first = document.allocateSectionId();
+    const auto second = document.allocateSectionId();
+    const auto third = document.allocateSectionId();
+    document.sections.push_back({first, "A", SctScriptSectionContent{}});
+    document.sections.push_back({second, "B", SctScriptSectionContent{}});
+    document.sections.push_back({third, "C", SctScriptSectionContent{}});
+    SctEditSession session(snapshotFor(std::move(document)));
+
+    const std::array split{first, third};
+    const std::array all{first, second, third};
+    const std::array opening{first, second};
+    const std::array ending{third};
+    EXPECT_FALSE(session.createSectionFolder("Split", split).committed);
+    ASSERT_TRUE(session.createSectionFolder("All", all).committed);
+    ASSERT_TRUE(session.createSectionFolder("Opening", opening,
+        SctSectionFolderId{1}).committed);
+    ASSERT_TRUE(session.createSectionFolder("Ending", ending,
+        SctSectionFolderId{1}).committed);
+    ASSERT_EQ(session.folders().size(), 3u);
+    EXPECT_EQ(session.folders()[1].parent, SctSectionFolderId{1});
+    auto cycle = session.folders().front();
+    cycle.parent = SctSectionFolderId{2};
+    EXPECT_FALSE(session.updateSectionFolder(std::move(cycle)).committed);
+    EXPECT_FALSE(session.moveSection(second, SctSectionMoveDirection::Down).committed);
+}
+
 }  // namespace

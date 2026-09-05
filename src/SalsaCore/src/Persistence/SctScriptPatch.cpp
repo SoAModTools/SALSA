@@ -8,8 +8,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <limits>
+#include <map>
 #include <ranges>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -299,6 +302,121 @@ template<typename Id>
     result.sourceTarget = parseReferenceTarget(value.at("sourceTarget"));
     if (!value.at("sourceTargetNameBytes").is_null())
         result.sourceTargetNameBytes = parseByteString(value.at("sourceTargetNameBytes"));
+    return result;
+}
+
+[[nodiscard]] Json encodeVariableKey(const SctVariableKey& value) {
+    return Json{{"kind", static_cast<std::uint32_t>(value.kind)}, {"index", value.index}};
+}
+
+[[nodiscard]] SctVariableKey parseVariableKey(const Json& value) {
+    requireObject(value, {"kind", "index"});
+    return {checkedEnum<SctVariableKind>(value.at("kind"), 3u, "variable kind"),
+        value.at("index").get<std::uint32_t>()};
+}
+
+[[nodiscard]] Json encodeAlias(const SctVariableAlias& value) {
+    return Json{{"variable", encodeVariableKey(value.variable)}, {"alias", value.alias}};
+}
+
+[[nodiscard]] SctVariableAlias parseAlias(const Json& value) {
+    requireObject(value, {"variable", "alias"});
+    SctVariableAlias result{parseVariableKey(value.at("variable")),
+        value.at("alias").get<std::string>()};
+    if (result.alias.empty()) throw std::runtime_error("variable alias is empty");
+    return result;
+}
+
+[[nodiscard]] Json encodeAuthoringTarget(const SctAuthoringTarget& value) {
+    return Json{{"kind", static_cast<std::uint32_t>(value.kind)}, {"id", value.id},
+        {"variableKind", value.variableKind
+            ? Json(static_cast<std::uint32_t>(*value.variableKind)) : Json(nullptr)}};
+}
+
+[[nodiscard]] SctAuthoringTarget parseAuthoringTarget(const Json& value) {
+    requireObject(value, {"kind", "id", "variableKind"});
+    SctAuthoringTarget result;
+    result.kind = checkedEnum<SctAuthoringTargetKind>(value.at("kind"), 5u,
+        "authoring target kind");
+    result.id = value.at("id").get<std::uint64_t>();
+    if (!value.at("variableKind").is_null())
+        result.variableKind = checkedEnum<SctVariableKind>(
+            value.at("variableKind"), 3u, "authoring variable kind");
+    if (result.kind == SctAuthoringTargetKind::Document) {
+        if (result.id != 0u || result.variableKind)
+            throw std::runtime_error("document authoring target is malformed");
+    } else if (result.kind != SctAuthoringTargetKind::Variable && result.id == 0u) {
+        throw std::runtime_error("authoring target ID zero is invalid");
+    }
+    if (result.kind == SctAuthoringTargetKind::Variable
+        && result.id > std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error("authoring variable index is invalid");
+    if ((result.kind == SctAuthoringTargetKind::Variable) != result.variableKind.has_value())
+        throw std::runtime_error("authoring variable target kind is malformed");
+    return result;
+}
+
+[[nodiscard]] Json optionalText(const std::optional<std::string>& value) {
+    return value ? Json(*value) : Json(nullptr);
+}
+
+[[nodiscard]] std::optional<std::string> parseOptionalText(const Json& value) {
+    return value.is_null() ? std::nullopt
+        : std::optional<std::string>{value.get<std::string>()};
+}
+
+[[nodiscard]] Json encodeAnnotation(const SctEntityAnnotation& value) {
+    return Json{{"target", encodeAuthoringTarget(value.target)},
+        {"note", optionalText(value.note)}, {"bookmarkLabel", optionalText(value.bookmarkLabel)},
+        {"colorRgb", value.colorRgb ? Json(*value.colorRgb) : Json(nullptr)}};
+}
+
+[[nodiscard]] SctEntityAnnotation parseAnnotation(const Json& value) {
+    requireObject(value, {"target", "note", "bookmarkLabel", "colorRgb"});
+    SctEntityAnnotation result;
+    result.target = parseAuthoringTarget(value.at("target"));
+    result.note = parseOptionalText(value.at("note"));
+    result.bookmarkLabel = parseOptionalText(value.at("bookmarkLabel"));
+    if (!value.at("colorRgb").is_null()) {
+        const auto color = value.at("colorRgb").get<std::uint32_t>();
+        if (color > 0xffffffu) throw std::runtime_error("annotation color is not RGB");
+        result.colorRgb = color;
+    }
+    if (!result.note && !result.bookmarkLabel && !result.colorRgb)
+        throw std::runtime_error("empty annotation records are not canonical");
+    return result;
+}
+
+[[nodiscard]] Json encodeFolder(const SctSectionFolder& value) {
+    return Json{{"id", value.id.value}, {"parent", value.parent
+            ? Json(value.parent->value) : Json(nullptr)},
+        {"name", value.name}, {"sections", ids(std::span{value.sections})},
+        {"note", optionalText(value.note)}, {"bookmarkLabel", optionalText(value.bookmarkLabel)},
+        {"colorRgb", value.colorRgb ? Json(*value.colorRgb) : Json(nullptr)}};
+}
+
+[[nodiscard]] SctSectionFolder parseFolder(const Json& value) {
+    requireObject(value, {"id", "parent", "name", "sections", "note",
+        "bookmarkLabel", "colorRgb"});
+    SctSectionFolder result;
+    result.id.value = value.at("id").get<std::uint64_t>();
+    if (!result.id.valid()) throw std::runtime_error("section folder ID is invalid");
+    if (!value.at("parent").is_null()) {
+        const auto parent = value.at("parent").get<std::uint64_t>();
+        if (parent == 0u) throw std::runtime_error("section folder parent ID is invalid");
+        result.parent = SctSectionFolderId{parent};
+    }
+    result.name = value.at("name").get<std::string>();
+    result.sections = parseIds<spice::sct::SctSectionId>(value.at("sections"));
+    result.note = parseOptionalText(value.at("note"));
+    result.bookmarkLabel = parseOptionalText(value.at("bookmarkLabel"));
+    if (!value.at("colorRgb").is_null()) {
+        const auto color = value.at("colorRgb").get<std::uint32_t>();
+        if (color > 0xffffffu) throw std::runtime_error("folder color is not RGB");
+        result.colorRgb = color;
+    }
+    if (result.name.empty() || result.sections.empty() || result.parent == result.id)
+        throw std::runtime_error("section folder is not canonical");
     return result;
 }
 
@@ -888,6 +1006,131 @@ template<typename T, typename Id>
     return found == values.end() ? nullptr : &*found;
 }
 
+[[nodiscard]] const SctVariableAlias* findAlias(
+    const std::vector<SctVariableAlias>& values, const SctVariableKey key) {
+    const auto found = std::ranges::find(values, key, &SctVariableAlias::variable);
+    return found == values.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] const SctEntityAnnotation* findAnnotation(
+    const std::vector<SctEntityAnnotation>& values, const SctAuthoringTarget target) {
+    const auto found = std::ranges::find(values, target, &SctEntityAnnotation::target);
+    return found == values.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] const SctSectionFolder* findFolder(
+    const std::vector<SctSectionFolder>& values, const SctSectionFolderId id) {
+    const auto found = std::ranges::find(values, id, &SctSectionFolder::id);
+    return found == values.end() ? nullptr : &*found;
+}
+
+void validateAuthoringState(const spice::sct::SctDocument& document,
+    const std::vector<SctVariableAlias>& aliases,
+    const std::vector<SctEntityAnnotation>& annotations,
+    const std::vector<SctSectionFolder>& folders) {
+    std::set<SctVariableKey> aliasKeys;
+    std::set<std::string, std::less<>> aliasNames;
+    for (const auto& alias : aliases) {
+        auto name = alias.alias;
+        std::ranges::transform(name, name.begin(), [](const unsigned char value) {
+            return static_cast<char>(std::tolower(value));
+        });
+        if (alias.alias.empty() || !aliasKeys.insert(alias.variable).second
+            || !aliasNames.insert(std::move(name)).second)
+            throw std::runtime_error("variable aliases are empty or duplicated");
+    }
+    const auto targetExists = [&](const SctAuthoringTarget& target) {
+        switch (target.kind) {
+        case SctAuthoringTargetKind::Document:
+            return target.id == 0u && !target.variableKind;
+        case SctAuthoringTargetKind::Section:
+            return !target.variableKind && findById(document.sections,
+                spice::sct::SctSectionId(target.id)) != nullptr;
+        case SctAuthoringTargetKind::Instruction:
+            if (target.variableKind) return false;
+            for (const auto& section : document.sections)
+                if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(
+                        &section.content);
+                    script && findById(script->instructions,
+                        spice::sct::SctInstructionId(target.id))) return true;
+            return false;
+        case SctAuthoringTargetKind::String:
+            if (target.variableKind) return false;
+            for (const auto& section : document.sections)
+                if (const auto* string = std::get_if<spice::sct::SctStringSectionContent>(
+                        &section.content);
+                    string && string->string.id.value() == target.id) return true;
+            return false;
+        case SctAuthoringTargetKind::FooterEntry:
+            return !target.variableKind && findById(document.footerEntries,
+                spice::sct::SctFooterEntryId(target.id)) != nullptr;
+        case SctAuthoringTargetKind::Variable:
+            return target.variableKind
+                && static_cast<std::uint8_t>(*target.variableKind)
+                    <= static_cast<std::uint8_t>(SctVariableKind::Float)
+                && target.id <= std::numeric_limits<std::uint32_t>::max();
+        }
+        return false;
+    };
+    std::set<SctAuthoringTarget> annotationTargets;
+    for (const auto& annotation : annotations)
+        if (!targetExists(annotation.target)
+            || !annotationTargets.insert(annotation.target).second)
+            throw std::runtime_error("entity annotations target absent or duplicated entities");
+
+    std::set<SctSectionFolderId> folderIds;
+    std::map<std::optional<SctSectionFolderId>, std::set<std::string, std::less<>>>
+        siblingNames;
+    std::unordered_map<std::uint64_t, const SctSectionFolder*> byId;
+    std::unordered_map<std::uint64_t, std::size_t> positions;
+    for (std::size_t index = 0; index < document.sections.size(); ++index)
+        positions.emplace(document.sections[index].id.value(), index);
+    for (const auto& folder : folders) {
+        auto name = folder.name;
+        std::ranges::transform(name, name.begin(), [](const unsigned char value) {
+            return static_cast<char>(std::tolower(value));
+        });
+        if (!folder.id.valid() || folder.name.empty() || folder.sections.empty()
+            || !folderIds.insert(folder.id).second
+            || !siblingNames[folder.parent].insert(std::move(name)).second)
+            throw std::runtime_error("section folders are empty or duplicated");
+        std::set<spice::sct::SctSectionId> unique;
+        std::vector<std::size_t> ordered;
+        for (const auto section : folder.sections) {
+            const auto position = positions.find(section.value());
+            if (position == positions.end() || !unique.insert(section).second)
+                throw std::runtime_error("a section folder references an absent or duplicate section");
+            ordered.push_back(position->second);
+        }
+        std::ranges::sort(ordered);
+        if (ordered.back() - ordered.front() + 1u != ordered.size())
+            throw std::runtime_error("a section folder is not physically contiguous");
+        byId.emplace(folder.id.value, &folder);
+    }
+    for (const auto& folder : folders) {
+        std::set<std::uint64_t> ancestry{folder.id.value};
+        auto parent = folder.parent;
+        while (parent) {
+            const auto found = byId.find(parent->value);
+            if (found == byId.end() || !ancestry.insert(parent->value).second)
+                throw std::runtime_error("a section folder parent is missing or cyclic");
+            if (!std::ranges::all_of(folder.sections, [&](const auto section) {
+                    return std::ranges::find(found->second->sections, section)
+                        != found->second->sections.end();
+                })) throw std::runtime_error("a child folder escapes its parent range");
+            parent = found->second->parent;
+        }
+    }
+    for (std::size_t left = 0; left < folders.size(); ++left)
+        for (std::size_t right = left + 1u; right < folders.size(); ++right) {
+            if (folders[left].parent != folders[right].parent) continue;
+            if (std::ranges::any_of(folders[left].sections, [&](const auto section) {
+                    return std::ranges::find(folders[right].sections, section)
+                        != folders[right].sections.end();
+                })) throw std::runtime_error("sibling section folders overlap");
+        }
+}
+
 }  // namespace
 
 bool SalsaScriptPatch::empty() const noexcept {
@@ -895,7 +1138,8 @@ bool SalsaScriptPatch::empty() const noexcept {
         && !sectionOrder.has_value() && sections.empty()
         && scriptSections.empty() && textValues.empty() && !footerOrder.has_value()
         && footerEntries.empty()
-        && authoredArms.empty() && textRepairs.empty() && unboundReferences.empty();
+        && authoredArms.empty() && textRepairs.empty() && unboundReferences.empty()
+        && aliases.empty() && annotations.empty() && folders.empty();
 }
 
 Result<std::vector<std::byte>> SalsaScriptPatchCodec::serialize(
@@ -970,6 +1214,21 @@ Result<std::vector<std::byte>> SalsaScriptPatchCodec::serialize(
                     ? encodeUnboundOrigin(*reference.before) : Json(nullptr)},
                 {"after", reference.after
                     ? encodeUnboundOrigin(*reference.after) : Json(nullptr)}});
+        document["aliases"] = Json::array();
+        for (const auto& alias : patch.aliases)
+            document["aliases"].push_back(Json{
+                {"before", alias.before ? encodeAlias(*alias.before) : Json(nullptr)},
+                {"after", alias.after ? encodeAlias(*alias.after) : Json(nullptr)}});
+        document["annotations"] = Json::array();
+        for (const auto& annotation : patch.annotations)
+            document["annotations"].push_back(Json{
+                {"before", annotation.before ? encodeAnnotation(*annotation.before) : Json(nullptr)},
+                {"after", annotation.after ? encodeAnnotation(*annotation.after) : Json(nullptr)}});
+        document["folders"] = Json::array();
+        for (const auto& folder : patch.folders)
+            document["folders"].push_back(Json{
+                {"before", folder.before ? encodeFolder(*folder.before) : Json(nullptr)},
+                {"after", folder.after ? encodeFolder(*folder.after) : Json(nullptr)}});
         auto text = document.dump(2);
         text.push_back('\n');
         const auto raw = std::as_bytes(std::span{text.data(), text.size()});
@@ -988,7 +1247,7 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
         requireObject(document, {"formatId", "schemaVersion", "sourceTextConvention",
             "allocatorState", "sectionOrder", "sections", "scriptSections",
             "textValues", "footerOrder", "footerEntries", "authoredArms", "textRepairs",
-            "unboundReferences"});
+            "unboundReferences", "aliases", "annotations", "folders"});
         if (document.at("formatId").get<std::string>() != PayloadType)
             throw std::runtime_error("patch format ID does not match SALSA SCT patches");
         if (!document.at("schemaVersion").is_number_unsigned()
@@ -1112,6 +1371,36 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
                 || (delta.after && delta.after->site != delta.site))
                 throw std::runtime_error("unbound reference delta is invalid");
             patch.unboundReferences.push_back(std::move(delta));
+        }
+        for (const auto& item : document.at("aliases")) {
+            requireObject(item, {"before", "after"});
+            SctValueDelta<SctVariableAlias> delta;
+            if (!item.at("before").is_null()) delta.before = parseAlias(item.at("before"));
+            if (!item.at("after").is_null()) delta.after = parseAlias(item.at("after"));
+            requireDelta(delta, "variable alias");
+            if (delta.before && delta.after && delta.before->variable != delta.after->variable)
+                throw std::runtime_error("variable alias identity changed");
+            patch.aliases.push_back(std::move(delta));
+        }
+        for (const auto& item : document.at("annotations")) {
+            requireObject(item, {"before", "after"});
+            SctValueDelta<SctEntityAnnotation> delta;
+            if (!item.at("before").is_null()) delta.before = parseAnnotation(item.at("before"));
+            if (!item.at("after").is_null()) delta.after = parseAnnotation(item.at("after"));
+            requireDelta(delta, "entity annotation");
+            if (delta.before && delta.after && delta.before->target != delta.after->target)
+                throw std::runtime_error("entity annotation identity changed");
+            patch.annotations.push_back(std::move(delta));
+        }
+        for (const auto& item : document.at("folders")) {
+            requireObject(item, {"before", "after"});
+            SctValueDelta<SctSectionFolder> delta;
+            if (!item.at("before").is_null()) delta.before = parseFolder(item.at("before"));
+            if (!item.at("after").is_null()) delta.after = parseFolder(item.at("after"));
+            requireDelta(delta, "section folder");
+            if (delta.before && delta.after && delta.before->id != delta.after->id)
+                throw std::runtime_error("section folder identity changed");
+            patch.folders.push_back(std::move(delta));
         }
         return Result<SalsaScriptPatch>::success(std::move(patch));
     } catch (const std::exception& error) {
@@ -1246,6 +1535,30 @@ Result<SalsaScriptPatch> SalsaScriptPatchService::diff(
         if (!findUnboundReference(baseline.unboundReferences, reference.site))
             patch.unboundReferences.push_back(
                 {reference.site, std::nullopt, reference});
+    for (const auto& alias : baseline.aliases) {
+        const auto* target = findAlias(working.aliases, alias.variable);
+        if (!target) patch.aliases.push_back({alias, std::nullopt});
+        else if (*target != alias) patch.aliases.push_back({alias, *target});
+    }
+    for (const auto& alias : working.aliases)
+        if (!findAlias(baseline.aliases, alias.variable))
+            patch.aliases.push_back({std::nullopt, alias});
+    for (const auto& annotation : baseline.annotations) {
+        const auto* target = findAnnotation(working.annotations, annotation.target);
+        if (!target) patch.annotations.push_back({annotation, std::nullopt});
+        else if (*target != annotation) patch.annotations.push_back({annotation, *target});
+    }
+    for (const auto& annotation : working.annotations)
+        if (!findAnnotation(baseline.annotations, annotation.target))
+            patch.annotations.push_back({std::nullopt, annotation});
+    for (const auto& folder : baseline.folders) {
+        const auto* target = findFolder(working.folders, folder.id);
+        if (!target) patch.folders.push_back({folder, std::nullopt});
+        else if (*target != folder) patch.folders.push_back({folder, *target});
+    }
+    for (const auto& folder : working.folders)
+        if (!findFolder(baseline.folders, folder.id))
+            patch.folders.push_back({std::nullopt, folder});
 
     std::ranges::sort(patch.sections, {}, [](const auto& value) {
         return (value.before ? value.before->id : value.after->id).value();
@@ -1265,6 +1578,15 @@ Result<SalsaScriptPatch> SalsaScriptPatchService::diff(
     std::ranges::sort(patch.textRepairs, {}, [](const auto& value) { return targetKey(value.target); });
     std::ranges::sort(patch.unboundReferences, {}, [](const auto& value) {
         return siteKey(value.site);
+    });
+    std::ranges::sort(patch.aliases, {}, [](const auto& value) {
+        return (value.before ? value.before->variable : value.after->variable);
+    });
+    std::ranges::sort(patch.annotations, {}, [](const auto& value) {
+        return (value.before ? value.before->target : value.after->target);
+    });
+    std::ranges::sort(patch.folders, {}, [](const auto& value) {
+        return (value.before ? value.before->id : value.after->id).value;
     });
     return Result<SalsaScriptPatch>::success(std::move(patch));
 }
@@ -1361,6 +1683,33 @@ Result<SctSemanticState> SalsaScriptPatchService::apply(
                 throw std::runtime_error("inserted unbound reference already exists");
             }
         }
+        for (const auto& change : patch.aliases) {
+            requireDelta(change, "variable alias");
+            const auto key = change.before ? change.before->variable : change.after->variable;
+            const auto* current = findAlias(baseline.aliases, key);
+            if (change.before) {
+                if (!current || *current != *change.before)
+                    throw std::runtime_error("variable alias expected-before state does not match");
+            } else if (current) throw std::runtime_error("inserted variable alias already exists");
+        }
+        for (const auto& change : patch.annotations) {
+            requireDelta(change, "entity annotation");
+            const auto key = change.before ? change.before->target : change.after->target;
+            const auto* current = findAnnotation(baseline.annotations, key);
+            if (change.before) {
+                if (!current || *current != *change.before)
+                    throw std::runtime_error("annotation expected-before state does not match");
+            } else if (current) throw std::runtime_error("inserted annotation already exists");
+        }
+        for (const auto& change : patch.folders) {
+            requireDelta(change, "section folder");
+            const auto key = change.before ? change.before->id : change.after->id;
+            const auto* current = findFolder(baseline.folders, key);
+            if (change.before) {
+                if (!current || *current != *change.before)
+                    throw std::runtime_error("section folder expected-before state does not match");
+            } else if (current) throw std::runtime_error("inserted section folder already exists");
+        }
 
         auto document = std::make_shared<spice::sct::SctDocument>(source);
         for (const auto& change : patch.sections) {
@@ -1445,10 +1794,33 @@ Result<SctSemanticState> SalsaScriptPatchService::apply(
             if (change.after) unboundReferences.push_back(*change.after);
         }
         std::ranges::sort(unboundReferences, {}, &SctUnboundReferenceOrigin::site);
+        auto aliases = baseline.aliases;
+        for (const auto& change : patch.aliases) {
+            const auto key = change.before ? change.before->variable : change.after->variable;
+            std::erase_if(aliases, [&](const auto& value) { return value.variable == key; });
+            if (change.after) aliases.push_back(*change.after);
+        }
+        std::ranges::sort(aliases, {}, &SctVariableAlias::variable);
+        auto annotations = baseline.annotations;
+        for (const auto& change : patch.annotations) {
+            const auto key = change.before ? change.before->target : change.after->target;
+            std::erase_if(annotations, [&](const auto& value) { return value.target == key; });
+            if (change.after) annotations.push_back(*change.after);
+        }
+        std::ranges::sort(annotations, {}, &SctEntityAnnotation::target);
+        auto folders = baseline.folders;
+        for (const auto& change : patch.folders) {
+            const auto key = change.before ? change.before->id : change.after->id;
+            std::erase_if(folders, [&](const auto& value) { return value.id == key; });
+            if (change.after) folders.push_back(*change.after);
+        }
+        std::ranges::sort(folders, {}, [](const auto& value) { return value.id.value; });
+        validateAuthoringState(*document, aliases, annotations, folders);
         verifyTextRepairs(*baseline.document, *document, repairs);
         return Result<SctSemanticState>::success(SctSemanticState{
             std::move(document), std::move(authoredArms), std::move(repairs),
-            std::move(unboundReferences)});
+            std::move(unboundReferences), std::move(aliases), std::move(annotations),
+            std::move(folders)});
     } catch (const std::exception& error) {
         return Result<SctSemanticState>::failure(patchError(
             std::string("The SCT patch could not be applied: ") + error.what(),
@@ -1584,6 +1956,9 @@ SctPatchedLoadResult SctPatchCheckpointService::load(
     result.authoredArms = std::move(applied.authoredArms);
     result.textRepairs = std::move(applied.textRepairs);
     result.unboundReferences = std::move(applied.unboundReferences);
+    result.aliases = std::move(applied.aliases);
+    result.annotations = std::move(applied.annotations);
+    result.folders = std::move(applied.folders);
     result.patchApplied = true;
     return result;
 }
@@ -1616,7 +1991,7 @@ SctCheckpointResult SctPatchCheckpointService::checkpoint(
     const SctSemanticState baselineState{request.baseline->document, {}, {}, {}};
     const SctSemanticState workingState{materialized.document,
         request.materialization.expectedStructuredArms, request.textRepairs,
-        request.unboundReferences};
+        request.unboundReferences, request.aliases, request.annotations, request.folders};
     auto patch = SalsaScriptPatchService::diff(baselineState, workingState,
         request.baseline->provenance->textConvention);
     if (!patch) {

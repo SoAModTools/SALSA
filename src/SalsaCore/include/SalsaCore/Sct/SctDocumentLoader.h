@@ -33,6 +33,8 @@ enum class SctNavigationKind {
     OpaqueAttachment,
     FooterGroup,
     OpaqueGroup,
+    SectionFolder,
+    Variable,
 };
 
 struct SctNavigationTarget final {

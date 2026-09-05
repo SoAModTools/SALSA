@@ -78,6 +78,7 @@
     <ClInclude Include="include\SalsaCore\Sct\SctDocumentMaterializer.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctEditSession.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctFragment.h" />
+    <ClInclude Include="include\SalsaCore\Sct\SctAuthoringCatalog.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctInspectionLocation.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctGlyphCatalog.h" />
     <ClInclude Include="include\SalsaCore\Sct\SctMessageAuthoring.h" />
@@ -120,6 +121,7 @@
     <ClCompile Include="src\Sct\SctDocumentMaterializer.cpp" />
     <ClCompile Include="src\Sct\SctEditSession.cpp" />
     <ClCompile Include="src\Sct\SctFragment.cpp" />
+    <ClCompile Include="src\Sct\SctAuthoringCatalog.cpp" />
     <ClCompile Include="src\Sct\SctGlyphCatalog.cpp" />
     <ClCompile Include="src\Sct\SctMessageAuthoring.cpp" />
     <ClCompile Include="src\Sct\SctParameterAuthoring.cpp" />

@@ -80,6 +80,8 @@ using Json = nlohmann::ordered_json;
     case SctNavigationKind::OpaqueAttachment: return "opaque-attachment";
     case SctNavigationKind::FooterGroup: return "footer-group";
     case SctNavigationKind::OpaqueGroup: return "opaque-group";
+    case SctNavigationKind::SectionFolder: return "section-folder";
+    case SctNavigationKind::Variable: return "variable";
     }
     return std::nullopt;
 }
@@ -94,6 +96,8 @@ using Json = nlohmann::ordered_json;
     if (value == "opaque-attachment") return SctNavigationKind::OpaqueAttachment;
     if (value == "footer-group") return SctNavigationKind::FooterGroup;
     if (value == "opaque-group") return SctNavigationKind::OpaqueGroup;
+    if (value == "section-folder") return SctNavigationKind::SectionFolder;
+    if (value == "variable") return SctNavigationKind::Variable;
     return std::nullopt;
 }
 

@@ -89,9 +89,14 @@ private:
 
 [[nodiscard]] SctSemanticState semanticState(const SctDocument& document,
     const std::span<const SctAuthoredArm> arms = {},
-    const std::span<const SctPatchedTextRepair> repairs = {}) {
+    const std::span<const SctPatchedTextRepair> repairs = {},
+    const std::span<const SctVariableAlias> aliases = {},
+    const std::span<const SctEntityAnnotation> annotations = {},
+    const std::span<const SctSectionFolder> folders = {}) {
     return {std::make_shared<const SctDocument>(document),
-        {arms.begin(), arms.end()}, {repairs.begin(), repairs.end()}};
+        {arms.begin(), arms.end()}, {repairs.begin(), repairs.end()}, {},
+        {aliases.begin(), aliases.end()}, {annotations.begin(), annotations.end()},
+        {folders.begin(), folders.end()}};
 }
 
 [[nodiscard]] const SctScriptSectionContent& scriptAt(
@@ -261,8 +266,19 @@ TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
 
     const std::array arms{arm};
     const std::array repairs{repair};
+    const std::array aliases{SctVariableAlias{{salsa::core::SctVariableKind::Byte, 7},
+        "DoorState"}};
+    const std::array annotations{
+        SctEntityAnnotation{{SctAuthoringTargetKind::Instruction, inserted.value()},
+            "Wait before continuing.", std::string{}, 0x224466u},
+        SctEntityAnnotation{{SctAuthoringTargetKind::Variable, 0,
+                SctVariableKind::Integer},
+            "Variable zero is a valid annotation target.", std::nullopt, 0x112233u}};
+    const std::array folders{SctSectionFolder{{1}, std::nullopt, "Main",
+        {working.sections[0].id}, "Primary flow", std::nullopt, 0x335577u}};
     const auto baselineState = semanticState(baseline);
-    const auto workingState = semanticState(working, arms, repairs);
+    const auto workingState = semanticState(working, arms, repairs,
+        aliases, annotations, folders);
     const auto patch = SalsaScriptPatchService::diff(baselineState, workingState,
         SctKnownTextConvention::Windows1252Byte7F);
     ASSERT_TRUE(patch);
@@ -305,6 +321,10 @@ TEST(SalsaScriptPatchTest, SquashesAndReappliesSemanticDocumentChanges) {
     EXPECT_EQ(applied.value().authoredArms, std::vector<SctAuthoredArm>{arm});
     ASSERT_EQ(applied.value().textRepairs.size(), 1u);
     EXPECT_EQ(applied.value().textRepairs.front().provenance, repair.provenance);
+    EXPECT_EQ(applied.value().aliases, std::vector<SctVariableAlias>{aliases.front()});
+    EXPECT_EQ(applied.value().annotations,
+        (std::vector<SctEntityAnnotation>(annotations.begin(), annotations.end())));
+    EXPECT_EQ(applied.value().folders, std::vector<SctSectionFolder>{folders.front()});
 
     const auto net = SalsaScriptPatchService::diff(baselineState,
         applied.value(), decoded.value().sourceTextConvention);
@@ -361,7 +381,7 @@ TEST(SalsaScriptPatchTest, PreservesAllocatorHighWaterAfterTransientEdits) {
         working.nextOpaqueAttachmentIdValue());
 }
 
-TEST(SalsaScriptPatchTest, RoundTripsV4ScptProgramsAndStringGroupMarkers) {
+TEST(SalsaScriptPatchTest, RoundTripsV5ScptProgramsAndStringGroupMarkers) {
     SalsaScriptPatch patch;
     SctDocumentInstruction instruction{SctInstructionId{1u}, 125u};
     instruction.fixedParameters.push_back({7u, SctUnresolvedReferenceValue{
@@ -387,7 +407,7 @@ TEST(SalsaScriptPatchTest, RoundTripsV4ScptProgramsAndStringGroupMarkers) {
     ASSERT_TRUE(encoded);
     const std::string json(reinterpret_cast<const char*>(encoded.value().data()),
         encoded.value().size());
-    EXPECT_NE(json.find("\"schemaVersion\": 4"), std::string::npos);
+    EXPECT_NE(json.find("\"schemaVersion\": 5"), std::string::npos);
     EXPECT_NE(json.find("\"stringGroupMarker\""), std::string::npos);
     EXPECT_NE(json.find("\"stackOverwrite\""), std::string::npos);
     EXPECT_NE(json.find("\"inert\""), std::string::npos);
@@ -433,9 +453,9 @@ TEST(SalsaScriptPatchTest, RejectsUnknownFieldsVersionsAndInvalidTargets) {
 
     std::string wrongVersion(reinterpret_cast<const char*>(encoded.value().data()),
         encoded.value().size());
-    const auto version = wrongVersion.find("\"schemaVersion\": 4");
+    const auto version = wrongVersion.find("\"schemaVersion\": 5");
     ASSERT_NE(version, std::string::npos);
-    wrongVersion.replace(version, std::string("\"schemaVersion\": 4").size(),
+    wrongVersion.replace(version, std::string("\"schemaVersion\": 5").size(),
         "\"schemaVersion\": 2");
     const auto unsupported = SalsaScriptPatchCodec::deserialize(patchBytes(wrongVersion));
     ASSERT_FALSE(unsupported);

@@ -31,6 +31,7 @@
     <ClCompile Include="Workspace\WorkspaceDetailsWidget.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Sct\SctDocumentController.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="Sct\SctCatalogEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctExportDialog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctRebaseDialog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctDocumentWidget.cpp"><Filter>SCT</Filter></ClCompile>
@@ -48,6 +49,7 @@
     <QtMoc Include="Application\ExclusiveOperationDialog.h"><Filter>Application</Filter></QtMoc>
     <QtMoc Include="Legacy\LegacyConversionDialog.h"><Filter>Legacy</Filter></QtMoc>
     <QtMoc Include="Sct\SctDocumentController.h"><Filter>SCT</Filter></QtMoc>
+    <ClInclude Include="Sct\SctCatalogEditorDialog.h"><Filter>SCT</Filter></ClInclude>
     <QtMoc Include="Sct\SctDocumentWidget.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctOutlineModel.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctStructuredOutlineModel.h"><Filter>SCT</Filter></QtMoc>

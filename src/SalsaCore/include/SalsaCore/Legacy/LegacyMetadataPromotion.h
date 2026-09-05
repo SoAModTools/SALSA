@@ -27,6 +27,14 @@ public:
         const LegacyMetadataPlanRecord& record,
         const LocalSalsaWorkspace& workspace,
         const std::filesystem::path& capsuleRoot) const = 0;
+    // Records with the same nonempty key are prepared as one artifact update. The
+    // default keeps third-party adapters record-local.
+    [[nodiscard]] virtual std::string aggregationKey(
+        const LegacyMetadataPlanRecord& record) const;
+    [[nodiscard]] virtual Result<std::vector<WorkspaceArtifactMutation>> prepareSelected(
+        std::span<const LegacyMetadataPlanRecord> records,
+        const LocalSalsaWorkspace& workspace,
+        const std::filesystem::path& capsuleRoot) const;
 };
 
 class LegacyMetadataPromotionRegistry final {
@@ -39,6 +47,11 @@ public:
 private:
     std::vector<std::shared_ptr<const LegacyMetadataPromotionAdapter>> adapters_{};
 };
+
+// Registers the production adapters owned by the currently implemented SALSA
+// authoring features. Unsupported capsule metadata remains pending.
+[[nodiscard]] Result<void> registerBuiltInLegacyMetadataPromotionAdapters(
+    LegacyMetadataPromotionRegistry& registry);
 
 struct LegacyMetadataPromotionItem final {
     LegacyMetadataPlanRecord record{};

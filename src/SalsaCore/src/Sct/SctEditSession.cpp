@@ -1,4 +1,5 @@
 #include "SalsaCore/Sct/SctEditSession.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
 #include "SalsaCore/Sct/SctInspectionLocation.h"
 
@@ -11,6 +12,8 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cctype>
+#include <limits>
 #include <ranges>
 #include <regex>
 #include <unordered_map>
@@ -53,10 +56,8 @@ using EditClock = std::chrono::steady_clock;
 }
 
 [[nodiscard]] std::string opcodeName(const std::uint16_t opcode) {
-    const auto* schema = spice::sct::findSctOpcodeSchema(opcode);
-    if (schema != nullptr && !schema->semantic.mnemonic.empty())
-        return std::string(schema->semantic.mnemonic);
-    return "Opcode " + std::to_string(opcode);
+    auto name = SctCatalogResolver::resolve(opcode).mnemonic;
+    return name.empty() ? "Opcode " + std::to_string(opcode) : std::move(name);
 }
 
 [[nodiscard]] SctNavigationTarget navigationFor(const SctMessageTarget& target) {
@@ -218,6 +219,7 @@ void appendChanges(SctEditChangeSet& target, const SctEditChangeSet& source) {
     const std::uint64_t id) {
     spice::sct::SctInstructionFactoryRequest request;
     request.opcode = opcode;
+    SctCatalogResolver::applyCreationDefaults(request);
     const auto draft = spice::sct::SctInstructionFactory::createDraft(request);
     if (!draft.draft) return std::nullopt;
     spice::sct::SctDocument context;
@@ -274,6 +276,72 @@ template<typename Remap>
     return batch;
 }
 
+[[nodiscard]] std::string foldedAlias(std::string value) {
+    std::ranges::transform(value, value.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
+[[nodiscard]] bool validAuthoringTarget(
+    const SctWorkingState& state, const SctAuthoringTarget& target) {
+    switch (target.kind) {
+    case SctAuthoringTargetKind::Document:
+        return target.id == 0u && !target.variableKind;
+    case SctAuthoringTargetKind::Section:
+        return !target.variableKind
+            && state.section(spice::sct::SctSectionId(target.id)) != nullptr;
+    case SctAuthoringTargetKind::Instruction:
+        return !target.variableKind
+            && state.instruction(spice::sct::SctInstructionId(target.id)) != nullptr;
+    case SctAuthoringTargetKind::String:
+        return !target.variableKind
+            && state.textValue(SctTextTarget{spice::sct::SctStringId(target.id)}) != nullptr;
+    case SctAuthoringTargetKind::FooterEntry:
+        return !target.variableKind
+            && state.footerEntry(spice::sct::SctFooterEntryId(target.id)) != nullptr;
+    case SctAuthoringTargetKind::Variable:
+        return target.id <= std::numeric_limits<std::uint32_t>::max()
+            && target.variableKind.has_value()
+            && static_cast<std::uint8_t>(*target.variableKind)
+                <= static_cast<std::uint8_t>(SctVariableKind::Float);
+    }
+    return false;
+}
+
+[[nodiscard]] bool contiguousSections(const SctWorkingState& state,
+    const std::span<const spice::sct::SctSectionId> sections) {
+    if (sections.empty()) return false;
+    std::vector<std::size_t> positions;
+    const auto order = state.sectionOrder();
+    for (const auto section : sections) {
+        const auto found = std::ranges::find(order, section);
+        if (found == order.end()) return false;
+        positions.push_back(static_cast<std::size_t>(found - order.begin()));
+    }
+    std::ranges::sort(positions);
+    if (std::adjacent_find(positions.begin(), positions.end()) != positions.end()) return false;
+    return positions.back() - positions.front() + 1u == positions.size();
+}
+
+[[nodiscard]] bool foldersRemainContiguous(
+    const std::span<const spice::sct::SctSectionId> order,
+    const std::span<const SctSectionFolder> folders) {
+    for (const auto& folder : folders) {
+        if (folder.sections.empty()) continue;
+        std::vector<std::size_t> positions;
+        for (const auto section : folder.sections) {
+            const auto found = std::ranges::find(order, section);
+            if (found == order.end()) continue;
+            positions.push_back(static_cast<std::size_t>(found - order.begin()));
+        }
+        if (positions.size() < 2u) continue;
+        std::ranges::sort(positions);
+        if (positions.back() - positions.front() + 1u != positions.size()) return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 SctEditSession::SctEditSession(std::shared_ptr<const SctDocumentSnapshot> initialSnapshot)
@@ -284,12 +352,15 @@ SctEditSession::SctEditSession(
     std::shared_ptr<const SctDocumentSnapshot> restoredSnapshot,
     const std::span<const SctAuthoredArm> authoredArms,
     const std::span<const SctPatchedTextRepair> textRepairs,
-    const std::span<const SctUnboundReferenceOrigin> unboundReferences)
+    const std::span<const SctUnboundReferenceOrigin> unboundReferences,
+    const std::span<const SctVariableAlias> aliases,
+    const std::span<const SctEntityAnnotation> annotations,
+    const std::span<const SctSectionFolder> folders)
     : baselineSnapshot_(std::move(baselineSnapshot)),
       history_(std::make_shared<const RevisionDelta>()),
       workingState_(restoredSnapshot != nullptr ? restoredSnapshot->document : nullptr,
           textRepairs),
-      structuredAuthoring_(authoredArms, unboundReferences),
+      structuredAuthoring_(authoredArms, unboundReferences, aliases, annotations, folders),
       materializedDocument_(restoredSnapshot != nullptr ? restoredSnapshot->document : nullptr),
       currentSnapshot_(std::move(restoredSnapshot)) {
     assert(baselineSnapshot_ != nullptr);
@@ -307,7 +378,10 @@ std::unique_ptr<SctEditSession> SctEditSession::createRebased(
     std::shared_ptr<const SctDocumentSnapshot> rebasedSnapshot,
     const std::span<const SctAuthoredArm> authoredArms,
     const std::span<const SctPatchedTextRepair> textRepairs,
-    const std::span<const SctUnboundReferenceOrigin> unboundReferences) {
+    const std::span<const SctUnboundReferenceOrigin> unboundReferences,
+    const std::span<const SctVariableAlias> aliases,
+    const std::span<const SctEntityAnnotation> annotations,
+    const std::span<const SctSectionFolder> folders) {
     if (!newBaselineSnapshot || !newBaselineSnapshot->document
         || newBaselineSnapshot->readiness
             != spice::sct::SctDocumentReadiness::StructurallyValid
@@ -321,12 +395,14 @@ std::unique_ptr<SctEditSession> SctEditSession::createRebased(
     delta->forwardChanges.documentChanged = true;
     delta->reverseChanges.documentChanged = true;
     delta->externalBefore = RevisionDelta::ExternalState{
-        newBaselineSnapshot, {}, {}, {}};
+        newBaselineSnapshot, {}, {}, {}, {}, {}, {}};
     delta->externalAfter = RevisionDelta::ExternalState{
         rebasedSnapshot,
         {authoredArms.begin(), authoredArms.end()},
         {textRepairs.begin(), textRepairs.end()},
-        {unboundReferences.begin(), unboundReferences.end()}};
+        {unboundReferences.begin(), unboundReferences.end()},
+        {aliases.begin(), aliases.end()}, {annotations.begin(), annotations.end()},
+        {folders.begin(), folders.end()}};
     const auto committed = session->history_.commit(
         delta, "Rebase patch onto new source");
     if (!committed.created) return nullptr;
@@ -338,6 +414,166 @@ std::unique_ptr<SctEditSession> SctEditSession::createRebased(
     session->pruneMaterializationCheckpoints();
     session->rebuildSemanticProjection();
     return session;
+}
+
+SctEditResult SctEditSession::setVariableAlias(
+    const SctVariableKey variable, std::optional<std::string> alias) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (static_cast<std::uint8_t>(variable.kind)
+            > static_cast<std::uint8_t>(SctVariableKind::Float))
+        return failure({editError(locator, "InvalidVariableKind",
+            "The variable kind is outside the supported alias types.")});
+    if (alias) {
+        alias->erase(alias->begin(), std::ranges::find_if(*alias, [](const unsigned char c) {
+            return !std::isspace(c);
+        }));
+        alias->erase(std::ranges::find_if(*alias | std::views::reverse,
+            [](const unsigned char c) { return !std::isspace(c); }).base(), alias->end());
+    }
+    if (alias && alias->empty()) alias.reset();
+    if (alias) {
+        const auto folded = foldedAlias(*alias);
+        for (const auto& existing : structuredAuthoring_.aliases()) {
+            if (existing.variable != variable && foldedAlias(existing.alias) == folded)
+                return failure({editError(locator, "DuplicateVariableAlias",
+                    "Variable aliases must be unique within a document.")});
+        }
+    }
+    const auto* existing = structuredAuthoring_.findAlias(variable);
+    const std::optional<SctVariableAlias> before = existing
+        ? std::optional{*existing} : std::nullopt;
+    const std::optional<SctVariableAlias> after = alias
+        ? std::optional<SctVariableAlias>{{variable, std::move(*alias)}} : std::nullopt;
+    if (before == after) return failure({editError(locator, "UnchangedVariableAlias",
+        "The variable alias is unchanged.")});
+    SctStructuredAuthoringOperationBatch operation;
+    operation.aliases.push_back({variable, before, after});
+    return commit({}, std::move(operation), after ? "Set variable alias" : "Clear variable alias",
+        {}, 0u);
+}
+
+SctEditResult SctEditSession::setAnnotation(SctEntityAnnotation annotation) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!validAuthoringTarget(workingState_, annotation.target))
+        return failure({editError(locator, "InvalidAnnotationTarget",
+            "The annotation target does not exist in this document.")});
+    if (annotation.colorRgb && *annotation.colorRgb > 0xffffffu)
+        return failure({editError(locator, "InvalidAnnotationColor",
+            "Annotation colors must be 24-bit RGB values.")});
+    if (annotation.note && annotation.note->empty()) annotation.note.reset();
+    const auto* existing = structuredAuthoring_.findAnnotation(annotation.target);
+    const std::optional<SctEntityAnnotation> before = existing
+        ? std::optional{*existing} : std::nullopt;
+    const std::optional<SctEntityAnnotation> after = annotation.note
+            || annotation.bookmarkLabel || annotation.colorRgb
+        ? std::optional{std::move(annotation)} : std::nullopt;
+    if (before == after) return failure({editError(locator, "UnchangedAnnotation",
+        "The entity annotation is unchanged.")});
+    SctStructuredAuthoringOperationBatch operation;
+    operation.annotations.push_back({after ? after->target : before->target, before, after});
+    return commit({}, std::move(operation), after ? "Edit authoring metadata"
+        : "Clear authoring metadata", {}, 0u);
+}
+
+SctEditResult SctEditSession::clearAnnotation(const SctAuthoringTarget target) {
+    const auto* existing = structuredAuthoring_.findAnnotation(target);
+    if (!existing) return failure({editError(
+        baselineSnapshot_->provenance->source().descriptor.locator,
+        "MissingAnnotation", "The selected entity has no authoring metadata.")});
+    auto cleared = *existing;
+    cleared.note.reset();
+    cleared.bookmarkLabel.reset();
+    cleared.colorRgb.reset();
+    return setAnnotation(std::move(cleared));
+}
+
+SctEditResult SctEditSession::createSectionFolder(std::string name,
+    const std::span<const spice::sct::SctSectionId> sections,
+    const std::optional<SctSectionFolderId> parent) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (name.empty() || !contiguousSections(workingState_, sections))
+        return failure({editError(locator, "InvalidSectionFolderRange",
+            "A section folder requires a name and a contiguous section selection.")});
+    if (parent && !structuredAuthoring_.findFolder(*parent))
+        return failure({editError(locator, "MissingParentFolder",
+            "The selected parent folder no longer exists.")});
+    if (parent) {
+        const auto* parentFolder = structuredAuthoring_.findFolder(*parent);
+        if (!std::ranges::all_of(sections, [&](const auto section) {
+                return std::ranges::find(parentFolder->sections, section)
+                    != parentFolder->sections.end();
+            }))
+            return failure({editError(locator, "FolderOutsideParent",
+                "A nested folder must remain inside its parent's section range.")});
+    }
+    for (const auto& folder : structuredAuthoring_.folders()) {
+        if (folder.id == parent) continue;
+        if (folder.parent != parent) continue;
+        for (const auto section : sections)
+            if (std::ranges::find(folder.sections, section) != folder.sections.end())
+                return failure({editError(locator, "SectionAlreadyGrouped",
+                    "A selected section already belongs to a sibling folder.")});
+    }
+    SctSectionFolder folder{structuredAuthoring_.nextFolderId(), parent,
+        std::move(name), {sections.begin(), sections.end()}};
+    SctStructuredAuthoringOperationBatch operation;
+    operation.folders.push_back({folder.id, std::nullopt, folder});
+    return commit({}, std::move(operation), "Create section folder", {}, 0u);
+}
+
+SctEditResult SctEditSession::updateSectionFolder(SctSectionFolder folder) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const auto* existing = structuredAuthoring_.findFolder(folder.id);
+    if (!existing || folder.name.empty() || folder.sections.empty()
+        || !contiguousSections(workingState_, folder.sections)
+        || folder.parent == folder.id
+        || (folder.parent && !structuredAuthoring_.findFolder(*folder.parent)))
+        return failure({editError(locator, "InvalidSectionFolder",
+            "The section folder is missing, empty, noncontiguous, or has an invalid parent.")});
+    for (auto parent = folder.parent; parent;) {
+        if (*parent == folder.id)
+            return failure({editError(locator, "SectionFolderCycle",
+                "A section folder cannot be nested beneath itself.")});
+        const auto* ancestor = structuredAuthoring_.findFolder(*parent);
+        parent = ancestor ? ancestor->parent : std::nullopt;
+    }
+    if (folder.parent) {
+        const auto* parent = structuredAuthoring_.findFolder(*folder.parent);
+        if (!std::ranges::all_of(folder.sections, [&](const auto section) {
+                return std::ranges::find(parent->sections, section)
+                    != parent->sections.end();
+            }))
+            return failure({editError(locator, "FolderOutsideParent",
+                "A nested folder must remain inside its parent's section range.")});
+    }
+    for (const auto& sibling : structuredAuthoring_.folders()) {
+        if (sibling.id == folder.id || sibling.parent != folder.parent) continue;
+        if (std::ranges::any_of(folder.sections, [&](const auto section) {
+                return std::ranges::find(sibling.sections, section)
+                    != sibling.sections.end();
+            }))
+            return failure({editError(locator, "OverlappingSectionFolders",
+                "Sibling section folders cannot overlap.")});
+    }
+    SctStructuredAuthoringOperationBatch operation;
+    operation.folders.push_back({folder.id, *existing, std::move(folder)});
+    return commit({}, std::move(operation), "Edit section folder", {}, 0u);
+}
+
+SctEditResult SctEditSession::removeSectionFolder(const SctSectionFolderId folder) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    const auto* existing = structuredAuthoring_.findFolder(folder);
+    if (!existing) return failure({editError(locator, "MissingSectionFolder",
+        "The selected section folder no longer exists.")});
+    SctStructuredAuthoringOperationBatch operation;
+    for (const auto& child : structuredAuthoring_.folders()) {
+        if (child.parent != folder) continue;
+        auto updated = child;
+        updated.parent = existing->parent;
+        operation.folders.push_back({child.id, child, std::move(updated)});
+    }
+    operation.folders.push_back({folder, *existing, std::nullopt});
+    return commit({}, std::move(operation), "Remove section folder", {}, 0u);
 }
 
 SctEditResult SctEditSession::insertInstructionAfter(
@@ -380,6 +616,7 @@ SctEditResult SctEditSession::insertInstructionAfter(
 
     spice::sct::SctInstructionFactoryRequest request;
     request.opcode = opcode;
+    SctCatalogResolver::applyCreationDefaults(request);
     const auto draft = spice::sct::SctInstructionFactory::createDraft(request);
     if (!draft.draft.has_value()) {
         std::vector<SctPipelineDiagnostic> diagnostics;
@@ -421,6 +658,7 @@ SctInstructionAuthoringDraftResult SctEditSession::createInstructionDraft(
     }
     spice::sct::SctInstructionFactoryRequest request;
     request.opcode = opcode;
+    SctCatalogResolver::applyCreationDefaults(request);
     auto created = spice::sct::SctInstructionFactory::createDraft(request);
     for (const auto& diagnostic : created.diagnostics)
         result.diagnostics.push_back(convertSctDiagnostic(
@@ -788,6 +1026,11 @@ SctEditResult SctEditSession::deleteInstructions(
         if (selected.contains(origin.site.instruction))
             authoring.unboundReferences.push_back(
                 {origin.site, origin, std::nullopt});
+    for (const auto& annotation : structuredAuthoring_.annotations())
+        if (annotation.target.kind == SctAuthoringTargetKind::Instruction
+            && selected.contains(spice::sct::SctInstructionId(annotation.target.id)))
+            authoring.annotations.push_back(
+                {annotation.target, annotation, std::nullopt});
     const auto placement = workingState_.placement(instructions.front());
     std::optional<SctNavigationTarget> fallback;
     if (const auto next = workingState_.instructionAfter(instructions.back()))
@@ -851,6 +1094,28 @@ SctEditResult SctEditSession::deleteSections(
         if (instructions.contains(origin.site.instruction))
             authoring.unboundReferences.push_back(
                 {origin.site, origin, std::nullopt});
+    const std::unordered_set<spice::sct::SctSectionId> selectedSections(
+        sections.begin(), sections.end());
+    for (const auto& annotation : structuredAuthoring_.annotations()) {
+        const bool remove = (annotation.target.kind == SctAuthoringTargetKind::Section
+                && selectedSections.contains(spice::sct::SctSectionId(annotation.target.id)))
+            || (annotation.target.kind == SctAuthoringTargetKind::Instruction
+                && instructions.contains(spice::sct::SctInstructionId(annotation.target.id)))
+            || (annotation.target.kind == SctAuthoringTargetKind::String
+                && strings.contains(spice::sct::SctStringId(annotation.target.id)));
+        if (remove) authoring.annotations.push_back(
+            {annotation.target, annotation, std::nullopt});
+    }
+    for (const auto& folder : structuredAuthoring_.folders()) {
+        auto updated = folder;
+        std::erase_if(updated.sections, [&](const auto section) {
+            return selectedSections.contains(section);
+        });
+        if (updated.sections == folder.sections) continue;
+        authoring.folders.push_back({folder.id, folder,
+            updated.sections.empty() ? std::optional<SctSectionFolder>{}
+                                     : std::optional<SctSectionFolder>{std::move(updated)}});
+    }
     const auto order = workingState_.sectionOrder();
     const auto last = std::ranges::find(order, sections.back());
     std::optional<SctNavigationTarget> fallback;
@@ -1411,6 +1676,21 @@ SctEditResult SctEditSession::deleteSection(const spice::sct::SctSectionId secti
         if (internal.contains(origin.site.instruction.value()))
             authored.unboundReferences.push_back(
                 {origin.site, origin, std::nullopt});
+    for (const auto& annotation : structuredAuthoring_.annotations()) {
+        if ((annotation.target.kind == SctAuthoringTargetKind::Section
+                && annotation.target.id == sectionId.value())
+            || (annotation.target.kind == SctAuthoringTargetKind::Instruction
+                && internal.contains(annotation.target.id)))
+            authored.annotations.push_back({annotation.target, annotation, std::nullopt});
+    }
+    for (const auto& folder : structuredAuthoring_.folders()) {
+        if (std::ranges::find(folder.sections, sectionId) == folder.sections.end()) continue;
+        auto updated = folder;
+        std::erase(updated.sections, sectionId);
+        authored.folders.push_back({folder.id, folder,
+            updated.sections.empty() ? std::optional<SctSectionFolder>{}
+                                     : std::optional<SctSectionFolder>{std::move(updated)}});
+    }
     const auto placement = workingState_.sectionPlacement(sectionId);
     const SctNavigationTarget removed{SctNavigationKind::Section, sectionId.value()};
     std::optional<SctNavigationTarget> next;
@@ -1444,6 +1724,15 @@ SctEditResult SctEditSession::moveSection(
         if (std::next(position) == order.end()) return failure({editError(locator, "SectionMoveAtBoundary", "The section is already last.")});
         anchor = *std::next(position);
     }
+    auto proposed = std::vector<spice::sct::SctSectionId>{order.begin(), order.end()};
+    const auto proposedPosition = std::ranges::find(proposed, sectionId);
+    if (direction == SctSectionMoveDirection::Up)
+        std::iter_swap(proposedPosition, std::prev(proposedPosition));
+    else
+        std::iter_swap(proposedPosition, std::next(proposedPosition));
+    if (!foldersRemainContiguous(proposed, structuredAuthoring_.folders()))
+        return failure({editError(locator, "SectionFolderWouldSplit",
+            "Move the complete section folder or ungroup it before crossing its boundary.")});
     const SctNavigationTarget target{SctNavigationKind::Section, sectionId.value()};
     return commit(SctSemanticOperationBatch{{SctRelocateSectionAfterOperation{sectionId, anchor}}},
         {}, direction == SctSectionMoveDirection::Up ? "Move section up" : "Move section down",
@@ -1502,6 +1791,13 @@ SctEditResult SctEditSession::deleteTextEntity(const SctTextTarget& target) {
     if (!attachments.empty()) return failure({editError(locator, "TextHasOpaqueAttachment",
         "The text entity cannot be deleted while opaque source data is anchored to it.",
         SctNavigationTarget{SctNavigationKind::OpaqueAttachment, attachments.front().value()})});
+    SctStructuredAuthoringOperationBatch authoring;
+    const auto targetKind = std::holds_alternative<spice::sct::SctStringId>(target)
+        ? SctAuthoringTargetKind::String : SctAuthoringTargetKind::FooterEntry;
+    const SctAuthoringTarget annotationTarget{targetKind, std::visit(
+        [](const auto id) { return id.value(); }, target), std::nullopt};
+    if (const auto* annotation = structuredAuthoring_.findAnnotation(annotationTarget))
+        authoring.annotations.push_back({annotationTarget, *annotation, std::nullopt});
     return std::visit([&](const auto id) -> SctEditResult {
         using Id = std::decay_t<decltype(id)>;
         if constexpr (std::is_same_v<Id, spice::sct::SctStringId>) {
@@ -1511,13 +1807,13 @@ SctEditResult SctEditSession::deleteTextEntity(const SctTextTarget& target) {
                     : std::get_if<spice::sct::SctStringSectionContent>(&section->content);
                 if (content != nullptr && content->string.id == id)
                     return commit(SctSemanticOperationBatch{{SctDeleteSectionOperation{sectionId}}},
-                        {}, "Delete indexed string", SelectionHints{navigation,
+                        std::move(authoring), "Delete indexed string", SelectionHints{navigation,
                             SctNavigationTarget{SctNavigationKind::Document, 0}});
             }
             return failure({editError(locator, "TextSectionNotFound", "The indexed string section no longer exists.", navigation)});
         } else {
             return commit(SctSemanticOperationBatch{{SctDeleteFooterEntryOperation{id}}},
-                {}, "Delete footer text", SelectionHints{navigation,
+                std::move(authoring), "Delete footer text", SelectionHints{navigation,
                     SctNavigationTarget{SctNavigationKind::Document, 0}});
         }
     }, target);
@@ -2097,6 +2393,12 @@ std::optional<SctCheckpointRequest> SctEditSession::checkpointRequest(
         std::vector<SctUnboundReferenceOrigin>{
             structuredAuthoring_.unboundReferences().begin(),
             structuredAuthoring_.unboundReferences().end()},
+        std::vector<SctVariableAlias>{structuredAuthoring_.aliases().begin(),
+            structuredAuthoring_.aliases().end()},
+        std::vector<SctEntityAnnotation>{structuredAuthoring_.annotations().begin(),
+            structuredAuthoring_.annotations().end()},
+        std::vector<SctSectionFolder>{structuredAuthoring_.folders().begin(),
+            structuredAuthoring_.folders().end()},
     };
 }
 
@@ -2270,6 +2572,18 @@ SctEditSession::unboundReferences() const noexcept {
     return structuredAuthoring_.unboundReferences();
 }
 
+std::span<const SctVariableAlias> SctEditSession::aliases() const noexcept {
+    return structuredAuthoring_.aliases();
+}
+
+std::span<const SctEntityAnnotation> SctEditSession::annotations() const noexcept {
+    return structuredAuthoring_.annotations();
+}
+
+std::span<const SctSectionFolder> SctEditSession::folders() const noexcept {
+    return structuredAuthoring_.folders();
+}
+
 std::shared_ptr<const SctSemanticEditorProjection>
 SctEditSession::semanticProjection() const noexcept {
     return semanticProjection_;
@@ -2287,10 +2601,7 @@ const std::vector<SctInsertableOpcode>& SctEditSession::insertableOpcodes() {
             if (!std::ranges::all_of(draft.draft->parameters, [](const auto& parameter) {
                     return parameter.value.has_value();
                 })) continue;
-            result.push_back({ schema.opcode,
-                schema.semantic.mnemonic.empty()
-                    ? "Opcode " + std::to_string(schema.opcode)
-                    : std::string(schema.semantic.mnemonic) });
+            result.push_back({schema.opcode, opcodeName(schema.opcode)});
         }
         return result;
     }();
@@ -2308,10 +2619,7 @@ const std::vector<SctInsertableOpcode>& SctEditSession::authorableOpcodes() {
             request.opcode = schema.opcode;
             const auto draft = spice::sct::SctInstructionFactory::createDraft(request);
             if (!draft.draft.has_value()) continue;
-            result.push_back({schema.opcode,
-                schema.semantic.mnemonic.empty()
-                    ? "Opcode " + std::to_string(schema.opcode)
-                    : std::string(schema.semantic.mnemonic)});
+            result.push_back({schema.opcode, opcodeName(schema.opcode)});
         }
         return result;
     }();
@@ -2507,7 +2815,8 @@ void SctEditSession::installExternalState(
     assert(state.snapshot->document != nullptr);
     workingState_ = SctWorkingState(state.snapshot->document, state.textRepairs);
     structuredAuthoring_ = SctStructuredAuthoringState(
-        state.authoredArms, state.unboundReferences);
+        state.authoredArms, state.unboundReferences, state.aliases,
+        state.annotations, state.folders);
     materializedDocument_ = state.snapshot->document;
     currentSnapshot_ = state.snapshot;
     structurallyValid_ = state.snapshot->readiness

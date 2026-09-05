@@ -76,6 +76,9 @@ struct SctSemanticState final {
     std::vector<SctAuthoredArm> authoredArms{};
     std::vector<SctPatchedTextRepair> textRepairs{};
     std::vector<SctUnboundReferenceOrigin> unboundReferences{};
+    std::vector<SctVariableAlias> aliases{};
+    std::vector<SctEntityAnnotation> annotations{};
+    std::vector<SctSectionFolder> folders{};
 };
 
 // A canonical baseline-to-working delta. It is intentionally not the undo journal.
@@ -91,6 +94,9 @@ struct SalsaScriptPatch final {
     std::vector<SctValueDelta<SctAuthoredArm>> authoredArms{};
     std::vector<SctPatchedTextRepairDelta> textRepairs{};
     std::vector<SctPatchedUnboundReferenceDelta> unboundReferences{};
+    std::vector<SctValueDelta<SctVariableAlias>> aliases{};
+    std::vector<SctValueDelta<SctEntityAnnotation>> annotations{};
+    std::vector<SctValueDelta<SctSectionFolder>> folders{};
 
     [[nodiscard]] bool empty() const noexcept;
 };
@@ -100,12 +106,15 @@ struct SctPatchApplication final {
     std::vector<SctAuthoredArm> authoredArms{};
     std::vector<SctPatchedTextRepair> textRepairs{};
     std::vector<SctUnboundReferenceOrigin> unboundReferences{};
+    std::vector<SctVariableAlias> aliases{};
+    std::vector<SctEntityAnnotation> annotations{};
+    std::vector<SctSectionFolder> folders{};
 };
 
 class SalsaScriptPatchCodec final {
 public:
     static constexpr std::string_view PayloadType = "jahorta.salsa.sct-script-patch";
-    static constexpr std::uint32_t SchemaVersion = 4;
+    static constexpr std::uint32_t SchemaVersion = 5;
 
     [[nodiscard]] static Result<std::vector<std::byte>> serialize(
         const SalsaScriptPatch& patch);
@@ -131,6 +140,9 @@ struct SctPatchedLoadResult final {
     std::vector<SctAuthoredArm> authoredArms{};
     std::vector<SctPatchedTextRepair> textRepairs{};
     std::vector<SctUnboundReferenceOrigin> unboundReferences{};
+    std::vector<SctVariableAlias> aliases{};
+    std::vector<SctEntityAnnotation> annotations{};
+    std::vector<SctSectionFolder> folders{};
     bool patchApplied = false;
     bool patchConflict = false;
 };
@@ -142,6 +154,9 @@ struct SctCheckpointRequest final {
     SctMaterializationRequest materialization{};
     std::vector<SctPatchedTextRepair> textRepairs{};
     std::vector<SctUnboundReferenceOrigin> unboundReferences{};
+    std::vector<SctVariableAlias> aliases{};
+    std::vector<SctEntityAnnotation> annotations{};
+    std::vector<SctSectionFolder> folders{};
 };
 
 struct SctCheckpointResult final {

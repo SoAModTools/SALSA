@@ -1,9 +1,12 @@
 #include "Sct/SctOutlineModel.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 
 #include "SpiceSCT/SctOpcodeMetadata.h"
 
 #include <QString>
 #include <QMimeData>
+#include <QBrush>
+#include <QColor>
 
 #include <algorithm>
 #include <ranges>
@@ -46,6 +49,22 @@ QVariant SctOutlineModel::data(const QModelIndex& modelIndex, const int role) co
     if (role == Qt::UserRole) return static_cast<int>(node->target.kind);
     if (role == Qt::UserRole + 1)
         return QVariant::fromValue<qulonglong>(node->target.id);
+    if (role == Qt::BackgroundRole) {
+        const auto direct = annotationColors_.find(key(node->target).toStdString());
+        if (direct != annotationColors_.end())
+            return QBrush(QColor::fromRgb(direct->second));
+        if (node->target.kind == core::SctNavigationKind::Instruction) {
+            const auto instruction = instructionValues_.find(node->target.id);
+            if (instruction != instructionValues_.end()) {
+                if (const auto project = opcodeColors_.find(instruction->second.opcode);
+                    project != opcodeColors_.end())
+                    return QBrush(QColor::fromRgb(project->second));
+                const auto catalog = core::SctCatalogResolver::resolve(
+                    instruction->second.opcode);
+                if (catalog.colorRgb) return QBrush(QColor::fromRgb(*catalog.colorRgb));
+            }
+        }
+    }
     return {};
 }
 
@@ -149,6 +168,36 @@ void SctOutlineModel::resetFrom(
         }
     }
     endResetModel();
+}
+
+void SctOutlineModel::setPresentationMetadata(
+    const std::span<const core::SctEntityAnnotation> annotations,
+    const std::span<const core::SctSectionFolder> folders,
+    const std::span<const core::SctOpcodeColor> opcodeColors) {
+    annotationColors_.clear();
+    opcodeColors_.clear();
+    for (const auto& annotation : annotations) {
+        if (!annotation.colorRgb) continue;
+        core::SctNavigationKind kind;
+        switch (annotation.target.kind) {
+        case core::SctAuthoringTargetKind::Document: kind = core::SctNavigationKind::Document; break;
+        case core::SctAuthoringTargetKind::Section: kind = core::SctNavigationKind::Section; break;
+        case core::SctAuthoringTargetKind::Instruction: kind = core::SctNavigationKind::Instruction; break;
+        case core::SctAuthoringTargetKind::String: kind = core::SctNavigationKind::String; break;
+        case core::SctAuthoringTargetKind::FooterEntry: kind = core::SctNavigationKind::FooterEntry; break;
+        case core::SctAuthoringTargetKind::Variable: continue;
+        }
+        annotationColors_.emplace(key({kind, annotation.target.id}).toStdString(),
+            *annotation.colorRgb);
+    }
+    for (const auto& folder : folders)
+        if (folder.colorRgb)
+            annotationColors_.emplace(key({core::SctNavigationKind::SectionFolder,
+                folder.id.value}).toStdString(), *folder.colorRgb);
+    for (const auto& color : opcodeColors) opcodeColors_[color.opcode] = color.colorRgb;
+    if (rowCount() > 0)
+        emit dataChanged(index(0, 0), index(rowCount() - 1, 1),
+            {Qt::BackgroundRole});
 }
 
 bool SctOutlineModel::apply(const core::SctEditChangeSet& changes) {
@@ -324,13 +373,11 @@ bool SctOutlineModel::applyOne(
             if (change.before == change.after) {
                 if (!change.afterValue) return false;
                 instructionValues_[change.instruction.value()] = *change.afterValue;
-                const auto* schema = spice::sct::findSctOpcodeSchema(
+                const auto resolved = core::SctCatalogResolver::resolve(
                     change.afterValue->opcode);
-                const auto mnemonic = schema != nullptr
-                        && !schema->semantic.mnemonic.empty()
-                    ? QString::fromUtf8(schema->semantic.mnemonic.data(),
-                        static_cast<qsizetype>(schema->semantic.mnemonic.size()))
-                    : QStringLiteral("Opcode");
+                const auto mnemonic = resolved.mnemonic.empty()
+                    ? QStringLiteral("Opcode")
+                    : QString::fromStdString(resolved.mnemonic);
                 node->label = mnemonic + QStringLiteral(" (")
                     + QString::number(change.afterValue->opcode) + QLatin1Char(')');
                 emit dataChanged(indexForNode(node), indexForNode(node, 1));
@@ -444,11 +491,9 @@ QString SctOutlineModel::key(const core::SctNavigationTarget target) {
 std::unique_ptr<SctOutlineModel::Node> SctOutlineModel::instructionNode(
     const spice::sct::SctDocumentInstruction& instruction, Node* parent) {
     auto node = std::make_unique<Node>();
-    const auto* schema = spice::sct::findSctOpcodeSchema(instruction.opcode);
-    const auto mnemonic = schema != nullptr && !schema->semantic.mnemonic.empty()
-        ? QString::fromUtf8(schema->semantic.mnemonic.data(),
-            static_cast<qsizetype>(schema->semantic.mnemonic.size()))
-        : QStringLiteral("Opcode");
+    const auto resolved = core::SctCatalogResolver::resolve(instruction.opcode);
+    const auto mnemonic = resolved.mnemonic.empty() ? QStringLiteral("Opcode")
+        : QString::fromStdString(resolved.mnemonic);
     node->label = mnemonic + QStringLiteral(" (")
         + QString::number(instruction.opcode) + QLatin1Char(')');
     node->secondary = tr("Instruction %1").arg(instruction.id.value());

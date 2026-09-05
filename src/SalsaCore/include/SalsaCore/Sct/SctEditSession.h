@@ -99,7 +99,10 @@ public:
         std::shared_ptr<const SctDocumentSnapshot> restoredSnapshot,
         std::span<const SctAuthoredArm> authoredArms,
         std::span<const SctPatchedTextRepair> textRepairs,
-        std::span<const SctUnboundReferenceOrigin> unboundReferences = {});
+        std::span<const SctUnboundReferenceOrigin> unboundReferences = {},
+        std::span<const SctVariableAlias> aliases = {},
+        std::span<const SctEntityAnnotation> annotations = {},
+        std::span<const SctSectionFolder> folders = {});
 
     SctEditSession(const SctEditSession&) = delete;
     SctEditSession& operator=(const SctEditSession&) = delete;
@@ -111,7 +114,20 @@ public:
         std::shared_ptr<const SctDocumentSnapshot> rebasedSnapshot,
         std::span<const SctAuthoredArm> authoredArms,
         std::span<const SctPatchedTextRepair> textRepairs,
-        std::span<const SctUnboundReferenceOrigin> unboundReferences = {});
+        std::span<const SctUnboundReferenceOrigin> unboundReferences = {},
+        std::span<const SctVariableAlias> aliases = {},
+        std::span<const SctEntityAnnotation> annotations = {},
+        std::span<const SctSectionFolder> folders = {});
+
+    [[nodiscard]] SctEditResult setVariableAlias(
+        SctVariableKey variable, std::optional<std::string> alias);
+    [[nodiscard]] SctEditResult setAnnotation(SctEntityAnnotation annotation);
+    [[nodiscard]] SctEditResult clearAnnotation(SctAuthoringTarget target);
+    [[nodiscard]] SctEditResult createSectionFolder(std::string name,
+        std::span<const spice::sct::SctSectionId> sections,
+        std::optional<SctSectionFolderId> parent = std::nullopt);
+    [[nodiscard]] SctEditResult updateSectionFolder(SctSectionFolder folder);
+    [[nodiscard]] SctEditResult removeSectionFolder(SctSectionFolderId folder);
 
     [[nodiscard]] SctEditResult insertInstructionAfter(
         spice::sct::SctInstructionId anchorInstruction,
@@ -230,6 +246,9 @@ public:
     [[nodiscard]] const SctStructuredAuthoringState& structuredAuthoring() const noexcept;
     [[nodiscard]] std::span<const SctUnboundReferenceOrigin>
         unboundReferences() const noexcept;
+    [[nodiscard]] std::span<const SctVariableAlias> aliases() const noexcept;
+    [[nodiscard]] std::span<const SctEntityAnnotation> annotations() const noexcept;
+    [[nodiscard]] std::span<const SctSectionFolder> folders() const noexcept;
     [[nodiscard]] std::shared_ptr<const SctSemanticEditorProjection>
         semanticProjection() const noexcept;
 
@@ -250,6 +269,9 @@ private:
             std::vector<SctAuthoredArm> authoredArms{};
             std::vector<SctPatchedTextRepair> textRepairs{};
             std::vector<SctUnboundReferenceOrigin> unboundReferences{};
+            std::vector<SctVariableAlias> aliases{};
+            std::vector<SctEntityAnnotation> annotations{};
+            std::vector<SctSectionFolder> folders{};
         };
         RevisionId parent{};
         SctSemanticOperationBatch forward{};

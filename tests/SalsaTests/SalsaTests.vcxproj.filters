@@ -49,6 +49,7 @@
     <ClCompile Include="test_sct_baseline_store.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_sct_change_plan.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_sct_script_patch.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="test_sct_authoring_catalog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_sct_structured_authoring.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_workspace_persistence.cpp"><Filter>Project</Filter></ClCompile>
   </ItemGroup>

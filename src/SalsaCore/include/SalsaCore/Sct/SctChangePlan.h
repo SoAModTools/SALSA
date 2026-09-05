@@ -33,6 +33,9 @@ enum class SctChangeEntityKind {
     AuthoredArm,
     TextRepair,
     UnboundReference,
+    VariableAlias,
+    EntityAnnotation,
+    SectionFolder,
     AllocatorState,
     OpaquePreservation,
 };

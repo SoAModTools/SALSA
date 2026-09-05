@@ -1,4 +1,5 @@
 #include "SalsaCore/Sct/SctParameterAuthoring.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include "SalsaCore/Sct/SctWorkingState.h"
@@ -150,8 +151,23 @@ SctParameterRowPresentation projectParameter(const SctWorkingState& state,
     SctParameterRowPresentation result;
     result.site = {instruction.id, {parameter.schemaIndex, group}};
     const auto* schema = schemaFor(instruction, parameter.schemaIndex);
-    result.parameter = schema != nullptr && !schema->role.empty()
-        ? std::string(schema->role) : "Parameter " + std::to_string(parameter.schemaIndex);
+    const auto catalog = SctCatalogResolver::resolve(instruction.opcode);
+    const auto* opcodeSchema = spice::sct::findSctOpcodeSchema(instruction.opcode);
+    std::optional<std::size_t> position;
+    if (opcodeSchema != nullptr) {
+        const std::span parameters{opcodeSchema->parameterCatalog.data(),
+            static_cast<std::size_t>(opcodeSchema->parameterCatalogCount)};
+        const auto found = std::ranges::find(parameters, parameter.schemaIndex,
+            &spice::sct::SctOpcodeParameterSchema::schemaIndex);
+        if (found != parameters.end())
+            position = static_cast<std::size_t>(found - parameters.begin());
+    }
+    result.parameter = position && *position < catalog.parameterLabels.size()
+        && !catalog.parameterLabels[*position].empty()
+        ? catalog.parameterLabels[*position]
+        : schema != nullptr && !schema->role.empty()
+            ? std::string(schema->role)
+            : "Parameter " + std::to_string(parameter.schemaIndex);
     result.notes = factNotes(instruction.opcode, parameter.schemaIndex);
     const auto appendNote = [&](std::string note) {
         if (!result.notes.empty()) result.notes += ' ';

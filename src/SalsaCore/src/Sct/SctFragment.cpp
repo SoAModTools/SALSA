@@ -416,6 +416,13 @@ Result<SctSemanticFragment> SctFragmentService::captureInstructions(
     }
     auto arms = collectArms(authoring, selected, fragment);
     if (!arms) return Result<SctSemanticFragment>::failure(arms.diagnostics());
+    for (auto annotation : authoring.annotations()) {
+        if (annotation.target.kind != SctAuthoringTargetKind::Instruction
+            || !selected.contains(spice::sct::SctInstructionId(annotation.target.id))) continue;
+        annotation.bookmarkLabel.reset();
+        if (annotation.note || annotation.colorRgb)
+            fragment.annotations.push_back(std::move(annotation));
+    }
     collectDependencies(fragment, state);
     return Result<SctSemanticFragment>::success(std::move(fragment));
 }
@@ -431,6 +438,9 @@ Result<SctSemanticFragment> SctFragmentService::captureSections(
     fragment.kind = SctFragmentKind::SectionRange;
     fragment.sourceAssetIdentity = std::move(sourceAssetIdentity);
     std::unordered_set<spice::sct::SctInstructionId> selected;
+    std::unordered_set<spice::sct::SctStringId> selectedStrings;
+    std::unordered_set<spice::sct::SctSectionId> selectedSections(
+        sections.begin(), sections.end());
     for (const auto id : sections) {
         const auto* section = state.section(id);
         if (!section || std::holds_alternative<spice::sct::SctOpaqueSectionContent>(
@@ -453,10 +463,31 @@ Result<SctSemanticFragment> SctFragmentService::captureSections(
                 spice::sct::SctOpaqueAnchor{text->string.id}).empty())
             return Result<SctSemanticFragment>::failure(fragmentError(
                 "A selected indexed string has preservation-constrained data."));
+        if (const auto* text = std::get_if<spice::sct::SctStringSectionContent>(
+                &section->content)) selectedStrings.insert(text->string.id);
         fragment.sections.push_back(*section);
     }
     auto arms = collectArms(authoring, selected, fragment);
     if (!arms) return Result<SctSemanticFragment>::failure(arms.diagnostics());
+    for (auto annotation : authoring.annotations()) {
+        const bool included = (annotation.target.kind == SctAuthoringTargetKind::Section
+                && selectedSections.contains(spice::sct::SctSectionId(annotation.target.id)))
+            || (annotation.target.kind == SctAuthoringTargetKind::Instruction
+                && selected.contains(spice::sct::SctInstructionId(annotation.target.id)))
+            || (annotation.target.kind == SctAuthoringTargetKind::String
+                && selectedStrings.contains(spice::sct::SctStringId(annotation.target.id)));
+        if (!included) continue;
+        annotation.bookmarkLabel.reset();
+        if (annotation.note || annotation.colorRgb)
+            fragment.annotations.push_back(std::move(annotation));
+    }
+    for (auto folder : authoring.folders()) {
+        if (!std::ranges::all_of(folder.sections, [&](const auto section) {
+                return selectedSections.contains(section);
+            })) continue;
+        folder.bookmarkLabel.reset();
+        fragment.folders.push_back(std::move(folder));
+    }
     collectDependencies(fragment, state);
     return Result<SctSemanticFragment>::success(std::move(fragment));
 }
@@ -637,6 +668,44 @@ Result<SctFragmentPastePlan> SctFragmentService::planPaste(
             {arm.id, std::nullopt, std::move(arm)});
         (void)oldId;
     }
+    for (auto annotation : fragment.annotations) {
+        switch (annotation.target.kind) {
+        case SctAuthoringTargetKind::Section:
+            if (!sectionIds.contains(spice::sct::SctSectionId(annotation.target.id))) continue;
+            annotation.target.id = sectionIds.at(
+                spice::sct::SctSectionId(annotation.target.id)).value();
+            break;
+        case SctAuthoringTargetKind::Instruction:
+            if (!instructionIds.contains(spice::sct::SctInstructionId(annotation.target.id))) continue;
+            annotation.target.id = instructionIds.at(
+                spice::sct::SctInstructionId(annotation.target.id)).value();
+            break;
+        case SctAuthoringTargetKind::String:
+            if (!stringIds.contains(spice::sct::SctStringId(annotation.target.id))) continue;
+            annotation.target.id = stringIds.at(
+                spice::sct::SctStringId(annotation.target.id)).value();
+            break;
+        default:
+            continue;
+        }
+        annotation.bookmarkLabel.reset();
+        result.authoring.annotations.push_back(
+            {annotation.target, std::nullopt, std::move(annotation)});
+    }
+    std::unordered_map<std::uint64_t, std::uint64_t> folderIds;
+    auto nextFolder = authoring.nextFolderId().value;
+    for (const auto& folder : fragment.folders)
+        folderIds.emplace(folder.id.value, nextFolder++);
+    for (auto folder : fragment.folders) {
+        folder.id = SctSectionFolderId{folderIds.at(folder.id.value)};
+        folder.parent = folder.parent && folderIds.contains(folder.parent->value)
+            ? std::optional{SctSectionFolderId{folderIds.at(folder.parent->value)}}
+            : std::nullopt;
+        for (auto& section : folder.sections) section = sectionIds.at(section);
+        folder.bookmarkLabel.reset();
+        result.authoring.folders.push_back(
+            {folder.id, std::nullopt, std::move(folder)});
+    }
     return Result<SctFragmentPastePlan>::success(std::move(result));
 }
 
@@ -663,6 +732,10 @@ Result<std::vector<std::byte>> SctFragmentCodec::serialize(
         }
         for (const auto& arm : fragment.authoredArms)
             payload.authoredArms.push_back({std::nullopt, arm});
+        for (const auto& annotation : fragment.annotations)
+            payload.annotations.push_back({std::nullopt, annotation});
+        for (const auto& folder : fragment.folders)
+            payload.folders.push_back({std::nullopt, folder});
         auto encodedPayload = SalsaScriptPatchCodec::serialize(payload);
         if (!encodedPayload)
             return Result<std::vector<std::byte>>::failure(encodedPayload.diagnostics());
@@ -733,7 +806,7 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
             || decodedPatch.sectionOrder || !decodedPatch.scriptSections.empty()
             || !decodedPatch.textValues.empty() || decodedPatch.footerOrder
             || !decodedPatch.footerEntries.empty() || !decodedPatch.textRepairs.empty()
-            || !decodedPatch.unboundReferences.empty())
+            || !decodedPatch.unboundReferences.empty() || !decodedPatch.aliases.empty())
             throw std::runtime_error("fragment payload contains unrelated patch data");
         SctSemanticFragment fragment;
         fragment.sourceAssetIdentity = document.at("sourceAssetIdentity").get<std::string>();
@@ -762,6 +835,16 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
             if (!arm.after || arm.before)
                 throw std::runtime_error("fragment arm delta is invalid");
             fragment.authoredArms.push_back(*arm.after);
+        }
+        for (const auto& annotation : decodedPatch.annotations) {
+            if (!annotation.after || annotation.before || annotation.after->bookmarkLabel)
+                throw std::runtime_error("fragment annotation delta is invalid");
+            fragment.annotations.push_back(*annotation.after);
+        }
+        for (const auto& folder : decodedPatch.folders) {
+            if (!folder.after || folder.before || folder.after->bookmarkLabel)
+                throw std::runtime_error("fragment folder delta is invalid");
+            fragment.folders.push_back(*folder.after);
         }
         for (const auto& encoded : document.at("dependencies")) {
             static const std::array dependencyFields{"sourceSite", "target",

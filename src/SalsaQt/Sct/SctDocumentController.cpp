@@ -110,7 +110,8 @@ bool SctDocumentController::adoptRebasedDocument(
     state->session = core::SctEditSession::createRebased(
         reopened.baseline, reopened.load.document,
         reopened.authoredArms, reopened.textRepairs,
-        reopened.unboundReferences);
+        reopened.unboundReferences, reopened.aliases, reopened.annotations,
+        reopened.folders);
     state->status = SourceStatus::Current;
     state->patchConflict = false;
     state->editBlocked = false;
@@ -147,7 +148,8 @@ bool SctDocumentController::installTransientDocument(
     DocumentState state{locator,
         std::make_unique<core::SctEditSession>(snapshot, snapshot,
             semanticState.authoredArms, semanticState.textRepairs,
-            semanticState.unboundReferences)};
+            semanticState.unboundReferences, semanticState.aliases,
+            semanticState.annotations, semanticState.folders)};
     auto [found, inserted] = documents_.emplace(locator.identityKey(), std::move(state));
     if (!inserted) return false;
     emit documentChanged(identity(locator), SctDocumentUpdate{
@@ -170,7 +172,10 @@ std::optional<core::SctSemanticState> SctDocumentController::semanticState(
         {state->session->structuredAuthoring().arms().begin(),
             state->session->structuredAuthoring().arms().end()},
         state->session->workingState().textRepairProvenances(),
-        {unbound.begin(), unbound.end()}};
+        {unbound.begin(), unbound.end()},
+        {state->session->aliases().begin(), state->session->aliases().end()},
+        {state->session->annotations().begin(), state->session->annotations().end()},
+        {state->session->folders().begin(), state->session->folders().end()}};
 }
 
 bool SctDocumentController::selectTextConvention(
@@ -711,6 +716,47 @@ bool SctDocumentController::moveSection(
             ? tr("Section moved up.") : tr("Section moved down."));
 }
 
+bool SctDocumentController::setVariableAlias(const core::AssetLocator& locator,
+    const core::SctVariableKey variable, std::optional<std::string> alias) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->setVariableAlias(
+            variable, std::move(alias)), tr("Variable alias updated."));
+}
+
+bool SctDocumentController::setAnnotation(const core::AssetLocator& locator,
+    core::SctEntityAnnotation annotation) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->setAnnotation(
+            std::move(annotation)), tr("Authoring metadata updated."));
+}
+
+bool SctDocumentController::createSectionFolder(const core::AssetLocator& locator,
+    std::string name, const std::span<const spice::sct::SctSectionId> sections,
+    const std::optional<core::SctSectionFolderId> parent) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->createSectionFolder(
+            std::move(name), sections, parent), tr("Section folder created."));
+}
+
+bool SctDocumentController::updateSectionFolder(const core::AssetLocator& locator,
+    core::SctSectionFolder folder) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->updateSectionFolder(
+            std::move(folder)), tr("Section folder updated."));
+}
+
+bool SctDocumentController::removeSectionFolder(const core::AssetLocator& locator,
+    const core::SctSectionFolderId folder) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->removeSectionFolder(folder),
+            tr("Section folder removed."));
+}
+
 bool SctDocumentController::createFooterText(
     const core::AssetLocator& locator, const core::SctCreatedFooterTextKind kind,
     const std::optional<spice::sct::SctFooterEntryId> after) {
@@ -1173,7 +1219,8 @@ void SctDocumentController::onFinished() {
         if (result.patchApplied) {
             return std::make_unique<core::SctEditSession>(result.baseline,
                 result.load.document, result.authoredArms, result.textRepairs,
-                result.unboundReferences);
+                result.unboundReferences, result.aliases, result.annotations,
+                result.folders);
         }
         return std::make_unique<core::SctEditSession>(result.load.document);
     };

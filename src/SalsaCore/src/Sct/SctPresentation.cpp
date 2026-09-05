@@ -1,4 +1,5 @@
 #include "SalsaCore/Sct/SctPresentation.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 
 #include "SpiceSCT/SctDocumentIndex.h"
 #include "SpiceSCT/SctOpcodeMetadata.h"
@@ -9,10 +10,14 @@
 #include <bit>
 #include <cmath>
 #include <iomanip>
+#include <functional>
+#include <iterator>
 #include <limits>
 #include <locale>
 #include <sstream>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace salsa::core {
 namespace {
@@ -521,9 +526,8 @@ std::vector<SctOutlineItem> SctPresentationService::outline(
             sectionKind(section.content), { SctNavigationKind::Section, section.id.value() }, {} };
         if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(&section.content)) {
             for (const auto& instruction : script->instructions) {
-                const auto* schema = spice::sct::findSctOpcodeSchema(instruction.opcode);
-                const auto mnemonic = schema != nullptr && !schema->semantic.mnemonic.empty()
-                    ? std::string(schema->semantic.mnemonic) : "Opcode";
+                auto mnemonic = SctCatalogResolver::resolve(instruction.opcode).mnemonic;
+                if (mnemonic.empty()) mnemonic = "Opcode";
                 item.children.push_back({ mnemonic + " (" + std::to_string(instruction.opcode) + ")",
                     "Instruction " + std::to_string(instruction.id.value()),
                     { SctNavigationKind::Instruction, instruction.id.value() }, {} });
@@ -552,6 +556,87 @@ std::vector<SctOutlineItem> SctPresentationService::outline(
     }
     result.push_back(std::move(opaque));
     return result;
+}
+
+std::vector<SctOutlineItem> SctPresentationService::outline(
+    const SctDocumentSnapshot& snapshot,
+    const std::span<const SctSectionFolder> folders) {
+    auto flat = outline(snapshot);
+    if (folders.empty()) return flat;
+    std::unordered_map<std::uint64_t, SctOutlineItem> sectionItems;
+    std::vector<SctOutlineItem> prefix;
+    std::vector<SctOutlineItem> suffix;
+    bool sawSection = false;
+    for (auto& item : flat) {
+        if (item.target.kind == SctNavigationKind::Section) {
+            sawSection = true;
+            sectionItems.emplace(item.target.id, std::move(item));
+        } else if (!sawSection) {
+            prefix.push_back(std::move(item));
+        } else {
+            suffix.push_back(std::move(item));
+        }
+    }
+    std::unordered_map<std::uint64_t, const SctSectionFolder*> byId;
+    std::unordered_map<std::uint64_t, std::uint64_t> directFolder;
+    for (const auto& folder : folders) {
+        byId.emplace(folder.id.value, &folder);
+        for (const auto section : folder.sections)
+            directFolder.emplace(section.value(), folder.id.value);
+    }
+    std::function<SctOutlineItem(const SctSectionFolder&)> makeFolder;
+    makeFolder = [&](const SctSectionFolder& folder) {
+        SctOutlineItem result{folder.name, "Section folder",
+            {SctNavigationKind::SectionFolder, folder.id.value}, {}};
+        const auto coveredByChild = [&](const auto section) {
+            return std::ranges::any_of(folders, [&](const auto& child) {
+                return child.parent == folder.id
+                    && std::ranges::find(child.sections, section) != child.sections.end();
+            });
+        };
+        for (const auto section : folder.sections)
+            if (const auto found = sectionItems.find(section.value());
+                found != sectionItems.end() && !coveredByChild(section))
+                result.children.push_back(found->second);
+        for (const auto& child : folders)
+            if (child.parent == folder.id)
+                result.children.push_back(makeFolder(child));
+        const auto position = [&](const SctOutlineItem& item) {
+            if (item.target.kind == SctNavigationKind::Section) {
+                const auto found = std::ranges::find_if(snapshot.document->sections,
+                    [&](const auto& section) { return section.id.value() == item.target.id; });
+                return static_cast<std::size_t>(found - snapshot.document->sections.begin());
+            }
+            const auto* nested = byId.at(item.target.id);
+            std::size_t first = snapshot.document->sections.size();
+            for (const auto section : nested->sections) {
+                const auto found = std::ranges::find(snapshot.document->sections,
+                    section, &spice::sct::SctDocumentSection::id);
+                first = std::min(first, static_cast<std::size_t>(
+                    found - snapshot.document->sections.begin()));
+            }
+            return first;
+        };
+        std::ranges::stable_sort(result.children, {}, position);
+        return result;
+    };
+    std::unordered_set<std::uint64_t> emittedFolders;
+    for (const auto& section : snapshot.document->sections) {
+        const auto grouped = directFolder.find(section.id.value());
+        if (grouped == directFolder.end()) {
+            if (const auto found = sectionItems.find(section.id.value());
+                found != sectionItems.end())
+                prefix.push_back(found->second);
+            continue;
+        }
+        auto folderId = grouped->second;
+        while (byId.at(folderId)->parent) folderId = byId.at(folderId)->parent->value;
+        if (emittedFolders.insert(folderId).second)
+            prefix.push_back(makeFolder(*byId.at(folderId)));
+    }
+    prefix.insert(prefix.end(), std::make_move_iterator(suffix.begin()),
+        std::make_move_iterator(suffix.end()));
+    return prefix;
 }
 
 SctEntityPresentation SctPresentationService::describe(
@@ -650,15 +735,18 @@ SctEntityPresentation SctPresentationService::describe(
         if (const auto* instruction = index.find(*snapshot.document,
                 spice::sct::SctInstructionId(target.id))) {
             const auto* schema = spice::sct::findSctOpcodeSchema(instruction->opcode);
-            const auto mnemonic = schema != nullptr && !schema->semantic.mnemonic.empty()
-                ? std::string(schema->semantic.mnemonic) : "Unknown opcode";
+            auto catalog = SctCatalogResolver::resolve(instruction->opcode);
+            const auto mnemonic = catalog.mnemonic.empty()
+                ? std::string("Unknown opcode") : catalog.mnemonic;
             SctEntityPresentation result{ mnemonic, "Opcode " + std::to_string(instruction->opcode), {
                 { "Entity ID", std::to_string(instruction->id.value()), {}, {} },
                 { "Opcode", std::to_string(instruction->opcode) + " (" + hexValue(instruction->opcode, 4) + ")", mnemonic, {} },
                 { "Skip refresh", instruction->skipRefresh ? "Yes" : "No", {}, {} },
             }, {} };
-            if (schema != nullptr && !schema->semantic.notes.empty())
-                result.properties.push_back({ "Schema notes", std::string(schema->semantic.notes), {}, {} });
+            if (!catalog.description.empty())
+                result.properties.push_back({"Description", catalog.description, {}, {}});
+            if (!catalog.note.empty())
+                result.properties.push_back({"Catalog notes", catalog.note, {}, {}});
             if (instruction->scheduledExpression.has_value())
                 result.properties.push_back(expressionProperty(*instruction->scheduledExpression,
                     spice::sct::SctExpressionSite{ instruction->id,

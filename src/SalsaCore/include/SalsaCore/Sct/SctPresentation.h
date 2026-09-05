@@ -2,6 +2,7 @@
 
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctInspectionLocation.h"
+#include "SalsaCore/Sct/SctStructuredAuthoring.h"
 
 #include "SpiceSCT/SctDocumentIndex.h"
 
@@ -43,6 +44,9 @@ class SctPresentationService final {
 public:
     [[nodiscard]] static std::vector<SctOutlineItem> outline(
         const SctDocumentSnapshot& snapshot);
+    [[nodiscard]] static std::vector<SctOutlineItem> outline(
+        const SctDocumentSnapshot& snapshot,
+        std::span<const SctSectionFolder> folders);
     [[nodiscard]] static SctEntityPresentation describe(
         const SctDocumentSnapshot& snapshot,
         SctNavigationTarget target);
