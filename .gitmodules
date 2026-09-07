@@ -3,4 +3,4 @@
 	url = https://github.com/google/googletest.git
 [submodule "third-party/SPICE"]
 	path = third-party/SPICE
-	url = https://github.com/jahorta/SPICE.git
+	url = https://github.com/SoAModTools/SPICE.git
