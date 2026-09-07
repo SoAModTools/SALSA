@@ -149,6 +149,9 @@ public:
     [[nodiscard]] SctEditResult pasteFragment(
         const SctSemanticFragment& fragment,
         SctFragmentPasteDestination destination);
+    [[nodiscard]] SctEditResult pasteFragment(
+        const SctSemanticFragment& fragment,
+        const SctSemanticDestination& destination);
     [[nodiscard]] SctEditResult deleteInstructions(
         std::span<const spice::sct::SctInstructionId> instructions);
     [[nodiscard]] SctEditResult deleteSections(
@@ -156,6 +159,16 @@ public:
     [[nodiscard]] SctEditResult moveInstructionsAfter(
         std::span<const spice::sct::SctInstructionId> instructions,
         spice::sct::SctInstructionId anchor);
+    [[nodiscard]] Result<SctSemanticFragment> captureSemanticUnits(
+        const SctSemanticSelection& selection) const;
+    [[nodiscard]] SctEditResult deleteSemanticUnits(
+        const SctSemanticSelection& selection);
+    [[nodiscard]] SctEditResult moveSemanticUnits(
+        const SctSemanticSelection& selection,
+        SctSemanticMoveDirection direction);
+    [[nodiscard]] SctEditResult moveSemanticUnits(
+        const SctSemanticSelection& selection,
+        const SctSemanticDestination& destination);
     [[nodiscard]] SctEditResult replaceMessage(
         const SctMessageTarget& target,
         const SctMessageDraft& draft,
@@ -256,6 +269,15 @@ public:
     [[nodiscard]] static const std::vector<SctInsertableOpcode>& authorableOpcodes();
 
 private:
+    struct AuthoredArmLoweringPlan final {
+        SctAuthoredArm before{};
+        SctAuthoredArm after{};
+        spice::sct::SctInstructionId bodyAnchor{};
+        std::optional<spice::sct::SctDocumentInstruction> beforeBodyScaffold{};
+        std::optional<spice::sct::SctDocumentInstruction> afterBodyScaffold{};
+        spice::sct::SctDocumentInstruction controller{};
+    };
+
     struct SelectionHints final {
         std::optional<SctNavigationTarget> undoSelection{};
         std::optional<SctNavigationTarget> redoSelection{};
@@ -299,6 +321,10 @@ private:
         std::string description,
         SelectionHints selections,
         std::uint64_t preflightMicroseconds = 0);
+    [[nodiscard]] Result<AuthoredArmLoweringPlan> planAuthoredArmLowering(
+        SctAuthoredArmId arm,
+        std::span<const spice::sct::SctInstructionId> body,
+        std::uint64_t nextInstructionId) const;
     void pruneMaterializationCheckpoints();
     void rebuildSemanticProjection();
     void installExternalState(const RevisionDelta::ExternalState& state);

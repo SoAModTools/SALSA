@@ -3,6 +3,7 @@
 #include "SpiceSCT/SctDocumentBuilder.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <array>
@@ -79,6 +80,12 @@ const SctInsertInstructionAfterOperation* insertion(
     return std::get_if<SctInsertInstructionAfterOperation>(
         &plan.document.operations[ordinal]);
 }
+
+std::vector<std::byte> jsonBytes(const nlohmann::ordered_json& value) {
+    const auto text = value.dump();
+    const auto bytes = std::as_bytes(std::span{text.data(), text.size()});
+    return {bytes.begin(), bytes.end()};
+}
 }  // namespace
 
 TEST(SctFragment, CapturesOnlyContiguousPhysicalRangesAndCompleteAuthoredArms) {
@@ -139,9 +146,9 @@ TEST(SctFragment, RoundTripsDeterministicallyAndRejectsUnsupportedSchemas) {
     auto unsupported = first.value();
     auto text = std::string(reinterpret_cast<const char*>(unsupported.data()),
         unsupported.size());
-    const auto marker = text.find("\"schemaVersion\": 3");
+    const auto marker = text.find("\"schemaVersion\": 4");
     ASSERT_NE(marker, std::string::npos);
-    text.replace(marker, std::string("\"schemaVersion\": 3").size(),
+    text.replace(marker, std::string("\"schemaVersion\": 4").size(),
         "\"schemaVersion\": 9");
     const auto bytes = std::as_bytes(std::span{text.data(), text.size()});
     const auto rejected = SctFragmentCodec::deserialize(bytes);
@@ -172,10 +179,12 @@ TEST(SctFragment, MigratesSchemaTwoFooterDependencies) {
     ASSERT_TRUE(current);
     std::string legacy(reinterpret_cast<const char*>(current.value().data()),
         current.value().size());
-    auto version = legacy.find("\"schemaVersion\": 3");
+    auto encoded = nlohmann::ordered_json::parse(legacy);
+    encoded["schemaVersion"] = 2;
+    encoded.erase("semanticUnits");
+    legacy = encoded.dump();
+    auto version = legacy.find("\"schemaVersion\":2");
     ASSERT_NE(version, std::string::npos);
-    legacy.replace(version, std::string("\"schemaVersion\": 3").size(),
-        "\"schemaVersion\": 2");
     auto targetKind = legacy.find("\"supplementary-text\"");
     ASSERT_NE(targetKind, std::string::npos);
     legacy.replace(targetKind, std::string("\"supplementary-text\"").size(),
@@ -193,9 +202,112 @@ TEST(SctFragment, MigratesSchemaTwoFooterDependencies) {
     ASSERT_TRUE(migrated);
     const std::string migratedText(
         reinterpret_cast<const char*>(migrated.value().data()), migrated.value().size());
-    EXPECT_NE(migratedText.find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(migratedText.find("\"schemaVersion\": 4"), std::string::npos);
     EXPECT_NE(migratedText.find("\"supplementary-text\""), std::string::npos);
     EXPECT_EQ(migratedText.find("\"footer\""), std::string::npos);
+}
+
+TEST(SctFragment, ReadsSchemaThreeAndUpgradesItToSchemaFour) {
+    const auto source = makeFragmentDocument();
+    const SctWorkingState state(source.document);
+    const SctStructuredAuthoringState authoring;
+    const std::array selected{source.instructions[1]};
+    const auto captured = SctFragmentService::captureInstructions(
+        state, authoring, "scripts/source.sct", selected);
+    ASSERT_TRUE(captured);
+    const auto current = SctFragmentCodec::serialize(captured.value());
+    ASSERT_TRUE(current);
+    auto encoded = nlohmann::ordered_json::parse(
+        reinterpret_cast<const char*>(current.value().data()),
+        reinterpret_cast<const char*>(current.value().data()) + current.value().size());
+    encoded["schemaVersion"] = 3;
+    encoded.erase("semanticUnits");
+
+    const auto decoded = SctFragmentCodec::deserialize(jsonBytes(encoded));
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value().kind, SctFragmentKind::InstructionRange);
+    const auto upgraded = SctFragmentCodec::serialize(decoded.value());
+    ASSERT_TRUE(upgraded);
+    const std::string upgradedText(
+        reinterpret_cast<const char*>(upgraded.value().data()), upgraded.value().size());
+    EXPECT_NE(upgradedText.find("\"schemaVersion\": 4"), std::string::npos);
+    EXPECT_NE(upgradedText.find("\"semanticUnits\": []"), std::string::npos);
+}
+
+TEST(SctFragment, RoundTripsSchemaFourSemanticHierarchyAndRejectsMalformedUnits) {
+    const auto source = makeFragmentDocument();
+    const SctWorkingState state(source.document);
+    const SctStructuredAuthoringState authoring;
+    const std::array selected{source.instructions[1], source.instructions[2]};
+    const auto captured = SctFragmentService::captureInstructions(
+        state, authoring, "scripts/source.sct", selected);
+    ASSERT_TRUE(captured);
+    auto fragment = captured.value();
+    fragment.kind = SctFragmentKind::SemanticUnits;
+    SctSemanticFragmentUnit arm;
+    arm.kind = SctSemanticNodeKind::Arm;
+    arm.instructions = {source.instructions[1], source.instructions[2]};
+    arm.armKind = SctStructuredArmKind::Then;
+    arm.entryInstruction = source.instructions[1];
+    SctSemanticFragmentUnit region;
+    region.kind = SctSemanticNodeKind::Region;
+    region.instructions = arm.instructions;
+    region.regionKind = SctStructuredRegionKind::If;
+    region.entryInstruction = source.instructions[1];
+    region.continuationInstruction = source.instructions[2];
+    region.children.push_back(arm);
+    fragment.semanticUnits.push_back(region);
+
+    const auto encoded = SctFragmentCodec::serialize(fragment);
+    ASSERT_TRUE(encoded);
+    const auto decoded = SctFragmentCodec::deserialize(encoded.value());
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value().kind, SctFragmentKind::SemanticUnits);
+    EXPECT_EQ(decoded.value().semanticUnits, fragment.semanticUnits);
+
+    auto malformed = nlohmann::ordered_json::parse(
+        reinterpret_cast<const char*>(encoded.value().data()),
+        reinterpret_cast<const char*>(encoded.value().data()) + encoded.value().size());
+    malformed["semanticUnits"][0]["unknown"] = true;
+    EXPECT_FALSE(SctFragmentCodec::deserialize(jsonBytes(malformed)));
+    malformed.erase("semanticUnits");
+    malformed["semanticUnits"] = nlohmann::ordered_json::array(
+        {{{"kind", 255u}, {"instructions", nlohmann::ordered_json::array({
+            source.instructions[1].value()})}, {"regionKind", nullptr},
+            {"armKind", nullptr}, {"caseValue", nullptr},
+            {"entryInstruction", nullptr}, {"continuationInstruction", nullptr},
+            {"children", nlohmann::ordered_json::array()}}});
+    EXPECT_FALSE(SctFragmentCodec::deserialize(jsonBytes(malformed)));
+}
+
+TEST(SctSnippetCodec, KeepsSchemaOneEnvelopeWithSchemaFourSemanticFragment) {
+    const auto source = makeFragmentDocument();
+    const SctWorkingState state(source.document);
+    const SctStructuredAuthoringState authoring;
+    const std::array selected{source.instructions[1]};
+    auto fragment = SctFragmentService::captureInstructions(
+        state, authoring, "scripts/source.sct", selected);
+    ASSERT_TRUE(fragment);
+    fragment.value().kind = SctFragmentKind::SemanticUnits;
+    SctSemanticFragmentUnit unit;
+    unit.kind = SctSemanticNodeKind::Instruction;
+    unit.instructions.assign(selected.begin(), selected.end());
+    fragment.value().semanticUnits.push_back(std::move(unit));
+    const auto encoded = SctSnippetCodec::serialize(
+        {"Semantic", "Reusable", fragment.value()});
+    ASSERT_TRUE(encoded);
+    const std::string text(reinterpret_cast<const char*>(encoded.value().data()),
+        encoded.value().size());
+    EXPECT_NE(text.find("\"schemaVersion\": 1"), std::string::npos);
+    const auto decoded = SctSnippetCodec::deserialize(encoded.value());
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value().fragment.semanticUnits,
+        fragment.value().semanticUnits);
+    const auto embedded = SctFragmentCodec::serialize(decoded.value().fragment);
+    ASSERT_TRUE(embedded);
+    const std::string embeddedText(
+        reinterpret_cast<const char*>(embedded.value().data()), embedded.value().size());
+    EXPECT_NE(embeddedText.find("\"schemaVersion\": 4"), std::string::npos);
 }
 
 TEST(SctFragment, PasteRemapsInternalReferencesAndPreservesSameDocumentDependencies) {

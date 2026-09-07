@@ -2843,10 +2843,23 @@ void MainWindow::insertInstruction() {
     if (widget == nullptr) return;
     const auto context = widget->insertionContext();
     if (!context.has_value()) return;
+    if (context->authoredArm) {
+        const auto opcode = chooseSemanticArmOpcode();
+        if (opcode) (void)documentController_->insertInstructionIntoAuthoredArm(
+            widget->locator(), *context->authoredArm, *opcode);
+        return;
+    }
+    if (context->controller && context->armKind) {
+        const auto opcode = chooseSemanticArmOpcode();
+        if (opcode) (void)documentController_->insertInstructionIntoStructuredArm(
+            widget->locator(), *context->controller, *context->armKind, *opcode);
+        return;
+    }
+    if (!context->anchor) return;
     auto draft = chooseInstructionDraft(widget->locator(), context->allowReturn);
     if (!draft.has_value()) return;
     (void)documentController_->createInstructionAfter(
-        widget->locator(), context->anchor, std::move(*draft));
+        widget->locator(), *context->anchor, std::move(*draft));
 }
 
 std::optional<std::uint16_t> MainWindow::chooseSemanticArmOpcode() {
@@ -3011,6 +3024,9 @@ std::optional<core::SctSemanticFragment> MainWindow::captureSelectedFragment(
     auto* widget = activeDocumentWidget();
     if (widget == nullptr) return std::nullopt;
     core::Result<core::SctSemanticFragment> captured = [&] {
+        if (const auto semantic = widget->selectedSemanticSelection())
+            return documentController_->captureSemanticUnits(
+                widget->locator(), *semantic);
         const auto instructions = widget->selectedInstructions();
         if (!instructions.empty())
             return documentController_->captureInstructions(
@@ -3048,7 +3064,9 @@ bool MainWindow::copyFragmentToClipboard(
     data->setText(fragment.kind == core::SctFragmentKind::InstructionRange
         ? tr("SALSA instruction fragment (%1 instructions)")
             .arg(fragment.instructions.size())
-        : tr("SALSA section fragment (%1 sections)").arg(fragment.sections.size()));
+        : fragment.kind == core::SctFragmentKind::SemanticUnits
+            ? tr("SALSA semantic fragment (%1 units)").arg(fragment.semanticUnits.size())
+            : tr("SALSA section fragment (%1 sections)").arg(fragment.sections.size()));
     QApplication::clipboard()->setMimeData(data);
     return true;
 }
@@ -3063,6 +3081,10 @@ void MainWindow::cutSelection() {
     if (widget == nullptr) return;
     const auto fragment = captureSelectedFragment();
     if (!fragment || !copyFragmentToClipboard(*fragment)) return;
+    if (const auto semantic = widget->selectedSemanticSelection()) {
+        (void)documentController_->deleteSemanticUnits(widget->locator(), *semantic);
+        return;
+    }
     const auto instructions = widget->selectedInstructions();
     if (!instructions.empty()) {
         (void)documentController_->deleteInstructions(widget->locator(), instructions);
@@ -3073,9 +3095,20 @@ void MainWindow::cutSelection() {
         (void)documentController_->deleteSections(widget->locator(), sections);
 }
 
-bool MainWindow::pasteFragment(const core::SctSemanticFragment& fragment) {
+bool MainWindow::pasteFragment(const core::SctSemanticFragment& fragment,
+    const bool duplicate) {
     auto* widget = activeDocumentWidget();
     if (widget == nullptr) return false;
+    if (fragment.kind == core::SctFragmentKind::SemanticUnits) {
+        const auto destination = widget->selectedSemanticDestination(!duplicate);
+        if (!destination) {
+            QMessageBox::information(this, tr("Choose a Semantic Destination"),
+                tr("Select a semantic instruction, region, or arm for this fragment."));
+            return false;
+        }
+        return documentController_->pasteFragment(
+            widget->locator(), fragment, *destination);
+    }
     core::SctFragmentPasteDestination destination;
     if (fragment.kind == core::SctFragmentKind::InstructionRange) {
         const auto selected = widget->selectedInstructions();
@@ -3157,12 +3190,16 @@ void MainWindow::pasteSelection() {
 
 void MainWindow::duplicateSelection() {
     const auto fragment = captureSelectedFragment();
-    if (fragment) (void)pasteFragment(*fragment);
+    if (fragment) (void)pasteFragment(*fragment, true);
 }
 
 void MainWindow::deleteSelection() {
     auto* widget = activeDocumentWidget();
     if (widget == nullptr) return;
+    if (const auto semantic = widget->selectedSemanticSelection()) {
+        (void)documentController_->deleteSemanticUnits(widget->locator(), *semantic);
+        return;
+    }
     const auto instructions = widget->selectedInstructions();
     if (!instructions.empty()) {
         (void)documentController_->deleteInstructions(widget->locator(), instructions);
@@ -3282,6 +3319,13 @@ void MainWindow::deleteInstruction() {
 void MainWindow::moveInstruction(const core::SctInstructionMoveDirection direction) {
     auto* widget = activeDocumentWidget();
     if (widget == nullptr) return;
+    if (const auto semantic = widget->selectedSemanticSelection()) {
+        (void)documentController_->moveSemanticUnits(widget->locator(), *semantic,
+            direction == core::SctInstructionMoveDirection::Up
+                ? core::SctSemanticMoveDirection::Up
+                : core::SctSemanticMoveDirection::Down);
+        return;
+    }
     const auto instructions = widget->selectedInstructions();
     if (instructions.size() > 1u) {
         const auto anchor = widget->rangeMoveAnchor(direction);
@@ -3755,6 +3799,27 @@ void MainWindow::syncDocument(
                 (void)documentController_->moveInstructionsAfter(widget->locator(),
                     instructions, spice::sct::SctInstructionId(anchor));
                 pendingInteractionPosition_.reset();
+            });
+        connect(widget, &SctDocumentWidget::moveSemanticUnitsRequested,
+            this, [this, widget](const QString&, const QStringList& values,
+                const QString& destinationKey, const int placement,
+                const QPoint& globalPosition) {
+                const auto projection = documentController_->semanticProjection(
+                    widget->locator());
+                if (!projection) return;
+                std::vector<core::SctSemanticNodeKey> keys;
+                keys.reserve(static_cast<std::size_t>(values.size()));
+                for (const auto& value : values)
+                    keys.push_back({value.toStdString()});
+                const auto selection = core::SctSemanticCommandPlanner::normalizeSelection(
+                    *projection, keys);
+                if (!selection) return;
+                const core::SctSemanticDestination destination{
+                    projection->workingRevision(),
+                    core::SctSemanticNodeKey{destinationKey.toStdString()},
+                    static_cast<core::SctSemanticDestinationPlacement>(placement)};
+                (void)documentController_->moveSemanticUnits(widget->locator(),
+                    selection.value(), destination, globalPosition);
             });
         connect(widget, &SctDocumentWidget::editMessageRequested,
             this, [this](const QString&) { editSelectedMessage(); });

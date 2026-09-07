@@ -1,6 +1,8 @@
 #pragma once
 
+#include "SalsaCore/Foundation/Result.h"
 #include "SalsaCore/History/RevisionHistory.h"
+#include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SpiceSCT/SctDocument.h"
 #include "SpiceSCT/SctStructuredControlFlow.h"
 
@@ -9,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace salsa::core {
@@ -215,6 +218,87 @@ struct SctSemanticAuthoredArmProjection final {
     std::vector<spice::sct::SctDocumentInstruction> visibleMembers{};
 };
 
+enum class SctSemanticNodeKind : std::uint8_t {
+    Section,
+    BasicBlock,
+    Instruction,
+    Region,
+    Arm,
+    Placeholder,
+    Issue,
+};
+
+// A projection-local identity. It is deterministic for one document revision,
+// but is deliberately not persisted as document or authoring state.
+struct SctSemanticNodeKey final {
+    std::string value{};
+    [[nodiscard]] bool valid() const noexcept { return !value.empty(); }
+    auto operator<=>(const SctSemanticNodeKey&) const = default;
+};
+
+struct SctSemanticProjectionNode final {
+    SctSemanticNodeKey key{};
+    SctSemanticNodeKind kind = SctSemanticNodeKind::Instruction;
+    std::optional<SctNavigationTarget> target{};
+    std::optional<spice::sct::SctBasicBlockId> basicBlock{};
+    std::optional<spice::sct::SctInstructionId> controller{};
+    std::optional<spice::sct::SctInstructionId> joinInstruction{};
+    std::optional<SctAuthoredArmId> authoredArm{};
+    std::optional<spice::sct::SctStructuredRegionKind> regionKind{};
+    std::optional<spice::sct::SctStructuredArmKind> armKind{};
+    std::optional<std::int32_t> caseValue{};
+    std::vector<std::int32_t> caseValues{};
+    std::vector<std::uint32_t> caseGroupOrdinals{};
+    std::optional<spice::sct::SctSemanticConfidence> confidence{};
+    std::optional<spice::sct::SctStructureIssue> issue{};
+    std::vector<spice::sct::SctStructureEvidence> evidence{};
+    std::vector<spice::sct::SctInstructionId> physicalInstructions{};
+    std::vector<spice::sct::SctInstructionId> managedScaffolding{};
+    std::vector<SctSemanticProjectionNode> children{};
+    SctSemanticArmStatus armStatus = SctSemanticArmStatus::Verified;
+    std::size_t importedEvidenceCount = 0;
+    bool verified = false;
+    bool virtualArm = false;
+    bool needsValue = false;
+    bool canReturnToEmpty = false;
+    bool hiddenByDefault = false;
+    bool authorable = true;
+};
+
+enum class SctSemanticDestinationPlacement : std::uint8_t {
+    Before,
+    After,
+    IntoStart,
+    IntoEnd,
+};
+
+struct SctSemanticSelection final {
+    RevisionId revision{};
+    SctSemanticNodeKey parent{};
+    std::vector<SctSemanticNodeKey> units{};
+    auto operator<=>(const SctSemanticSelection&) const = default;
+};
+
+struct SctSemanticDestination final {
+    RevisionId revision{};
+    SctSemanticNodeKey node{};
+    SctSemanticDestinationPlacement placement =
+        SctSemanticDestinationPlacement::After;
+    auto operator<=>(const SctSemanticDestination&) const = default;
+};
+
+enum class SctSemanticMoveDirection : std::uint8_t { Up, Down };
+
+struct SctSemanticCommandPlan final {
+    SctSemanticSelection selection{};
+    std::vector<spice::sct::SctInstructionId> physicalInstructions{};
+    std::optional<spice::sct::SctInstructionId> anchorAfter{};
+    std::optional<SctAuthoredArmId> destinationAuthoredArm{};
+    std::optional<spice::sct::SctInstructionId> destinationController{};
+    std::optional<spice::sct::SctStructuredArmKind> destinationArmKind{};
+    std::vector<SctAuthoredArmId> authoredArmsToRemove{};
+};
+
 class SctSemanticEditorProjection final {
 public:
     [[nodiscard]] static SctSemanticEditorProjection build(
@@ -228,9 +312,48 @@ public:
         authoredArms() const noexcept { return authoredArms_; }
     [[nodiscard]] const SctSemanticAuthoredArmProjection* find(
         SctAuthoredArmId id) const noexcept;
+    [[nodiscard]] std::span<const SctSemanticProjectionNode> roots() const noexcept {
+        return roots_;
+    }
+    [[nodiscard]] const SctSemanticProjectionNode* find(
+        const SctSemanticNodeKey& key) const noexcept;
+    [[nodiscard]] const SctSemanticProjectionNode* find(
+        SctNavigationTarget target) const noexcept;
+    [[nodiscard]] RevisionId workingRevision() const noexcept {
+        return workingRevision_;
+    }
+    [[nodiscard]] RevisionId verifiedRevision() const noexcept {
+        return verifiedRevision_;
+    }
+    [[nodiscard]] bool current() const noexcept {
+        return workingRevision_ == verifiedRevision_;
+    }
 
 private:
     std::vector<SctSemanticAuthoredArmProjection> authoredArms_{};
+    std::vector<SctSemanticProjectionNode> roots_{};
+    RevisionId workingRevision_{};
+    RevisionId verifiedRevision_{};
+};
+
+class SctSemanticCommandPlanner final {
+public:
+    [[nodiscard]] static Result<SctSemanticSelection> normalizeSelection(
+        const SctSemanticEditorProjection& projection,
+        std::span<const SctSemanticNodeKey> nodes);
+    [[nodiscard]] static Result<SctSemanticCommandPlan> planSelection(
+        const SctSemanticEditorProjection& projection,
+        const SctSemanticSelection& selection);
+    [[nodiscard]] static Result<SctSemanticCommandPlan> planMove(
+        const SctSemanticEditorProjection& projection,
+        const SctWorkingState& workingState,
+        const SctSemanticSelection& selection,
+        SctSemanticMoveDirection direction);
+    [[nodiscard]] static Result<SctSemanticCommandPlan> planMove(
+        const SctSemanticEditorProjection& projection,
+        const SctWorkingState& workingState,
+        const SctSemanticSelection& selection,
+        const SctSemanticDestination& destination);
 };
 
 }  // namespace salsa::core

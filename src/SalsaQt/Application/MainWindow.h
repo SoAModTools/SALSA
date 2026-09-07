@@ -159,7 +159,8 @@ private:
     void pasteSelectedSnippet();
     void deleteSelectedSnippet();
     void reloadSnippets();
-    [[nodiscard]] bool pasteFragment(const core::SctSemanticFragment& fragment);
+    [[nodiscard]] bool pasteFragment(const core::SctSemanticFragment& fragment,
+        bool duplicate = false);
     void editSelectedMessage();
     void createScriptSection();
     void createIndexedString();

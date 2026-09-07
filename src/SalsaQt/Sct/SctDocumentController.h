@@ -12,6 +12,7 @@
 #include <QFutureWatcher>
 #include <QList>
 #include <QObject>
+#include <QPoint>
 #include <QString>
 
 #include <cstdint>
@@ -87,12 +88,18 @@ public:
     [[nodiscard]] core::Result<core::SctSemanticFragment> captureSections(
         const core::AssetLocator& locator,
         std::span<const spice::sct::SctSectionId> sections) const;
+    [[nodiscard]] core::Result<core::SctSemanticFragment> captureSemanticUnits(
+        const core::AssetLocator& locator,
+        const core::SctSemanticSelection& selection) const;
     [[nodiscard]] std::vector<std::string> suggestSectionNames(
         const core::AssetLocator& locator,
         const core::SctSemanticFragment& fragment) const;
     [[nodiscard]] bool pasteFragment(const core::AssetLocator& locator,
         const core::SctSemanticFragment& fragment,
         core::SctFragmentPasteDestination destination);
+    [[nodiscard]] bool pasteFragment(const core::AssetLocator& locator,
+        const core::SctSemanticFragment& fragment,
+        const core::SctSemanticDestination& destination);
     [[nodiscard]] bool deleteInstructions(const core::AssetLocator& locator,
         std::span<const spice::sct::SctInstructionId> instructions);
     [[nodiscard]] bool deleteSections(const core::AssetLocator& locator,
@@ -100,6 +107,15 @@ public:
     [[nodiscard]] bool moveInstructionsAfter(const core::AssetLocator& locator,
         std::span<const spice::sct::SctInstructionId> instructions,
         spice::sct::SctInstructionId anchor);
+    [[nodiscard]] bool deleteSemanticUnits(const core::AssetLocator& locator,
+        const core::SctSemanticSelection& selection);
+    [[nodiscard]] bool moveSemanticUnits(const core::AssetLocator& locator,
+        const core::SctSemanticSelection& selection,
+        core::SctSemanticMoveDirection direction);
+    [[nodiscard]] bool moveSemanticUnits(const core::AssetLocator& locator,
+        const core::SctSemanticSelection& selection,
+        const core::SctSemanticDestination& destination,
+        std::optional<QPoint> globalPosition = std::nullopt);
     [[nodiscard]] bool replaceMessage(
         const core::AssetLocator& locator,
         const core::SctMessageTarget& target,
@@ -291,7 +307,8 @@ private:
     [[nodiscard]] bool applyEditResult(
         DocumentState& state,
         core::SctEditResult result,
-        QString successMessage);
+        QString successMessage,
+        std::optional<QPoint> globalPosition = std::nullopt);
     void requestMaterialization(DocumentState& state);
     void startMaterialization(const std::string& identityKey, DocumentState& state);
     void finishMaterialization(const std::string& identityKey, std::uint64_t generation);

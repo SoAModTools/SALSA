@@ -551,6 +551,17 @@ core::Result<core::SctSemanticFragment> SctDocumentController::captureSections(
     return state->session->captureSections(sections);
 }
 
+core::Result<core::SctSemanticFragment> SctDocumentController::captureSemanticUnits(
+    const core::AssetLocator& locator,
+    const core::SctSemanticSelection& selection) const {
+    const auto* state = findState(locator);
+    if (state == nullptr || busy() || state->editBlocked)
+        return core::Result<core::SctSemanticFragment>::failure(core::Diagnostic{
+            core::DiagnosticSeverity::Error, core::DiagnosticCode::InvalidSctFragment,
+            "The document is not available for semantic copying.", locator.path()});
+    return state->session->captureSemanticUnits(selection);
+}
+
 std::vector<std::string> SctDocumentController::suggestSectionNames(
     const core::AssetLocator& locator,
     const core::SctSemanticFragment& fragment) const {
@@ -567,6 +578,15 @@ bool SctDocumentController::pasteFragment(const core::AssetLocator& locator,
     return state != nullptr && !busy() && !state->editBlocked
         && applyEditResult(*state, state->session->pasteFragment(
             fragment, std::move(destination)), tr("Fragment pasted."));
+}
+
+bool SctDocumentController::pasteFragment(const core::AssetLocator& locator,
+    const core::SctSemanticFragment& fragment,
+    const core::SctSemanticDestination& destination) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->pasteFragment(
+            fragment, destination), tr("Semantic fragment pasted."));
 }
 
 bool SctDocumentController::deleteInstructions(const core::AssetLocator& locator,
@@ -592,6 +612,37 @@ bool SctDocumentController::moveInstructionsAfter(const core::AssetLocator& loca
     return state != nullptr && !busy() && !state->editBlocked
         && applyEditResult(*state, state->session->moveInstructionsAfter(
             instructions, anchor), tr("Instructions moved."));
+}
+
+bool SctDocumentController::deleteSemanticUnits(
+    const core::AssetLocator& locator,
+    const core::SctSemanticSelection& selection) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->deleteSemanticUnits(selection),
+            tr("Semantic selection deleted."));
+}
+
+bool SctDocumentController::moveSemanticUnits(
+    const core::AssetLocator& locator,
+    const core::SctSemanticSelection& selection,
+    const core::SctSemanticMoveDirection direction) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state, state->session->moveSemanticUnits(selection, direction),
+            tr("Semantic selection moved."));
+}
+
+bool SctDocumentController::moveSemanticUnits(
+    const core::AssetLocator& locator,
+    const core::SctSemanticSelection& selection,
+    const core::SctSemanticDestination& destination,
+    const std::optional<QPoint> globalPosition) {
+    auto* state = findState(locator);
+    return state != nullptr && !busy() && !state->editBlocked
+        && applyEditResult(*state,
+            state->session->moveSemanticUnits(selection, destination),
+            tr("Semantic selection moved."), globalPosition);
 }
 
 bool SctDocumentController::replaceMessage(
@@ -960,7 +1011,8 @@ const SctDocumentController::DocumentState* SctDocumentController::findState(
 bool SctDocumentController::applyEditResult(
     DocumentState& state,
     core::SctEditResult result,
-    QString successMessage) {
+    QString successMessage,
+    std::optional<QPoint> globalPosition) {
     failureDiagnostics_.clear();
     const auto key = identity(state.locator);
     if (!result.committed) {
@@ -972,6 +1024,7 @@ bool SctDocumentController::applyEditResult(
             ? tr("The edit could not be applied.")
             : QString::fromStdString(result.diagnostics.front().message);
         notice.documentIdentity = key;
+        notice.globalPosition = globalPosition;
         if (!result.diagnostics.empty()) notice.target = result.diagnostics.front().target;
         emit editRejected(notice);
         return false;
@@ -993,7 +1046,8 @@ bool SctDocumentController::applyEditResult(
             .arg(result.journalMicroseconds)
             .arg(notificationTimer.nsecsElapsed() / 1000);
     }
-    if (result.suggestedSelection.has_value()) {
+    if (result.suggestedSelection.has_value()
+        && result.suggestedSelectionRange.size() <= 1u) {
         emit selectionRequested(key, static_cast<int>(result.suggestedSelection->kind),
             static_cast<qulonglong>(result.suggestedSelection->id));
     }

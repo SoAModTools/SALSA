@@ -12,6 +12,7 @@
 #include <QWidget>
 #include <QList>
 #include <QRect>
+#include <QStringList>
 
 #include <cstddef>
 #include <memory>
@@ -38,7 +39,10 @@ class SctDocumentWidget final : public QWidget {
 
 public:
     struct InstructionInsertionContext final {
-        spice::sct::SctInstructionId anchor;
+        std::optional<spice::sct::SctInstructionId> anchor{};
+        std::optional<core::SctAuthoredArmId> authoredArm{};
+        std::optional<spice::sct::SctInstructionId> controller{};
+        std::optional<spice::sct::SctStructuredArmKind> armKind{};
         bool allowReturn = false;
     };
 
@@ -94,6 +98,10 @@ public:
     [[nodiscard]] std::optional<spice::sct::SctInstructionId> selectedInstruction() const;
     [[nodiscard]] std::vector<spice::sct::SctInstructionId>
         selectedInstructions() const;
+    [[nodiscard]] std::optional<core::SctSemanticSelection>
+        selectedSemanticSelection() const;
+    [[nodiscard]] std::optional<core::SctSemanticDestination>
+        selectedSemanticDestination(bool intoContainer = true) const;
     [[nodiscard]] std::optional<spice::sct::SctInstructionId>
         rangeMoveAnchor(core::SctInstructionMoveDirection direction) const;
     [[nodiscard]] std::optional<core::SctMessageTarget> selectedMessageTarget() const;
@@ -115,6 +123,9 @@ signals:
     void moveInstructionRangeRequested(const QString& identityKey,
         const QList<qulonglong>& instructions, qulonglong anchor,
         const QPoint& globalPosition);
+    void moveSemanticUnitsRequested(const QString& identityKey,
+        const QStringList& nodeKeys, const QString& destinationKey,
+        int placement, const QPoint& globalPosition);
     void editMessageRequested(const QString& identityKey);
     void createScriptSectionRequested(const QString& identityKey);
     void createIndexedStringRequested(const QString& identityKey);
@@ -157,6 +168,7 @@ signals:
 private:
     void rebuildOutline();
     void rebuildStructuredOutline(bool initialLoad);
+    void restoreSemanticSelection(bool reveal = false);
     void markStructuredOutlinePending();
     void syncDocumentButtons();
     void showTarget(core::SctNavigationTarget target);
@@ -193,6 +205,8 @@ private:
     bool showRejectedStructureEvidence_ = false;
     bool showSemanticControlFlowInstructions_ = false;
     std::shared_ptr<const core::SctSemanticEditorProjection> semanticProjection_{};
+    std::vector<core::SctNavigationTarget> semanticSelectionTargets_{};
+    bool restoringSemanticSelection_ = false;
     QLabel* title_ = nullptr;
     QLabel* subtitle_ = nullptr;
     QTreeWidget* properties_ = nullptr;

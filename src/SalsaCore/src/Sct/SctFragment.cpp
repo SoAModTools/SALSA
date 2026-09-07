@@ -18,6 +18,153 @@ namespace {
 
 using Json = nlohmann::ordered_json;
 
+[[nodiscard]] Json encodeSemanticUnit(const SctSemanticFragmentUnit& unit) {
+    Json instructions = Json::array();
+    for (const auto instruction : unit.instructions)
+        instructions.push_back(instruction.value());
+    Json children = Json::array();
+    for (const auto& child : unit.children)
+        children.push_back(encodeSemanticUnit(child));
+    return Json{{"kind", static_cast<std::uint32_t>(unit.kind)},
+        {"instructions", std::move(instructions)},
+        {"regionKind", unit.regionKind
+            ? Json(static_cast<std::uint32_t>(*unit.regionKind)) : Json(nullptr)},
+        {"armKind", unit.armKind
+            ? Json(static_cast<std::uint32_t>(*unit.armKind)) : Json(nullptr)},
+        {"caseValue", unit.caseValue ? Json(*unit.caseValue) : Json(nullptr)},
+        {"entryInstruction", unit.entryInstruction
+            ? Json(unit.entryInstruction->value()) : Json(nullptr)},
+        {"continuationInstruction", unit.continuationInstruction
+            ? Json(unit.continuationInstruction->value()) : Json(nullptr)},
+        {"children", std::move(children)}};
+}
+
+[[nodiscard]] SctSemanticFragmentUnit decodeSemanticUnit(
+    const Json& encoded, const std::size_t depth = 0) {
+    static const std::array fields{"kind", "instructions", "regionKind", "armKind",
+        "caseValue", "entryInstruction", "continuationInstruction", "children"};
+    if (depth > 128u || !encoded.is_object() || encoded.size() != fields.size()
+        || !std::ranges::all_of(fields,
+            [&](const auto field) { return encoded.contains(field); })
+        || !encoded.at("instructions").is_array()
+        || !encoded.at("children").is_array())
+        throw std::runtime_error("semantic unit shape is invalid");
+    const auto kind = encoded.at("kind").get<std::uint32_t>();
+    if (kind > static_cast<std::uint32_t>(SctSemanticNodeKind::Issue))
+        throw std::runtime_error("semantic unit kind is invalid");
+    SctSemanticFragmentUnit unit;
+    unit.kind = static_cast<SctSemanticNodeKind>(kind);
+    for (const auto& instruction : encoded.at("instructions"))
+        unit.instructions.emplace_back(instruction.get<std::uint64_t>());
+    if (!encoded.at("regionKind").is_null()) {
+        const auto value = encoded.at("regionKind").get<std::uint32_t>();
+        if (value > static_cast<std::uint32_t>(
+                spice::sct::SctStructuredRegionKind::Switch))
+            throw std::runtime_error("semantic region kind is invalid");
+        unit.regionKind = static_cast<spice::sct::SctStructuredRegionKind>(value);
+    }
+    if (!encoded.at("armKind").is_null()) {
+        const auto value = encoded.at("armKind").get<std::uint32_t>();
+        if (value > static_cast<std::uint32_t>(
+                spice::sct::SctStructuredArmKind::SwitchCase))
+            throw std::runtime_error("semantic arm kind is invalid");
+        unit.armKind = static_cast<spice::sct::SctStructuredArmKind>(value);
+    }
+    if (!encoded.at("caseValue").is_null())
+        unit.caseValue = encoded.at("caseValue").get<std::int32_t>();
+    if (!encoded.at("entryInstruction").is_null())
+        unit.entryInstruction = spice::sct::SctInstructionId(
+            encoded.at("entryInstruction").get<std::uint64_t>());
+    if (!encoded.at("continuationInstruction").is_null())
+        unit.continuationInstruction = spice::sct::SctInstructionId(
+            encoded.at("continuationInstruction").get<std::uint64_t>());
+    for (const auto& child : encoded.at("children"))
+        unit.children.push_back(decodeSemanticUnit(child, depth + 1u));
+    return unit;
+}
+
+using SemanticInstructionSet =
+    std::unordered_set<spice::sct::SctInstructionId>;
+
+[[nodiscard]] SemanticInstructionSet validateSemanticUnit(
+    const SctSemanticFragmentUnit& unit,
+    const std::unordered_set<spice::sct::SctInstructionId>& payloadInstructions,
+    const std::size_t depth = 0) {
+    if (depth > 128u)
+        throw std::runtime_error("semantic unit nesting exceeds the supported limit");
+    if (unit.kind > SctSemanticNodeKind::Issue)
+        throw std::runtime_error("semantic unit kind is invalid");
+    if (unit.kind == SctSemanticNodeKind::Placeholder
+        || unit.kind == SctSemanticNodeKind::Issue
+        || unit.kind == SctSemanticNodeKind::BasicBlock)
+        throw std::runtime_error("non-authorable semantic rows cannot be serialized");
+    if (unit.instructions.empty())
+        throw std::runtime_error("semantic unit has no physical instructions");
+    SemanticInstructionSet ownInstructions;
+    for (const auto instruction : unit.instructions) {
+        if (!instruction || !payloadInstructions.contains(instruction)
+            || !ownInstructions.insert(instruction).second)
+            throw std::runtime_error(
+                "semantic unit instruction membership is invalid");
+    }
+    if ((unit.entryInstruction && !*unit.entryInstruction)
+        || (unit.continuationInstruction && !*unit.continuationInstruction))
+        throw std::runtime_error("semantic unit contains an invalid boundary instruction");
+    if (unit.kind == SctSemanticNodeKind::Instruction) {
+        if (unit.instructions.size() != 1u || unit.regionKind || unit.armKind
+            || unit.caseValue || unit.entryInstruction
+            || unit.continuationInstruction || !unit.children.empty())
+            throw std::runtime_error("semantic instruction unit shape is invalid");
+    } else if (unit.kind == SctSemanticNodeKind::Region) {
+        if (!unit.regionKind || unit.armKind || unit.caseValue
+            || !unit.entryInstruction)
+            throw std::runtime_error("semantic region unit shape is invalid");
+    } else if (unit.kind == SctSemanticNodeKind::Arm) {
+        if (!unit.armKind || unit.regionKind || !unit.entryInstruction)
+            throw std::runtime_error("semantic arm unit shape is invalid");
+    } else if (unit.kind == SctSemanticNodeKind::Section) {
+        if (unit.regionKind || unit.armKind || unit.caseValue
+            || unit.entryInstruction || unit.continuationInstruction)
+            throw std::runtime_error("semantic section unit shape is invalid");
+    }
+    if (unit.caseValue && (!unit.armKind
+        || *unit.armKind != spice::sct::SctStructuredArmKind::SwitchCase))
+        throw std::runtime_error("semantic case value belongs to a non-case unit");
+    SemanticInstructionSet childInstructions;
+    for (const auto& child : unit.children) {
+        const auto nested = validateSemanticUnit(
+            child, payloadInstructions, depth + 1u);
+        for (const auto instruction : nested) {
+            if (!ownInstructions.contains(instruction))
+                throw std::runtime_error(
+                    "semantic child lies outside its parent instruction range");
+            if (!childInstructions.insert(instruction).second)
+                throw std::runtime_error(
+                    "semantic sibling instruction ranges overlap");
+        }
+    }
+    return ownInstructions;
+}
+
+void validateSemanticUnits(const SctSemanticFragment& fragment) {
+    std::unordered_set<spice::sct::SctInstructionId> payloadInstructions;
+    for (const auto& instruction : fragment.instructions) {
+        if (!instruction.id || !payloadInstructions.insert(instruction.id).second)
+            throw std::runtime_error("fragment instruction identity is invalid");
+    }
+    SemanticInstructionSet represented;
+    for (const auto& unit : fragment.semanticUnits) {
+        const auto instructions = validateSemanticUnit(unit, payloadInstructions);
+        for (const auto instruction : instructions)
+            if (!represented.insert(instruction).second)
+                throw std::runtime_error(
+                    "semantic top-level instruction ranges overlap");
+    }
+    if (represented != payloadInstructions)
+        throw std::runtime_error(
+            "semantic units do not cover the fragment instruction payload");
+}
+
 [[nodiscard]] Diagnostic fragmentError(std::string message,
     const DiagnosticCode code = DiagnosticCode::InvalidSctFragment,
     std::optional<std::filesystem::path> path = std::nullopt) {
@@ -601,7 +748,7 @@ Result<SctFragmentPastePlan> SctFragmentService::planPaste(
         return instruction;
     };
 
-    if (fragment.kind == SctFragmentKind::InstructionRange) {
+    if (fragment.kind != SctFragmentKind::SectionRange) {
         if (!destination.instructionAfter
             || state.instruction(*destination.instructionAfter) == nullptr)
             return Result<SctFragmentPastePlan>::failure(fragmentError(
@@ -715,13 +862,20 @@ Result<std::vector<std::byte>> SctFragmentCodec::serialize(
     try {
         if (fragment.sourceAssetIdentity.empty()
             || (fragment.kind == SctFragmentKind::InstructionRange
-                && (fragment.instructions.empty() || !fragment.sections.empty()))
+                && (fragment.instructions.empty() || !fragment.sections.empty()
+                    || !fragment.semanticUnits.empty()))
             || (fragment.kind == SctFragmentKind::SectionRange
-                && (fragment.sections.empty() || !fragment.instructions.empty()))
+                && (fragment.sections.empty() || !fragment.instructions.empty()
+                    || !fragment.semanticUnits.empty()))
+            || (fragment.kind == SctFragmentKind::SemanticUnits
+                && (fragment.instructions.empty() || !fragment.sections.empty()
+                    || fragment.semanticUnits.empty()))
             || !dependenciesAreComplete(fragment))
             throw std::runtime_error("fragment semantic shape is invalid");
+        if (fragment.kind == SctFragmentKind::SemanticUnits)
+            validateSemanticUnits(fragment);
         SalsaScriptPatch payload;
-        if (fragment.kind == SctFragmentKind::InstructionRange) {
+        if (fragment.kind != SctFragmentKind::SectionRange) {
             spice::sct::SctDocumentSection section;
             section.id = spice::sct::SctSectionId{1};
             section.nameBytes = "__FRAGMENT__";
@@ -751,13 +905,20 @@ Result<std::vector<std::byte>> SctFragmentCodec::serialize(
                     : Json(nullptr)},
                 {"targetNameBytes", encodeByteString(dependency.targetNameBytes)}});
         }
+        Json semanticUnits = Json::array();
+        for (const auto& unit : fragment.semanticUnits)
+            semanticUnits.push_back(encodeSemanticUnit(unit));
+        const auto kind = fragment.kind == SctFragmentKind::InstructionRange
+            ? "instructionRange"
+            : fragment.kind == SctFragmentKind::SectionRange
+                ? "sectionRange" : "semanticUnits";
         Json document{{"formatId", FormatId}, {"schemaVersion", SchemaVersion},
-            {"kind", fragment.kind == SctFragmentKind::InstructionRange
-                ? "instructionRange" : "sectionRange"},
+            {"kind", kind},
             {"sourceAssetIdentity", fragment.sourceAssetIdentity},
             {"payloadEncoding", "base64"},
             {"payload", encodeBase64(encodedPayload.value())},
-            {"dependencies", std::move(dependencies)}};
+            {"dependencies", std::move(dependencies)},
+            {"semanticUnits", std::move(semanticUnits)}};
         auto text = document.dump(2);
         text.push_back('\n');
         if (text.size() > MaximumBytes)
@@ -782,19 +943,30 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
         const auto document = Json::parse(
             reinterpret_cast<const char*>(bytes.data()),
             reinterpret_cast<const char*>(bytes.data()) + bytes.size());
-        static const std::array fields{"formatId", "schemaVersion", "kind",
+        static const std::array legacyFields{"formatId", "schemaVersion", "kind",
             "sourceAssetIdentity", "payloadEncoding", "payload", "dependencies"};
-        if (!document.is_object() || document.size() != fields.size()
-            || !std::ranges::all_of(fields,
-                [&](const auto field) { return document.contains(field); }))
+        static const std::array currentFields{"formatId", "schemaVersion", "kind",
+            "sourceAssetIdentity", "payloadEncoding", "payload", "dependencies",
+            "semanticUnits"};
+        if (!document.is_object() || !document.contains("schemaVersion"))
             throw std::runtime_error("fragment has missing or unknown fields");
-        if (document.at("formatId").get<std::string>() != FormatId)
-            throw std::runtime_error("fragment format ID is invalid");
         const auto schemaVersion = document.at("schemaVersion").get<std::uint32_t>();
-        if (schemaVersion != SchemaVersion && schemaVersion != LegacySchemaVersion)
+        if (schemaVersion != SchemaVersion && schemaVersion != PreviousSchemaVersion
+            && schemaVersion != LegacySchemaVersion)
             return Result<SctSemanticFragment>::failure(fragmentError(
                 "The semantic fragment schema version is unsupported.",
                 DiagnosticCode::UnsupportedSctFragmentSchema));
+        const bool fieldsAreValid = schemaVersion == SchemaVersion
+            ? document.size() == currentFields.size()
+                && std::ranges::all_of(currentFields,
+                    [&](const auto field) { return document.contains(field); })
+            : document.size() == legacyFields.size()
+                && std::ranges::all_of(legacyFields,
+                    [&](const auto field) { return document.contains(field); });
+        if (!fieldsAreValid)
+            throw std::runtime_error("fragment has missing or unknown fields");
+        if (document.at("formatId").get<std::string>() != FormatId)
+            throw std::runtime_error("fragment format ID is invalid");
         if (document.at("payloadEncoding").get<std::string>() != "base64")
             throw std::runtime_error("fragment payload encoding is invalid");
         if (!document.at("dependencies").is_array())
@@ -815,8 +987,11 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
         if (fragment.sourceAssetIdentity.empty())
             throw std::runtime_error("fragment source asset identity is empty");
         const auto kind = document.at("kind").get<std::string>();
-        if (kind == "instructionRange") {
-            fragment.kind = SctFragmentKind::InstructionRange;
+        if (kind == "instructionRange" || kind == "semanticUnits") {
+            if (kind == "semanticUnits" && schemaVersion != SchemaVersion)
+                throw std::runtime_error("semantic units require fragment schema 4");
+            fragment.kind = kind == "instructionRange"
+                ? SctFragmentKind::InstructionRange : SctFragmentKind::SemanticUnits;
             if (decodedPatch.sections.size() != 1u
                 || !decodedPatch.sections.front().after
                 || decodedPatch.sections.front().before)
@@ -885,6 +1060,17 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
             dependency.targetNameBytes = decodeByteString(encoded.at("targetNameBytes"));
             fragment.dependencies.push_back(std::move(dependency));
         }
+        if (schemaVersion == SchemaVersion) {
+            if (!document.at("semanticUnits").is_array())
+                throw std::runtime_error("fragment semantic units are not an array");
+            for (const auto& encoded : document.at("semanticUnits"))
+                fragment.semanticUnits.push_back(decodeSemanticUnit(encoded));
+        }
+        if ((fragment.kind == SctFragmentKind::SemanticUnits)
+            != !fragment.semanticUnits.empty())
+            throw std::runtime_error("fragment semantic unit shape is invalid");
+        if (fragment.kind == SctFragmentKind::SemanticUnits)
+            validateSemanticUnits(fragment);
         if (!dependenciesAreComplete(fragment))
             throw std::runtime_error(
                 "fragment dependencies do not match its external references");

@@ -4,6 +4,7 @@
 #include "SalsaCore/Sct/SctStructuredAuthoring.h"
 
 #include <QAbstractItemModel>
+#include <QStringList>
 
 #include <cstddef>
 #include <memory>
@@ -37,6 +38,12 @@ public:
     QVariant data(const QModelIndex& index, int role) const override;
     QVariant headerData(int section, Qt::Orientation orientation,
         int role) const override;
+    Qt::ItemFlags flags(const QModelIndex& index) const override;
+    QStringList mimeTypes() const override;
+    QMimeData* mimeData(const QModelIndexList& indexes) const override;
+    bool dropMimeData(const QMimeData* data, Qt::DropAction action,
+        int row, int column, const QModelIndex& parent) override;
+    Qt::DropActions supportedDropActions() const override;
 
     void resetFrom(std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
         std::shared_ptr<const core::SctSemanticEditorProjection> projection);
@@ -48,21 +55,37 @@ public:
         core::SctNavigationTarget target) const;
     [[nodiscard]] std::optional<EditContext> editContext(
         const QModelIndex& index) const noexcept;
+    [[nodiscard]] std::optional<core::SctSemanticNodeKey> nodeKey(
+        const QModelIndex& index) const noexcept;
+    [[nodiscard]] core::SctSemanticNodeKind nodeKind(
+        const QModelIndex& index) const noexcept;
+    [[nodiscard]] std::span<const spice::sct::SctInstructionId> physicalInstructions(
+        const QModelIndex& index) const noexcept;
+
+signals:
+    void semanticUnitsDropRequested(const QStringList& nodeKeys,
+        const QString& destinationKey, int placement);
 
 private:
     struct Node final {
         QString label{};
         QString secondary{};
         QString tooltip{};
+        core::SctSemanticNodeKey key{};
+        core::SctSemanticNodeKind kind = core::SctSemanticNodeKind::Instruction;
         std::optional<core::SctNavigationTarget> target{};
         bool suggested = false;
         std::size_t importedEvidenceCount = 0;
         std::optional<EditContext> editContext{};
+        std::vector<spice::sct::SctInstructionId> physicalInstructions{};
+        bool authorable = true;
         Node* parent = nullptr;
         std::vector<std::unique_ptr<Node>> children{};
     };
 
     void rebuild();
+    void appendProjectionNode(Node* parent,
+        const core::SctSemanticProjectionNode& source);
     void appendInstruction(Node& parent, spice::sct::SctInstructionId instruction,
         std::optional<EditContext> context = std::nullopt);
     void appendRegion(Node& parent, const spice::sct::SctSectionStructure& section,

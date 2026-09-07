@@ -13,6 +13,7 @@
 #include <cassert>
 #include <chrono>
 #include <cctype>
+#include <functional>
 #include <limits>
 #include <ranges>
 #include <regex>
@@ -942,6 +943,93 @@ Result<SctSemanticFragment> SctEditSession::captureSections(
         sections);
 }
 
+Result<SctEditSession::AuthoredArmLoweringPlan>
+SctEditSession::planAuthoredArmLowering(const SctAuthoredArmId id,
+    const std::span<const spice::sct::SctInstructionId> body,
+    const std::uint64_t nextInstructionId) const {
+    const auto path = baselineSnapshot_->provenance->source().descriptor.locator.path();
+    const auto fail = [&](std::string message) {
+        return Result<AuthoredArmLoweringPlan>::failure(Diagnostic{
+            DiagnosticSeverity::Error, DiagnosticCode::InvalidSctFragment,
+            std::move(message), path});
+    };
+    if (body.empty() || std::ranges::any_of(body,
+            [](const auto instruction) { return !instruction; }))
+        return fail("A semantic arm requires at least one valid body instruction.");
+    const auto* current = structuredAuthoring_.find(id);
+    if (current == nullptr
+        || current->realization != SctAuthoredArmRealization::Virtual)
+        return fail("The destination is no longer an empty authored arm.");
+    if (current->kind == spice::sct::SctStructuredArmKind::SwitchCase
+        && !current->caseValue)
+        return fail("Choose a unique signed case value before realizing the case.");
+    const auto* region = verifiedRegion(*currentSnapshot_, current->controller.instruction);
+    if (region == nullptr || !region->join || !current->expectedJoin
+        || region->join->entryInstruction != *current->expectedJoin)
+        return fail("The verified controller or join changed before the arm could be realized.");
+    const auto join = *current->expectedJoin;
+    const auto beforeJoin = workingState_.instructionBefore(join);
+    if (!beforeJoin)
+        return fail("The semantic arm cannot be placed before its verified join.");
+    const auto* sourceController = workingState_.instruction(
+        current->controller.instruction);
+    if (sourceController == nullptr)
+        return fail("The semantic arm controller is no longer available.");
+
+    AuthoredArmLoweringPlan plan;
+    plan.before = *current;
+    plan.after = *current;
+    plan.after.realization = SctAuthoredArmRealization::Physical;
+    plan.after.members.assign(body.begin(), body.end());
+    plan.bodyAnchor = *beforeJoin;
+    plan.controller = *sourceController;
+
+    if (current->kind == spice::sct::SctStructuredArmKind::Else) {
+        const auto* preceding = workingState_.instruction(*beforeJoin);
+        bool hasExit = false;
+        if (preceding != nullptr && preceding->opcode == 10u) {
+            const auto parameter = std::ranges::find(preceding->fixedParameters, 0u,
+                &spice::sct::SctDocumentParameter::schemaIndex);
+            hasExit = parameter != preceding->fixedParameters.end()
+                && std::get_if<spice::sct::SctInstructionReference>(
+                    &parameter->value) != nullptr
+                && std::get<spice::sct::SctInstructionReference>(
+                    parameter->value).target == join;
+        }
+        if (!hasExit) {
+            spice::sct::SctDocumentInstruction exit{
+                spice::sct::SctInstructionId(nextInstructionId), 10u};
+            exit.fixedParameters.push_back({0u,
+                spice::sct::SctInstructionReference{join}});
+            plan.after.managedScaffolding.push_back(exit.id);
+            plan.beforeBodyScaffold = std::move(exit);
+        }
+        if (!setInstructionReference(plan.controller, 1u, body.front()))
+            return fail("The verified If does not expose its false-target parameter.");
+    } else if (current->kind
+            == spice::sct::SctStructuredArmKind::SwitchCase) {
+        spice::sct::SctDocumentInstruction exit{
+            spice::sct::SctInstructionId(nextInstructionId), 10u};
+        exit.fixedParameters.push_back({0u,
+            spice::sct::SctInstructionReference{join}});
+        plan.after.managedScaffolding.push_back(exit.id);
+        plan.afterBodyScaffold = std::move(exit);
+        plan.controller.repeatedParameterGroups.push_back({{{2u,
+            spice::sct::SctEncodedWordValue{
+                static_cast<std::uint32_t>(*current->caseValue)}},
+            {3u, spice::sct::SctInstructionReference{body.front()}}}});
+        const auto count = std::ranges::find(plan.controller.fixedParameters, 1u,
+            &spice::sct::SctDocumentParameter::schemaIndex);
+        if (count == plan.controller.fixedParameters.end())
+            return fail("The verified Switch does not expose its repeated-group count.");
+        count->value = spice::sct::SctEncodedWordValue{
+            static_cast<std::uint32_t>(plan.controller.repeatedParameterGroups.size())};
+    } else {
+        return fail("This semantic arm kind cannot be realized by this command.");
+    }
+    return Result<AuthoredArmLoweringPlan>::success(std::move(plan));
+}
+
 SctEditResult SctEditSession::pasteFragment(
     const SctSemanticFragment& fragment, SctFragmentPasteDestination destination) {
     const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
@@ -966,7 +1054,7 @@ SctEditResult SctEditSession::pasteFragment(
     const auto first = insertedSelection.empty()
         ? std::optional<SctNavigationTarget>{}
         : std::optional<SctNavigationTarget>{insertedSelection.front()};
-    const auto undoTarget = fragment.kind == SctFragmentKind::InstructionRange
+    const auto undoTarget = fragment.kind != SctFragmentKind::SectionRange
         && destination.instructionAfter
         ? std::optional<SctNavigationTarget>{SctNavigationTarget{
             SctNavigationKind::Instruction, destination.instructionAfter->value()}}
@@ -976,12 +1064,144 @@ SctEditResult SctEditSession::pasteFragment(
             : std::optional<SctNavigationTarget>{SctNavigationTarget{
                 SctNavigationKind::Document, 0u}};
     return commit(std::move(paste.document), std::move(paste.authoring),
-        fragment.kind == SctFragmentKind::InstructionRange
-            ? "Paste instructions" : "Paste sections",
+        fragment.kind == SctFragmentKind::SectionRange
+            ? "Paste sections" : fragment.kind == SctFragmentKind::SemanticUnits
+                ? "Paste semantic units" : "Paste instructions",
         SelectionHints{undoTarget, first,
             undoTarget ? std::vector<SctNavigationTarget>{*undoTarget}
                        : std::vector<SctNavigationTarget>{},
             insertedSelection});
+}
+
+SctEditResult SctEditSession::pasteFragment(
+    const SctSemanticFragment& fragment,
+    const SctSemanticDestination& destination) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (fragment.kind != SctFragmentKind::SemanticUnits)
+        return failure({editError(locator, "SemanticFragmentRequired",
+            "A semantic destination accepts only a semantic fragment.")});
+    if (!semanticProjection_ || !semanticProjection_->current()
+        || destination.revision != semanticProjection_->workingRevision())
+        return failure({editError(locator, "SemanticDestinationStale",
+            "The semantic paste destination no longer belongs to the verified revision.")});
+    const auto* target = semanticProjection_->find(destination.node);
+    if (target == nullptr)
+        return failure({editError(locator, "SemanticDestinationMissing",
+            "The semantic paste destination no longer exists.")});
+    if (std::ranges::any_of(fragment.instructions, [](const auto& instruction) {
+            return instruction.opcode == 9u || instruction.opcode == 12u;
+        }))
+        return failure({editError(locator, "SemanticFragmentProtectedInstruction",
+            "Semantic paste cannot insert a section label or Return into another unit.")});
+
+    const SctSemanticProjectionNode* container = target;
+    std::optional<spice::sct::SctInstructionId> anchor;
+    if (destination.placement == SctSemanticDestinationPlacement::IntoStart
+        || destination.placement == SctSemanticDestinationPlacement::IntoEnd) {
+        if (target->kind == SctSemanticNodeKind::Region) {
+            const auto primary = std::ranges::find_if(target->children,
+                [](const auto& child) {
+                    return child.kind == SctSemanticNodeKind::Arm
+                        && (child.armKind
+                                == spice::sct::SctStructuredArmKind::Then
+                            || child.armKind
+                                == spice::sct::SctStructuredArmKind::LoopBody);
+                });
+            if (primary == target->children.end())
+                return failure({editError(locator, "SemanticArmRequired",
+                    "Choose a specific semantic arm for this paste.")});
+            container = &*primary;
+        }
+        if (container->kind != SctSemanticNodeKind::Arm)
+            return failure({editError(locator, "SemanticContainerRequired",
+                "This semantic row is not an instruction container.")});
+        if (container->virtualArm && container->authoredArm) {
+            SctFragmentPasteDestination physical;
+            const auto* authored = structuredAuthoring_.find(*container->authoredArm);
+            if (authored == nullptr || !authored->expectedJoin)
+                return failure({editError(locator, "SemanticArmContextChanged",
+                    "The empty semantic arm no longer has a verified join.")});
+            physical.instructionAfter = workingState_.instructionBefore(
+                *authored->expectedJoin);
+            if (!physical.instructionAfter)
+                return failure({editError(locator, "SemanticArmJoinUnavailable",
+                    "The semantic arm cannot be placed before its verified join.")});
+            auto pasted = SctFragmentService::planPaste(workingState_,
+                structuredAuthoring_, locator.identityKey(), fragment, physical);
+            if (!pasted) {
+                std::vector<SctPipelineDiagnostic> diagnostics;
+                for (const auto& diagnostic : pasted.diagnostics())
+                    diagnostics.push_back(editError(locator,
+                        "SemanticFragmentPasteFailed", diagnostic.message));
+                return failure(std::move(diagnostics));
+            }
+            auto plan = std::move(pasted).takeValue();
+            std::vector<spice::sct::SctInstructionId> body;
+            for (const auto& selected : plan.insertedSelection)
+                if (selected.kind == SctNavigationKind::Instruction)
+                    body.emplace_back(selected.id);
+            auto lowering = planAuthoredArmLowering(*container->authoredArm, body,
+                workingState_.nextInstructionIdValue() + body.size());
+            if (!lowering) {
+                std::vector<SctPipelineDiagnostic> diagnostics;
+                for (const auto& diagnostic : lowering.diagnostics())
+                    diagnostics.push_back(editError(locator,
+                        "SemanticArmLoweringFailed", diagnostic.message));
+                return failure(std::move(diagnostics));
+            }
+            auto lower = std::move(lowering).takeValue();
+            auto effectiveAnchor = lower.bodyAnchor;
+            if (lower.beforeBodyScaffold) {
+                plan.document.operations.insert(plan.document.operations.begin(),
+                    SctInsertInstructionAfterOperation{lower.bodyAnchor,
+                        *lower.beforeBodyScaffold});
+                effectiveAnchor = lower.beforeBodyScaffold->id;
+            }
+            auto firstInsertion = std::ranges::find_if(plan.document.operations,
+                [&](auto& operation) {
+                    const auto* insertion = std::get_if<SctInsertInstructionAfterOperation>(
+                        &operation);
+                    return insertion != nullptr && insertion->instruction.id == body.front();
+                });
+            if (lower.beforeBodyScaffold && firstInsertion != plan.document.operations.end())
+                std::get<SctInsertInstructionAfterOperation>(*firstInsertion).anchor
+                    = effectiveAnchor;
+            if (lower.afterBodyScaffold)
+                plan.document.operations.push_back(SctInsertInstructionAfterOperation{
+                    body.back(), *lower.afterBodyScaffold});
+            plan.document.operations.push_back(SctReplaceInstructionOperation{
+                lower.controller.id, std::move(lower.controller)});
+            plan.authoring.operations.push_back(SctSetAuthoredArmOperation{
+                lower.before.id, lower.before, lower.after});
+            const auto first = plan.insertedSelection.empty()
+                ? std::optional<SctNavigationTarget>{}
+                : std::optional<SctNavigationTarget>{plan.insertedSelection.front()};
+            return commit(std::move(plan.document), std::move(plan.authoring),
+                "Paste semantic units into empty arm",
+                SelectionHints{{SctNavigationTarget{SctNavigationKind::Instruction,
+                    lower.before.controller.instruction.value()}}, first,
+                    {}, plan.insertedSelection});
+        }
+        if (!container->controller)
+            return failure({editError(locator, "SemanticArmBoundaryMissing",
+                "The semantic arm has no verified insertion boundary.")});
+        anchor = destination.placement == SctSemanticDestinationPlacement::IntoStart
+            ? container->controller
+            : !container->physicalInstructions.empty()
+                ? std::optional{container->physicalInstructions.back()}
+                : container->controller;
+    } else {
+        if (target->physicalInstructions.empty())
+            return failure({editError(locator, "SemanticDestinationEmpty",
+                "The semantic paste target has no physical placement.")});
+        anchor = destination.placement == SctSemanticDestinationPlacement::Before
+            ? workingState_.instructionBefore(target->physicalInstructions.front())
+            : std::optional{target->physicalInstructions.back()};
+    }
+    if (!anchor)
+        return failure({editError(locator, "SemanticPasteAtSectionStart",
+            "Semantic content cannot be pasted before the protected section entry.")});
+    return pasteFragment(fragment, SctFragmentPasteDestination{anchor});
 }
 
 SctEditResult SctEditSession::deleteInstructions(
@@ -1179,6 +1399,193 @@ SctEditResult SctEditSession::moveInstructionsAfter(
         selection.push_back({SctNavigationKind::Instruction, id.value()});
     return commit(std::move(operations), {}, "Move instructions",
         SelectionHints{selection.front(), selection.front(), selection, selection});
+}
+
+Result<SctSemanticFragment> SctEditSession::captureSemanticUnits(
+    const SctSemanticSelection& selection) const {
+    if (!semanticProjection_) return Result<SctSemanticFragment>::failure(Diagnostic{
+        DiagnosticSeverity::Error, DiagnosticCode::InvalidSctFragment,
+        "The semantic projection is unavailable.",
+        baselineSnapshot_->provenance->source().descriptor.locator.path()});
+    const auto plan = SctSemanticCommandPlanner::planSelection(
+        *semanticProjection_, selection);
+    if (!plan) return Result<SctSemanticFragment>::failure(plan.diagnostics());
+    if (!plan.value().authoredArmsToRemove.empty()
+        && plan.value().physicalInstructions.empty()) {
+        return Result<SctSemanticFragment>::failure(Diagnostic{
+            DiagnosticSeverity::Error, DiagnosticCode::InvalidSctFragment,
+            "An empty virtual arm cannot be copied without its containing region.",
+            baselineSnapshot_->provenance->source().descriptor.locator.path()});
+    }
+    auto captured = captureInstructions(plan.value().physicalInstructions);
+    if (!captured) return captured;
+    std::function<SctSemanticFragmentUnit(const SctSemanticProjectionNode&)> encodeUnit;
+    encodeUnit = [&](const SctSemanticProjectionNode& node) {
+        SctSemanticFragmentUnit unit;
+        unit.kind = node.kind;
+        unit.instructions = node.physicalInstructions;
+        unit.regionKind = node.regionKind;
+        unit.armKind = node.armKind;
+        unit.caseValue = node.caseValue;
+        unit.entryInstruction = node.controller;
+        unit.continuationInstruction = node.joinInstruction;
+        for (const auto& child : node.children) {
+            if (child.kind == SctSemanticNodeKind::Placeholder
+                || child.kind == SctSemanticNodeKind::Issue
+                || child.kind == SctSemanticNodeKind::BasicBlock) continue;
+            unit.children.push_back(encodeUnit(child));
+        }
+        return unit;
+    };
+    captured.value().kind = SctFragmentKind::SemanticUnits;
+    for (const auto& key : selection.units) {
+        const auto* node = semanticProjection_->find(key);
+        if (node) captured.value().semanticUnits.push_back(encodeUnit(*node));
+    }
+    return captured;
+}
+
+SctEditResult SctEditSession::deleteSemanticUnits(
+    const SctSemanticSelection& selection) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!semanticProjection_) return failure({editError(locator,
+        "SemanticProjectionUnavailable", "The semantic projection is unavailable.")});
+    const auto plan = SctSemanticCommandPlanner::planSelection(
+        *semanticProjection_, selection);
+    if (!plan) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : plan.diagnostics())
+            diagnostics.push_back(editError(locator, "SemanticSelectionInvalid",
+                diagnostic.message));
+        return failure(std::move(diagnostics));
+    }
+    if (plan.value().physicalInstructions.empty()) {
+        if (plan.value().authoredArmsToRemove.size() != 1u)
+            return failure({editError(locator, "SemanticSelectionInvalid",
+                "Select one empty semantic arm to remove.")});
+        return removeVirtualArm(plan.value().authoredArmsToRemove.front());
+    }
+    if (!plan.value().authoredArmsToRemove.empty())
+        return failure({editError(locator, "SemanticMixedVirtualSelectionUnsupported",
+            "Delete empty virtual arms separately from physical semantic units.")});
+    for (const auto& key : selection.units) {
+        const auto* node = semanticProjection_->find(key);
+        if (node != nullptr && node->kind == SctSemanticNodeKind::Arm) {
+            if (node->armKind == spice::sct::SctStructuredArmKind::Then
+                || node->armKind == spice::sct::SctStructuredArmKind::LoopBody)
+                return failure({editError(locator, "RequiredSemanticArm",
+                    "Then and loop-body arms cannot be removed independently.")});
+            if (node->authoredArm && node->canReturnToEmpty
+                && plan.value().physicalInstructions.size() == 1u)
+                return deleteOnlyInstructionFromAuthoredArm(*node->authoredArm,
+                    plan.value().physicalInstructions.front());
+            return failure({editError(locator, "SemanticArmDeleteRequiresAdoption",
+                "This complete arm cannot yet be removed safely; edit it in the Physical view.")});
+        }
+    }
+    return deleteInstructions(plan.value().physicalInstructions);
+}
+
+SctEditResult SctEditSession::moveSemanticUnits(
+    const SctSemanticSelection& selection,
+    const SctSemanticMoveDirection direction) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!semanticProjection_) return failure({editError(locator,
+        "SemanticProjectionUnavailable", "The semantic projection is unavailable.")});
+    const auto plan = SctSemanticCommandPlanner::planMove(
+        *semanticProjection_, workingState_, selection, direction);
+    if (!plan) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : plan.diagnostics())
+            diagnostics.push_back(editError(locator, "SemanticMoveInvalid", diagnostic.message));
+        return failure(std::move(diagnostics));
+    }
+    if (!plan.value().anchorAfter)
+        return failure({editError(locator, "SemanticMoveAtSectionStart",
+            "The semantic selection cannot move before the protected section entry.")});
+    return moveInstructionsAfter(plan.value().physicalInstructions,
+        *plan.value().anchorAfter);
+}
+
+SctEditResult SctEditSession::moveSemanticUnits(
+    const SctSemanticSelection& selection,
+    const SctSemanticDestination& destination) {
+    const auto& locator = baselineSnapshot_->provenance->source().descriptor.locator;
+    if (!semanticProjection_) return failure({editError(locator,
+        "SemanticProjectionUnavailable", "The semantic projection is unavailable.")});
+    const auto plan = SctSemanticCommandPlanner::planMove(
+        *semanticProjection_, workingState_, selection, destination);
+    if (!plan) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : plan.diagnostics())
+            diagnostics.push_back(editError(locator, "SemanticDropInvalid", diagnostic.message));
+        return failure(std::move(diagnostics));
+    }
+    if (plan.value().destinationAuthoredArm) {
+        const auto& body = plan.value().physicalInstructions;
+        auto captured = captureInstructions(body);
+        if (!captured) {
+            std::vector<SctPipelineDiagnostic> diagnostics;
+            for (const auto& diagnostic : captured.diagnostics())
+                diagnostics.push_back(editError(locator,
+                    "SemanticMoveInvalid", diagnostic.message));
+            return failure(std::move(diagnostics));
+        }
+        if (!captured.value().authoredArms.empty())
+            return failure({editError(locator, "SemanticArmSourceRequiresDetachment",
+                "A complete authored arm cannot move to another controller without an explicit detachment operation.")});
+        auto lowering = planAuthoredArmLowering(
+            *plan.value().destinationAuthoredArm, body,
+            workingState_.nextInstructionIdValue());
+        if (!lowering) {
+            std::vector<SctPipelineDiagnostic> diagnostics;
+            for (const auto& diagnostic : lowering.diagnostics())
+                diagnostics.push_back(editError(locator,
+                    "SemanticArmLoweringFailed", diagnostic.message));
+            return failure(std::move(diagnostics));
+        }
+        auto lower = std::move(lowering).takeValue();
+        for (const auto instruction : body) {
+            const auto placement = workingState_.placement(instruction);
+            if (!placement || placement->section != lower.before.controller.section)
+                return failure({editError(locator, "SemanticMoveAcrossSection",
+                    "Semantic content can move into an authored arm only within its script section.")});
+        }
+        auto effectiveAnchor = lower.bodyAnchor;
+        SctSemanticOperationBatch operations;
+        if (lower.beforeBodyScaffold) {
+            operations.operations.push_back(SctInsertInstructionAfterOperation{
+                lower.bodyAnchor, *lower.beforeBodyScaffold});
+            effectiveAnchor = lower.beforeBodyScaffold->id;
+        }
+        if (std::ranges::find(body, effectiveAnchor) != body.end())
+            return failure({editError(locator, "SemanticMoveIntoSelf",
+                "The semantic destination overlaps the selected physical range.")});
+        for (const auto instruction : body) {
+            operations.operations.push_back(SctRelocateInstructionAfterOperation{
+                instruction, effectiveAnchor});
+            effectiveAnchor = instruction;
+        }
+        if (lower.afterBodyScaffold)
+            operations.operations.push_back(SctInsertInstructionAfterOperation{
+                body.back(), *lower.afterBodyScaffold});
+        operations.operations.push_back(SctReplaceInstructionOperation{
+            lower.controller.id, std::move(lower.controller)});
+        std::vector<SctNavigationTarget> selected;
+        for (const auto instruction : body)
+            selected.push_back({SctNavigationKind::Instruction,
+                instruction.value()});
+        return commit(std::move(operations),
+            {{SctSetAuthoredArmOperation{lower.before.id,
+                lower.before, lower.after}}},
+            "Move semantic units into empty arm",
+            SelectionHints{selected.front(), selected.front(), selected, selected});
+    }
+    if (!plan.value().anchorAfter)
+        return failure({editError(locator, "SemanticDropAtSectionStart",
+            "The semantic selection cannot be dropped before the protected section entry.")});
+    return moveInstructionsAfter(plan.value().physicalInstructions,
+        *plan.value().anchorAfter);
 }
 
 SctEditResult SctEditSession::replaceMessage(
@@ -1933,97 +2340,39 @@ SctEditResult SctEditSession::insertInstructionIntoAuthoredArm(
         return failure({editError(locator, "OpcodeUnavailableForSemanticArm",
             "This opcode cannot be inserted as the first instruction of a semantic arm.")});
     }
-    if (current->kind == spice::sct::SctStructuredArmKind::SwitchCase
-        && !current->caseValue) {
-        return failure({editError(locator, "SwitchCaseValueRequired",
-            "Choose a unique signed case value before inserting the first instruction.")});
-    }
-    const auto* region = verifiedRegion(*currentSnapshot_, current->controller.instruction);
-    if (region == nullptr || !region->join || !current->expectedJoin
-        || region->join->entryInstruction != *current->expectedJoin) {
-        return failure({editError(locator, "SemanticArmContextChanged",
-            "The verified controller or join changed before the arm could be realized.")});
-    }
-    const auto join = *current->expectedJoin;
-    const auto beforeJoin = workingState_.instructionBefore(join);
-    if (!beforeJoin) {
-        return failure({editError(locator, "SemanticArmJoinUnavailable",
-            "The semantic arm cannot be placed before its join.")});
-    }
     auto child = makeInstruction(opcode, workingState_.nextInstructionIdValue());
     if (!child) {
         return failure({editError(locator, "OpcodeRequiresParameters",
             "The opcode cannot be inserted until its required parameters can be authored.")});
     }
 
-    SctSemanticOperationBatch document;
-    auto next = *current;
-    next.realization = SctAuthoredArmRealization::Physical;
-    next.members.push_back(child->id);
-    std::uint64_t nextId = child->id.value() + 1u;
-
-    if (current->kind == spice::sct::SctStructuredArmKind::Else) {
-        auto anchor = *beforeJoin;
-        const auto* preceding = workingState_.instruction(anchor);
-        bool hasExit = false;
-        if (preceding != nullptr && preceding->opcode == 10u) {
-            const auto parameter = std::ranges::find(preceding->fixedParameters, 0u,
-                &spice::sct::SctDocumentParameter::schemaIndex);
-            hasExit = parameter != preceding->fixedParameters.end()
-                && std::get_if<spice::sct::SctInstructionReference>(&parameter->value) != nullptr
-                && std::get<spice::sct::SctInstructionReference>(parameter->value).target == join;
-        }
-        if (!hasExit) {
-            spice::sct::SctDocumentInstruction exit{
-                spice::sct::SctInstructionId(nextId++), 10u};
-            exit.fixedParameters.push_back({0u,
-                spice::sct::SctInstructionReference{join}});
-            document.operations.push_back(
-                SctInsertInstructionAfterOperation{anchor, exit});
-            next.managedScaffolding.push_back(exit.id);
-            anchor = exit.id;
-        }
-        document.operations.push_back(
-            SctInsertInstructionAfterOperation{anchor, *child});
-        auto controller = *workingState_.instruction(current->controller.instruction);
-        if (!setInstructionReference(controller, 1u, child->id)) {
-            return failure({editError(locator, "IfFalseTargetUnavailable",
-                "The verified If does not expose its false-target parameter.")});
-        }
-        document.operations.push_back(SctReplaceInstructionOperation{
-            controller.id, std::move(controller)});
-    } else if (current->kind
-            == spice::sct::SctStructuredArmKind::SwitchCase) {
-        document.operations.push_back(
-            SctInsertInstructionAfterOperation{*beforeJoin, *child});
-        spice::sct::SctDocumentInstruction exit{
-            spice::sct::SctInstructionId(nextId++), 10u};
-        exit.fixedParameters.push_back({0u, spice::sct::SctInstructionReference{join}});
-        document.operations.push_back(SctInsertInstructionAfterOperation{child->id, exit});
-        next.managedScaffolding.push_back(exit.id);
-        auto controller = *workingState_.instruction(current->controller.instruction);
-        controller.repeatedParameterGroups.push_back({{{2u,
-            spice::sct::SctEncodedWordValue{
-                static_cast<std::uint32_t>(*current->caseValue)}},
-            {3u, spice::sct::SctInstructionReference{child->id}}}});
-        const auto count = std::ranges::find(controller.fixedParameters, 1u,
-            &spice::sct::SctDocumentParameter::schemaIndex);
-        if (count == controller.fixedParameters.end()) {
-            return failure({editError(locator, "SwitchCaseCountUnavailable",
-                "The verified Switch does not expose its repeated-group count.")});
-        }
-        count->value = spice::sct::SctEncodedWordValue{
-            static_cast<std::uint32_t>(controller.repeatedParameterGroups.size())};
-        document.operations.push_back(SctReplaceInstructionOperation{
-            controller.id, std::move(controller)});
-    } else {
-        return failure({editError(locator, "SemanticArmKindUnsupported",
-            "This semantic arm kind cannot be realized by this command.")});
+    const std::array body{child->id};
+    auto lowering = planAuthoredArmLowering(id, body, child->id.value() + 1u);
+    if (!lowering) {
+        std::vector<SctPipelineDiagnostic> diagnostics;
+        for (const auto& diagnostic : lowering.diagnostics())
+            diagnostics.push_back(editError(locator,
+                "SemanticArmLoweringFailed", diagnostic.message));
+        return failure(std::move(diagnostics));
     }
+    auto lower = std::move(lowering).takeValue();
+    SctSemanticOperationBatch document;
+    auto anchor = lower.bodyAnchor;
+    if (lower.beforeBodyScaffold) {
+        document.operations.push_back(SctInsertInstructionAfterOperation{
+            anchor, *lower.beforeBodyScaffold});
+        anchor = lower.beforeBodyScaffold->id;
+    }
+    document.operations.push_back(SctInsertInstructionAfterOperation{anchor, *child});
+    if (lower.afterBodyScaffold)
+        document.operations.push_back(SctInsertInstructionAfterOperation{
+            child->id, *lower.afterBodyScaffold});
+    document.operations.push_back(SctReplaceInstructionOperation{
+        lower.controller.id, std::move(lower.controller)});
 
     const SctNavigationTarget inserted{SctNavigationKind::Instruction, child->id.value()};
     return commit(std::move(document),
-        {{SctSetAuthoredArmOperation{id, *current, next}}},
+        {{SctSetAuthoredArmOperation{id, lower.before, lower.after}}},
         current->kind == spice::sct::SctStructuredArmKind::Else
             ? "Insert first Else instruction" : "Insert first Switch case instruction",
         SelectionHints{{SctNavigationTarget{SctNavigationKind::Instruction,

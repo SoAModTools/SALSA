@@ -16,7 +16,19 @@
 
 namespace salsa::core {
 
-enum class SctFragmentKind { InstructionRange, SectionRange };
+enum class SctFragmentKind { InstructionRange, SectionRange, SemanticUnits };
+
+struct SctSemanticFragmentUnit final {
+    SctSemanticNodeKind kind = SctSemanticNodeKind::Instruction;
+    std::vector<spice::sct::SctInstructionId> instructions{};
+    std::optional<spice::sct::SctStructuredRegionKind> regionKind{};
+    std::optional<spice::sct::SctStructuredArmKind> armKind{};
+    std::optional<std::int32_t> caseValue{};
+    std::optional<spice::sct::SctInstructionId> entryInstruction{};
+    std::optional<spice::sct::SctInstructionId> continuationInstruction{};
+    std::vector<SctSemanticFragmentUnit> children{};
+    auto operator<=>(const SctSemanticFragmentUnit&) const = default;
+};
 
 struct SctFragmentDependency final {
     spice::sct::SctParameterSite sourceSite;
@@ -35,6 +47,7 @@ struct SctSemanticFragment final {
     std::vector<SctEntityAnnotation> annotations{};
     std::vector<SctSectionFolder> folders{};
     std::vector<SctFragmentDependency> dependencies{};
+    std::vector<SctSemanticFragmentUnit> semanticUnits{};
 };
 
 struct SctFragmentPasteDestination final {
@@ -53,7 +66,8 @@ struct SctFragmentPastePlan final {
 class SctFragmentCodec final {
 public:
     static constexpr std::string_view FormatId = "jahorta.salsa.sct-fragment";
-    static constexpr std::uint32_t SchemaVersion = 3;
+    static constexpr std::uint32_t SchemaVersion = 4;
+    static constexpr std::uint32_t PreviousSchemaVersion = 3;
     static constexpr std::uint32_t LegacySchemaVersion = 2;
     static constexpr std::size_t MaximumBytes = 64u * 1024u * 1024u;
     static constexpr std::string_view MimeType =

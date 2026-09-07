@@ -185,6 +185,12 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
     structuredOutline_ = new QTreeView(structuredTab);
     structuredOutlineModel_ = new SctStructuredOutlineModel(structuredOutline_);
     structuredOutline_->setModel(structuredOutlineModel_);
+    structuredOutline_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    structuredOutline_->setDragEnabled(true);
+    structuredOutline_->setAcceptDrops(true);
+    structuredOutline_->setDropIndicatorShown(true);
+    structuredOutline_->setDragDropMode(QAbstractItemView::InternalMove);
+    structuredOutline_->setDefaultDropAction(Qt::MoveAction);
     structuredOutline_->setIndentation(ui::TreeIndentation);
     structuredOutline_->setContextMenuPolicy(Qt::CustomContextMenu);
     structuredOutline_->header()->setSectionResizeMode(QHeaderView::Interactive);
@@ -313,6 +319,20 @@ SctDocumentWidget::SctDocumentWidget(core::AssetLocator locator, QWidget* parent
                 static_cast<int>(target->kind), target->id);
             emit becameActive(QString::fromStdString(locator_.identityKey()));
             emit editContextChanged();
+        });
+    connect(structuredOutline_->selectionModel(), &QItemSelectionModel::selectionChanged,
+        this, [this] {
+            if (!restoringSemanticSelection_) semanticSelectionTargets_.clear();
+            syncDocumentButtons();
+            emit editContextChanged();
+        });
+    connect(structuredOutlineModel_,
+        &SctStructuredOutlineModel::semanticUnitsDropRequested,
+        this, [this](const QStringList& nodeKeys,
+            const QString& destinationKey, const int placement) {
+            emit moveSemanticUnitsRequested(
+                QString::fromStdString(locator_.identityKey()), nodeKeys,
+                destinationKey, placement, QCursor::pos());
         });
     connect(insertInstructionButton_, &QToolButton::clicked, this, [this] {
         emit insertInstructionRequested(QString::fromStdString(locator_.identityKey()));
@@ -916,6 +936,16 @@ void SctDocumentWidget::setSourceStatus(const int sourceStatus) {
 void SctDocumentWidget::selectTarget(
     const core::SctNavigationTarget target,
     const bool reveal) {
+    if (outlineTabs_->currentIndex() == 1) {
+        semanticSelectionTargets_ = {target};
+        currentTarget_ = target;
+        restoreSemanticSelection(reveal);
+        showTarget(target);
+        emit becameActive(QString::fromStdString(locator_.identityKey()));
+        emit editContextChanged();
+        return;
+    }
+    semanticSelectionTargets_.clear();
     (void)selectLocation(core::SctInspectionLocation{ target }, reveal);
 }
 
@@ -923,6 +953,16 @@ void SctDocumentWidget::selectTargets(
     const std::span<const core::SctNavigationTarget> targets,
     const bool reveal) {
     if (targets.empty()) return;
+    if (outlineTabs_->currentIndex() == 1) {
+        semanticSelectionTargets_.assign(targets.begin(), targets.end());
+        currentTarget_ = targets.front();
+        restoreSemanticSelection(reveal);
+        showTarget(*currentTarget_);
+        emit becameActive(QString::fromStdString(locator_.identityKey()));
+        emit editContextChanged();
+        return;
+    }
+    semanticSelectionTargets_.clear();
     outlineTabs_->setCurrentIndex(0);
     QItemSelection selection;
     QModelIndex current;
@@ -947,6 +987,7 @@ bool SctDocumentWidget::selectLocation(
     const bool reveal) {
     // Diagnostic, property, and semantic navigation always reveal the
     // authoritative physical representation.
+    semanticSelectionTargets_.clear();
     outlineTabs_->setCurrentIndex(0);
     const auto target = core::owningNavigationTarget(location);
     const auto found = outlineModel_->indexForTarget(target);
@@ -1045,21 +1086,53 @@ QRect SctDocumentWidget::globalRectForTarget(
 
 std::optional<SctDocumentWidget::InstructionInsertionContext>
 SctDocumentWidget::insertionContext() const {
-    if (outlineTabs_->currentIndex() != 0) return std::nullopt;
+    if (outlineTabs_->currentIndex() == 1) {
+        const auto rows = structuredOutline_->selectionModel()->selectedRows(0);
+        if (rows.size() != 1) return std::nullopt;
+        const auto& row = rows.front();
+        const auto context = structuredOutlineModel_->editContext(row);
+        const auto physical = structuredOutlineModel_->physicalInstructions(row);
+        const auto kind = structuredOutlineModel_->nodeKind(row);
+        if ((kind == core::SctSemanticNodeKind::Arm
+                || kind == core::SctSemanticNodeKind::Placeholder) && context) {
+            return InstructionInsertionContext{std::nullopt, context->authoredArm,
+                context->controller, context->armKind, false};
+        }
+        if (physical.empty()) return std::nullopt;
+        const auto anchor = physical.back();
+        const auto* existing = outlineModel_->instruction(anchor);
+        if (existing == nullptr || existing->opcode == 12u) return std::nullopt;
+        return InstructionInsertionContext{anchor, std::nullopt, std::nullopt,
+            std::nullopt, !outlineModel_->nextInstruction(anchor).has_value()};
+    }
     if (!currentTarget_.has_value()) return std::nullopt;
     if (currentTarget_->kind == core::SctNavigationKind::Instruction) {
         const auto instruction = spice::sct::SctInstructionId(currentTarget_->id);
         const auto* existing = outlineModel_->instruction(instruction);
         if (existing == nullptr || existing->opcode == 12u)
             return std::nullopt;
-        return InstructionInsertionContext{ instruction,
-            !outlineModel_->nextInstruction(instruction).has_value() };
+        return InstructionInsertionContext{instruction, std::nullopt, std::nullopt,
+            std::nullopt, !outlineModel_->nextInstruction(instruction).has_value()};
     }
     return std::nullopt;
 }
 
 bool SctDocumentWidget::canDeleteSelected() const {
-    if (outlineTabs_->currentIndex() != 0) return false;
+    if (outlineTabs_->currentIndex() == 1) {
+        const auto selection = selectedSemanticSelection();
+        if (!selection || !semanticProjection_) return false;
+        for (const auto& key : selection->units) {
+            const auto* node = semanticProjection_->find(key);
+            if (node == nullptr) return false;
+            if (node->kind == core::SctSemanticNodeKind::Arm
+                && (node->armKind == spice::sct::SctStructuredArmKind::Then
+                    || node->armKind == spice::sct::SctStructuredArmKind::LoopBody))
+                return false;
+        }
+        const auto plan = core::SctSemanticCommandPlanner::planSelection(
+            *semanticProjection_, *selection);
+        return plan.hasValue();
+    }
     const auto instructions = selectedInstructions();
     if (!instructions.empty()) return std::ranges::none_of(instructions,
         [this](const auto instruction) {
@@ -1071,7 +1144,15 @@ bool SctDocumentWidget::canDeleteSelected() const {
 }
 
 std::optional<spice::sct::SctInstructionId> SctDocumentWidget::selectedInstruction() const {
-    if (outlineTabs_->currentIndex() != 0) return std::nullopt;
+    if (outlineTabs_->currentIndex() == 1) {
+        const auto selected = structuredOutline_->selectionModel()->selectedRows(0);
+        if (selected.size() != 1
+            || structuredOutlineModel_->nodeKind(selected.front())
+                != core::SctSemanticNodeKind::Instruction) return std::nullopt;
+        const auto target = structuredOutlineModel_->target(selected.front());
+        return target && target->kind == core::SctNavigationKind::Instruction
+            ? std::optional{spice::sct::SctInstructionId(target->id)} : std::nullopt;
+    }
     if (!currentTarget_.has_value()
         || currentTarget_->kind != core::SctNavigationKind::Instruction) return std::nullopt;
     return spice::sct::SctInstructionId(currentTarget_->id);
@@ -1079,7 +1160,14 @@ std::optional<spice::sct::SctInstructionId> SctDocumentWidget::selectedInstructi
 
 std::vector<spice::sct::SctInstructionId>
 SctDocumentWidget::selectedInstructions() const {
-    if (outlineTabs_->currentIndex() != 0) return {};
+    if (outlineTabs_->currentIndex() == 1) {
+        const auto selection = selectedSemanticSelection();
+        if (!selection || !semanticProjection_) return {};
+        const auto plan = core::SctSemanticCommandPlanner::planSelection(
+            *semanticProjection_, *selection);
+        return plan ? plan.value().physicalInstructions
+                    : std::vector<spice::sct::SctInstructionId>{};
+    }
     auto indexes = outline_->selectionModel()->selectedRows(0);
     if (indexes.empty()) return {};
     const auto parent = indexes.front().parent();
@@ -1099,9 +1187,52 @@ SctDocumentWidget::selectedInstructions() const {
     return result;
 }
 
+std::optional<core::SctSemanticSelection>
+SctDocumentWidget::selectedSemanticSelection() const {
+    if (outlineTabs_->currentIndex() != 1 || !semanticProjection_) return std::nullopt;
+    const auto rows = structuredOutline_->selectionModel()->selectedRows(0);
+    std::vector<core::SctSemanticNodeKey> keys;
+    keys.reserve(rows.size());
+    for (const auto& row : rows) {
+        if (const auto key = structuredOutlineModel_->nodeKey(row)) keys.push_back(*key);
+    }
+    const auto normalized = core::SctSemanticCommandPlanner::normalizeSelection(
+        *semanticProjection_, keys);
+    return normalized ? std::optional{normalized.value()} : std::nullopt;
+}
+
+std::optional<core::SctSemanticDestination>
+SctDocumentWidget::selectedSemanticDestination(const bool intoContainer) const {
+    const auto selection = selectedSemanticSelection();
+    if (!selection || selection->units.empty() || !semanticProjection_)
+        return std::nullopt;
+    const auto* target = semanticProjection_->find(selection->units.back());
+    if (target == nullptr) return std::nullopt;
+    const bool container = target->kind == core::SctSemanticNodeKind::Arm
+        || target->kind == core::SctSemanticNodeKind::Region;
+    return core::SctSemanticDestination{
+        selection->revision,
+        target->key,
+        intoContainer && container
+            ? core::SctSemanticDestinationPlacement::IntoEnd
+            : core::SctSemanticDestinationPlacement::After};
+}
+
 std::optional<spice::sct::SctInstructionId>
 SctDocumentWidget::rangeMoveAnchor(
     const core::SctInstructionMoveDirection direction) const {
+    if (outlineTabs_->currentIndex() == 1) {
+        const auto selection = selectedSemanticSelection();
+        if (!selection || !semanticProjection_ || !snapshot_ || !snapshot_->document)
+            return std::nullopt;
+        const core::SctWorkingState state(snapshot_->document);
+        const auto planned = core::SctSemanticCommandPlanner::planMove(
+            *semanticProjection_, state, *selection,
+            direction == core::SctInstructionMoveDirection::Up
+                ? core::SctSemanticMoveDirection::Up
+                : core::SctSemanticMoveDirection::Down);
+        return planned ? planned.value().anchorAfter : std::nullopt;
+    }
     const auto selected = selectedInstructions();
     if (selected.empty()) return std::nullopt;
     if (direction == core::SctInstructionMoveDirection::Down)
@@ -1144,15 +1275,17 @@ std::optional<spice::sct::SctSectionId> SctDocumentWidget::selectedSection() con
 }
 
 std::vector<spice::sct::SctSectionId> SctDocumentWidget::selectedSections() const {
-    if (outlineTabs_->currentIndex() != 0) return {};
-    auto indexes = outline_->selectionModel()->selectedRows(0);
+    auto indexes = outlineTabs_->currentIndex() == 0
+        ? outline_->selectionModel()->selectedRows(0)
+        : structuredOutline_->selectionModel()->selectedRows(0);
     if (indexes.empty()) return {};
     std::ranges::sort(indexes, {}, &QModelIndex::row);
     std::vector<spice::sct::SctSectionId> result;
     result.reserve(indexes.size());
     for (qsizetype ordinal = 0; ordinal < indexes.size(); ++ordinal) {
         const auto& index = indexes[ordinal];
-        const auto target = outlineModel_->target(index);
+        const auto target = outlineTabs_->currentIndex() == 0
+            ? outlineModel_->target(index) : structuredOutlineModel_->target(index);
         if (index.parent().isValid() || !target
             || target->kind != core::SctNavigationKind::Section
             || (ordinal != 0u
@@ -1167,7 +1300,8 @@ bool SctDocumentWidget::canEditSelectedMessage() const {
 }
 
 bool SctDocumentWidget::canMoveSelected(const core::SctInstructionMoveDirection direction) const {
-    if (outlineTabs_->currentIndex() != 0) return false;
+    if (outlineTabs_->currentIndex() == 1)
+        return rangeMoveAnchor(direction).has_value();
     const auto selected = selectedInstructions();
     if (selected.size() > 1u) {
         if (!rangeMoveAnchor(direction)) return false;
@@ -1211,14 +1345,13 @@ void SctDocumentWidget::rebuildOutline() {
 }
 
 void SctDocumentWidget::syncDocumentButtons() {
-    const bool physical = outlineTabs_->currentIndex() == 0;
     insertInstructionButton_->setEnabled(
-        editingEnabled_ && physical && insertionContext().has_value());
+        editingEnabled_ && insertionContext().has_value());
     deleteInstructionButton_->setEnabled(
-        editingEnabled_ && physical && canDeleteSelected());
-    moveInstructionUpButton_->setEnabled(editingEnabled_ && physical
+        editingEnabled_ && canDeleteSelected());
+    moveInstructionUpButton_->setEnabled(editingEnabled_
         && canMoveSelected(core::SctInstructionMoveDirection::Up));
-    moveInstructionDownButton_->setEnabled(editingEnabled_ && physical
+    moveInstructionDownButton_->setEnabled(editingEnabled_
         && canMoveSelected(core::SctInstructionMoveDirection::Down));
 }
 
@@ -1227,13 +1360,41 @@ void SctDocumentWidget::rebuildStructuredOutline(const bool initialLoad) {
     structuredOutlineModel_->setDeveloperOptions(
         showStructuredBasicBlocks_, showRejectedStructureEvidence_,
         showSemanticControlFlowInstructions_);
+    restoringSemanticSelection_ = true;
     structuredOutlineModel_->resetFrom(snapshot_, semanticProjection_);
+    restoringSemanticSelection_ = false;
     if (initialLoad) structuredOutline_->collapseAll();
+    if (!semanticSelectionTargets_.empty()) {
+        restoreSemanticSelection(!initialLoad);
+        return;
+    }
     if (!retained) return;
     const auto selected = structuredOutlineModel_->indexForTarget(*retained);
     if (!selected.isValid()) return;
     structuredOutline_->setCurrentIndex(selected);
     if (!initialLoad) expandAncestors(*structuredOutline_, selected);
+}
+
+void SctDocumentWidget::restoreSemanticSelection(const bool reveal) {
+    if (semanticSelectionTargets_.empty()) return;
+    QItemSelection selection;
+    QModelIndex current;
+    for (const auto target : semanticSelectionTargets_) {
+        const auto index = structuredOutlineModel_->indexForTarget(target);
+        if (!index.isValid()) continue;
+        if (!current.isValid()) current = index;
+        selection.select(index, index);
+        if (reveal) expandAncestors(*structuredOutline_, index);
+    }
+    if (!current.isValid()) return;
+    restoringSemanticSelection_ = true;
+    structuredOutline_->selectionModel()->select(selection,
+        QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    structuredOutline_->selectionModel()->setCurrentIndex(current,
+        QItemSelectionModel::NoUpdate);
+    restoringSemanticSelection_ = false;
+    if (reveal) revealVerticallyPreservingHorizontal(
+        *structuredOutline_, current, QAbstractItemView::PositionAtCenter);
 }
 
 void SctDocumentWidget::markStructuredOutlinePending() {

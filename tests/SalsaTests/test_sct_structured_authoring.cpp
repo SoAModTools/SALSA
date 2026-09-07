@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <ranges>
 
@@ -103,6 +104,40 @@ std::uint16_t simpleOpcode() {
     return found == SctEditSession::insertableOpcodes().end() ? 1u : found->opcode;
 }
 
+const SctSemanticProjectionNode* findSemanticNode(
+    const std::span<const SctSemanticProjectionNode> nodes,
+    const std::function<bool(const SctSemanticProjectionNode&)>& predicate) {
+    for (const auto& node : nodes) {
+        if (predicate(node)) return &node;
+        if (const auto* child = findSemanticNode(node.children, predicate)) return child;
+    }
+    return nullptr;
+}
+
+const SctSemanticProjectionNode* findAuthoredArmNode(
+    const SctSemanticEditorProjection& projection, const SctAuthoredArmId arm) {
+    return findSemanticNode(projection.roots(), [&](const auto& node) {
+        return node.authoredArm == arm;
+    });
+}
+
+SctSemanticFragment twoInstructionSemanticFragment() {
+    SctSemanticFragment fragment;
+    fragment.kind = SctFragmentKind::SemanticUnits;
+    fragment.sourceAssetIdentity = "scripts/semantic_test.sct";
+    SctDocumentInstruction first{SctInstructionId(100u), 10u};
+    first.fixedParameters = {{0u, SctInstructionReference{SctInstructionId(101u)}}};
+    SctDocumentInstruction second{SctInstructionId(101u), 1u};
+    fragment.instructions = {first, second};
+    for (const auto& value : fragment.instructions) {
+        SctSemanticFragmentUnit unit;
+        unit.kind = SctSemanticNodeKind::Instruction;
+        unit.instructions.push_back(value.id);
+        fragment.semanticUnits.push_back(std::move(unit));
+    }
+    return fragment;
+}
+
 TEST(SctStructuredAuthoring, StateAppliesAtomicallyAndNeverReusesIds) {
     SctStructuredAuthoringState state;
     const SctAuthoredArm arm{{1u}, {SctSectionId(1u), SctInstructionId(2u)},
@@ -142,6 +177,168 @@ TEST(SctStructuredAuthoring, VirtualElseIsDirtyUndoableAndDocumentFree) {
     EXPECT_TRUE(session.structuredAuthoring().arms().empty());
     ASSERT_TRUE(session.redo().has_value());
     EXPECT_EQ(session.structuredAuthoring().arms().size(), 1u);
+}
+
+TEST(SctStructuredAuthoring, ProjectionNormalizesSiblingsAndPlansSafeDestinations) {
+    const auto fixture = ifWithoutElse();
+    SctEditSession session(fixture.snapshot);
+    const auto projection = session.semanticProjection();
+    ASSERT_NE(projection, nullptr);
+    ASSERT_TRUE(projection->current());
+    const auto* region = findSemanticNode(projection->roots(), [](const auto& node) {
+        return node.kind == SctSemanticNodeKind::Region
+            && node.regionKind == SctStructuredRegionKind::If;
+    });
+    ASSERT_NE(region, nullptr);
+    const auto arm = std::ranges::find_if(region->children, [](const auto& node) {
+        return node.kind == SctSemanticNodeKind::Arm
+            && node.armKind == SctStructuredArmKind::Then;
+    });
+    ASSERT_NE(arm, region->children.end());
+    ASSERT_GE(arm->children.size(), 2u);
+    const std::array reversed{arm->children[1].key, arm->children[0].key,
+        arm->children[1].key};
+    const auto normalized = SctSemanticCommandPlanner::normalizeSelection(
+        *projection, reversed);
+    ASSERT_TRUE(normalized);
+    ASSERT_EQ(normalized.value().units.size(), 2u);
+    EXPECT_EQ(normalized.value().units[0], arm->children[0].key);
+    EXPECT_EQ(normalized.value().units[1], arm->children[1].key);
+
+    const std::array firstOnly{arm->children[0].key};
+    const auto selection = SctSemanticCommandPlanner::normalizeSelection(
+        *projection, firstOnly);
+    ASSERT_TRUE(selection);
+    const auto moved = SctSemanticCommandPlanner::planMove(*projection,
+        session.workingState(), selection.value(), SctSemanticMoveDirection::Down);
+    ASSERT_TRUE(moved);
+    ASSERT_TRUE(moved.value().anchorAfter);
+    EXPECT_EQ(*moved.value().anchorAfter, arm->children[1].physicalInstructions.back());
+    const auto destination = SctSemanticDestination{projection->workingRevision(),
+        arm->key, SctSemanticDestinationPlacement::IntoEnd};
+    const auto placed = SctSemanticCommandPlanner::planMove(*projection,
+        session.workingState(), selection.value(), destination);
+    ASSERT_TRUE(placed);
+    EXPECT_EQ(placed.value().destinationController, arm->controller);
+
+    const std::array wholeArm{arm->key};
+    const auto armSelection = SctSemanticCommandPlanner::normalizeSelection(
+        *projection, wholeArm);
+    ASSERT_TRUE(armSelection);
+    EXPECT_FALSE(SctSemanticCommandPlanner::planMove(*projection,
+        session.workingState(), armSelection.value(), destination));
+}
+
+TEST(SctStructuredAuthoring, MultiInstructionPasteLowersEmptyElseAtomically) {
+    const auto fixture = ifWithoutElse();
+    SctEditSession session(fixture.snapshot);
+    ASSERT_TRUE(session.addVirtualElse(fixture.controller).committed);
+    const auto arm = session.structuredAuthoring().arms().front().id;
+    const auto beforePaste = session.workingRevision();
+    const auto* armNode = findAuthoredArmNode(*session.semanticProjection(), arm);
+    ASSERT_NE(armNode, nullptr);
+    const auto pasted = session.pasteFragment(twoInstructionSemanticFragment(),
+        {session.semanticProjection()->workingRevision(), armNode->key,
+            SctSemanticDestinationPlacement::IntoEnd});
+    ASSERT_TRUE(pasted.committed) << (pasted.diagnostics.empty()
+        ? "" : pasted.diagnostics.front().message);
+    EXPECT_NE(session.workingRevision(), beforePaste);
+    const auto* authored = session.structuredAuthoring().find(arm);
+    ASSERT_NE(authored, nullptr);
+    ASSERT_EQ(authored->members.size(), 2u);
+    EXPECT_EQ(authored->realization, SctAuthoredArmRealization::Physical);
+    const auto materialized = session.materializeRevision(session.workingRevision());
+    ASSERT_TRUE(materialized);
+    const auto index = SctDocumentIndex::build(**materialized);
+    const auto* controller = index.find(**materialized, fixture.controller);
+    ASSERT_NE(controller, nullptr);
+    const auto falseTarget = std::ranges::find(controller->fixedParameters, 1u,
+        &SctDocumentParameter::schemaIndex);
+    ASSERT_NE(falseTarget, controller->fixedParameters.end());
+    EXPECT_EQ(std::get<SctInstructionReference>(falseTarget->value).target,
+        authored->members.front());
+    const auto* first = index.find(**materialized, authored->members.front());
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(std::get<SctInstructionReference>(first->fixedParameters.front().value).target,
+        authored->members.back());
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_EQ(session.workingRevision(), beforePaste);
+    EXPECT_EQ(session.structuredAuthoring().find(arm)->realization,
+        SctAuthoredArmRealization::Virtual);
+    ASSERT_TRUE(session.redo().has_value());
+    EXPECT_EQ(session.structuredAuthoring().find(arm)->members.size(), 2u);
+}
+
+TEST(SctStructuredAuthoring, EmptyArmMoveRejectsSourceControllerDismantling) {
+    const auto fixture = ifWithoutElse();
+    SctEditSession session(fixture.snapshot);
+    ASSERT_TRUE(session.addVirtualElse(fixture.controller).committed);
+    const auto projection = session.semanticProjection();
+    ASSERT_TRUE(projection);
+    const auto arm = session.structuredAuthoring().arms().front().id;
+    const auto* destination = findAuthoredArmNode(*projection, arm);
+    ASSERT_NE(destination, nullptr);
+    const auto* source = findSemanticNode(projection->roots(), [](const auto& node) {
+        return node.kind == SctSemanticNodeKind::Instruction
+            && !node.hiddenByDefault;
+    });
+    ASSERT_NE(source, nullptr);
+    const std::array key{source->key};
+    const auto selection = SctSemanticCommandPlanner::normalizeSelection(
+        *projection, key);
+    ASSERT_TRUE(selection);
+    const auto before = session.workingRevision();
+    const auto moved = session.moveSemanticUnits(selection.value(),
+        {projection->workingRevision(), destination->key,
+            SctSemanticDestinationPlacement::IntoEnd});
+    EXPECT_FALSE(moved.committed);
+    EXPECT_EQ(session.workingRevision(), before);
+}
+
+TEST(SctStructuredAuthoring, MultiInstructionCaseRequiresValueAndLowersInOneRevision) {
+    const auto fixture = switchWithCases();
+    SctEditSession session(fixture.snapshot);
+    ASSERT_TRUE(session.addVirtualCase(fixture.controller).committed);
+    const auto arm = session.structuredAuthoring().arms().front().id;
+    const auto* emptyNode = findAuthoredArmNode(*session.semanticProjection(), arm);
+    ASSERT_NE(emptyNode, nullptr);
+    const auto emptyKey = emptyNode->key;
+    const auto rejectedAt = session.workingRevision();
+    const auto rejected = session.pasteFragment(twoInstructionSemanticFragment(),
+        {session.semanticProjection()->workingRevision(), emptyKey,
+            SctSemanticDestinationPlacement::IntoEnd});
+    EXPECT_FALSE(rejected.committed);
+    EXPECT_EQ(session.workingRevision(), rejectedAt);
+    ASSERT_TRUE(session.setVirtualCaseValue(arm, -7).committed);
+    const auto beforePaste = session.workingRevision();
+    const auto stale = session.pasteFragment(twoInstructionSemanticFragment(),
+        {rejectedAt, emptyKey, SctSemanticDestinationPlacement::IntoEnd});
+    EXPECT_FALSE(stale.committed);
+    EXPECT_EQ(session.workingRevision(), beforePaste);
+    const auto* valuedNode = findAuthoredArmNode(*session.semanticProjection(), arm);
+    ASSERT_NE(valuedNode, nullptr);
+    const auto pasted = session.pasteFragment(twoInstructionSemanticFragment(),
+        {session.semanticProjection()->workingRevision(), valuedNode->key,
+            SctSemanticDestinationPlacement::IntoEnd});
+    ASSERT_TRUE(pasted.committed) << (pasted.diagnostics.empty()
+        ? "" : pasted.diagnostics.front().message);
+    const auto* authored = session.structuredAuthoring().find(arm);
+    ASSERT_NE(authored, nullptr);
+    ASSERT_EQ(authored->members.size(), 2u);
+    ASSERT_EQ(authored->managedScaffolding.size(), 1u);
+    const auto materialized = session.materializeRevision(session.workingRevision());
+    ASSERT_TRUE(materialized);
+    const auto index = SctDocumentIndex::build(**materialized);
+    const auto* controller = index.find(**materialized, fixture.controller);
+    ASSERT_NE(controller, nullptr);
+    ASSERT_EQ(controller->repeatedParameterGroups.size(), 3u);
+    EXPECT_EQ(std::get<SctInstructionReference>(
+        controller->repeatedParameterGroups.back().parameters.back().value).target,
+        authored->members.front());
+    ASSERT_TRUE(session.undo().has_value());
+    EXPECT_EQ(session.workingRevision(), beforePaste);
+    EXPECT_EQ(session.structuredAuthoring().find(arm)->realization,
+        SctAuthoredArmRealization::Virtual);
 }
 
 TEST(SctStructuredAuthoring, FirstElseInstructionLowersAsOneCombinedRevision) {

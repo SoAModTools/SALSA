@@ -7,6 +7,7 @@
 #include <QBrush>
 #include <QColor>
 #include <QFont>
+#include <QMimeData>
 #include <QStyle>
 #include <QStringList>
 
@@ -165,6 +166,86 @@ QVariant SctStructuredOutlineModel::headerData(
     return section == 0 ? tr("Semantic outline") : tr("State / ID");
 }
 
+Qt::ItemFlags SctStructuredOutlineModel::flags(const QModelIndex& modelIndex) const {
+    auto result = QAbstractItemModel::flags(modelIndex);
+    if (!modelIndex.isValid()) return result;
+    const auto* node = static_cast<Node*>(modelIndex.internalPointer());
+    if (!node->authorable) return result;
+    if (node->kind == core::SctSemanticNodeKind::Instruction
+        || node->kind == core::SctSemanticNodeKind::Region)
+        result |= Qt::ItemIsDragEnabled;
+    if (node->kind == core::SctSemanticNodeKind::Region
+        || node->kind == core::SctSemanticNodeKind::Arm)
+        result |= Qt::ItemIsDropEnabled;
+    return result;
+}
+
+QStringList SctStructuredOutlineModel::mimeTypes() const {
+    return {QStringLiteral("application/vnd.jahorta.salsa.semantic-units")};
+}
+
+QMimeData* SctStructuredOutlineModel::mimeData(const QModelIndexList& indexes) const {
+    auto* data = new QMimeData;
+    std::vector<const Node*> nodes;
+    for (const auto& index : indexes) {
+        if (!index.isValid() || index.column() != 0) continue;
+        const auto* node = static_cast<Node*>(index.internalPointer());
+        if (!node->authorable || !node->key.valid()) continue;
+        nodes.push_back(node);
+    }
+    std::ranges::sort(nodes, {}, [this](const Node* node) { return rowOf(node); });
+    nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+    if (nodes.empty()) return data;
+    const auto* parent = nodes.front()->parent;
+    for (std::size_t ordinal = 0; ordinal < nodes.size(); ++ordinal) {
+        if (nodes[ordinal]->parent != parent
+            || rowOf(nodes[ordinal]) != rowOf(nodes.front()) + static_cast<int>(ordinal))
+            return data;
+    }
+    QByteArray encoded;
+    for (const auto* node : nodes) {
+        if (!encoded.isEmpty()) encoded.push_back('\n');
+        encoded += QByteArray::fromStdString(node->key.value);
+    }
+    data->setData(mimeTypes().front(), encoded);
+    return data;
+}
+
+bool SctStructuredOutlineModel::dropMimeData(const QMimeData* data,
+    const Qt::DropAction action, int row, const int column,
+    const QModelIndex& parentIndex) {
+    if (action == Qt::IgnoreAction) return true;
+    if (action != Qt::MoveAction || column > 0 || data == nullptr
+        || !data->hasFormat(mimeTypes().front())) return false;
+    QStringList keys;
+    for (const auto& token : data->data(mimeTypes().front()).split('\n')) {
+        if (!token.isEmpty()) keys.push_back(QString::fromUtf8(token));
+    }
+    if (keys.empty()) return false;
+    const Node* destination = parentIndex.isValid()
+        ? static_cast<Node*>(parentIndex.internalPointer()) : nullptr;
+    auto placement = core::SctSemanticDestinationPlacement::IntoEnd;
+    if (row >= 0) {
+        const auto& siblings = destination == nullptr ? roots_ : destination->children;
+        if (siblings.empty()) return false;
+        if (row < static_cast<int>(siblings.size())) {
+            destination = siblings[static_cast<std::size_t>(row)].get();
+            placement = core::SctSemanticDestinationPlacement::Before;
+        } else {
+            destination = siblings.back().get();
+            placement = core::SctSemanticDestinationPlacement::After;
+        }
+    }
+    if (destination == nullptr || !destination->key.valid()) return false;
+    emit semanticUnitsDropRequested(keys,
+        QString::fromStdString(destination->key.value), static_cast<int>(placement));
+    return true;
+}
+
+Qt::DropActions SctStructuredOutlineModel::supportedDropActions() const {
+    return Qt::MoveAction;
+}
+
 void SctStructuredOutlineModel::resetFrom(
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
     std::shared_ptr<const core::SctSemanticEditorProjection> projection) {
@@ -205,6 +286,26 @@ SctStructuredOutlineModel::editContext(const QModelIndex& modelIndex) const noex
     return node == nullptr ? std::nullopt : node->editContext;
 }
 
+std::optional<core::SctSemanticNodeKey> SctStructuredOutlineModel::nodeKey(
+    const QModelIndex& modelIndex) const noexcept {
+    if (!modelIndex.isValid()) return std::nullopt;
+    const auto* node = static_cast<Node*>(modelIndex.internalPointer());
+    return node != nullptr && node->key.valid()
+        ? std::optional{node->key} : std::nullopt;
+}
+
+core::SctSemanticNodeKind SctStructuredOutlineModel::nodeKind(
+    const QModelIndex& modelIndex) const noexcept {
+    if (!modelIndex.isValid()) return core::SctSemanticNodeKind::Issue;
+    return static_cast<Node*>(modelIndex.internalPointer())->kind;
+}
+
+std::span<const SctInstructionId> SctStructuredOutlineModel::physicalInstructions(
+    const QModelIndex& modelIndex) const noexcept {
+    if (!modelIndex.isValid()) return {};
+    return static_cast<Node*>(modelIndex.internalPointer())->physicalInstructions;
+}
+
 void SctStructuredOutlineModel::rebuild() {
     beginResetModel();
     roots_.clear();
@@ -212,86 +313,102 @@ void SctStructuredOutlineModel::rebuild() {
     regionsByController_.clear();
     importedEvidenceByInstruction_.clear();
     hiddenControlFlow_.clear();
-    if (!snapshot_ || !snapshot_->document || !snapshot_->analysis) {
+    if (!snapshot_ || !snapshot_->document || !snapshot_->analysis || !projection_) {
         endResetModel();
         return;
     }
-    for (const auto& section : snapshot_->analysis->structuredControlFlow.sections()) {
-        for (const auto& candidate : section.historicalCandidates)
-            ++importedEvidenceByInstruction_[candidate.sourceInstruction.value()];
-        for (const auto& region : section.regions) {
-            for (const auto& evidence : region.evidence) {
-                if ((evidence.kind == SctStructureEvidenceKind::PreTargetJump
-                        || evidence.kind == SctStructureEvidenceKind::BackwardTerminatorJump
-                        || evidence.kind == SctStructureEvidenceKind::CommonForwardExit)
-                    && evidence.source) {
-                    hiddenControlFlow_.push_back(*evidence.source);
-                }
-            }
-        }
-        auto root = std::make_unique<Node>();
-        root->target = core::SctNavigationTarget{
-            core::SctNavigationKind::Section, section.section.value()};
-        const auto* source = snapshot_->analysis->entities.find(
-            *snapshot_->document, section.section);
-        root->label = source == nullptr
-            ? tr("Section %1").arg(section.section.value())
-            : QString::fromUtf8(source->nameBytes.data(),
-                static_cast<qsizetype>(source->nameBytes.size()));
-        root->secondary = tr("Script");
-        root->importedEvidenceCount = section.historicalCandidates.size();
-        if (root->importedEvidenceCount != 0u) {
-            root->secondary += tr(" | Imported evidence: %1")
-                .arg(root->importedEvidenceCount);
-            root->tooltip = tr("%1 imported control-flow evidence item(s). "
-                "Select the section to inspect.").arg(root->importedEvidenceCount);
-        }
-        const auto belongsToTopLevelRegion = [&](const SctInstructionId instruction) {
-            return std::ranges::any_of(section.regions, [&](const auto& region) {
-                if (region.parent) return false;
-                return std::ranges::any_of(region.members, [&](const auto blockId) {
-                    const auto block = std::ranges::find(section.blocks, blockId,
-                        &SctStructuredBasicBlock::id);
-                    return block != section.blocks.end()
-                        && std::ranges::find(block->instructions, instruction)
-                            != block->instructions.end();
-                });
-            });
-        };
-        for (const auto& block : section.blocks) {
-            Node* blockParent = root.get();
-            std::unique_ptr<Node> blockNode;
-            if (showBasicBlocks_) {
-                blockNode = std::make_unique<Node>();
-                blockNode->parent = root.get();
-                blockNode->label = tr("Basic block at instruction %1")
-                    .arg(block.id.entryInstruction.value());
-                blockNode->secondary = tr("Derived");
-                blockParent = blockNode.get();
-            }
-            for (const auto instruction : block.instructions) {
-                const auto region = std::ranges::find_if(section.regions,
-                    [&](const auto& candidate) {
-                        return !candidate.parent
-                            && candidate.id.headerInstruction == instruction;
-                    });
-                if (region != section.regions.end()) {
-                    appendRegion(*blockParent, section, *region);
-                } else if (!belongsToTopLevelRegion(instruction)) {
-                    appendInstruction(*blockParent, instruction);
-                }
-            }
-            if (blockNode && !blockNode->children.empty())
-                root->children.push_back(std::move(blockNode));
-        }
-        if (showRejectedEvidence_) {
-            for (const auto& issue : section.issues) appendIssue(*root, issue);
-        }
-        roots_.push_back(std::move(root));
-        indexNode(*roots_.back());
-    }
-    appendAuthoredArms();
+    for (const auto& source : projection_->roots()) appendProjectionNode(nullptr, source);
     endResetModel();
+}
+
+void SctStructuredOutlineModel::appendProjectionNode(
+    Node* parent, const core::SctSemanticProjectionNode& source) {
+    if (source.kind == core::SctSemanticNodeKind::Issue && !showRejectedEvidence_) return;
+    if (source.hiddenByDefault && !showControlFlowInstructions_) return;
+    auto node = std::make_unique<Node>();
+    node->parent = parent;
+    node->key = source.key;
+    node->kind = source.kind;
+    node->target = source.target;
+    node->importedEvidenceCount = source.importedEvidenceCount;
+    node->physicalInstructions = source.physicalInstructions;
+    node->authorable = source.authorable;
+    switch (source.kind) {
+    case core::SctSemanticNodeKind::Section: {
+        const auto id = spice::sct::SctSectionId(source.target ? source.target->id : 0u);
+        const auto* value = snapshot_->analysis->entities.find(*snapshot_->document, id);
+        node->label = value == nullptr ? tr("Section %1").arg(id.value())
+            : QString::fromUtf8(value->nameBytes.data(),
+                static_cast<qsizetype>(value->nameBytes.size()));
+        node->secondary = tr("Script");
+        break;
+    }
+    case core::SctSemanticNodeKind::Instruction: {
+        const auto id = spice::sct::SctInstructionId(source.target ? source.target->id : 0u);
+        const auto* value = snapshot_->analysis->entities.find(*snapshot_->document, id);
+        const auto resolved = value == nullptr ? core::SctResolvedCatalogEntry{}
+            : core::SctCatalogResolver::resolve(value->opcode);
+        node->label = value == nullptr ? tr("Unavailable instruction")
+            : QStringLiteral("%1 (%2)").arg(resolved.mnemonic.empty() ? tr("Opcode")
+                : QString::fromStdString(resolved.mnemonic)).arg(value->opcode);
+        node->secondary = tr("Instruction %1").arg(id.value());
+        break;
+    }
+    case core::SctSemanticNodeKind::Region:
+        node->label = source.regionKind ? regionName(*source.regionKind) : tr("Region");
+        node->secondary = source.confidence ? confidenceName(*source.confidence) : tr("Derived");
+        node->tooltip = evidenceTooltip(source.evidence);
+        break;
+    case core::SctSemanticNodeKind::Arm: {
+        if (source.armKind == SctStructuredArmKind::Then) node->label = tr("Then");
+        else if (source.armKind == SctStructuredArmKind::LoopBody) node->label = tr("Body");
+        else if (source.armKind == SctStructuredArmKind::Else) node->label = tr("Else");
+        else if (source.caseValue) node->label = tr("Case %1").arg(*source.caseValue);
+        else node->label = tr("Case (value required)");
+        switch (source.armStatus) {
+        case core::SctSemanticArmStatus::Verified: node->secondary = tr("Verified"); break;
+        case core::SctSemanticArmStatus::Virtual: node->secondary = tr("Virtual"); break;
+        case core::SctSemanticArmStatus::NeedsValue: node->secondary = tr("Needs value"); break;
+        case core::SctSemanticArmStatus::PendingVerification:
+            node->secondary = tr("Pending verification"); break;
+        case core::SctSemanticArmStatus::Conflicted:
+            node->secondary = tr("Needs attention"); node->suggested = true; break;
+        }
+        break;
+    }
+    case core::SctSemanticNodeKind::Placeholder:
+        node->label = tr("[Empty]");
+        node->secondary = source.needsValue
+            ? tr("Set a case value before inserting")
+            : tr("Insert an instruction to realize");
+        break;
+    case core::SctSemanticNodeKind::Issue:
+        node->label = source.issue ? issueName(source.issue->kind) : tr("Structure issue");
+        node->secondary = tr("Not grouped");
+        node->tooltip = evidenceTooltip(source.evidence);
+        node->suggested = true;
+        break;
+    case core::SctSemanticNodeKind::BasicBlock:
+        node->label = source.basicBlock
+            ? tr("Basic block at instruction %1").arg(source.basicBlock->entryInstruction.value())
+            : tr("Basic block");
+        node->secondary = tr("Derived");
+        break;
+    }
+    if (source.controller || source.authoredArm || source.regionKind || source.armKind) {
+        node->editContext = EditContext{source.controller, source.authoredArm,
+            source.regionKind, source.armKind, source.verified, source.virtualArm,
+            source.needsValue, source.canReturnToEmpty};
+    }
+    if (node->importedEvidenceCount != 0u) {
+        node->secondary += tr(" | Imported evidence: %1")
+            .arg(node->importedEvidenceCount);
+    }
+    auto* raw = node.get();
+    if (parent == nullptr) roots_.push_back(std::move(node));
+    else parent->children.push_back(std::move(node));
+    for (const auto& child : source.children) appendProjectionNode(raw, child);
+    indexNode(*raw);
 }
 
 void SctStructuredOutlineModel::appendInstruction(Node& parent,
