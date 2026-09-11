@@ -157,7 +157,7 @@ TEST(SctAuthoringMaterializerTest, CancellationAndUnknownPlatformCannotProduceOu
     auto imported = SctAuthoringImporter::import(a.project, a.project.revision, std::move(unknown)); ASSERT_TRUE(imported);
     auto output = prepare(imported.value(), imported.value().project); EXPECT_FALSE(output.succeeded()); EXPECT_FALSE(output.scripts[0].prepared);
 }
-TEST(SctAuthoringMaterializerTest, RejectsRebuildThatPullsPreservedPrefixIntoExecutableSection) {
+TEST(SctAuthoringMaterializerTest, RebuildPreservesIndexedStartBeyondOpaquePrefix) {
     // One synthetic index row points past a 32-byte opaque prefix. The prefix
     // happens to encode opcode 79; it must never become part of the section.
     std::vector<std::byte> bytes(68, std::byte{0});
@@ -177,9 +177,17 @@ TEST(SctAuthoringMaterializerTest, RejectsRebuildThatPullsPreservedPrefixIntoExe
     auto reused = prepare(a.value(), a.value().project, SctAuthoringOutputMode::ReuseUnchangedSource);
     ASSERT_TRUE(reused.succeeded()) << messages(reused);
     auto rebuilt = prepare(a.value(), a.value().project);
-    EXPECT_FALSE(rebuilt.succeeded());
-    EXPECT_FALSE(rebuilt.scripts[0].prepared);
-    EXPECT_NE(messages(rebuilt).find("section/instruction shape"), std::string::npos) << messages(rebuilt);
+    ASSERT_TRUE(rebuilt.succeeded()) << messages(rebuilt);
+    const auto& output = *rebuilt.scripts[0].prepared;
+    EXPECT_EQ(output.digest, hash);
+    ASSERT_TRUE(output.layout);
+    ASSERT_EQ(output.layout->sections.size(), 1);
+    EXPECT_EQ(output.layout->sections[0].dataRelativeOffset, 32);
+    auto reimported = sct::SctDocumentImporter::import(sct::SctParser{}.parse(output.bytes), {{sct::SctPlatform::GameCube}, {}});
+    ASSERT_TRUE(reimported.document);
+    const auto& instructions = std::get<sct::SctScriptSectionContent>(reimported.document->sections[0].content).instructions;
+    ASSERT_EQ(instructions.size(), 1);
+    EXPECT_EQ(instructions[0].opcode, 12);
 }
 TEST(SctAuthoringMaterializerTest, SourceReuseCannotBypassUnresolvedInstructionReferences) {
     std::vector<std::byte> bytes(44, std::byte{0});
