@@ -26,6 +26,7 @@
   <ItemGroup>
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringProject.h"><Filter>Authoring</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringCodec.h"><Filter>Authoring</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringMaterializer.h"><Filter>Authoring</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h">
       <Filter>Application</Filter>
     </ClInclude>
@@ -71,6 +72,7 @@
     <ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctAuthoringProject.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctAuthoringCodec.cpp"><Filter>Authoring</Filter></ClCompile>
+    <ClCompile Include="src\Authoring\SctAuthoringMaterializer.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Application\ApplicationInfo.cpp">
       <Filter>Application</Filter>
     </ClCompile>

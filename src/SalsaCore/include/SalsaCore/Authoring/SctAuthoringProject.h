@@ -57,6 +57,12 @@ struct SctLegacyOrigin final {
     std::uint64_t scriptOrdinal = 0;
 };
 
+struct SctAuthoringImportRecipe final {
+    std::optional<GamePlatform> platform;
+    bool trustSelectedTextEncoding = false;
+    auto operator<=>(const SctAuthoringImportRecipe&) const = default;
+};
+
 // Describes an immutable external baseline, not mutable SCT bytes or an import receipt.
 // Imported document identity scopes SPICE IDs; source hash alone does not identify them.
 struct SctAuthoringBaseline final {
@@ -66,6 +72,7 @@ struct SctAuthoringBaseline final {
     SctImportedDocumentId importedDocument;
     std::optional<spice::sct::SctKnownTextConvention> textConvention;
     std::vector<SctAuthoringEvidence> importEvidence;
+    SctAuthoringImportRecipe recipe;
 };
 struct SctScriptContext final {
     SctScriptId id;
@@ -110,11 +117,28 @@ struct SctPreservedProgramRegion final {
     SctImportedDocumentId importedDocument;
     std::variant<SctWholeDocument, SctOrderedSourceSelection> coverage;
 };
+// A single SCPT literal, retaining its exact encoding and termination. Compound
+// programs, variable reads, and opaque expressions cannot inhabit this contract.
+struct SctLiteralConstant final {
+    spice::sct::SctScptValueOperation operation;
+    spice::sct::SctExpressionTermination termination = spice::sct::SctExpressionTermination::StopCode;
+    [[nodiscard]] bool valid() const noexcept;
+    [[nodiscard]] spice::sct::SctCanonicalExpression expression() const;
+    [[nodiscard]] static std::optional<SctLiteralConstant> fromExpression(const spice::sct::SctCanonicalExpression& expression);
+    auto operator<=>(const SctLiteralConstant&) const = default;
+};
+struct SctPreservedLiteralOverride final {
+    spice::sct::SctParameterSite site;
+    std::uint16_t opcode = 0;
+    SctLiteralConstant baselineValue;
+    SctLiteralConstant value;
+};
 struct SctAuthoringContent final {
     SctContentId id;
     SctContentOwner owner;
     SctPreservedProgramRegion region;
     std::vector<SctAuthoringEvidence> evidence;
+    std::vector<SctPreservedLiteralOverride> literalOverrides;
 };
 
 // Mutable construction value for S1. Validate before accepting/persisting it.

@@ -172,7 +172,7 @@ TEST(SctAuthoringProjectTest, MalformedOrUnsupportedJsonNeverReturnsPartialProje
         [](auto& j) { j["baselines"][0]["sourceRevision"] = "bad-hash"; },
         [](auto& j) { j["modules"][0]["evidence"][0]["kind"] = nullptr; },
         [](auto& j) { j["format"] = "other"; },
-        [](auto& j) { j["schemaVersion"] = 2; },
+        [](auto& j) { j["schemaVersion"] = 1; },
         [](auto& j) { j["schemaVersion"] = 1.0; },
         [](auto& j) { j["extra"] = true; },
         [](auto& j) { j.erase("contents"); },
@@ -182,7 +182,7 @@ TEST(SctAuthoringProjectTest, MalformedOrUnsupportedJsonNeverReturnsPartialProje
         SCOPED_TRACE(i); auto json = Json::parse(bytes); mutations[i](json);
         auto result = SctAuthoringCodec::decode(json.dump()); EXPECT_FALSE(result.hasValue()); EXPECT_TRUE(hasErrors(result.diagnostics()));
     }
-    auto json = Json::parse(bytes); json["schemaVersion"] = 2;
+    auto json = Json::parse(bytes); json["schemaVersion"] = 1;
     EXPECT_EQ(SctAuthoringCodec::decode(json.dump()).diagnostics()[0].code, DiagnosticCode::UnsupportedPersistenceSchemaVersion);
     EXPECT_FALSE(SctAuthoringCodec::decode("{"));
     EXPECT_FALSE(SctAuthoringCodec::decode("{\"format\":\"a\",\"format\":\"b\"}"));

@@ -22,6 +22,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="test_sct_authoring_project.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="test_sct_authoring_materializer.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc">
       <Filter>Bootstrap</Filter>
     </ClCompile>

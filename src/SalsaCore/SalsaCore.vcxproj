@@ -47,6 +47,7 @@
   <ItemGroup>
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringProject.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringCodec.h" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringMaterializer.h" />
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h" />
     <ClInclude Include="include\SalsaCore\Application\ActivityLifecycle.h" />
     <ClInclude Include="include\SalsaCore\Application\ExclusiveOperationFlow.h" />
@@ -99,6 +100,7 @@
     <ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp" />
     <ClCompile Include="src\Authoring\SctAuthoringProject.cpp" />
     <ClCompile Include="src\Authoring\SctAuthoringCodec.cpp" />
+    <ClCompile Include="src\Authoring\SctAuthoringMaterializer.cpp" />
     <ClCompile Include="src\Application\ApplicationInfo.cpp" />
     <ClCompile Include="src\Application\ExclusiveOperationFlow.cpp" />
     <ClCompile Include="src\Foundation\Hashing.cpp" />

@@ -1,4 +1,5 @@
 #include "SalsaCore/Authoring/SctAuthoringProject.h"
+#include "SpiceSCT/SctScptEncoding.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -30,6 +31,26 @@ bool exists(const SctAuthoringProject& project, const SctAuthoringEntityId& id) 
     return std::visit([&](auto value) { return project.find(value) != nullptr; }, id);
 }
 } // namespace
+
+bool SctLiteralConstant::valid() const noexcept {
+    using namespace spice::sct;
+    if (operation.kind != SctScptValueKind::InlineValue && operation.kind != SctScptValueKind::DecimalLiteral
+        && operation.kind != SctScptValueKind::FloatLiteral) return false;
+    return isSctScptOperationEncodingValid(operation)
+        && termination == (operation.kind == SctScptValueKind::InlineValue
+            ? SctExpressionTermination::InlineValue : SctExpressionTermination::StopCode);
+}
+spice::sct::SctCanonicalExpression SctLiteralConstant::expression() const {
+    return {spice::sct::SctTypedScptProgram{{operation}}, termination};
+}
+std::optional<SctLiteralConstant> SctLiteralConstant::fromExpression(const spice::sct::SctCanonicalExpression& expression) {
+    const auto* program = std::get_if<spice::sct::SctTypedScptProgram>(&expression.body);
+    if (!program || program->operations.size() != 1) return {};
+    const auto* value = std::get_if<spice::sct::SctScptValueOperation>(&program->operations.front());
+    if (!value) return {};
+    SctLiteralConstant result{*value, expression.termination};
+    return result.valid() ? std::optional{result} : std::nullopt;
+}
 
 bool validSctAuthoringUuid(std::string_view value) noexcept {
     if (value.size() != 36 || value == "00000000-0000-0000-0000-000000000000") return false;
@@ -103,6 +124,10 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
             [&](const auto& convention) { return convention.convention == *item.textConvention; }))
             out.push_back(error(where + "invalid text convention."));
         checkEvidence(item.importEvidence, where, out);
+        if (item.recipe.platform && *item.recipe.platform != GamePlatform::GameCube && *item.recipe.platform != GamePlatform::Dreamcast)
+            out.push_back(error(where + "invalid declared import platform."));
+        if (item.recipe.trustSelectedTextEncoding && !item.textConvention)
+            out.push_back(error(where + "trusted text promotion requires an explicit encoding."));
     }
     const auto checkReference = [&](const auto& ref, const std::string& where) {
         std::visit([&](const auto& target) {
@@ -156,6 +181,16 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     }
     for (const auto& item : contents) {
         const auto where = context("Content", item.id.value);
+        std::set<spice::sct::SctParameterSite> sites;
+        for (const auto& edit : item.literalOverrides) {
+            if (!edit.site.instruction || edit.site.parameter.repeatedGroupOrdinal
+                || !sites.insert(edit.site).second || edit.value == edit.baselineValue)
+                out.push_back(error(where + "invalid, duplicate, or redundant preserved literal override."));
+            if (!edit.baselineValue.valid() || !edit.value.valid()
+                || edit.baselineValue.operation.kind != edit.value.operation.kind
+                || edit.baselineValue.termination != edit.value.termination)
+                out.push_back(error(where + "preserved literal override must retain its literal encoding family and termination."));
+        }
         const auto script = effectiveScript(item.owner);
         const auto* baseline = find(item.region.baseline);
         if (!script) out.push_back(error(where + "owner has no valid script."));

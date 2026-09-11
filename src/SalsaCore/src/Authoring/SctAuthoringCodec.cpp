@@ -191,6 +191,52 @@ Diagnostic failure(const std::exception& exception) {
         dynamic_cast<const UnsupportedSchema*>(&exception) ? DiagnosticCode::UnsupportedPersistenceSchemaVersion : DiagnosticCode::MalformedPersistenceJson,
         std::string("Authoring codec: ") + exception.what()};
 }
+Json literalJson(const SctLiteralConstant& literal) {
+    using spice::sct::SctScptValueKind;
+    const auto kind = literal.operation.kind == SctScptValueKind::InlineValue ? "inline"
+        : literal.operation.kind == SctScptValueKind::DecimalLiteral ? "decimal" : "float";
+    return {{"kind", kind}, {"encodingWord", literal.operation.encodingWord}, {"payloadWords", literal.operation.payloadWords},
+        {"termination", literal.termination == spice::sct::SctExpressionTermination::InlineValue ? "inline" : "stop"}};
+}
+Json overridesJson(const std::vector<SctPreservedLiteralOverride>& edits) {
+    auto ordered = edits;
+    std::ranges::sort(ordered, {}, &SctPreservedLiteralOverride::site);
+    auto result = Json::array();
+    for (const auto& edit : ordered) result.push_back({{"instruction", std::to_string(edit.site.instruction.value())},
+        {"schemaIndex", edit.site.parameter.schemaIndex}, {"opcode", edit.opcode},
+        {"baselineValue", literalJson(edit.baselineValue)}, {"value", literalJson(edit.value)}});
+    return result;
+}
+std::uint32_t word(const Json& value, std::uint64_t maximum = UINT32_MAX) {
+    require(value.is_number_unsigned() && value.get<std::uint64_t>() <= maximum, "Word value is out of range.");
+    return value.get<std::uint32_t>();
+}
+SctLiteralConstant readLiteral(const Json& value) {
+    using namespace spice::sct;
+    keys(value, {"kind", "encodingWord", "payloadWords", "termination"});
+    const auto kind = string(value.at("kind"));
+    require(kind == "inline" || kind == "decimal" || kind == "float", "Unsupported literal kind.");
+    const auto termination = string(value.at("termination"));
+    require(termination == "inline" || termination == "stop", "Unsupported literal termination.");
+    SctLiteralConstant result{{kind == "inline" ? SctScptValueKind::InlineValue
+        : kind == "decimal" ? SctScptValueKind::DecimalLiteral : SctScptValueKind::FloatLiteral,
+        word(value.at("encodingWord")), {}}, termination == "inline" ? SctExpressionTermination::InlineValue : SctExpressionTermination::StopCode};
+    for (const auto& payload : array(value.at("payloadWords"))) result.operation.payloadWords.push_back(word(payload));
+    require(result.valid(), "Invalid literal encoding.");
+    return result;
+}
+std::vector<SctPreservedLiteralOverride> readOverrides(const Json& values) {
+    std::vector<SctPreservedLiteralOverride> result;
+    for (const auto& edit : array(values)) {
+        keys(edit, {"instruction", "schemaIndex", "opcode", "baselineValue", "value"});
+        const auto instruction = decimal(edit.at("instruction"));
+        require(instruction != 0, "Override instruction ID cannot be zero.");
+        result.push_back({{spice::sct::SctInstructionId{instruction}, {word(edit.at("schemaIndex")), {}}},
+            static_cast<std::uint16_t>(word(edit.at("opcode"), UINT16_MAX)),
+            readLiteral(edit.at("baselineValue")), readLiteral(edit.at("value"))});
+    }
+    return result;
+}
 } // namespace
 
 Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project) {
@@ -204,7 +250,8 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
             return Json{{"id", id(b.id)}, {"datasetFingerprint", b.datasetFingerprint.digest.toHex()},
                 {"asset", std::string(path.begin(), path.end())}, {"sourceRevision", b.source.revision.digest.toHex()},
                 {"byteSize", std::to_string(b.source.byteSize)}, {"importedDocument", b.importedDocument.value},
-                {"textConvention", enumJson(b.textConvention, Conventions)}, {"importEvidence", evidenceJson(b.importEvidence)}};
+                {"textConvention", enumJson(b.textConvention, Conventions)}, {"importEvidence", evidenceJson(b.importEvidence)},
+                {"recipe", {{"platform", enumJson(b.recipe.platform, Platforms)}, {"trustSelectedTextEncoding", b.recipe.trustSelectedTextEncoding}}}};
         });
         root["scripts"] = sorted(project.scripts, [](const auto& s) {
             return Json{{"id", id(s.id)}, {"name", s.name}, {"baseline", id(s.baseline)},
@@ -218,7 +265,8 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
         root["connections"] = sorted(project.connections, [](const auto& c) { return Json{{"id", id(c.id)},
             {"source", referenceJson(c.source)}, {"destination", referenceJson(c.destination)}, {"evidence", evidenceJson(c.evidence)}}; });
         root["contents"] = sorted(project.contents, [](const auto& c) { return Json{{"id", id(c.id)},
-            {"owner", ownerJson(c.owner)}, {"region", regionJson(c.region)}, {"evidence", evidenceJson(c.evidence)}}; });
+            {"owner", ownerJson(c.owner)}, {"region", regionJson(c.region)}, {"evidence", evidenceJson(c.evidence)},
+            {"literalOverrides", overridesJson(c.literalOverrides)}}; });
         return Result<std::string>::success(root.dump(2), std::move(diagnostics));
     } catch (const std::exception& ex) { return Result<std::string>::failure(failure(ex)); }
 }
@@ -231,7 +279,8 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
         result.id.value = string(root.at("projectId")); result.revision = id<RevisionId>(root.at("revision"));
         result.nextEntityId = decimal(root.at("nextEntityId"));
         for (const auto& b : array(root.at("baselines"))) {
-            keys(b, {"id", "datasetFingerprint", "asset", "sourceRevision", "byteSize", "importedDocument", "textConvention", "importEvidence"});
+            keys(b, {"id", "datasetFingerprint", "asset", "sourceRevision", "byteSize", "importedDocument", "textConvention", "importEvidence", "recipe"});
+            keys(b.at("recipe"), {"platform", "trustSelectedTextEncoding"});
             const auto path = string(b.at("asset"));
             auto locator = AssetLocator::fromRelativePath(std::filesystem::path(std::u8string(path.begin(), path.end())));
             if (!locator) return Result<SctAuthoringProject>::failure(locator.diagnostics());
@@ -239,7 +288,8 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
             require(path == std::string(normalized.begin(), normalized.end()), "Asset locator must be normalized.");
             result.baselines.push_back({id<SctBaselineId>(b.at("id")), {digest(b.at("datasetFingerprint"))},
                 {std::move(locator).takeValue(), decimal(b.at("byteSize")), {digest(b.at("sourceRevision"))}},
-                {string(b.at("importedDocument"))}, readEnum<spice::sct::SctKnownTextConvention>(b.at("textConvention"), Conventions), readEvidence(b.at("importEvidence"))});
+                {string(b.at("importedDocument"))}, readEnum<spice::sct::SctKnownTextConvention>(b.at("textConvention"), Conventions), readEvidence(b.at("importEvidence")),
+                {readEnum<GamePlatform>(b.at("recipe").at("platform"), Platforms), boolean(b.at("recipe").at("trustSelectedTextEncoding"))}});
         }
         for (const auto& s : array(root.at("scripts"))) {
             keys(s, {"id", "name", "baseline", "platform", "region", "legacyOrigin", "contentUses"});
@@ -266,9 +316,9 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
                 readReference<SctPortId>(c.at("destination")), readEvidence(c.at("evidence"))});
         }
         for (const auto& c : array(root.at("contents"))) {
-            keys(c, {"id", "owner", "region", "evidence"});
+            keys(c, {"id", "owner", "region", "evidence", "literalOverrides"});
             result.contents.push_back({id<SctContentId>(c.at("id")), readOwner<SctContentOwner>(c.at("owner")),
-                readRegion(c.at("region")), readEvidence(c.at("evidence"))});
+                readRegion(c.at("region")), readEvidence(c.at("evidence")), readOverrides(c.at("literalOverrides"))});
         }
         auto diagnostics = result.validate();
         if (hasErrors(diagnostics)) return Result<SctAuthoringProject>::failure(std::move(diagnostics));
