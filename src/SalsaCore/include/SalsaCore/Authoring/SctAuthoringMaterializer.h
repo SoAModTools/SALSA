@@ -51,6 +51,14 @@ public:
     [[nodiscard]] static Result<SctAuthoringAdoption> import(
         const SctAuthoringProject& project, RevisionId expectedRevision,
         SctAuthoringImportRequest request, std::stop_token stop = {});
+    [[nodiscard]] static Result<SctAuthoringAdoption> replaceImportedScript(
+        const SctAuthoringProject& project, RevisionId expectedRevision, SctScriptId script,
+        SctAuthoringImportRequest request, std::stop_token stop = {});
+    // Reconstitute an existing binding from verified immutable bytes. The store
+    // also checks the persisted physical identity signature before adoption.
+    [[nodiscard]] static Result<std::shared_ptr<const SctImportedProgram>> restore(
+        const SctAuthoringProject& project, SctBaselineId baseline,
+        std::vector<std::byte> bytes, std::stop_token stop = {});
 };
 
 struct SctPreservedEditRequest final {
@@ -113,6 +121,13 @@ struct SctAuthoringMaterializationResult final {
 };
 class SctAuthoringMaterializer final {
 public:
+    [[nodiscard]] static Result<SctSemanticState> workingState(
+        const SctAuthoringProject& project, const SctImportedPrograms& programs, SctScriptId script);
+    [[nodiscard]] static Result<SctAuthoringProject> replaceWorkingState(
+        const SctAuthoringProject& project, const SctImportedPrograms& programs,
+        SctScriptId script, const SctSemanticState& working);
+    [[nodiscard]] static std::shared_ptr<const SctDocumentSnapshot> snapshot(
+        const SctImportedProgram& program, std::shared_ptr<const spice::sct::SctDocument> document);
     [[nodiscard]] static SctAuthoringMaterializationResult materialize(
         const SctAuthoringMaterializationRequest& request, std::stop_token stop = {});
 };

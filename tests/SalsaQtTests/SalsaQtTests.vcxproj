@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{138731BA-C86D-43B1-ACEB-B0D8218B4410}</ProjectGuid>
+    <RootNamespace>SalsaQtTests</RootNamespace>
+    <Keyword>QtVS_v304</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <QtMsBuild Condition="'$(QtMsBuild)'=='' OR !Exists('$(QtMsBuild)\qt.targets')">$(MSBuildProjectDirectory)\..\..\src\SalsaQt\QtMsBuild</QtMsBuild>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Condition="Exists('$(QtMsBuild)\qt_defaults.props')">
+    <Import Project="$(QtMsBuild)\qt_defaults.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="$(QtMsBuild)\Qt.props" />
+    <Import Project="..\..\build\Salsa.Common.props" />
+    <Import Project="..\..\build\Salsa.Qt.props" />
+  </ImportGroup>
+  <PropertyGroup>
+    <OutDir>$(SalsaRepositoryRoot)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SalsaRepositoryRoot)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+    <SalsaQtDeployTool>$(QtInstallDir)\bin\windeployqt.exe</SalsaQtDeployTool>
+    <SalsaQtDeployMode Condition="'$(Configuration)'=='Debug'">--debug</SalsaQtDeployMode>
+    <SalsaQtDeployMode Condition="'$(Configuration)'=='Release'">--release</SalsaQtDeployMode>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <Link>
+      <SubSystem>Console</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup><ClCompile>
+    <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)src\SalsaQt;$(SalsaRepositoryRoot)third-party\googletest\googletest\include;$(SalsaRepositoryRoot)third-party\googletest\googletest;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+  </ClCompile></ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="test_authoring_controller.cpp" />
+    <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc" />
+    <ClCompile Include="..\..\src\SalsaQt\Sct\SctDocumentController.cpp" />
+    <ClCompile Include="..\..\src\SalsaQt\Application\SalsaLogging.cpp" />
+    <QtMoc Include="..\..\src\SalsaQt\Sct\SctDocumentController.h" />
+    <ProjectReference Include="..\..\src\SalsaCore\SalsaCore.vcxproj"><Project>{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7}</Project></ProjectReference>
+    <ProjectReference Include="..\..\third-party\SPICE\Compression\Compression.vcxproj"><Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project></ProjectReference>
+    <ProjectReference Include="..\..\third-party\SPICE\SpiceRoot\SpiceRoot.vcxproj"><Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project></ProjectReference>
+    <ProjectReference Include="..\..\third-party\SPICE\SpiceSCT\SpiceSCT.vcxproj"><Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project></ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Condition="Exists('$(QtMsBuild)\qt.targets')">
+    <Import Project="$(QtMsBuild)\qt.targets" />
+  </ImportGroup>
+  <Target Name="DeploySalsaQtRuntime" AfterTargets="Build" Condition="'$(DesignTimeBuild)'!='true' AND '$(ConfigurationType)'=='Application'">
+    <Error Condition="!Exists('$(SalsaQtDeployTool)')" Text="SALSA Qt deployment tool was not found at '$(SalsaQtDeployTool)'." />
+    <Exec Command="&quot;$(SalsaQtDeployTool)&quot; $(SalsaQtDeployMode) --compiler-runtime --force --verbose 0 &quot;$(TargetPath)&quot;" EnvironmentVariables="VCINSTALLDIR=$(VCInstallDir)" />
+  </Target>
+</Project>

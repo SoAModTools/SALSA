@@ -1,4 +1,5 @@
 #include "SalsaCore/Persistence/SctWorkspaceRebase.h"
+#include "SalsaCore/Authoring/SctAuthoringStore.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 
@@ -93,6 +94,17 @@ TEST(SctWorkspaceRebaseTest, DiscoversRebasesCommitsAndReopensAStalePatch) {
     const auto checkpoint = SctPatchCheckpointService::checkpoint(
         *checkpointRequest, workspace, workspace);
     ASSERT_TRUE(checkpoint.saved);
+    // The authoring checkpoint generates rebase inputs and must be advanced by
+    // the same atomic rebase commit, retaining script/content identity.
+    auto authored = SctAuthoringProject::create().value();
+    auto imported = SctAuthoringImporter::import(authored, authored.revision,
+        {oldProject.loadAsset(asset).value(), oldProject.dataset().identity, {GamePlatform::GameCube, false},
+            loaded.load.document->provenance->textConvention, "test"});
+    ASSERT_TRUE(imported);
+    auto semantic = session.materializeRevision(session.workingRevision()); ASSERT_TRUE(semantic);
+    auto edited = SctAuthoringMaterializer::replaceWorkingState(imported.value().project, {imported.value().program}, imported.value().script, {*semantic});
+    ASSERT_TRUE(edited);
+    ASSERT_TRUE(SctAuthoringStore::save(workspace, {edited.value(), {imported.value().program}}, {authored.id}, {}));
     std::stop_source cancelled;
     cancelled.request_stop();
     const auto cancelledDiscovery = SctWorkspaceRebaseService::discover(
@@ -119,6 +131,15 @@ TEST(SctWorkspaceRebaseTest, DiscoversRebasesCommitsAndReopensAStalePatch) {
     const auto committed = SctWorkspaceRebaseService::commit(
         newProject, workspace, plan.value(), preview, {});
     ASSERT_TRUE(committed.committed);
+    auto authoringReopened = SctAuthoringStore::load(workspace); ASSERT_TRUE(authoringReopened); ASSERT_TRUE(authoringReopened.value());
+    const auto& restored = authoringReopened.value()->state;
+    EXPECT_EQ(restored.project.scripts.front().id, imported.value().script);
+    EXPECT_NE(restored.project.scripts.front().baseline, imported.value().program->baseline().id);
+    auto output = SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(restored.project),
+        restored.programs, {imported.value().script}});
+    ASSERT_TRUE(output.succeeded());
+    EXPECT_EQ(output.scripts.front().prepared->document->sections.front().nameBytes, "RENAMED");
+    EXPECT_EQ(std::get<SctScriptSectionContent>(output.scripts.front().prepared->document->sections.front().content).instructions.size(), 3u);
 
     const auto reopened = SctPatchCheckpointService::load(
         newProject, &workspace, &workspace, asset);

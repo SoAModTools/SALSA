@@ -2,6 +2,7 @@
 #include "SalsaCore/Legacy/LegacyFreshImport.h"
 #include "SalsaCore/Legacy/LegacyConversionService.h"
 #include "SalsaCore/Legacy/LegacyMetadataPromotion.h"
+#include "SalsaCore/Authoring/SctAuthoringStore.h"
 #include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
 #include "SalsaCore/Project/LocalGameProject.h"
 #include "SalsaCore/Sct/SctAuthoringCatalog.h"
@@ -560,7 +561,8 @@ TEST(LegacyFreshImportTest, CommitsFreshDatasetWorkspaceCapsuleAndBaselines) {
     const auto baseline = workspace.value().loadBaseline(revision);
     ASSERT_TRUE(baseline);
     EXPECT_TRUE(baseline.value().has_value());
-    EXPECT_TRUE(std::filesystem::is_empty(request.workspaceDirectory / L"patches"));
+    EXPECT_TRUE(std::filesystem::is_regular_file(workspace.value().patchPath(AssetLocator::fromRelativePath("A001A.sct").value())));
+    EXPECT_TRUE(std::filesystem::is_regular_file(workspace.value().componentPath(SctAuthoringStore::relativePath(workspace.value()))));
 
     std::ifstream report(request.workspaceDirectory / L"imports"
         / prepared.value().plan.capsuleId / L"report.json", std::ios::binary);
@@ -706,7 +708,13 @@ public:
 TEST(LegacyFreshImportTest, TypedMetadataPromotionIsAtomicAndIdempotent) {
     FreshImportTemporaryDirectory temporary;
     const auto capsule = makeFreshImportCapsule(temporary.path(), {{"A001A", "A001A"}});
-    const auto request = requestFor(temporary, capsule);
+    auto request = requestFor(temporary, capsule);
+    // Exercise explicitly deferred metadata through the later promotion command.
+    auto deferred = LegacyFreshImportPlanner::plan(request);
+    ASSERT_TRUE(deferred);
+    for (const auto& record : deferred.value().metadata)
+        if (record.disposition == LegacyMetadataDisposition::Pending)
+            request.metadataDecisions.push_back({record.recordId, LegacyMetadataDecisionAction::Drop});
     auto prepared = LegacyFreshImportPreparer::prepare(
         request, temporary.path() / L"source-stage");
     ASSERT_TRUE(prepared);
@@ -749,7 +757,13 @@ TEST(LegacyFreshImportTest, BuiltInPromotionAppliesV7AliasesColorsAndSectionFold
     FreshImportTemporaryDirectory temporary;
     const auto capsule = makeFreshImportCapsule(
         temporary.path(), {{"A001A", "A001A"}}, false, true);
-    const auto request = requestFor(temporary, capsule);
+    auto request = requestFor(temporary, capsule);
+    // Exercise explicitly deferred metadata through the later promotion command.
+    auto deferred = LegacyFreshImportPlanner::plan(request);
+    ASSERT_TRUE(deferred);
+    for (const auto& record : deferred.value().metadata)
+        if (record.disposition == LegacyMetadataDisposition::Pending)
+            request.metadataDecisions.push_back({record.recordId, LegacyMetadataDecisionAction::Drop});
     auto prepared = LegacyFreshImportPreparer::prepare(
         request, temporary.path() / L"source-stage");
     ASSERT_TRUE(prepared) << prepared.diagnostics().front().message;
@@ -827,6 +841,42 @@ TEST(LegacyFreshImportTest, BuiltInPromotionAppliesV7AliasesColorsAndSectionFold
     ASSERT_EQ(loaded.folders.size(), 1u);
     EXPECT_EQ(loaded.folders.front().name, "main");
     ASSERT_EQ(loaded.folders.front().sections.size(), 1u);
+}
+
+TEST(LegacyFreshImportTest, V7AuthoringProjectPreservesPromotedMetadataAndCanReopenEditAndExport) {
+    FreshImportTemporaryDirectory temporary;
+    const auto capsule = makeFreshImportCapsule(temporary.path(), {{"A001A", "A001A"}}, false, true);
+    const auto request = requestFor(temporary, capsule);
+    const auto original = digestFile(temporary.path() / L"fixture.prj").value();
+    auto prepared = LegacyFreshImportPreparer::prepare(request, temporary.path() / L"source-stage");
+    ASSERT_TRUE(prepared);
+    auto committed = LegacyFreshImportCommitService::commit({prepared.value(), temporary.path() / L"fixture.prj",
+        temporary.path() / L"workspace-stage", temporary.path() / L"recovery"});
+    ASSERT_TRUE(committed.succeeded()) << (committed.diagnostics.empty() ? "" : committed.diagnostics.front().message);
+    auto workspace = LocalSalsaWorkspace::openOrCreate(request.workspaceDirectory, *committed.dataset); ASSERT_TRUE(workspace);
+    auto checkpoint = SctAuthoringStore::load(workspace.value()); ASSERT_TRUE(checkpoint); ASSERT_TRUE(checkpoint.value());
+    auto state = checkpoint.value()->state;
+    ASSERT_EQ(state.project.scripts.size(), 1u);
+    const auto script = state.project.scripts.front().id;
+    EXPECT_EQ(state.project.scripts.front().legacyOrigin->scriptKey, "A001A");
+    EXPECT_TRUE(state.project.modules.empty());
+    ASSERT_EQ(state.project.workspaceAuthoring.projectAliases.size(), 1u);
+    EXPECT_EQ(state.project.workspaceAuthoring.projectAliases.front().alias, "ProjectFlag");
+    EXPECT_EQ(state.project.workspaceAuthoring.opcodeColors.size(), 1u);
+    auto current = SctAuthoringMaterializer::workingState(state.project, state.programs, script); ASSERT_TRUE(current);
+    ASSERT_EQ(current.value().aliases.size(), 1u); EXPECT_EQ(current.value().aliases.front().alias, "LocalCounter");
+    ASSERT_FALSE(current.value().folders.empty());
+    auto document = std::make_shared<spice::sct::SctDocument>(*current.value().document);
+    document->sections.front().nameBytes = "RENAMED";
+    current.value().document = document;
+    auto edited = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, current.value()); ASSERT_TRUE(edited);
+    state.project = edited.value(); ++state.project.revision.value;
+    auto saved = SctAuthoringStore::save(workspace.value(), state, checkpoint.value()->presentation, checkpoint.value()->digest); ASSERT_TRUE(saved);
+    auto reopened = SctAuthoringStore::load(workspace.value()); ASSERT_TRUE(reopened); ASSERT_TRUE(reopened.value());
+    auto output = SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(reopened.value()->state.project),
+        reopened.value()->state.programs, {script}, SctAuthoringOutputMode::Rebuild});
+    ASSERT_TRUE(output.succeeded()); EXPECT_EQ(output.scripts.front().prepared->document->sections.front().nameBytes, "RENAMED");
+    EXPECT_EQ(digestFile(temporary.path() / L"fixture.prj").value(), original);
 }
 
 TEST(LegacyFreshImportTest, ValidatesOptionalPrivateOrganicCapsuleWithoutWriting) {

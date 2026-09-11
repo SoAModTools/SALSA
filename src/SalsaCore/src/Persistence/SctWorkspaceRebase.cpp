@@ -1,4 +1,5 @@
 #include "SalsaCore/Persistence/SctWorkspaceRebase.h"
+#include "SalsaCore/Authoring/SctAuthoringStore.h"
 
 #include "SalsaCore/Foundation/Hashing.h"
 #include "SalsaCore/Persistence/PatchEnvelopeCodec.h"
@@ -270,6 +271,8 @@ SctWorkspaceRebaseCommitResult SctWorkspaceRebaseService::commitSelected(
     }
 
     std::vector<WorkspaceArtifactMutation> mutations;
+    auto authored = SctAuthoringStore::load(workspace);
+    if (!authored) { result.diagnostics = authored.diagnostics(); return result; }
     std::set<std::filesystem::path> mutationPaths;
     std::set<std::string> assets;
     std::string aggregatePlanId;
@@ -307,7 +310,7 @@ SctWorkspaceRebaseCommitResult SctWorkspaceRebaseService::commitSelected(
         const auto patchRelative = std::filesystem::relative(
             plan.candidate.patchPath, workspace.descriptor().root);
         std::optional<std::vector<std::byte>> replacement;
-        if (!preview.rebasedPatch->empty()) {
+        if (!preview.rebasedPatch->empty() || authored.value()) {
             PatchEnvelope envelope{project.dataset().identity.fingerprint,
                 {{plan.candidate.locator, plan.newSource.descriptor.revision}}, {},
                 {std::string(SalsaScriptPatchCodec::PayloadType),
@@ -353,6 +356,33 @@ SctWorkspaceRebaseCommitResult SctWorkspaceRebaseService::commitSelected(
         aggregatePlanId += plan.corePlan.id;
         aggregatePlanId.push_back('|');
         result.committedAssets.push_back(plan.candidate.locator);
+        if (authored.value()) {
+            auto& state = authored.value()->state;
+            const auto script = std::ranges::find_if(state.project.scripts, [&](const auto& s) {
+                return state.project.find(s.baseline)->source.locator == plan.candidate.locator;
+            });
+            if (script != state.project.scripts.end()) {
+                const auto oldBaseline = script->baseline;
+                const auto& provenance = *plan.newBaselineSnapshot->provenance;
+                auto imported = SctAuthoringImporter::replaceImportedScript(state.project, state.project.revision, script->id,
+                    {plan.newSource, project.dataset().identity, {project.dataset().identity.platform ? project.dataset().identity.platform : script->platform,
+                        provenance.textSelectionOrigin == SctTextSelectionOrigin::UserSelected}, provenance.textConvention, script->name});
+                if (!imported) { result.diagnostics = imported.diagnostics(); return result; }
+                auto working = SalsaScriptPatchService::apply({std::make_shared<const spice::sct::SctDocument>(imported.value().program->document())}, *preview.rebasedPatch);
+                if (!working) { result.diagnostics = working.diagnostics(); return result; }
+                std::erase_if(state.programs, [&](const auto& p) { return p->baseline().id == oldBaseline; });
+                state.programs.push_back(imported.value().program);
+                auto next = SctAuthoringMaterializer::replaceWorkingState(imported.value().project, state.programs, imported.value().script, working.value());
+                if (!next) { result.diagnostics = next.diagnostics(); return result; }
+                state.project = std::move(next).takeValue();
+            }
+        }
+    }
+
+    if (authored.value()) {
+        auto artifact = SctAuthoringStore::mutation(workspace, authored.value()->state, authored.value()->presentation, authored.value()->digest);
+        if (!artifact) { result.diagnostics = artifact.diagnostics(); return result; }
+        mutations.push_back(std::move(artifact).takeValue());
     }
 
     const auto aggregateDigest = sha256(std::as_bytes(std::span{

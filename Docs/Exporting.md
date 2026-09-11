@@ -1,6 +1,6 @@
 # Exporting SCT Documents
 
-SALSA keeps editing and publication separate. Editing changes the active document and its patch checkpoint; exporting creates a complete SCT file for one explicit target. Export does not save or clear the document's patch state.
+SALSA keeps authoring and publication separate. **Document > Save Authoring Project** (Ctrl+S) checkpoints every imported script and its edits together. Export creates a complete SCT file for one explicit target and does not clear the project's unsaved state. Closing a document tab keeps its edits in the project. Undo and redo follow the shared project history across tabs; the undo stack lasts for the current session.
 
 ## Export the active document
 
@@ -29,7 +29,7 @@ Cancelling stops the operation at the next safe boundary. It does not alter the 
 
 ## Replacing the loaded source file
 
-Choosing the loaded SCT itself as the destination requires an additional confirmation. SALSA refuses the replacement if the source bytes have changed since the document was opened. A successful replacement makes the open document's source baseline stale, so reload the document before creating another patch checkpoint or replacing the source again.
+Choosing the loaded SCT itself as the destination requires an additional confirmation. SALSA refuses the replacement if the source bytes have changed since import. A successful replacement makes the imported baseline stale. Save the authoring project, refresh the dataset, and use stale-patch rebasing to adopt the changed source before replacing it again. Project saving retains the immutable imported baseline and does not overwrite the source file.
 
 Exporting somewhere else remains available when the original source has changed. In that case SALSA warns that the output represents the captured in-memory revision rather than the current file on disk.
 

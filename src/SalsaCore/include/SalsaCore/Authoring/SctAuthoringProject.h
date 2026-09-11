@@ -2,6 +2,8 @@
 
 #include "SalsaCore/History/RevisionHistory.h"
 #include "SalsaCore/Project/ProjectTypes.h"
+#include "SalsaCore/Persistence/SctScriptPatch.h"
+#include "SalsaCore/Sct/SctAuthoringCatalog.h"
 #include "SpiceSCT/SctDocument.h"
 
 #include <algorithm>
@@ -139,10 +141,13 @@ struct SctAuthoringContent final {
     SctPreservedProgramRegion region;
     std::vector<SctAuthoringEvidence> evidence;
     std::vector<SctPreservedLiteralOverride> literalOverrides;
+    // Canonical baseline-to-working state, including existing editor metadata.
+    // Physical patches and literal overrides are mutually exclusive.
+    std::optional<SalsaScriptPatch> physicalPatch;
 };
 
-// Mutable construction value for S1. Validate before accepting/persisting it.
-// Project commands and revision advancement become authoritative in S3.
+// Construction/serialization value. SctAuthoringSession owns accepted live
+// revisions; views submit commands rather than maintaining another authority.
 struct SctAuthoringProject final {
     SctAuthoringProjectId id;
     RevisionId revision{1};
@@ -154,6 +159,7 @@ struct SctAuthoringProject final {
     std::vector<SctAuthoringPort> ports;
     std::vector<SctAuthoringConnection> connections;
     std::vector<SctAuthoringContent> contents;
+    SctWorkspaceAuthoringState workspaceAuthoring;
 
     [[nodiscard]] static Result<SctAuthoringProject> create();
     template<class Tag> [[nodiscard]] Result<SctAuthoringId<Tag>> allocateId() {

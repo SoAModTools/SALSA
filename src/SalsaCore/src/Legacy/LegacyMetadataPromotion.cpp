@@ -1,4 +1,5 @@
 #include "SalsaCore/Legacy/LegacyMetadataPromotion.h"
+#include "SalsaCore/Authoring/SctAuthoringStore.h"
 
 #include "SalsaCore/Application/ApplicationInfo.h"
 #include "SalsaCore/Foundation/Hashing.h"
@@ -459,6 +460,13 @@ struct ImportedProjectMetadata final {
     std::vector<SctOpcodeColor> colors{};
 };
 
+[[nodiscard]] Result<SctWorkspaceAuthoringState> currentProjectMetadata(const LocalSalsaWorkspace& workspace) {
+    auto authored = SctAuthoringStore::load(workspace);
+    if (!authored) return Result<SctWorkspaceAuthoringState>::failure(authored.diagnostics());
+    if (authored.value()) return Result<SctWorkspaceAuthoringState>::success(authored.value()->state.project.workspaceAuthoring);
+    return SctWorkspaceAuthoringStore(workspace.componentPath(workspace.descriptor().components.authoring / L"workspace.json")).load();
+}
+
 [[nodiscard]] Result<ImportedProjectMetadata> importedProjectMetadata(
     const std::filesystem::path& capsuleRoot) {
     auto record = readCbor(capsuleRoot / L"project.cbor");
@@ -562,7 +570,7 @@ struct ImportedScriptMetadata final {
         imported.diagnostics());
     const auto path = workspace.componentPath(
         workspace.descriptor().components.authoring / L"workspace.json");
-    auto current = SctWorkspaceAuthoringStore(path).load();
+    auto current = currentProjectMetadata(workspace);
     if (!current) return Result<std::vector<WorkspaceArtifactMutation>>::failure(
         current.diagnostics());
     auto state = std::move(current).takeValue();
@@ -633,6 +641,23 @@ struct LoadedPromotionScript final {
     if (!project) return Result<LoadedPromotionScript>::failure(project.diagnostics());
     auto value = std::move(project).takeValue();
     auto loaded = SctPatchCheckpointService::load(value, &workspace, &workspace, locator);
+    auto authored = SctAuthoringStore::load(workspace);
+    if (!authored) return Result<LoadedPromotionScript>::failure(authored.diagnostics());
+    if (authored.value()) {
+        const auto& state = authored.value()->state;
+        auto script = std::ranges::find_if(state.project.scripts, [&](const auto& s) { return state.project.find(s.baseline)->source.locator == locator; });
+        if (script != state.project.scripts.end()) {
+            auto current = SctAuthoringMaterializer::workingState(state.project, state.programs, script->id);
+            if (!current) return Result<LoadedPromotionScript>::failure(current.diagnostics());
+            const auto program = *std::ranges::find_if(state.programs, [&](const auto& p) { return p->baseline().id == script->baseline; });
+            loaded.baseline = SctAuthoringMaterializer::snapshot(*program, std::make_shared<const spice::sct::SctDocument>(program->document()));
+            loaded.load.document = SctAuthoringMaterializer::snapshot(*program, current.value().document);
+            loaded.authoredArms = current.value().authoredArms; loaded.textRepairs = current.value().textRepairs;
+            loaded.unboundReferences = current.value().unboundReferences; loaded.aliases = current.value().aliases;
+            loaded.annotations = current.value().annotations; loaded.folders = current.value().folders;
+            loaded.patchConflict = false;
+        }
+    }
     if (!loaded.load.succeeded() || loaded.patchConflict) {
         auto diagnostics = loaded.load.infrastructureDiagnostics;
         if (diagnostics.empty()) diagnostics.push_back(error(
@@ -716,7 +741,7 @@ public:
         if (!imported) return {false, false, imported.diagnostics().front().message};
         const auto path = workspace.componentPath(
             workspace.descriptor().components.authoring / L"workspace.json");
-        auto state = SctWorkspaceAuthoringStore(path).load();
+        auto state = currentProjectMetadata(workspace);
         if (!state) return {false, false, state.diagnostics().front().message};
         if (const auto conflict = mergeProjectMetadata(state.value(), imported.value(),
                 kind_ == LegacyMetadataKind::ProjectVariableAliases,
@@ -986,6 +1011,40 @@ LegacyMetadataPromotionResult LegacyMetadataPromotionService::promote(
             paths.emplace(mutation.relativePath, mutations.size());
             mutations.push_back(std::move(mutation));
         }
+    }
+    auto authored = SctAuthoringStore::load(workspace);
+    if (!authored) { result.diagnostics = authored.diagnostics(); return result; }
+    if (authored.value()) {
+        auto next = authored.value()->state;
+        if (next.project.revision.value == UINT64_MAX) { result.diagnostics = {error("Project revision exhausted.")}; return result; }
+        for (const auto& mutation : mutations) {
+            if (!mutation.replacement) continue;
+            if (mutation.relativePath == workspace.descriptor().components.authoring / L"workspace.json") {
+                auto metadata = SctAuthoringCatalogCodec::deserializeWorkspace(*mutation.replacement);
+                if (!metadata) { result.diagnostics = metadata.diagnostics(); return result; }
+                next.project.workspaceAuthoring = metadata.value();
+            }
+            for (const auto& script : next.project.scripts) {
+                const auto& baseline = *next.project.find(script.baseline);
+                if (workspace.componentPath(mutation.relativePath) != workspace.patchPath(baseline.source.locator)) continue;
+                const auto& bytes = *mutation.replacement;
+                auto envelope = PatchEnvelopeCodec::deserialize(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+                if (!envelope) { result.diagnostics = envelope.diagnostics(); return result; }
+                auto patch = SalsaScriptPatchCodec::deserialize(envelope.value().payload.bytes);
+                if (!patch) { result.diagnostics = patch.diagnostics(); return result; }
+                const auto program = *std::ranges::find_if(next.programs, [&](const auto& p) { return p->baseline().id == baseline.id; });
+                auto working = SalsaScriptPatchService::apply({std::make_shared<const spice::sct::SctDocument>(program->document())}, patch.value());
+                if (!working) { result.diagnostics = working.diagnostics(); return result; }
+                auto edited = SctAuthoringMaterializer::replaceWorkingState(next.project, next.programs, script.id, working.value());
+                if (!edited) { result.diagnostics = edited.diagnostics(); return result; }
+                // Update only this content while iterating stable script records.
+                next.project.contents = std::move(edited.value().contents);
+            }
+        }
+        ++next.project.revision.value;
+        auto artifact = SctAuthoringStore::mutation(workspace, next, authored.value()->presentation, authored.value()->digest);
+        if (!artifact) { result.diagnostics = artifact.diagnostics(); return result; }
+        mutations.push_back(std::move(artifact).takeValue());
     }
     for (auto& item : state.value().at("metadata")) {
         if (!selected.contains(item.value("recordId", ""))) continue;

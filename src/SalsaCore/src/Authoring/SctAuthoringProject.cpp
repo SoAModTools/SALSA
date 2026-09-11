@@ -181,6 +181,11 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     }
     for (const auto& item : contents) {
         const auto where = context("Content", item.id.value);
+        if (item.physicalPatch) {
+            if (!item.literalOverrides.empty()) out.push_back(error(where + "physical patches and literal overrides are mutually exclusive."));
+            auto encoded = SalsaScriptPatchCodec::serialize(*item.physicalPatch);
+            if (!encoded) out.insert(out.end(), encoded.diagnostics().begin(), encoded.diagnostics().end());
+        }
         std::set<spice::sct::SctParameterSite> sites;
         for (const auto& edit : item.literalOverrides) {
             if (!edit.site.instruction || edit.site.parameter.repeatedGroupOrdinal

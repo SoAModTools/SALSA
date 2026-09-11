@@ -8,6 +8,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SalsaQt", "src\SalsaQt\Sals
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SalsaTests", "tests\SalsaTests\SalsaTests.vcxproj", "{A6772AC9-96E8-4282-B3BC-79B90F793160}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SalsaQtTests", "tests\SalsaQtTests\SalsaQtTests.vcxproj", "{138731BA-C86D-43B1-ACEB-B0D8218B4410}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SalsaLegacyConverter", "src\SalsaLegacyConverter\SalsaLegacyConverter.vcxproj", "{C1B1356A-7A02-4D20-9E48-CE3D670A8290}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Compression", "third-party\SPICE\Compression\Compression.vcxproj", "{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}"
@@ -34,6 +36,10 @@ Global
 		Release|x64 = Release|x64
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{138731BA-C86D-43B1-ACEB-B0D8218B4410}.Debug|x64.ActiveCfg = Debug|x64
+		{138731BA-C86D-43B1-ACEB-B0D8218B4410}.Debug|x64.Build.0 = Debug|x64
+		{138731BA-C86D-43B1-ACEB-B0D8218B4410}.Release|x64.ActiveCfg = Release|x64
+		{138731BA-C86D-43B1-ACEB-B0D8218B4410}.Release|x64.Build.0 = Release|x64
 		{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7}.Debug|x64.ActiveCfg = Debug|x64
 		{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7}.Debug|x64.Build.0 = Debug|x64
 		{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7}.Release|x64.ActiveCfg = Release|x64
@@ -67,6 +73,7 @@ Global
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
+		{138731BA-C86D-43B1-ACEB-B0D8218B4410} = {759F40E8-BF46-457F-92C8-4F4729EF1531}
 		{F67B7C7B-36BA-44E8-9DAE-0E6CEC5AFFA7} = {759F40E8-BF46-457F-92C8-4F4729EF1531}
 		{72F16C27-C9F1-47CD-AF9C-A9A694C00467} = {759F40E8-BF46-457F-92C8-4F4729EF1531}
 		{A6772AC9-96E8-4282-B3BC-79B90F793160} = {759F40E8-BF46-457F-92C8-4F4729EF1531}

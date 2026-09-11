@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Tests"><UniqueIdentifier>{B628C2B0-7642-4577-B2F3-5232AB9AE54C}</UniqueIdentifier></Filter>
+    <Filter Include="Editor"><UniqueIdentifier>{C7C9E028-95F9-450B-8148-F14BB731ED36}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="test_authoring_controller.cpp"><Filter>Tests</Filter></ClCompile>
+    <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc"><Filter>Tests</Filter></ClCompile>
+    <ClCompile Include="..\..\src\SalsaQt\Sct\SctDocumentController.cpp"><Filter>Editor</Filter></ClCompile>
+    <ClCompile Include="..\..\src\SalsaQt\Application\SalsaLogging.cpp"><Filter>Editor</Filter></ClCompile>
+    <QtMoc Include="..\..\src\SalsaQt\Sct\SctDocumentController.h"><Filter>Editor</Filter></QtMoc>
+  </ItemGroup>
+</Project>

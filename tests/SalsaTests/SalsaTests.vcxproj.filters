@@ -56,4 +56,5 @@
     <ClCompile Include="test_sct_structured_authoring.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="test_workspace_persistence.cpp"><Filter>Project</Filter></ClCompile>
   </ItemGroup>
+  <ItemGroup><ClCompile Include="test_sct_authoring_session.cpp"><Filter>SCT</Filter></ClCompile></ItemGroup>
 </Project>

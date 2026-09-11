@@ -108,4 +108,6 @@
     <ClCompile Include="src\Sct\SctStructuredAuthoring.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="src\Sct\SctWorkingState.cpp"><Filter>SCT</Filter></ClCompile>
   </ItemGroup>
+  <ItemGroup><ClInclude Include="include\SalsaCore\Authoring\SctAuthoringSession.h"><Filter>Authoring</Filter></ClInclude><ClCompile Include="src\Authoring\SctAuthoringSession.cpp"><Filter>Authoring</Filter></ClCompile></ItemGroup>
+  <ItemGroup><ClInclude Include="include\SalsaCore\Authoring\SctAuthoringStore.h"><Filter>Authoring</Filter></ClInclude><ClCompile Include="src\Authoring\SctAuthoringStore.cpp"><Filter>Authoring</Filter></ClCompile></ItemGroup>
 </Project>

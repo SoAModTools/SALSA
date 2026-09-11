@@ -16,12 +16,12 @@ Choose the target platform, Dreamcast disc when applicable, region or explicit U
 
 SALSA inventories every script before import. A script that cannot be converted remains selected until you explicitly exclude it or correct an allowed output-stem remap. SALSA never silently drops, renames, or deduplicates a script. A disagreement between the legacy dictionary key and stored script name requires exclusion; invalid or colliding output stems may be explicitly remapped after review.
 
-The import prepares every selected script as a canonical `SctDocument`, exports it through SpiceSCT, reparses the result, and requires semantic equivalence. Invalid recognized metadata blocks preparation until you explicitly discard the listed record; the decision is recorded and the immutable capsule remains available. Unsupported authoring metadata such as aliases, colors, presentation groups, folded state, and suppressed instructions remains Pending until the corresponding new SALSA feature has a typed promotion adapter.
+The import prepares every selected script as a canonical `SctDocument`, exports it through SpiceSCT, reparses the result, and requires semantic equivalence. Invalid recognized metadata blocks preparation until you explicitly discard the listed record; the decision is recorded and the immutable capsule remains available. Eligible project and script aliases, opcode colors, and section folders are promoted into the new authoring project. Other metadata stays in the migration capsule with its disposition and explanation. Legacy folders remain grouping metadata and do not create script modules.
 
 ## Publication and recovery
 
 You may cancel while SALSA reads, reviews, or prepares the project. Cancellation becomes unavailable during the brief final publication step. SALSA publishes the source directory and workspace through a recoverable same-volume transaction; an interrupted transaction is completed or rolled back when SALSA next starts. If either destination contains unrecognized changes, recovery stops instead of deleting or overwriting them.
 
-The completed workspace retains the immutable capsule, portable import report, legacy-to-current mappings, generated source baselines, target scope, and metadata disposition history. The original `.prj` remains unchanged. Retaining a copy of it inside the capsule is optional and disabled by default.
+The completed workspace retains the authoring project, immutable capsule, portable import report, legacy-to-current mappings, generated source baselines, target scope, and metadata disposition history. Reopening restores the same script and content identities. The original `.prj` remains unchanged. Retaining a copy of it inside the capsule is optional and disabled by default.
 
 Creating an SCT file and assigning a target scope does not prove that the game can reach that script. The initial importer also does not merge into an existing source dataset or workspace.

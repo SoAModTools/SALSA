@@ -623,7 +623,7 @@ void MainWindow::buildUi() {
     navigateMenu->addAction(bookmarkDock_->toggleViewAction());
 
     auto* documentMenu = menuBar()->addMenu(tr("&Document"));
-    saveAction_ = documentMenu->addAction(tr("&Save Patch Checkpoint"));
+    saveAction_ = documentMenu->addAction(tr("&Save Authoring Project"));
     saveAction_->setShortcut(QKeySequence::Save);
     exportAction_ = documentMenu->addAction(tr("&Export SCT..."));
     exportAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
@@ -1183,6 +1183,8 @@ void MainWindow::connectWorkspace() {
         });
     connect(documentController_, &SctDocumentController::editCommitted,
         this, [this](const QString&, const QString& message) {
+            loadWorkspaceAuthoring();
+            syncActions();
             statusBar()->showMessage(message, 8000);
         });
     connect(documentController_, &SctDocumentController::editRejected,
@@ -1320,6 +1322,7 @@ void MainWindow::rebaseStalePatches() {
     const auto dirty = documentController_->dirtyLocators();
     if (!confirmDiscardAll(tr("rebase stale patches"),
             PendingLifecycle::RebasePatches)) return;
+    if (documentController_->projectDirty() && !documentController_->discardProjectChanges()) return;
     // A true return with pre-existing dirty documents means the user chose
     // Discard. Close just those sessions so their uncheckpointed state cannot
     // leak into the independently reconstructed rebase inputs.
@@ -1329,12 +1332,9 @@ void MainWindow::rebaseStalePatches() {
     if (!project) return;
     (void)exclusiveOperations_->open(std::make_unique<SctRebaseController>(
         *project, patchWorkspace_, [this, project](const auto& assets) {
-            bool adoptedEveryOpenDocument = true;
-            for (const auto& locator : assets) {
-                if (!documentController_->contains(locator)) continue;
-                adoptedEveryOpenDocument = documentController_->adoptRebasedDocument(
-                    *project, locator) && adoptedEveryOpenDocument;
-            }
+            (void)assets;
+            const bool adoptedEveryOpenDocument = documentController_->adoptWorkspaceCheckpoint();
+            documentController_->synchronizeCatalog(project->assets().snapshot());
             scheduleWorkspaceSessionSave();
             syncActions();
             return adoptedEveryOpenDocument
@@ -1354,7 +1354,7 @@ void MainWindow::cleanWorkspaceEvidence() {
 }
 
 void MainWindow::promoteLegacyMetadata() {
-    if (!patchWorkspace_ || !documentController_->openLocators().empty()) return;
+    if (!patchWorkspace_ || !documentController_->openLocators().empty() || documentController_->projectDirty()) return;
     const auto root = patchWorkspace_->componentPath(
         patchWorkspace_->descriptor().components.importState);
     QStringList capsuleIds;
@@ -1447,6 +1447,7 @@ void MainWindow::promoteLegacyMetadata() {
             : QString::fromStdString(result.diagnostics.front().message));
         return;
     }
+    (void)documentController_->adoptWorkspaceCheckpoint();
     loadWorkspaceAuthoring();
     statusBar()->showMessage(tr("Promoted %1 legacy metadata records.")
         .arg(result.appliedRecordIds.size()), 8000);
@@ -1479,12 +1480,10 @@ void MainWindow::editInstructionCatalog() {
 
 bool MainWindow::saveWorkspaceAuthoring() {
     if (!patchWorkspace_) return false;
-    const auto path = patchWorkspace_->componentPath(
-        patchWorkspace_->descriptor().components.authoring / L"workspace.json");
-    const auto saved = core::SctWorkspaceAuthoringStore(path).save(workspaceAuthoring_);
+    const auto saved = documentController_->setWorkspaceAuthoring(workspaceAuthoring_);
     if (!saved) {
         QMessageBox::warning(this, tr("Workspace metadata could not be saved"),
-            QString::fromStdString(saved.diagnostics().front().message));
+            tr("The project metadata command was rejected."));
         return false;
     }
     reloadAuthoringDocks();
@@ -1494,12 +1493,7 @@ bool MainWindow::saveWorkspaceAuthoring() {
 void MainWindow::loadWorkspaceAuthoring() {
     workspaceAuthoring_ = {};
     if (!patchWorkspace_) { reloadAuthoringDocks(); return; }
-    const auto path = patchWorkspace_->componentPath(
-        patchWorkspace_->descriptor().components.authoring / L"workspace.json");
-    const auto loaded = core::SctWorkspaceAuthoringStore(path).load();
-    if (loaded) workspaceAuthoring_ = loaded.value();
-    else statusBar()->showMessage(QString::fromStdString(
-        loaded.diagnostics().front().message), 12000);
+    workspaceAuthoring_ = documentController_->workspaceAuthoring();
     reloadAuthoringDocks();
 }
 
@@ -2010,9 +2004,9 @@ void MainWindow::rememberPatchWorkspaceAssociation(
 void MainWindow::saveActiveDocument() {
     if (!flushPendingEditors()) return;
     auto* widget = activeDocumentWidget();
-    if (widget == nullptr) return;
-    if (documentController_->saveDocument(widget->locator())) {
-        statusBar()->showMessage(tr("Saving SCT patch checkpoint..."));
+    const auto locator = widget ? widget->locator() : core::AssetLocator::fromRelativePath("authoring-project").value();
+    if (documentController_->saveDocument(locator)) {
+        statusBar()->showMessage(tr("Saving authoring project..."));
         progressBar_->setRange(0, 0);
         progressBar_->show();
         cancelButton_->show();
@@ -2449,25 +2443,13 @@ void MainWindow::syncEditActions() {
         : widget == nullptr ? tr("Open an SCT document first.")
         : !documentController_->structurallyValid(widget->locator())
             ? tr("Resolve the current document errors before editing.") : QString{};
-    const bool canSave = available && patchWorkspace_ != nullptr
-        && documentController_->isDirty(widget->locator())
-        && !documentController_->isSaving(widget->locator())
-        && !documentController_->patchConflict(widget->locator())
-        && !documentController_->isPublishing()
-        && documentController_->sourceStatus(widget->locator())
-            == SctDocumentController::SourceStatus::Current;
-    QString saveReason = unavailableReason;
-    if (saveReason.isEmpty() && patchWorkspace_ == nullptr)
-        saveReason = tr("Open or create a workspace to save patch checkpoints.");
-    else if (saveReason.isEmpty() && !documentController_->isDirty(widget->locator()))
-        saveReason = tr("The active document has no changes to checkpoint.");
-    else if (saveReason.isEmpty() && documentController_->isSaving(widget->locator()))
-        saveReason = tr("A patch checkpoint is already being saved.");
-    else if (saveReason.isEmpty() && documentController_->patchConflict(widget->locator()))
-        saveReason = tr("Rebase the document's patch conflict before saving.");
-    else if (saveReason.isEmpty() && documentController_->sourceStatus(widget->locator())
-            != SctDocumentController::SourceStatus::Current)
-        saveReason = tr("Refresh and reconcile the changed source before saving.");
+    const bool canSave = !exclusive && !controller_->busy() && !documentController_->busy()
+        && patchWorkspace_ && documentController_->projectDirty()
+        && !documentController_->isSaving(core::AssetLocator::fromRelativePath("authoring-project").value());
+    const QString saveReason = canSave ? QString{} : !patchWorkspace_
+        ? tr("Open or create a workspace to save the authoring project.")
+        : !documentController_->projectDirty() ? tr("The project has no unsaved changes.")
+        : tr("Wait for the current operation to finish.");
     applyActionAvailability(saveAction_, {canSave, saveReason});
     const bool canExport = editable && !documentController_->isPublishing()
         && !documentController_->isSaving(widget->locator());
@@ -2481,12 +2463,12 @@ void MainWindow::syncEditActions() {
         }
     }
 
-    const auto undoDescription = available
-        ? documentController_->undoDescription(widget->locator()) : std::nullopt;
-    const auto redoDescription = available
-        ? documentController_->redoDescription(widget->locator()) : std::nullopt;
-    const bool canUndo = available && documentController_->canUndo(widget->locator());
-    const bool canRedo = available && documentController_->canRedo(widget->locator());
+    const auto projectLocator = widget ? widget->locator() : core::AssetLocator::fromRelativePath("authoring-project").value();
+    const bool projectAvailable = !exclusive && !controller_->busy() && !documentController_->busy();
+    const auto undoDescription = documentController_->undoDescription(projectLocator);
+    const auto redoDescription = documentController_->redoDescription(projectLocator);
+    const bool canUndo = projectAvailable && documentController_->canUndo(projectLocator);
+    const bool canRedo = projectAvailable && documentController_->canRedo(projectLocator);
     applyActionAvailability(undoAction_, {canUndo,
         unavailableReason.isEmpty() ? tr("There is nothing to undo.") : unavailableReason});
     applyActionAvailability(redoAction_, {canRedo,
@@ -3477,20 +3459,24 @@ bool MainWindow::prepareScptEditor(
 
 void MainWindow::undoActiveDocument() {
     if (!flushPendingEditors()) return;
-    if (auto* widget = activeDocumentWidget())
-        (void)documentController_->undo(widget->locator());
+    auto* widget = activeDocumentWidget();
+    const auto locator = widget ? widget->locator() : core::AssetLocator::fromRelativePath("authoring-project").value();
+    (void)documentController_->undo(locator);
 }
 
 void MainWindow::redoActiveDocument() {
     if (!flushPendingEditors()) return;
-    if (auto* widget = activeDocumentWidget())
-        (void)documentController_->redo(widget->locator());
+    auto* widget = activeDocumentWidget();
+    const auto locator = widget ? widget->locator() : core::AssetLocator::fromRelativePath("authoring-project").value();
+    (void)documentController_->redo(locator);
 }
 
 bool MainWindow::confirmDiscardDocument(
     const core::AssetLocator& locator, const QString& action,
     const PendingLifecycle pending) {
-    if (!documentController_->isDirty(locator)) return true;
+    // Closing a view keeps its edits in the project. Project disposal has the
+    // single save/discard decision in confirmDiscardAll.
+    if (pending == PendingLifecycle::CloseDocument || !documentController_->isDirty(locator)) return true;
     QMessageBox message(this);
     message.setIcon(QMessageBox::Warning);
     message.setWindowTitle(tr("Save document changes?"));
@@ -3524,21 +3510,19 @@ bool MainWindow::confirmDiscardDocument(
 
 bool MainWindow::confirmDiscardAll(
     const QString& action, const PendingLifecycle pending) {
-    const auto dirty = documentController_->dirtyLocators();
-    if (dirty.empty()) return true;
+    auto dirty = documentController_->dirtyLocators();
+    if (!documentController_->projectDirty()) return true;
+    if (dirty.empty()) dirty.push_back(core::AssetLocator::fromRelativePath("authoring-project").value());
     QMessageBox message(this);
     message.setIcon(QMessageBox::Warning);
-    message.setWindowTitle(tr("Save document changes?"));
-    message.setText(dirty.size() == 1
-        ? tr("One open SCT document has changes outside its patch checkpoint.")
-        : tr("%1 open SCT documents have changes outside their patch checkpoints.")
-            .arg(dirty.size()));
+    message.setWindowTitle(tr("Save project changes?"));
+    message.setText(tr("The authoring project has unsaved changes."));
     const bool canSaveAll = patchWorkspace_ && std::ranges::none_of(
         dirty, [this](const auto& locator) {
             return documentController_->patchConflict(locator);
         });
     message.setInformativeText(canSaveAll
-        ? tr("Save patch checkpoints, discard all changes, or cancel before you %1?").arg(action)
+        ? tr("Save the project, discard all changes, or cancel before you %1?").arg(action)
         : tr("Not every document has a writable, conflict-free SALSA workspace. Discard all changes or cancel before you %1?")
             .arg(action));
     auto buttons = QMessageBox::Discard | QMessageBox::Cancel;
@@ -3551,12 +3535,9 @@ bool MainWindow::confirmDiscardAll(
     pendingLifecycle_ = pending;
     pendingLifecycleDocument_.reset();
     pendingLifecycleSaves_.clear();
-    bool failedToStart = false;
-    for (const auto& locator : dirty) {
-        pendingLifecycleSaves_.push_back(locator);
-        if (!documentController_->isSaving(locator))
-            failedToStart = !documentController_->saveDocument(locator) || failedToStart;
-    }
+    pendingLifecycleSaves_.push_back(dirty.front());
+    const bool failedToStart = !documentController_->isSaving(dirty.front())
+        && !documentController_->saveDocument(dirty.front());
     if (failedToStart) {
         pendingLifecycle_ = PendingLifecycle::None;
         pendingLifecycleSaves_.clear();
@@ -3594,7 +3575,7 @@ void MainWindow::continuePendingLifecycle(
         return;
     }
     if (pendingLifecycle_ != PendingLifecycle::CloseDocument
-        && !documentController_->dirtyLocators().empty()) {
+        && documentController_->projectDirty()) {
         statusBar()->showMessage(tr(
             "A document changed while checkpoints were being saved; the requested action was cancelled."),
             8000);

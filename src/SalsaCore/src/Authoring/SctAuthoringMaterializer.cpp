@@ -81,6 +81,11 @@ Result<const SctAuthoringContent*> wholeRegion(const SctAuthoringProject& projec
     return Result<const SctAuthoringContent*>::success(content);
 }
 Result<sct::SctDocument> replay(const SctImportedProgram& program, const SctAuthoringContent& content) {
+    if (content.physicalPatch) {
+        auto state = SalsaScriptPatchService::apply({std::make_shared<const sct::SctDocument>(program.document())}, *content.physicalPatch);
+        if (!state) return Result<sct::SctDocument>::failure(state.diagnostics());
+        return Result<sct::SctDocument>::success(*state.value().document);
+    }
     sct::SctDocument document = program.document();
     SctSemanticOperationBatch batch;
     for (const auto& edit : content.literalOverrides) {
@@ -172,7 +177,8 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     result.readiness = sct::SctDocumentReadiness::StructurallyValid;
     if (std::ranges::any_of(result.diagnostics, [](const auto& d) { return d.severity == DiagnosticSeverity::Error; })) return result;
     if (stop.stop_requested()) return result;
-    const bool reuse = mode == SctAuthoringOutputMode::ReuseUnchangedSource && region.value()->literalOverrides.empty();
+    const bool reuse = mode == SctAuthoringOutputMode::ReuseUnchangedSource && region.value()->literalOverrides.empty()
+        && (!region.value()->physicalPatch || region.value()->physicalPatch->empty());
     std::vector<std::uint8_t> bytes;
     std::optional<sct::SctDocumentLayout> layout;
     std::optional<sct::SctPreservationReport> preservation;
@@ -302,6 +308,103 @@ Result<SctAuthoringAdoption> SctAuthoringImporter::import(const SctAuthoringProj
     return Result<SctAuthoringAdoption>::success({std::move(next), std::move(program), scriptId.value(), contentId.value()}, std::move(diagnostics));
 }
 
+Result<std::shared_ptr<const SctImportedProgram>> SctAuthoringImporter::restore(
+    const SctAuthoringProject& project, SctBaselineId id, std::vector<std::byte> bytes, std::stop_token stop) {
+    auto diagnostics = project.validate();
+    if (hasErrors(diagnostics)) return Result<std::shared_ptr<const SctImportedProgram>>::failure(std::move(diagnostics));
+    const auto* baseline = project.find(id);
+    if (!baseline) return Result<std::shared_ptr<const SctImportedProgram>>::failure(error("Restored baseline is absent."));
+    SctAuthoringProject empty; empty.id = project.id;
+    auto imported = import(empty, empty.revision, {{baseline->source, std::move(bytes)},
+        {baseline->recipe.platform, {}, baseline->datasetFingerprint}, baseline->recipe, baseline->textConvention, "Restored baseline"}, stop);
+    if (!imported) return Result<std::shared_ptr<const SctImportedProgram>>::failure(imported.diagnostics());
+    auto backing = std::move(imported.value().program);
+    return Result<std::shared_ptr<const SctImportedProgram>>::success(std::shared_ptr<const SctImportedProgram>(
+        new SctImportedProgram(project.id, *baseline, backing->bytes(), backing->document(),
+            backing->evidence(), backing->diagnostics(), backing->readiness())));
+}
+
+Result<SctAuthoringAdoption> SctAuthoringImporter::replaceImportedScript(const SctAuthoringProject& project,
+    RevisionId expected, SctScriptId id, SctAuthoringImportRequest request, std::stop_token stop) {
+    auto diagnostics = project.validate();
+    if (hasErrors(diagnostics)) return Result<SctAuthoringAdoption>::failure(std::move(diagnostics));
+    const auto* prior = project.find(id);
+    if (!prior || prior->contentUses.size() != 1 || !std::holds_alternative<SctContentId>(prior->contentUses.front()))
+        return Result<SctAuthoringAdoption>::failure(error("Replacing a baseline requires one preserved script content."));
+    const auto contentId = std::get<SctContentId>(prior->contentUses.front());
+    const auto* content = project.find(contentId);
+    if (!content || content->owner != SctContentOwner{id} || !std::holds_alternative<SctWholeDocument>(content->region.coverage))
+        return Result<SctAuthoringAdoption>::failure(error("Partitioned content requires explicit reconciliation before replacing its baseline."));
+    if (request.source.descriptor.locator != project.find(prior->baseline)->source.locator)
+        return Result<SctAuthoringAdoption>::failure(error("Replacement baseline must refer to the same asset locator."));
+    auto result = import(project, expected, std::move(request), stop);
+    if (!result) return result;
+    auto& next = result.value().project;
+    std::erase_if(next.scripts, [&](const auto& s) { return s.id == id; });
+    auto& script = *std::ranges::find(next.scripts, result.value().script, &SctScriptContext::id);
+    script.id = id; script.name = prior->name; script.legacyOrigin = prior->legacyOrigin; script.contentUses = {contentId};
+    std::erase_if(next.contents, [&](const auto& c) { return c.id == contentId; });
+    auto& replacement = *std::ranges::find(next.contents, result.value().content, &SctAuthoringContent::id);
+    replacement.id = contentId; replacement.owner = id; replacement.evidence = content->evidence;
+    std::erase_if(next.baselines, [&](const auto& b) { return b.id == prior->baseline; });
+    result.value().script = id; result.value().content = contentId;
+    auto validation = next.validate();
+    if (hasErrors(validation)) return Result<SctAuthoringAdoption>::failure(std::move(validation));
+    return result;
+}
+
+Result<SctSemanticState> SctAuthoringMaterializer::workingState(const SctAuthoringProject& project,
+    const SctImportedPrograms& programs, SctScriptId script) {
+    auto diagnostics = project.validate();
+    if (hasErrors(diagnostics)) return Result<SctSemanticState>::failure(std::move(diagnostics));
+    const auto* context = project.find(script);
+    if (!context) return Result<SctSemanticState>::failure(error("Script does not exist."));
+    auto program = resolve(project, programs, *project.find(context->baseline));
+    if (!program) return Result<SctSemanticState>::failure(program.diagnostics());
+    auto content = wholeRegion(project, script, *program.value());
+    if (!content) return Result<SctSemanticState>::failure(content.diagnostics());
+    if (content.value()->physicalPatch)
+        return SalsaScriptPatchService::apply({std::make_shared<const sct::SctDocument>(program.value()->document())}, *content.value()->physicalPatch);
+    auto document = replay(*program.value(), *content.value());
+    if (!document) return Result<SctSemanticState>::failure(document.diagnostics());
+    return Result<SctSemanticState>::success({std::make_shared<const sct::SctDocument>(std::move(document).takeValue())});
+}
+
+std::shared_ptr<const SctDocumentSnapshot> SctAuthoringMaterializer::snapshot(
+    const SctImportedProgram& program, std::shared_ptr<const sct::SctDocument> document) {
+    auto parsed = std::make_shared<const sct::SctParseResult>(sct::SctParser{}.parse(bytesOf(program.bytes())));
+    auto inspection = std::make_shared<const SctSourceInspection>(SctSourceInspection{
+        {program.baseline().source, program.bytes()}, program.baseline().datasetFingerprint,
+        parsed, sct::SctSourceTextDetector::assess(*parsed), program.diagnostics()});
+    auto provenance = std::make_shared<const SctDocumentProvenance>(SctDocumentProvenance{inspection,
+        program.baseline().textConvention, program.baseline().recipe.trustSelectedTextEncoding
+            ? SctTextSelectionOrigin::UserSelected : SctTextSelectionOrigin::UniqueAssessment,
+        program.evidence(), program.diagnostics()});
+    auto analysis = std::make_shared<const sct::SctDocumentAnalysis>(sct::SctDocumentAnalysis::build(*document, &program.evidence()));
+    return std::make_shared<const SctDocumentSnapshot>(SctDocumentSnapshot{
+        provenance, document, analysis, program.readiness(), program.diagnostics()});
+}
+
+Result<SctAuthoringProject> SctAuthoringMaterializer::replaceWorkingState(const SctAuthoringProject& project,
+    const SctImportedPrograms& programs, SctScriptId script, const SctSemanticState& working) {
+    auto current = workingState(project, programs, script);
+    if (!current) return Result<SctAuthoringProject>::failure(current.diagnostics());
+    const auto& context = *project.find(script);
+    const auto& baseline = *project.find(context.baseline);
+    auto program = resolve(project, programs, baseline);
+    if (!working.document || !sct::SctDocumentValidator::validateDocument(*working.document).validDocument)
+        return Result<SctAuthoringProject>::failure(error("Working document is structurally invalid."));
+    auto patch = SalsaScriptPatchService::diff({std::make_shared<const sct::SctDocument>(program.value()->document())}, working, baseline.textConvention);
+    if (!patch) return Result<SctAuthoringProject>::failure(patch.diagnostics());
+    auto next = project;
+    auto& content = *std::ranges::find(next.contents, std::get<SctContentId>(context.contentUses.front()), &SctAuthoringContent::id);
+    content.literalOverrides.clear();
+    content.physicalPatch = patch.value().empty() ? std::nullopt : std::optional{std::move(patch).takeValue()};
+    auto replayed = workingState(next, programs, script);
+    if (!replayed) return Result<SctAuthoringProject>::failure(replayed.diagnostics());
+    return Result<SctAuthoringProject>::success(std::move(next));
+}
+
 Result<SctLiteralConstant> SctPreservedEditService::inspectLiteral(const spice::sct::SctDocument& document,
     const spice::sct::SctParameterSite& site, std::uint16_t expectedOpcode, const SctLiteralConstant& replacement) {
     const auto index = sct::SctDocumentIndex::build(document);
@@ -348,6 +451,17 @@ Result<SctPreservedEditResult> SctPreservedEditService::replaceLiteral(const Sct
     if (currentLiteral.value() != request.expectedValue) return Result<SctPreservedEditResult>::failure(error("Literal edit current value is stale."));
     if (request.value == request.expectedValue) return Result<SctPreservedEditResult>::success({project, {}});
     if (project.revision.value == UINT64_MAX) return Result<SctPreservedEditResult>::failure(error("Project revision is exhausted."));
+    if (content->physicalPatch) {
+        auto state = SctAuthoringMaterializer::workingState(project, programs, script);
+        auto document = *state.value().document;
+        auto changed = SctSemanticOperationService::applyInPlace(document, {{SctReplaceParameterValueOperation{request.site, request.value.expression()}}});
+        if (!changed.succeeded()) return Result<SctPreservedEditResult>::failure(error("Literal operation failed."));
+        state.value().document = std::make_shared<const sct::SctDocument>(std::move(document));
+        auto next = SctAuthoringMaterializer::replaceWorkingState(project, programs, script, state.value());
+        if (!next) return Result<SctPreservedEditResult>::failure(next.diagnostics());
+        ++next.value().revision.value;
+        return Result<SctPreservedEditResult>::success({std::move(next).takeValue(), {script}});
+    }
     auto baselineLiteral = inspectLiteral(resolved.value()->document(), request.site, request.expectedOpcode, request.value);
     if (!baselineLiteral) return Result<SctPreservedEditResult>::failure(baselineLiteral.diagnostics());
     auto next = project;

@@ -1,4 +1,5 @@
 #pragma once
+#include "SalsaCore/Authoring/SctAuthoringStore.h"
 
 #include "SalsaCore/Project/LocalGameProject.h"
 #include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
@@ -280,6 +281,26 @@ signals:
         const QList<int>& kinds, const QList<qulonglong>& ids);
 
 private:
+    [[nodiscard]] std::optional<core::SctScriptId> authoringScript(const core::AssetLocator& locator) const;
+    [[nodiscard]] bool adoptAuthoring(const core::SctPatchedLoadResult& load);
+    void restoreAuthoringProjections();
+    void restoreAuthoringProjection(const std::string& key);
+    std::unique_ptr<core::SctAuthoringSession> authoring_;
+    core::SctAuthoringPresentation authoringPresentation_;
+    std::optional<core::Sha256Digest> authoringCheckpoint_;
+    bool authoringLoadFailed_ = false;
+    QFutureWatcher<core::Result<core::Sha256Digest>> authoringSaveWatcher_;
+    std::stop_source authoringSaveStop_;
+    std::shared_ptr<const core::SctAuthoringState> savingAuthoring_;
+    std::optional<core::AssetLocator> savingAuthoringLocator_;
+    core::RevisionId publishingAuthoringRevision_;
+public:
+    [[nodiscard]] core::SctWorkspaceAuthoringState workspaceAuthoring() const;
+    [[nodiscard]] bool setWorkspaceAuthoring(const core::SctWorkspaceAuthoringState& metadata);
+    [[nodiscard]] bool adoptWorkspaceCheckpoint();
+    [[nodiscard]] bool discardProjectChanges();
+    [[nodiscard]] bool projectDirty() const { return authoring_ && authoring_->isDirty(); }
+private:
     enum class Operation { None, Opening, Reloading, Reimporting };
     struct DocumentState {
         core::AssetLocator locator;
@@ -290,6 +311,7 @@ private:
         std::uint64_t requestedMaterializationGeneration = 0;
         std::uint64_t runningMaterializationGeneration = 0;
         core::RevisionId requestedMaterializationRevision{};
+        core::RevisionId runningAuthoringRevision{};
         std::unique_ptr<QFutureWatcher<core::SctCheckpointResult>> checkpointWatcher{};
         std::stop_source checkpointStop{};
         std::uint64_t checkpointGeneration = 0;

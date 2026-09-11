@@ -245,6 +245,9 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
     try {
         Json root{{"format", Format}, {"schemaVersion", SchemaVersion}, {"projectId", project.id.value},
             {"revision", id(project.revision)}, {"nextEntityId", std::to_string(project.nextEntityId)}};
+        auto metadata = SctAuthoringCatalogCodec::serializeWorkspace(project.workspaceAuthoring);
+        if (!metadata) return Result<std::string>::failure(metadata.diagnostics());
+        root["workspaceAuthoring"] = Json::parse(metadata.value());
         root["baselines"] = sorted(project.baselines, [](const auto& b) {
             const auto path = b.source.locator.path().generic_u8string();
             return Json{{"id", id(b.id)}, {"datasetFingerprint", b.datasetFingerprint.digest.toHex()},
@@ -264,9 +267,16 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
         root["ports"] = sorted(project.ports, [](const auto& p) { return Json{{"id", id(p.id)}, {"owner", ownerJson(p.owner)}, {"name", p.name}}; });
         root["connections"] = sorted(project.connections, [](const auto& c) { return Json{{"id", id(c.id)},
             {"source", referenceJson(c.source)}, {"destination", referenceJson(c.destination)}, {"evidence", evidenceJson(c.evidence)}}; });
-        root["contents"] = sorted(project.contents, [](const auto& c) { return Json{{"id", id(c.id)},
+        root["contents"] = sorted(project.contents, [](const auto& c) {
+            Json patch = nullptr;
+            if (c.physicalPatch) {
+                auto encoded = SalsaScriptPatchCodec::serialize(*c.physicalPatch);
+                require(static_cast<bool>(encoded), "Invalid physical patch.");
+                patch = Json::parse(encoded.value());
+            }
+            return Json{{"id", id(c.id)},
             {"owner", ownerJson(c.owner)}, {"region", regionJson(c.region)}, {"evidence", evidenceJson(c.evidence)},
-            {"literalOverrides", overridesJson(c.literalOverrides)}}; });
+            {"literalOverrides", overridesJson(c.literalOverrides)}, {"physicalPatch", patch}}; });
         return Result<std::string>::success(root.dump(2), std::move(diagnostics));
     } catch (const std::exception& ex) { return Result<std::string>::failure(failure(ex)); }
 }
@@ -274,8 +284,12 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
 Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
     try {
         const auto root = parse(text); envelope(root, Format, SchemaVersion);
-        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents"});
+        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents", "workspaceAuthoring"});
         SctAuthoringProject result;
+        const auto metadataJson = root.at("workspaceAuthoring").dump();
+        auto metadata = SctAuthoringCatalogCodec::deserializeWorkspace(std::as_bytes(std::span(metadataJson.data(), metadataJson.size())));
+        if (!metadata) return Result<SctAuthoringProject>::failure(metadata.diagnostics());
+        result.workspaceAuthoring = std::move(metadata).takeValue();
         result.id.value = string(root.at("projectId")); result.revision = id<RevisionId>(root.at("revision"));
         result.nextEntityId = decimal(root.at("nextEntityId"));
         for (const auto& b : array(root.at("baselines"))) {
@@ -316,9 +330,15 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
                 readReference<SctPortId>(c.at("destination")), readEvidence(c.at("evidence"))});
         }
         for (const auto& c : array(root.at("contents"))) {
-            keys(c, {"id", "owner", "region", "evidence", "literalOverrides"});
+            keys(c, {"id", "owner", "region", "evidence", "literalOverrides", "physicalPatch"});
             result.contents.push_back({id<SctContentId>(c.at("id")), readOwner<SctContentOwner>(c.at("owner")),
                 readRegion(c.at("region")), readEvidence(c.at("evidence")), readOverrides(c.at("literalOverrides"))});
+            if (!c.at("physicalPatch").is_null()) {
+                const auto text = c.at("physicalPatch").dump();
+                auto patch = SalsaScriptPatchCodec::deserialize(std::as_bytes(std::span(text.data(), text.size())));
+                if (!patch) return Result<SctAuthoringProject>::failure(patch.diagnostics());
+                result.contents.back().physicalPatch = std::move(patch).takeValue();
+            }
         }
         auto diagnostics = result.validate();
         if (hasErrors(diagnostics)) return Result<SctAuthoringProject>::failure(std::move(diagnostics));

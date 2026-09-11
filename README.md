@@ -4,7 +4,7 @@ SALSA is being rewritten as a C++20 and Qt 6 desktop editor for Skies of Arcadia
 
 The new implementation is organized as a Qt-free `SalsaCore` static library, a Qt Widgets `SalsaQt` application, and a GoogleTest-based `SalsaTests` executable. It consumes the frozen SpiceSCT document API through a pinned SPICE submodule.
 
-SALSA can inspect extracted datasets, decode and edit SCT files through document-local history, checkpoint deterministic semantic patches in a separate workspace, export the active script to an explicit publication target, and import official final-version-7 legacy projects into a fresh source dataset and workspace. The editable model remains platform- and region-agnostic; target platform and encoding choices are supplied when publishing or migrating data.
+SALSA can inspect extracted datasets and edit imported SCT scripts through one authoring project and transaction history. Save checkpoints the entire project, its stable identities, and immutable source baselines in a separate workspace. Closing a document view retains its edits in the project. Export publishes the selected script to an explicit target. Official final-version-7 legacy projects import into a fresh dataset and authoring workspace, including supported metadata and retained migration evidence. Target platform and encoding choices are supplied when publishing or migrating data.
 
 The original Python application is preserved under `legacy/python` as a behavioral and domain-knowledge reference. It is not a dependency of the new application.
 
@@ -24,4 +24,4 @@ Build outputs are written to `bin/<platform>/<configuration>`.
 
 ## Testing
 
-Run `bin/x64/Debug/SalsaTests.exe` after building the Debug configuration. Automated coverage is restricted to the Qt-free core. GUI behavior is tested manually; automated GUI-driving tests are not part of this project.
+Run the relevant filtered suites in `bin/x64/Debug/SalsaTests.exe` after building. `SalsaQtTests.exe` exercises the document controller with a Qt event loop and synthetic assets; it does not drive widgets or require game data. Manual testing covers the rendered GUI. Private corpus tests live in the sister testing repository and run only in Release.

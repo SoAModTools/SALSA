@@ -1,4 +1,6 @@
 #include "SalsaCore/Legacy/LegacyFreshImport.h"
+#include "SalsaCore/Legacy/LegacyMetadataPromotion.h"
+#include "SalsaCore/Authoring/SctAuthoringStore.h"
 
 #include "SalsaCore/Application/ApplicationInfo.h"
 #include "SalsaCore/Persistence/AtomicFile.h"
@@ -555,7 +557,7 @@ FreshLegacyImportCommitResult LegacyFreshImportCommitService::commit(
     auto finalDataset = stagedProject.value().dataset();
     finalDataset.root = plan.sourceDestination.path;
     auto workspace = LocalSalsaWorkspace::openOrCreate(
-        request.stagedWorkspaceDirectory, finalDataset);
+        request.stagedWorkspaceDirectory, stagedProject.value().dataset());
     if (!workspace) return {FreshLegacyImportCommitStatus::RecoveryBlocked,
         std::nullopt, plan.workspaceDestination.path, workspace.diagnostics()};
     for (const auto& script : plan.scripts) {
@@ -576,6 +578,54 @@ FreshLegacyImportCommitResult LegacyFreshImportCommitService::commit(
     auto portable = writePortableArtifacts(preparation, workspace.value());
     if (!portable) return {FreshLegacyImportCommitStatus::RecoveryBlocked,
         std::nullopt, plan.workspaceDestination.path, portable.diagnostics()};
+    LegacyMetadataPromotionRegistry registry;
+    auto registered = registerBuiltInLegacyMetadataPromotionAdapters(registry);
+    if (!registered) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, registered.diagnostics()};
+    auto preview = LegacyMetadataPromotionService::preview(workspace.value(), plan.capsuleId, registry);
+    if (!preview) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, preview.diagnostics()};
+    std::vector<std::string> eligible;
+    for (const auto& item : preview.value().items)
+        if (item.record.disposition == LegacyMetadataDisposition::Pending && item.assessment.eligible && !item.assessment.conflict)
+            eligible.push_back(item.record.recordId);
+    if (!eligible.empty()) {
+        auto promoted = LegacyMetadataPromotionService::promote(workspace.value(), preview.value(), eligible, registry);
+        if (!promoted.applied) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, promoted.diagnostics};
+    }
+    auto created = SctAuthoringProject::create();
+    if (!created) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, created.diagnostics()};
+    SctAuthoringState authored{std::move(created).takeValue(), {}};
+    auto metadata = SctWorkspaceAuthoringStore(workspace.value().componentPath(
+        workspace.value().descriptor().components.authoring / L"workspace.json")).load();
+    if (!metadata) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, metadata.diagnostics()};
+    authored.project.workspaceAuthoring = metadata.value();
+    for (const auto& script : plan.scripts) {
+        if (script.status != FreshLegacyScriptPlanStatus::Ready) continue;
+        auto locator = AssetLocator::fromRelativePath(script.outputRelativePath);
+        if (!locator) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, locator.diagnostics()};
+        auto loaded = SctPatchCheckpointService::load(stagedProject.value(), &workspace.value(), &workspace.value(), locator.value());
+        if (!loaded.load.succeeded() || loaded.patchConflict)
+            return fail("A normalized legacy script could not be adopted into the authoring project.");
+        const auto& provenance = *loaded.baseline->provenance;
+        auto adopted = SctAuthoringImporter::import(authored.project, authored.project.revision,
+            {provenance.source(), finalDataset.identity, {finalDataset.identity.platform,
+                provenance.textSelectionOrigin == SctTextSelectionOrigin::UserSelected}, provenance.textConvention, script.outputStem});
+        if (!adopted) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, adopted.diagnostics()};
+        authored.programs.push_back(adopted.value().program);
+        auto working = SctAuthoringMaterializer::replaceWorkingState(adopted.value().project, authored.programs, adopted.value().script,
+            {loaded.load.document->document, loaded.authoredArms, loaded.textRepairs, loaded.unboundReferences,
+                loaded.aliases, loaded.annotations, loaded.folders});
+        if (!working) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, working.diagnostics()};
+        authored.project = std::move(working).takeValue();
+        std::ranges::find(authored.project.scripts, adopted.value().script, &SctScriptContext::id)->legacyOrigin =
+            SctLegacyOrigin{plan.capsuleId, script.legacyKey, script.ordinal};
+    }
+    auto checkpoint = SctAuthoringStore::save(workspace.value(), authored, {authored.project.id}, {});
+    if (!checkpoint) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, checkpoint.diagnostics()};
+    // The staged project is complete before either destination is published.
+    // Rebind only the source location; authored identity never contains it.
+    workspace = LocalSalsaWorkspace::openOrCreate(request.stagedWorkspaceDirectory, finalDataset,
+        WorkspaceDatasetAcceptance::UserConfirmedReassociation);
+    if (!workspace) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, workspace.diagnostics()};
     WorkspaceSessionState session{workspace.value().descriptor().workspaceId};
     auto sessionWritten = WorkspaceSessionStore{}.checkpoint(
         workspace.value().sessionPath(), session);
