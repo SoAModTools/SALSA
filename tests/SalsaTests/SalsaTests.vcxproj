@@ -51,6 +51,7 @@
   <ItemGroup>
     <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
+    <ClCompile Include="test_sct_authoring_project.cpp" />
     <ClCompile Include="test_application_info.cpp" />
     <ClCompile Include="test_exclusive_operation_flow.cpp" />
     <ClCompile Include="test_shell_presentation.cpp" />

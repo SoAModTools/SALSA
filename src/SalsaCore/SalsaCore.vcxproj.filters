@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+    <Filter Include="Authoring">
+      <UniqueIdentifier>{6E7505D1-3C49-4D9C-9BA3-F73C8F651A84}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Application">
       <UniqueIdentifier>{A7888D7A-B9E4-43D5-8BD5-842E93574978}</UniqueIdentifier>
     </Filter>
@@ -21,6 +24,8 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringProject.h"><Filter>Authoring</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringCodec.h"><Filter>Authoring</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h">
       <Filter>Application</Filter>
     </ClInclude>
@@ -64,6 +69,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp"><Filter>Legacy</Filter></ClCompile>
+    <ClCompile Include="src\Authoring\SctAuthoringProject.cpp"><Filter>Authoring</Filter></ClCompile>
+    <ClCompile Include="src\Authoring\SctAuthoringCodec.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Application\ApplicationInfo.cpp">
       <Filter>Application</Filter>
     </ClCompile>

@@ -72,6 +72,9 @@ enum class DiagnosticCode {
     LegacyCapsuleIntegrityFailed,
     LegacyImportInvalidRequest,
     LegacyImportDestinationNotFresh,
+    InvalidSctAuthoringProject,
+    UnresolvedSctAuthoringBinding,
+    InvalidSctAuthoringPresentation,
 };
 
 [[nodiscard]] constexpr bool isCurrentDiagnosticSeverity(
@@ -139,6 +142,9 @@ enum class DiagnosticCode {
     case DiagnosticCode::LegacyCapsuleIntegrityFailed: return "LegacyCapsuleIntegrityFailed";
     case DiagnosticCode::LegacyImportInvalidRequest: return "LegacyImportInvalidRequest";
     case DiagnosticCode::LegacyImportDestinationNotFresh: return "LegacyImportDestinationNotFresh";
+    case DiagnosticCode::InvalidSctAuthoringProject: return "InvalidSctAuthoringProject";
+    case DiagnosticCode::UnresolvedSctAuthoringBinding: return "UnresolvedSctAuthoringBinding";
+    case DiagnosticCode::InvalidSctAuthoringPresentation: return "InvalidSctAuthoringPresentation";
     }
     return "Unknown";
 }
