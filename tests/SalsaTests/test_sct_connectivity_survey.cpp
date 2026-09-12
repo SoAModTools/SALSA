@@ -1,6 +1,7 @@
 #include "../../src/SalsaConnectivitySurvey/Survey.h"
 #include "../../src/SalsaConnectivitySurvey/Worker.h"
 #include "SalsaCore/Authoring/SctInterpretation.h"
+#include "SpiceMLD/MldDocumentWriter.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include <Windows.h>
 #include <gtest/gtest.h>
@@ -42,6 +43,13 @@ std::vector<std::byte> bytes() {
         {doc.allocateSectionId(), "M00001",
          sct::SctScriptSectionContent{
              {{test, 0, false, {}, {{0, expression("BitVar[1960] == 1")}, {1, sct::SctInstructionReference{ret}}}},
+              {doc.allocateInstructionId(),
+               11,
+               false,
+               {},
+               {{0,
+                 sct::SctInstructionReference{
+                     std::get<sct::SctScriptSectionContent>(doc.sections[2].content).instructions.front().id}}}},
               {ret, 12}}}});
     auto result = sct::SctDocumentExporter::exportDocument(
         doc, sct::SctDocumentExportOptions{sct::SctPlatform::Dreamcast,
@@ -65,6 +73,135 @@ Json identity(const std::vector<std::byte> &data) {
             {"region", "eu"},
             {"sha256", hash(data)},
             {"textConvention", nullptr}};
+}
+std::vector<std::byte> mldBytes(unsigned signal = 1960) {
+    spice::mld::MldDocument doc;
+    for (unsigned n = 0; n < 4; ++n) {
+        spice::mld::MldEntry entry;
+        entry.id = {n + 1};
+        entry.entryId = 99;
+        entry.tableId = 1;
+        entry.functionName = n < 2 ? "eventhook" : "testobject";
+        entry.functionParameters.resize(9);
+        entry.functionParameters[8] = signal;
+        doc.entries.push_back(entry);
+        doc.layout.push_back(entry.id);
+    }
+    auto out =
+        spice::mld::MldDocumentWriter::write(doc, {spice::mld::MldPlatform::Dreamcast, spice::mld::MldWrapper::Raw});
+    if (!out.ok())
+        throw std::runtime_error("Synthetic MLD export failed");
+    auto span = std::as_bytes(std::span(out.bytes));
+    return {span.begin(), span.end()};
+}
+Json mldIdentity(const std::vector<std::byte> &data) {
+    auto result = identity(data);
+    result["kind"] = "mld";
+    result["path"] = "a002a.mld";
+    result["key"] = "synthetic:a002a.mld";
+    return result;
+}
+TEST(ConnectivitySurveyTest, MldProvidersAndHandlersKeepDistinctEntriesAndShowResponses) {
+    auto data = bytes(), mld = mldBytes();
+    auto script = extract(data, identity(data));
+    auto resource = extract(mld, mldIdentity(mld));
+    ASSERT_EQ(resource["status"], "analyzed");
+    ASSERT_EQ(resource["entries"].size(), 4);
+    auto links = linkResource(resource, script, true);
+    ASSERT_EQ(links["eventhooks"].size(), 2);
+    ASSERT_EQ(links["handlers"].size(), 2);
+    EXPECT_NE(links["handlers"][0]["entry"], links["handlers"][1]["entry"]);
+    EXPECT_EQ(links["handlers"][0]["response"]["calls"].size(), 1);
+    EXPECT_EQ(links["handlers"][0]["response"]["writes"].size(), 2);
+    ASSERT_EQ(links["eventhooks"][0]["consumers"].size(), 1);
+    EXPECT_EQ(links["eventhooks"][0]["consumers"][0]["boundaryStatus"], "structured");
+    auto foreign = script;
+    foreign["identity"]["dataset"] = "another-disc";
+    EXPECT_THROW(linkResource(resource, foreign), std::exception);
+    auto unmatched = mldBytes(4000);
+    auto absent = linkResource(extract(unmatched, mldIdentity(unmatched)), script);
+    EXPECT_TRUE(absent["eventhooks"][0]["consumers"].empty());
+    auto invalid = mldBytes(0xffffffff);
+    auto unknown = extract(invalid, mldIdentity(invalid));
+    EXPECT_TRUE(unknown["entries"][0]["signal"].is_null());
+    EXPECT_TRUE(unknown["entries"][0].contains("signalIssue"));
+    EXPECT_EQ(linkResource(unknown, script)["handlers"].size(), 2);
+    auto dungeon = identity(data);
+    dungeon["path"] = "me103a.sct";
+    EXPECT_EQ(summarize(extract(data, dungeon))["scriptGroup"], "field");
+    dungeon["path"] = "me099a.sct";
+    EXPECT_EQ(summarize(extract(data, dungeon))["scriptGroup"], "field");
+    EXPECT_EQ(summarize(extract(data, dungeon))["context"], "overworld");
+}
+TEST(ConnectivitySurveyTest, ResourceQueriesLimitEntrypointsAndKeepTransitionCandidatesQualified) {
+    Temporary temp;
+    auto data = bytes(), mld = mldBytes();
+    auto script = extract(data, identity(data)), resource = extract(mld, mldIdentity(mld));
+    resource["identity"]["association"] = {{"role", "base"}, {"scripts", Json::array({"me002a.sct"})}};
+    const auto handler = script["sections"][3]["id"].get<std::string>();
+    const auto scene = script["scopes"][0]["id"].get<std::string>();
+    const auto instruction = script["instructions"].back()["id"];
+    script["resourceContext"]["transitions"].push_back(
+        {{"instruction", instruction}, {"target", {{"text", "me033b"}}}});
+    Json run = {{"files", Json::array()}, {"summary", Json::object()}}, index;
+    for (const auto &facts : {script, resource}) {
+        auto row = summarize(facts);
+        auto name = hash(facts.at("identity").dump()) + ".json.zlib";
+        writeFacts(temp.root / "facts" / name, facts);
+        row["facts"] = name;
+        run["files"].push_back(row);
+    }
+    indexResources(run, index, temp.root);
+    // Inventory candidates stay dataset-qualified; duplicates are not silently selected.
+    for (const auto *path : {"field/me033b.sct", "alternative/me033b.sct"})
+        run["files"].push_back(
+            {{"identity", {{"key", std::string("synthetic:") + path}, {"path", path}, {"dataset", "synthetic"}}}});
+    auto query = [&](const char *kind, const std::string &section) {
+        return queryResources(run, index, temp.root, kind, "synthetic:me002a.sct#" + section, "synthetic:me002a.sct");
+    };
+    EXPECT_EQ(query("entrypoint", handler)[0]["links"][0]["handlers"].size(), 2);
+    EXPECT_TRUE(query("entrypoint", script["sections"][0]["id"])[0]["links"][0]["handlers"].empty());
+    EXPECT_EQ(query("cutscene", scene)[0]["links"][0]["handlers"].size(), 2);
+    auto transitions = query("entrypoint", handler)[0]["links"][0]["handlers"][0]["response"]["transitions"];
+    ASSERT_EQ(transitions.size(), 1);
+    EXPECT_EQ(transitions[0]["targetStatus"], "ambiguous");
+    EXPECT_EQ(transitions[0]["candidateScripts"].size(), 2);
+    script["scopes"][0]["sections"].push_back(script["sections"][0]["id"]);
+    for (auto &edge : script["controlFlow"])
+        if (edge["kind"] == static_cast<unsigned>(sct::SctControlFlowKind::Call))
+            edge["target"] = script["instructions"][0]["id"];
+    writeFacts(temp.root / "facts" / (hash(script.at("identity").dump()) + ".json.zlib"), script);
+    EXPECT_TRUE(query("cutscene", scene)[0]["links"][0]["handlers"].empty());
+}
+TEST(ConnectivitySurveyTest, StructuredBranchesKeepContinuationSeparateAndReadScriptTargets) {
+    sct::SctDocument doc;
+    auto condition = doc.allocateInstructionId(), yes = doc.allocateInstructionId();
+    auto jump = doc.allocateInstructionId(), no = doc.allocateInstructionId(), join = doc.allocateInstructionId();
+    auto text = doc.allocateSupplementaryTextId();
+    doc.supplementaryText.push_back({text, sct::SctTextKind::PlainString, sct::SctPlainText{"me033b"}});
+    doc.sections.push_back(
+        {doc.allocateSectionId(), "loop",
+         sct::SctScriptSectionContent{
+             {{condition, 0, false, {}, {{0, expression("BitVar[1960] == 1")}, {1, sct::SctInstructionReference{no}}}},
+              {yes, 17, false, {}, {{0, expression("20")}}},
+              {jump, 10, false, {}, {{0, sct::SctInstructionReference{join}}}},
+              {no, 18, false, {}, {{0, expression("20")}}},
+              {join, 43, false, {}, {{0, sct::SctSupplementaryTextReference{text}}}},
+              {doc.allocateInstructionId(), 12}}}});
+    const auto context = scriptResourceContext(doc);
+    ASSERT_EQ(context["transitions"].size(), 1);
+    EXPECT_EQ(context["transitions"][0]["target"]["text"], "me033b");
+    bool found = false;
+    for (const auto &region : context["regions"])
+        if (region["controller"] == std::to_string(condition.value())) {
+            found = true;
+            EXPECT_EQ(region["continuation"], std::to_string(join.value()));
+            ASSERT_EQ(region["arms"].size(), 2);
+            for (const auto &arm : region["arms"])
+                for (const auto &id : arm["instructions"])
+                    EXPECT_NE(id, std::to_string(join.value()));
+        }
+    EXPECT_TRUE(found);
 }
 void normalize(Json &facts) {
     facts.erase("loadMs");
@@ -155,12 +292,21 @@ TEST(ConnectivitySurveyTest, CliParallelResumeCorruptionAndPartialFailure) {
                                               {"region", "eu"},
                                               {"disc", "1"},
                                               {"root", input.string()}}})}};
+    auto mld = mldBytes();
+    writeText(input / "a002a.mld", std::string(reinterpret_cast<const char *>(mld.data()), mld.size()));
+    config["datasets"][0]["mlds"] =
+        Json::array({{{"path", "a002a.mld"}, {"role", "base"}, {"scripts", Json::array({"me002a.sct"})}},
+                     {{"path", "missing.mld"}, {"role", "auxiliary"}, {"scripts", Json::array({"me002a.sct"})}}});
     auto manifest = temp.root / "manifest.json", output = temp.root / "output";
     writeText(manifest, config.dump());
     ASSERT_EQ(invoke({L"scan", L"--manifest", manifest.wstring(), L"--output", output.wstring(), L"--jobs", L"2"}), 0);
     auto first = readJson(output / "survey.json");
     EXPECT_EQ(first["summary"]["analyzed"], 2);
     EXPECT_EQ(first["summary"]["cached"], 0);
+    EXPECT_EQ(first["summary"]["resources"]["analyzed"], 1);
+    EXPECT_EQ(first["summary"]["resources"]["failed"], 1);
+    EXPECT_EQ(first["summary"]["resources"]["directHandlerBindings"], 2);
+    EXPECT_EQ(invoke({L"query", L"--survey", output.wstring(), L"--resource", L"synthetic:a002a.mld", L"--json"}), 0);
     ASSERT_EQ(invoke({L"scan", L"--manifest", manifest.wstring(), L"--output", output.wstring(), L"--resume"}), 0);
     EXPECT_EQ(readJson(output / "summary.json")["cached"], 2);
     auto factFile = output / "facts" / first["files"][0]["facts"].get<std::string>();
@@ -179,6 +325,12 @@ TEST(ConnectivitySurveyTest, CliParallelResumeCorruptionAndPartialFailure) {
     normalize(parallelFacts);
     normalize(serialFacts);
     EXPECT_EQ(parallelFacts, serialFacts);
+    auto changedMld = mldBytes(4000);
+    writeText(input / "a002a.mld", std::string(reinterpret_cast<const char *>(changedMld.data()), changedMld.size()));
+    ASSERT_EQ(invoke({L"scan", L"--manifest", manifest.wstring(), L"--output", output.wstring(), L"--resume"}), 0);
+    EXPECT_EQ(readJson(output / "summary.json")["cached"], 2);
+    EXPECT_EQ(readJson(output / "summary.json")["resources"]["cached"], 0);
+    EXPECT_EQ(readJson(output / "summary.json")["resources"]["signalReadBindings"], 0);
     writeText(input / "bad.sct", "bad");
     ASSERT_EQ(invoke({L"scan", L"--manifest", manifest.wstring(), L"--output", output.wstring(), L"--resume"}), 1);
     EXPECT_EQ(readJson(output / "summary.json")["analyzed"], 2);

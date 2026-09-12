@@ -16,3 +16,4 @@
 - User-approved S8 story-connectivity exception: private acceptance uses only the `me002*.sct` family in Dreamcast EU, on available relevant discs. Do not expand this connectivity matrix to other platforms or regions. Other SALSA corpus behavior retains the general policy above.
 
 - The standalone connectivity survey is a separate, opt-in analysis executable, not a gtest suite. Its approved initial full-corpus run covers every SCT in DC EU on both available discs. This does not expand the `me002*.sct` regression exception above. Keep its corpus launcher and all local manifests, caches, and reports in the private testing repository; use Release and its mutex.
+- The approved MLD survey extension adds optional paired base-MLD context for field stems below 200, including overworld stem 99, from each DC EU disc's actual inventory. Report unavailable pairs as context gaps; do not require runtime reachability or infer cross-disc equivalence.

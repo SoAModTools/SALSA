@@ -49,6 +49,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\src\SalsaConnectivitySurvey\Resources.cpp" />
     <ClCompile Include="test_sct_connectivity_survey.cpp" />
     <ClCompile Include="..\..\src\SalsaConnectivitySurvey\Worker.cpp" />
     <ClCompile Include="..\..\src\SalsaConnectivitySurvey\Survey.cpp" />

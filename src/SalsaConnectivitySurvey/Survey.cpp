@@ -134,6 +134,8 @@ std::string variableName(unsigned kind, std::uint32_t index) {
     return std::string(names[kind]) + ":" + std::to_string(index);
 }
 Json extract(std::vector<std::byte> bytes, const Json &identity) {
+    if (identity.value("kind", "sct") == "mld")
+        return extractResource(std::move(bytes), identity);
     using Clock = std::chrono::steady_clock;
     const auto start = Clock::now();
     Json out = {{"identity", identity}, {"status", "failed"}, {"diagnostics", Json::array()}};
@@ -245,6 +247,7 @@ Json extract(std::vector<std::byte> bytes, const Json &identity) {
              {"target", e.targetInstruction ? Json(decimal(*e.targetInstruction)) : Json(nullptr)},
              {"kind", static_cast<unsigned>(e.kind)},
              {"site", e.origin ? site(*e.origin) : Json(nullptr)}});
+    out["resourceContext"] = scriptResourceContext(doc);
     out["extractMs"] = std::chrono::duration<double, std::milli>(Clock::now() - parsed).count();
     return out;
 }
@@ -256,6 +259,14 @@ Json summarize(const Json &f) {
                    {"extractMs", f.value("extractMs", 0.0)}};
     if (f.at("status") != "analyzed")
         return result;
+    if (f.at("identity").value("kind", "sct") == "mld") {
+        result["entries"] = f.at("entries").size();
+        result["eventhooks"] = 0ull;
+        for (const auto &entry : f.at("entries"))
+            if (entry.at("function") == "eventhook")
+                result["eventhooks"] = result["eventhooks"].get<std::uint64_t>() + 1;
+        return result;
+    }
     std::set<std::string> grouped;
     for (const auto &scope : f.at("scopes"))
         for (const auto &sec : scope.at("sections"))
@@ -284,7 +295,8 @@ Json summarize(const Json &f) {
     std::string kind = "other";
     if (std::regex_match(stem, match, number)) {
         const auto n = std::stoul(match[1]);
-        kind = n < 99 ? "field" : n == 99 ? "overworld" : n < 200 ? "dungeon" : n < 500 ? "cutscene" : "ship-battle";
+        kind = n < 200 ? "field" : n < 500 ? "cutscene" : "ship-battle";
+        result["context"] = n == 99 ? "overworld" : kind;
     }
     result["scriptGroup"] = kind;
     return result;
@@ -321,8 +333,10 @@ Json select(const Json &facts, const std::string &kind, const std::string &value
     for (const auto &sec : facts.at("sections"))
         if (sections.empty() || sections.contains(sec.at("id").get<std::string>()))
             result["sections"].push_back(sec);
-    if (kind == "script")
+    if (kind == "script") {
         result["scopes"] = facts.at("scopes");
+        result["resourceContext"] = facts.at("resourceContext");
+    }
     if (kind == "cutscene" || kind == "entrypoint") {
         result["controlFlow"] = Json::array();
         for (const auto &e : facts.at("controlFlow")) {

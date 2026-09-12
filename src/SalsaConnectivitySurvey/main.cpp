@@ -1,6 +1,7 @@
 #include "SpiceSCT/SctTextContract.h"
 #include "Survey.h"
 #include "Worker.h"
+#include "smores/script/Relationships.h"
 #include <Windows.h>
 
 #include <algorithm>
@@ -125,7 +126,9 @@ bool inside(const fs::path &child, const fs::path &parent) {
     return true;
 }
 void verifyManifest(const Json &m, const char *format) {
-    if (m.at("format") != format || m.at("schemaVersion") != SchemaVersion)
+    if (m.at("format") != format ||
+        m.at("schemaVersion") !=
+            (std::string_view(format) == "jahorta.salsa.connectivity-survey-input" ? 1 : SchemaVersion))
         throw std::runtime_error("Unsupported survey schema");
 }
 std::string factName(const Json &identity) {
@@ -135,7 +138,7 @@ Json aggregate(Json &run) {
     Json index = {
         {"format", "jahorta.salsa.connectivity-index"}, {"schemaVersion", SchemaVersion}, {"datasets", Json::object()}};
     Json summary = {
-        {"discovered", run.at("files").size()},
+        {"discovered", 0ull},
         {"analyzed", 0ull},
         {"failed", 0ull},
         {"cached", 0ull},
@@ -154,6 +157,9 @@ Json aggregate(Json &run) {
                       "Dataset/disc graphs remain separate; absent files are inventory differences."})}};
     const auto add = [&](const char *k, std::uint64_t n) { summary[k] = summary[k].get<std::uint64_t>() + n; };
     for (const auto &f : run.at("files")) {
+        if (f.at("identity").value("kind", "sct") != "sct")
+            continue;
+        add("discovered", 1);
         auto status = f.at("status").get<std::string>();
         summary["statuses"][status] = summary["statuses"].value(status, 0ull) + 1;
         summary["peakWorkerBytes"] =
@@ -341,6 +347,7 @@ int scan(const Options &options) {
             if (!locators.insert(relative).second)
                 throw std::runtime_error("Case-colliding SCT locators");
             Json identity = {{"key", d.at("id").get<std::string>() + ":" + relative},
+                             {"kind", "sct"},
                              {"dataset", d.at("id")},
                              {"release", d.at("release")},
                              {"disc", d.at("disc")},
@@ -362,6 +369,57 @@ int scan(const Options &options) {
             }
             run["files"].push_back(item);
             sources.push_back(file);
+        }
+        std::set<std::string> resourcePaths;
+        if (d.contains("mlds")) {
+            if (!d.at("mlds").is_array())
+                throw std::runtime_error("mlds must be an array");
+            for (auto association : d.at("mlds")) {
+                const auto normalize = [&](const Json &j, const char *extension) {
+                    auto asset = smores::script::assetKey(j.get<std::string>());
+                    if (!asset.ends_with(extension) ||
+                        !smores::script::valid({"dataset", asset, "revision", "document"}))
+                        throw std::runtime_error("Invalid associated resource/script path");
+                    return asset;
+                };
+                auto asset = normalize(association.at("path"), ".mld");
+                if (!resourcePaths.insert(asset).second)
+                    throw std::runtime_error("Duplicate MLD path; combine its script associations");
+                auto role = association.value("role", std::string("unclassified"));
+                if (role != "base" && role != "auxiliary" && role != "streamed-tile" && role != "unclassified")
+                    throw std::runtime_error("Invalid MLD role");
+                if (!association.at("scripts").is_array())
+                    throw std::runtime_error("MLD scripts must be an array");
+                std::set<std::string> scripts;
+                for (const auto &script : association.at("scripts"))
+                    scripts.insert(normalize(script, ".sct"));
+                association = {{"path", asset}, {"role", role}, {"scripts", scripts}};
+                Json identity = {{"key", d.at("id").get<std::string>() + ":" + asset},
+                                 {"kind", "mld"},
+                                 {"dataset", d.at("id")},
+                                 {"release", d.at("release")},
+                                 {"disc", d.at("disc")},
+                                 {"path", asset},
+                                 {"platform", d.at("platform")},
+                                 {"region", d.at("region")},
+                                 {"sha256", nullptr},
+                                 {"textConvention", nullptr},
+                                 {"analyzerVersion", AnalyzerVersion},
+                                 {"buildIdentity", build},
+                                 {"association", association}};
+                auto file = root / path(asset);
+                Json item;
+                try {
+                    if (!inside(fs::canonical(file), root))
+                        throw std::runtime_error("MLD resolves outside dataset root");
+                    identity["sha256"] = hash(readBytes(file));
+                    item = {{"identity", identity}, {"status", "pending"}};
+                } catch (const std::exception &e) {
+                    item = failure(identity, "resource-unavailable", e.what());
+                }
+                run["files"].push_back(item);
+                sources.push_back(file);
+            }
         }
     }
     run["inventoryMs"] = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
@@ -447,6 +505,7 @@ int scan(const Options &options) {
             fs::remove(output / ".work" / (std::to_string(n) + suffix));
     }
     auto index = aggregate(run);
+    indexResources(run, index, output);
     run["wallMs"] = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
     const bool cancelled = stopped;
     run["state"] = cancelled ? "cancelled" : run["summary"]["failed"] == 0 ? "complete" : "partial";
@@ -469,14 +528,14 @@ int scan(const Options &options) {
     return cancelled ? 130 : summary.at("failed") == 0 ? 0 : 1;
 }
 int query(const Options &options) {
-    options.check(
-        {"--survey", "--variable", "--script", "--cutscene", "--entrypoint", "--dataset", "--offset", "--limit"},
-        {"--json", "--all"});
+    options.check({"--survey", "--variable", "--script", "--cutscene", "--entrypoint", "--resource", "--dataset",
+                   "--offset", "--limit"},
+                  {"--json", "--all"});
     auto directory = path(options.need("--survey"));
     auto run = readJson(directory / "survey.json");
     verifyManifest(run, "jahorta.salsa.connectivity-survey");
     std::string kind, value;
-    for (auto k : {"variable", "script", "cutscene", "entrypoint"})
+    for (auto k : {"variable", "script", "cutscene", "entrypoint", "resource"})
         if (options.values.contains(std::string("--") + k)) {
             if (!kind.empty())
                 throw std::runtime_error("Choose one query kind");
@@ -504,6 +563,16 @@ int query(const Options &options) {
     verifyManifest(index, "jahorta.salsa.connectivity-index");
     if (run.at("indexIdentity") != hash(index.dump()))
         throw std::runtime_error("Survey index does not match this run");
+    if (kind == "resource") {
+        if (!index.at("resources").contains(value))
+            throw std::runtime_error("Unknown MLD resource key");
+        std::cout << Json{{"format", "jahorta.salsa.connectivity-resource-query"},
+                          {"schemaVersion", SchemaVersion},
+                          {"resources", queryResources(run, index, directory, kind, value, script)}}
+                         .dump(2)
+                  << "\n";
+        return 0;
+    }
     std::set<std::string> relevant;
     if (kind == "variable") {
         if (!std::regex_match(value, std::regex("(BitVar|ByteVar|IntVar|FloatVar):[0-9]+")))
@@ -564,6 +633,14 @@ int query(const Options &options) {
         }
         results.push_back(std::move(result));
     }
+    auto resourceLinks = queryResources(run, index, directory, kind, value, script);
+    if (options.values.contains("--dataset")) {
+        Json filtered = Json::array();
+        for (auto &r : resourceLinks)
+            if (r.at("identity").at("dataset") == options.need("--dataset"))
+                filtered.push_back(std::move(r));
+        resourceLinks = std::move(filtered);
+    }
     if (!found && kind != "variable")
         throw std::runtime_error("Unknown script key");
     Json answer = {{"format", "jahorta.salsa.connectivity-query"},
@@ -575,7 +652,8 @@ int query(const Options &options) {
                    {"offset", offset},
                    {"truncated", !options.flags.contains("--all") && total > std::uint64_t(offset) + limit},
                    {"results", results},
-                   {"incidence", incidence}};
+                   {"incidence", incidence},
+                   {"resourceLinks", resourceLinks}};
     if (!options.flags.contains("--json"))
         std::cout << "Static connectivity (datasets remain separate). " << total << " records; offset " << offset
                   << ". Use --all or --offset/--limit for additional records.\n";
@@ -601,10 +679,11 @@ int wmain(int argc, wchar_t **argv) {
             return facts.at("status") == "analyzed" ? 0 : 1;
         }
         if (argc < 2 || std::wstring(argv[1]) == L"--help") {
-            std::cout << "SalsaConnectivitySurvey scan --manifest <file> --output <directory> [--resume] [--jobs 2] "
-                         "[--timeout-seconds 300]\nSalsaConnectivitySurvey query --survey <directory> (--variable "
-                         "BitVar:N | --script dataset:path | --cutscene dataset:path#section | --entrypoint "
-                         "dataset:path#section) [--json] [--all | --offset N --limit N]\n";
+            std::cout
+                << "SalsaConnectivitySurvey scan --manifest <file> --output <directory> [--resume] [--jobs 2] "
+                   "[--timeout-seconds 300]\nSalsaConnectivitySurvey query --survey <directory> (--variable "
+                   "BitVar:N | --script dataset:path | --cutscene dataset:path#section | --entrypoint "
+                   "dataset:path#section | --resource dataset:asset.mld) [--json] [--all | --offset N --limit N]\n";
             return 0;
         }
         Options options(argc, argv, 2);
