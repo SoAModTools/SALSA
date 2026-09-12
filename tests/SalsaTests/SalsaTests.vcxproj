@@ -49,6 +49,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="test_sct_connectivity_survey.cpp" />
+    <ClCompile Include="..\..\src\SalsaConnectivitySurvey\Worker.cpp" />
+    <ClCompile Include="..\..\src\SalsaConnectivitySurvey\Survey.cpp" />
     <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc" />
     <ClCompile Include="run_tests.cpp" />
     <ClCompile Include="test_sct_authoring_project.cpp" />

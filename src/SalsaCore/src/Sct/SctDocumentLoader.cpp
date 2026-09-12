@@ -126,7 +126,15 @@ SctLoadResult SctDocumentLoader::load(
         result.infrastructureDiagnostics = sourceResult.diagnostics();
         return result;
     }
-    auto source = std::move(sourceResult).takeValue();
+    return loadSnapshot(std::move(sourceResult).takeValue(),project.dataset().identity,{},stopToken,true,std::move(traceObserver));
+}
+SctLoadResult SctDocumentLoader::loadSnapshot(SourceAssetSnapshot source, DatasetIdentity dataset,
+    std::optional<spice::sct::SctKnownTextConvention> selectedConvention,std::stop_token stopToken,
+    bool buildEditorAnalysis,spice::sct::SctParseTraceObserver traceObserver) {
+    SctLoadResult result;const auto locator=source.descriptor.locator;
+    auto hash=sha256(source.bytes);
+    if(!hash||hash.value()!=source.descriptor.revision.digest||source.bytes.size()!=source.descriptor.byteSize){
+        result.infrastructureDiagnostics.push_back({DiagnosticSeverity::Error,DiagnosticCode::SourceChanged,"Source snapshot size or digest changed.",locator.path()});return result;}
     if (stopToken.stop_requested()) {
         result.cancelled = true;
         result.infrastructureDiagnostics.push_back(cancelledDiagnostic(locator));
@@ -142,8 +150,8 @@ SctLoadResult SctDocumentLoader::load(
         parser.parse(bytes, locator.identityKey(), std::move(parseOptions)));
 
     auto inspection = std::make_shared<SctSourceInspection>(SctSourceInspection{
-        std::move(source), project.dataset().identity.fingerprint,
-        std::move(parsed), {}, {} });
+        std::move(source), dataset.fingerprint,
+        std::move(parsed), {}, {}, dataset.platform });
     for (const auto& parserDiagnostic : inspection->parsed->diagnostics) {
         SctPipelineDiagnostic diagnostic;
         diagnostic.severity = severityOf(parserDiagnostic.severity);
@@ -175,14 +183,15 @@ SctLoadResult SctDocumentLoader::load(
         convention = recommended;
         origin = SctTextSelectionOrigin::UniqueAssessment;
     }
-    return materialize(std::move(inspection), convention, origin, stopToken);
+    if(selectedConvention){convention=selectedConvention;origin=SctTextSelectionOrigin::UserSelected;}
+    return materialize(std::move(inspection), convention, origin, stopToken,buildEditorAnalysis);
 }
 
 SctLoadResult SctDocumentLoader::materialize(
     std::shared_ptr<const SctSourceInspection> inspection,
     const std::optional<spice::sct::SctKnownTextConvention> convention,
     const SctTextSelectionOrigin origin,
-    const std::stop_token stopToken) {
+    const std::stop_token stopToken, bool buildEditorAnalysis) {
     SctLoadResult result;
     result.inspection = inspection;
     if (!inspection || !inspection->parsed || !inspection->parsed->parseOk) return result;
@@ -194,6 +203,7 @@ SctLoadResult SctDocumentLoader::materialize(
     }
 
     spice::sct::SctDocumentImportOptions options;
+    if(inspection->declaredPlatform)options.declaredSourcePlatform=*inspection->declaredPlatform==GamePlatform::GameCube?spice::sct::SctPlatform::GameCube:spice::sct::SctPlatform::Dreamcast;
     if (convention.has_value()) options.sourceTextEncoding = spice::sct::sctTextEncodingFor(*convention);
     options.footerTextPromotion = origin == SctTextSelectionOrigin::UserSelected
         ? spice::sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding
@@ -228,9 +238,9 @@ SctLoadResult SctDocumentLoader::materialize(
     });
     auto document = std::make_shared<const spice::sct::SctDocument>(
         std::move(*assessment.import.document));
-    auto analysis = std::make_shared<const spice::sct::SctDocumentAnalysis>(
+    auto analysis = buildEditorAnalysis ? std::make_shared<const spice::sct::SctDocumentAnalysis>(
         spice::sct::SctDocumentAnalysis::build(*document,
-            evidence ? &*evidence : nullptr));
+            evidence ? &*evidence : nullptr)) : nullptr;
     auto snapshot = std::make_shared<SctDocumentSnapshot>(SctDocumentSnapshot{
         std::move(provenance), document, std::move(analysis),
         assessment.readiness,

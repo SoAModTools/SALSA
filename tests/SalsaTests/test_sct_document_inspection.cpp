@@ -104,7 +104,7 @@ public:
     FakeCatalog(AssetLocator assetLocator, std::vector<std::byte> bytes)
         : bytes_(std::move(bytes)), descriptor_(AssetDescriptor{
             std::move(assetLocator), static_cast<std::uint64_t>(bytes_.size()),
-            SourceRevision{ zeroDigest() } }),
+            SourceRevision{ sha256(bytes_).value() } }),
           snapshot_(AssetCatalogSnapshot{ {}, DatasetFingerprint{ zeroDigest() } }) {
         snapshot_.assets.push_back(descriptor_);
     }
@@ -833,4 +833,15 @@ TEST(SctDocumentLoader, ReportsMalformedAssetsWithoutInstallingADocument) {
     EXPECT_FALSE(loaded.succeeded());
     ASSERT_FALSE(loaded.infrastructureDiagnostics.empty());
     EXPECT_EQ(loaded.infrastructureDiagnostics.back().code, DiagnosticCode::SctParseFailed);
+}
+
+TEST(SctDocumentLoader, DirectSnapshotRejectsMismatchedRevisionBeforeParsing) {
+    auto bytes = inspectableSctBytes(false);
+    SourceAssetSnapshot source{{locator(), bytes.size(), {zeroDigest()}}, bytes};
+    auto result = SctDocumentLoader::loadSnapshot(std::move(source),
+        {GamePlatform::GameCube, GameRegion::Europe, {zeroDigest()}});
+    EXPECT_FALSE(result.succeeded());
+    EXPECT_FALSE(result.inspection);
+    ASSERT_EQ(result.infrastructureDiagnostics.size(), 1u);
+    EXPECT_EQ(result.infrastructureDiagnostics.front().code, DiagnosticCode::SourceChanged);
 }

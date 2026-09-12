@@ -15,4 +15,8 @@ SALSA is an editor for Skies of Arcadia Legends script files. This guide describ
 
 - [Importing a legacy SALSA project](LegacyImport.md)
 
+## Analysis tools
+
+- [Standalone SCT connectivity survey](ConnectivitySurvey.md)
+
 More guides will be added as localization and workspace-wide tools become available.

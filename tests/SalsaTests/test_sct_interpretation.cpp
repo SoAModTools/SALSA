@@ -73,11 +73,11 @@ TEST(SctInterpretationTest, CrossScriptDependenciesAndEntryEvidenceAreQualified)
     auto s = fixture();
     auto a = SctInterpretation::analyze(s);
     EXPECT_EQ(a.suggestions.size(), 2u);
-    EXPECT_EQ(a.dependencies.size(), 4u);
+    EXPECT_EQ(a.connectivity.pairCount(), 4u);
     ASSERT_FALSE(a.suggestions.empty());
     EXPECT_NE(a.suggestions.front().qualification.find("not runtime"), std::string::npos);
     EXPECT_TRUE(SctInterpretation::fresh(s, a.suggestions.front()));
-    EXPECT_TRUE(std::ranges::any_of(a.dependencies, [](const auto &d) { return d.writer.script != d.reader.script; }));
+    EXPECT_TRUE(a.connectivity.anyLink(a.accesses, [](const auto &d) { return d.writer.script != d.reader.script; }));
 }
 TEST(SctInterpretationTest, DecisionsDeduplicateAndExplicitNamesSurviveRescan) {
     auto s = fixture();
@@ -296,14 +296,14 @@ TEST(SctInterpretationTest, WholeCutsceneEffectsIncludeHelpersBranchesSchedulesA
         if (analysis.accesses[n].variable.index == 1960)
             inputWrites.push_back(analysis.accesses[n].kind);
     EXPECT_EQ(inputWrites, (std::vector<SctStateAccessKind>{SctStateAccessKind::Set, SctStateAccessKind::Clear}));
-    EXPECT_TRUE(std::ranges::any_of(analysis.dependencies, [&](const auto &link) {
+    EXPECT_TRUE(analysis.connectivity.anyLink(analysis.accesses, [&](const auto &link) {
         return link.variable.index == 24001 && link.writer.site->instruction == late;
     }));
     EXPECT_TRUE(
         std::ranges::any_of(effect.writes, [&](auto n) { return analysis.accesses[n].variable.index == 70000; }));
     // There is no script reader for this helper write; it still belongs in the effect inventory.
     EXPECT_FALSE(
-        std::ranges::any_of(analysis.dependencies, [](const auto &link) { return link.variable.index == 70000; }));
+        analysis.connectivity.anyLink(analysis.accesses, [](const auto &link) { return link.variable.index == 70000; }));
     EXPECT_EQ(analysis.suggestions.size(), 1u); // optional entry-name rule is independent
 }
 TEST(SctInterpretationTest, StoryOrderAndPresentationPersistWithoutChangingProgram) {

@@ -14,3 +14,5 @@
 - Run private corpus tests only in Release, in the sister private testing repository, following its mutex and corpus-boundary rules. This coverage policy is SALSA-specific, not a global SoAModTools rule.
 
 - User-approved S8 story-connectivity exception: private acceptance uses only the `me002*.sct` family in Dreamcast EU, on available relevant discs. Do not expand this connectivity matrix to other platforms or regions. Other SALSA corpus behavior retains the general policy above.
+
+- The standalone connectivity survey is a separate, opt-in analysis executable, not a gtest suite. Its approved initial full-corpus run covers every SCT in DC EU on both available discs. This does not expand the `me002*.sct` regression exception above. Keep its corpus launcher and all local manifests, caches, and reports in the private testing repository; use Release and its mutex.

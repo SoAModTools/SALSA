@@ -62,6 +62,7 @@ struct SctSourceInspection final {
     std::shared_ptr<const spice::sct::SctParseResult> parsed;
     spice::sct::SctSourceTextAssessment textAssessment;
     std::vector<SctPipelineDiagnostic> diagnostics;
+    std::optional<GamePlatform> declaredPlatform;
 };
 
 struct SctDocumentProvenance final {
@@ -99,6 +100,10 @@ struct SctLoadResult final {
 
 class SctDocumentLoader final {
 public:
+    // Read-only loading without adopting a project or constructing editor projections.
+    [[nodiscard]] static SctLoadResult loadSnapshot(SourceAssetSnapshot, DatasetIdentity,
+        std::optional<spice::sct::SctKnownTextConvention> convention = {}, std::stop_token stop = {},
+        bool buildEditorAnalysis = false, spice::sct::SctParseTraceObserver traceObserver = {});
     [[nodiscard]] static SctLoadResult load(
         const GameProjectContext& project,
         const AssetLocator& locator,
@@ -109,7 +114,7 @@ public:
         std::shared_ptr<const SctSourceInspection> inspection,
         std::optional<spice::sct::SctKnownTextConvention> convention,
         SctTextSelectionOrigin origin,
-        std::stop_token stopToken = {});
+        std::stop_token stopToken = {}, bool buildEditorAnalysis = true);
 };
 
 [[nodiscard]] std::string_view sctTextConventionName(
