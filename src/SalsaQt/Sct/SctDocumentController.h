@@ -52,6 +52,7 @@ public:
     ~SctDocumentController() override;
 
     [[nodiscard]] std::shared_ptr<const core::SctAuthoringState> authoringState() const;
+    [[nodiscard]] std::optional<std::filesystem::path> authoringSourcePath(core::SctScriptId) const;
     [[nodiscard]] core::Result<core::SctAuthoringChange> executeAuthoringCommand(
         core::RevisionId expected, std::string description, const core::SctAuthoringSession::Command& command);
     [[nodiscard]] bool openDocument(

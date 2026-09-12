@@ -4,6 +4,7 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include <mutex>
+#include <map>
 
 namespace salsa::core {
 
@@ -100,6 +101,7 @@ struct SctAuthoringMaterializationRequest final {
     SctImportedPrograms programs;
     std::vector<SctScriptId> scripts;
     SctAuthoringOutputMode mode = SctAuthoringOutputMode::Rebuild;
+    std::map<SctScriptId, spice::sct::SctDocumentExportOptions> outputOptions;
 };
 struct SctPreparedAuthoringOutput final {
     std::vector<std::uint8_t> bytes;

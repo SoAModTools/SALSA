@@ -24,6 +24,8 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Authoring\SctPublicationSet.h" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctRouteAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringProject.h"><Filter>Authoring</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringCodec.h"><Filter>Authoring</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringMaterializer.h"><Filter>Authoring</Filter></ClInclude>
@@ -69,6 +71,8 @@
     <ClInclude Include="include\SalsaCore\Sct\SctWorkingState.h"><Filter>SCT</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Authoring\SctPublicationSet.cpp" />
+    <ClCompile Include="src\Authoring\SctRouteAuthoring.cpp" />
     <ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp"><Filter>Legacy</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctAuthoringProject.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctAuthoringCodec.cpp"><Filter>Authoring</Filter></ClCompile>

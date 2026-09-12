@@ -47,3 +47,5 @@ Choose a storyline and select proposal steps, then use **Adopt selected steps**.
 Each occurrence has a stable identity, optional name, and independent position, even if the same cutscene appears several times. Use **Name step**, Up/Down, Remove, and Overview to organize these visits. Names attached to occurrences do not rename their underlying modules. Save layout and then save the project as usual.
 
 Path facts are shared with the standalone survey. Resource context comes from explicitly retained project entrypoint bindings, or the survey's explicit MLD associations. Missing MLD context does not block proposals. Survey physical IDs are external evidence and never silently become authored project identities.
+
+Executable routing is explicit and independent of narrative adoption. Open **Executable routes / export set** for supported load/arrival editing and coordinated output. See [the route workflow](CrossScriptRoutes.md).

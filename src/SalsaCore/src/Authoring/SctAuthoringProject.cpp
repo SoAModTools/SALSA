@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctRouteAuthoring.h"
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctTextAuthoring.h"
 #include "SalsaCore/Authoring/SctInterpretation.h"
@@ -379,6 +380,8 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     }
     auto interpretations = SctInterpretation::validate(*this);
     out.insert(out.end(), interpretations.begin(), interpretations.end());
+    const auto routes = SctRouteAuthoring::validate(*this);
+    out.insert(out.end(),routes.begin(),routes.end());
     return out;
 }
 

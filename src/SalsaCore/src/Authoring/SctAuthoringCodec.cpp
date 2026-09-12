@@ -83,6 +83,77 @@ template<class Id> SctAuthoringReference<Id> readReference(const Json& value) {
     keys(value, {"kind", "originalEvidence", "explanation", "evidence"});
     return SctUnresolvedBinding{string(value.at("originalEvidence")), string(value.at("explanation")), readEvidence(value.at("evidence"))};
 }
+Json routeJson(const std::optional<SctExecutableRoute> &route) {
+    if (!route)
+        return nullptr;
+    const auto &r = *route;
+    Json observations = Json::array();
+    for (const auto &o : r.observations)
+        observations.push_back({{"script", id(o.script)},
+                                {"action", id(o.action)},
+                                {"role", static_cast<unsigned>(o.role)},
+                                {"fingerprint", o.fingerprint}});
+    Json unresolved = nullptr;
+    if (r.unresolved)
+        unresolved = referenceJson<SctPortId>(*r.unresolved);
+    return {{"kind", static_cast<unsigned>(r.kind)},
+            {"sourceScript", id(r.sourceScript)},
+            {"destinationScript", id(r.destinationScript)},
+            {"sourceAction", id(r.sourceAction)},
+            {"sourceParameter", r.sourceOperand.schemaIndex},
+            {"sourceGroup",
+             r.sourceOperand.repeatedGroupOrdinal ? Json(*r.sourceOperand.repeatedGroupOrdinal) : Json(nullptr)},
+            {"arrival", id(r.arrival)},
+            {"arrivalCase", r.arrivalCase ? Json(*r.arrivalCase) : Json(nullptr)},
+            {"sourceStem", r.sourceStem},
+            {"targetFilename", r.targetFilename},
+            {"observations", observations},
+            {"unresolved", unresolved},
+            {"discriminatorBit", r.discriminatorBit ? Json(*r.discriminatorBit) : Json(nullptr)},
+            {"discriminatorValue", r.discriminatorValue}};
+}
+std::optional<SctExecutableRoute> readRoute(const Json &j) {
+    if (j.is_null())
+        return {};
+    keys(j, {"kind", "sourceScript", "destinationScript", "sourceAction", "sourceParameter", "sourceGroup", "arrival",
+             "arrivalCase", "sourceStem", "targetFilename", "observations", "unresolved", "discriminatorBit",
+             "discriminatorValue"});
+    auto number = [](const Json &v) {
+        require(v.is_number_unsigned() && v.get<std::uint64_t>() <= UINT32_MAX, "Invalid route ordinal.");
+        return v.get<std::uint32_t>();
+    };
+    SctExecutableRoute r;
+    auto kind = number(j.at("kind"));
+    require(kind <= 4, "Unknown route kind.");
+    r.kind = static_cast<SctTransitionKind>(kind);
+    r.sourceScript = id<SctScriptId>(j.at("sourceScript"));
+    r.destinationScript = id<SctScriptId>(j.at("destinationScript"));
+    r.sourceAction = id<SctActionId>(j.at("sourceAction"));
+    r.sourceOperand.schemaIndex = number(j.at("sourceParameter"));
+    if (!j.at("sourceGroup").is_null())
+        r.sourceOperand.repeatedGroupOrdinal = number(j.at("sourceGroup"));
+    r.arrival = id<SctEntrypointId>(j.at("arrival"));
+    if (!j.at("arrivalCase").is_null())
+        r.arrivalCase = number(j.at("arrivalCase"));
+    if (!j.at("discriminatorBit").is_null())
+        r.discriminatorBit = number(j.at("discriminatorBit"));
+    r.discriminatorValue = boolean(j.at("discriminatorValue"));
+    r.sourceStem = string(j.at("sourceStem"));
+    r.targetFilename = string(j.at("targetFilename"));
+    for (const auto &o : array(j.at("observations"))) {
+        keys(o, {"script", "action", "role", "fingerprint"});
+        auto role = number(o.at("role"));
+        require(role <= 6, "Unknown observation role.");
+        r.observations.push_back({id<SctScriptId>(o.at("script")), id<SctActionId>(o.at("action")),
+                                  static_cast<SctRouteObservationRole>(role), string(o.at("fingerprint"))});
+    }
+    if (!j.at("unresolved").is_null()) {
+        auto ref = readReference<SctPortId>(j.at("unresolved"));
+        require(std::holds_alternative<SctUnresolvedBinding>(ref), "Expected unresolved route evidence.");
+        r.unresolved = std::get<SctUnresolvedBinding>(ref);
+    }
+    return r;
+}
 Json usesJson(const std::vector<SctAuthoringReference<SctContentId>>& uses) {
     auto result = Json::array(); for (const auto& use : uses) result.push_back(referenceJson(use)); return result;
 }
@@ -401,7 +472,7 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
         root["modules"] = sorted(project.modules, owned); root["entrypoints"] = sorted(project.entrypoints, owned);
         root["ports"] = sorted(project.ports, [](const auto& p) { return Json{{"id", id(p.id)}, {"owner", ownerJson(p.owner)}, {"name", p.name}, {"action", p.action ? Json(id(*p.action)) : Json(nullptr)}, {"sequence", p.sequence ? Json(id(*p.sequence)) : Json(nullptr)}}; });
         root["connections"] = sorted(project.connections, [](const auto& c) { return Json{{"id", id(c.id)},
-            {"source", referenceJson(c.source)}, {"destination", referenceJson(c.destination)}, {"evidence", evidenceJson(c.evidence)}}; });
+            {"source", referenceJson(c.source)}, {"destination", referenceJson(c.destination)}, {"evidence", evidenceJson(c.evidence)}, {"route",routeJson(c.route)}}; });
         root["contents"] = sorted(project.contents, [](const auto& c) {
             Json patch = nullptr; Json authored = nullptr;
             if (c.authoredState) { auto encoded = SctProgramStateCodec::encode(*c.authoredState); require(static_cast<bool>(encoded), "Invalid authored content."); authored = Json::parse(encoded.value()); }
@@ -507,9 +578,9 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
             result.ports.push_back({id<SctPortId>(p.at("id")), readOwner<SctPortOwner>(p.at("owner")), string(p.at("name")), p.at("action").is_null() ? std::nullopt : std::optional{id<SctActionId>(p.at("action"))}, p.at("sequence").is_null() ? std::nullopt : std::optional{id<SctSequenceId>(p.at("sequence"))}});
         }
         for (const auto& c : array(root.at("connections"))) {
-            keys(c, {"id", "source", "destination", "evidence"});
+            keys(c, {"id", "source", "destination", "evidence", "route"});
             result.connections.push_back({id<SctConnectionId>(c.at("id")), readReference<SctPortId>(c.at("source")),
-                readReference<SctPortId>(c.at("destination")), readEvidence(c.at("evidence"))});
+                readReference<SctPortId>(c.at("destination")), readEvidence(c.at("evidence")), readRoute(c.at("route"))});
         }
         for (const auto& c : array(root.at("contents"))) {
             keys(c, {"id", "owner", "region", "evidence", "literalOverrides", "physicalPatch", "authoredState"});

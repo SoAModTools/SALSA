@@ -66,6 +66,7 @@ class StoryDialog final : public QDialog {
         bar->addWidget(new QLabel(tr("Cutscene / module:")));
         roots = new QComboBox(this);
         bar->addWidget(roots, 1);
+        button(bar, "Executable routes / export set", [this] { showSctRouteEditor(controller,this); });
         button(bar, "Refresh", [this] { refresh(); });
         button(bar, "Save layout", [this] { saveLayout(); });
         button(bar, "Suggest all paths", [this] { suggest(false); });

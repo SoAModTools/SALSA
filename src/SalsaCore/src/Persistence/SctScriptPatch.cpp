@@ -1172,6 +1172,41 @@ spice::sct::SctDocument SctProgramStateCodec::authoredDocument(const spice::sct:
     return document;
 }
 
+Result<std::string> SctProgramStateCodec::inspectInstruction(const spice::sct::SctDocument &document,
+                                                             spice::sct::SctInstructionId id) {
+    for (const auto &section : document.sections)
+        if (const auto *body = std::get_if<spice::sct::SctScriptSectionContent>(&section.content))
+            for (const auto &instruction : body->instructions)
+                if (instruction.id == id) {
+                    auto value = encodeInstruction(instruction);
+                    value["referencedText"] = Json::array();
+                    auto add = [&](const auto &parameters) {
+                        for (const auto &p : parameters)
+                            if (const auto *ref = std::get_if<spice::sct::SctSupplementaryTextReference>(&p.value))
+                                for (const auto &text : document.supplementaryText)
+                                    if (text.id == ref->target)
+                                        value["referencedText"].push_back(encodeSupplementaryText(text));
+                    };
+                    add(instruction.fixedParameters);
+                    for (const auto &group : instruction.repeatedParameterGroups)
+                        add(group.parameters);
+                    return Result<std::string>::success(value.dump());
+                }
+    return Result<std::string>::failure({DiagnosticSeverity::Error, DiagnosticCode::InvalidSctAuthoringProject,
+                                         "Route observation action is missing."});
+}
+
+Result<std::string> SctProgramStateCodec::instructionFingerprint(const spice::sct::SctDocument &document,
+                                                                 spice::sct::SctInstructionId id) {
+    auto observation = inspectInstruction(document, id);
+    if (!observation)
+        return observation;
+    auto digest = sha256(std::as_bytes(std::span(observation.value())));
+    if (!digest)
+        return Result<std::string>::failure(digest.diagnostics());
+    return Result<std::string>::success(digest.value().toHex());
+}
+
 Result<std::string> SctProgramStateCodec::encode(const SctSemanticState& state) {
     try {
         if (!state.document) throw std::runtime_error("Missing authored program.");

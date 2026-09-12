@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctRouteAuthoring.h"
 #include "SalsaCore/Sct/SctPublication.h"
 #include "SalsaCore/Authoring/SctAuthoringMaterializer.h"
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
@@ -201,6 +202,12 @@ SctPublicationResult SctPublicationService::publish(
         if (!captured.semanticOutput || captured.authoringRevision != captured.authoringProject->revision) {
             result.infrastructureDiagnostics.push_back(publicationDiagnostic(DiagnosticSeverity::Error, DiagnosticCode::SctExportFailed, "Captured authoring revision is inconsistent."));
             return result;
+        }
+        auto routeDiagnostics = SctRouteAuthoring::validate(*captured.authoringProject,captured.authoringScript,true);
+        if (hasErrors(routeDiagnostics)) { result.infrastructureDiagnostics = routeDiagnostics; return result; }
+        const std::array seed{captured.authoringScript};
+        if (SctRouteAuthoring::closure(*captured.authoringProject,seed).size()>1) {
+            result.infrastructureDiagnostics.push_back(publicationDiagnostic(DiagnosticSeverity::Error,DiagnosticCode::SctExportFailed,"This route requires companion scripts. Use coordinated project output to publish the complete closure.")); return result;
         }
         auto activation = SctEntrypointAuthoring::lower(*captured.authoringProject,captured.authoringScript,*outputDocument);
         if (!activation) { result.infrastructureDiagnostics = activation.diagnostics(); return result; }

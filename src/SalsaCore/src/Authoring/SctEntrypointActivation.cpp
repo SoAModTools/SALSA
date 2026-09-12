@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctRouteAuthoring.h"
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SpiceSCT/SctDocumentIndex.h"
 #include <set>
@@ -148,6 +149,7 @@ Result<SctAuthoringState> SctEntrypointAuthoring::setEnabled(const SctAuthoringS
     auto next = state; const auto found = std::ranges::find(next.project.entrypoints,id,&SctAuthoringEntrypoint::id);
     if (found == next.project.entrypoints.end()) return Result<SctAuthoringState>::failure(error("Entrypoint is missing."));
     found->enabled = enabled;
+    SctRouteAuthoring::reconcile(next.project,found->script);
     return checked(std::move(next));
 }
 Result<SctAuthoringState> SctEntrypointAuthoring::setActivation(const SctAuthoringState& state, SctEntrypointId id, SctEntrypointActivation activation) {

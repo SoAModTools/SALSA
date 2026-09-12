@@ -263,6 +263,9 @@ struct StoredTransaction final {
         index < transaction.mutations.size(); ++index) {
         const auto& mutation = transaction.mutations[index];
         const auto destination = root / mutation.relativePath;
+        const auto current = fileDigest(destination);
+        if (!current || (current.value() != mutation.beforeSha256 && current.value() != mutation.afterSha256))
+            return blocked(transaction.request.transactionId, "Destination changed after transaction preparation.", destination);
         if (mutation.afterPresent) {
             const auto staged = readBytes(transactionRoot / mutation.stagedPath);
             if (!staged) return {transaction.request.transactionId,
@@ -470,6 +473,23 @@ WorkspaceTransactionResult WorkspaceTransactionService::commitPrepared(
         return {std::string(transactionId), decoded.value().status, {}};
     return finishCommit(workspaceRoot, transactionRoot,
         std::move(decoded).takeValue(), hooks);
+}
+
+WorkspaceTransactionResult WorkspaceTransactionService::rollbackPrepared(const std::filesystem::path &root,
+                                                                         const std::filesystem::path &journal,
+                                                                         std::string_view id) {
+    if (!validId(id) || !safeRelative(journal))
+        return blocked(std::string(id), "Invalid rollback identity.", root);
+    auto path = root / journal / std::filesystem::path(id);
+    auto stored = decode(path / ManifestName);
+    if (!stored)
+        return {std::string(id), WorkspaceTransactionStatus::RecoveryBlocked, stored.diagnostics()};
+    for (const auto &m : stored.value().mutations) {
+        auto current = fileDigest(root / m.relativePath);
+        if (!current || (current.value() != m.beforeSha256 && current.value() != m.afterSha256))
+            return blocked(std::string(id), "External changes prevent rollback.", root / m.relativePath);
+    }
+    return rollBack(root, path, std::move(stored).takeValue());
 }
 
 std::vector<WorkspaceTransactionResult> WorkspaceTransactionService::recoverAll(

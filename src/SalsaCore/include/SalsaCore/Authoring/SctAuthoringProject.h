@@ -161,11 +161,34 @@ struct SctAuthoringPort final {
     std::optional<SctActionId> action;
     std::optional<SctSequenceId> sequence;
 };
+enum class SctTransitionKind { LiteralLoad, Warp, SavedAreaReturn, Battle, ShipBattleExit };
+// Captured instruction observations detect later low-level edits. They never replay edits.
+enum class SctRouteObservationRole { Source, Arrival, Response, Prerequisite, Requirement, Effect, Continuation };
+struct SctRouteObservation final {
+    SctScriptId script;
+    SctActionId action;
+    SctRouteObservationRole role = SctRouteObservationRole::Requirement;
+    std::string fingerprint;
+};
+struct SctExecutableRoute final {
+    SctTransitionKind kind = SctTransitionKind::LiteralLoad;
+    SctScriptId sourceScript, destinationScript;
+    SctActionId sourceAction;
+    spice::sct::SctParameterAddress sourceOperand{0, {}};
+    SctEntrypointId arrival;
+    std::optional<std::uint32_t> arrivalCase;
+    std::string sourceStem, targetFilename;
+    std::optional<std::uint32_t> discriminatorBit;
+    bool discriminatorValue = false;
+    std::vector<SctRouteObservation> observations;
+    std::optional<SctUnresolvedBinding> unresolved;
+};
 struct SctAuthoringConnection final {
     SctConnectionId id;
     SctAuthoringReference<SctPortId> source;
     SctAuthoringReference<SctPortId> destination;
     std::vector<SctAuthoringEvidence> evidence;
+    std::optional<SctExecutableRoute> route;
 };
 struct SctWholeDocument final {};
 struct SctOrderedSourceSelection final {

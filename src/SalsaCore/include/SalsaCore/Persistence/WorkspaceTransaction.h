@@ -63,6 +63,9 @@ public:
         const std::filesystem::path& transactionsRelativeRoot,
         std::string_view transactionId,
         const WorkspaceTransactionHooks& hooks = {});
+    [[nodiscard]] static WorkspaceTransactionResult rollbackPrepared(
+        const std::filesystem::path& workspaceRoot,
+        const std::filesystem::path& transactionsRelativeRoot, std::string_view transactionId);
     [[nodiscard]] static std::vector<WorkspaceTransactionResult> recoverAll(
         const std::filesystem::path& workspaceRoot,
         const std::filesystem::path& transactionsRelativeRoot);

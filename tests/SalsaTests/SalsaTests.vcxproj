@@ -48,7 +48,9 @@
       <SubSystem>Console</SubSystem>
     </Link>
   </ItemDefinitionGroup>
+  <ItemGroup><ClInclude Include="SctRouteTestFixture.h" /></ItemGroup>
   <ItemGroup>
+    <ClCompile Include="test_sct_routes.cpp" />
     <ClCompile Include="..\..\src\SalsaConnectivitySurvey\Resources.cpp" />
     <ClCompile Include="test_sct_connectivity_survey.cpp" />
     <ClCompile Include="..\..\src\SalsaConnectivitySurvey\Worker.cpp" />

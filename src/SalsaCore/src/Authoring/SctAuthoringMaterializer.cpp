@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctRouteAuthoring.h"
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringMaterializer.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
@@ -128,6 +129,7 @@ Result<const SctAuthoringContent*> wholeRegion(const SctAuthoringProject& projec
     if (std::ranges::any_of(project.modules, [&](const auto& m) { return m.script == script && m.sections.empty(); }))
         return Result<const SctAuthoringContent*>::failure(error("Empty module descriptors are not supported."));
     for (const auto& connection : project.connections) {
+        if (connection.route) continue;
         for (const auto* endpoint : {&connection.source, &connection.destination}) {
             const auto* portId = std::get_if<SctPortId>(endpoint);
             if (!portId) return Result<const SctAuthoringContent*>::failure(error("Unresolved execution connection prevents output."));
@@ -258,7 +260,7 @@ SctRealizationMap mapping(const SctAuthoringProject& project, SctScriptId script
     return mapping;
 }
 SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctImportedPrograms& programs,
-    SctScriptId scriptId, SctAuthoringOutputMode mode, std::stop_token stop) {
+    SctScriptId scriptId, SctAuthoringOutputMode mode, std::stop_token stop, const sct::SctDocumentExportOptions* selectedOptions) {
     SctAuthoringScriptOutput result; result.script = scriptId;
     const auto* script = project.find(scriptId);
     if (!script) { result.infrastructureDiagnostics.push_back(error("Requested script is absent.")); return result; }
@@ -279,6 +281,8 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     auto semanticValid = SctSequenceAuthoring::validateProgram(project, scriptId, replayed.value());
     if (semanticValid) semanticValid = SctEntrypointAuthoring::validateProgram(project, scriptId, replayed.value(), true);
     if (!semanticValid) { result.infrastructureDiagnostics = semanticValid.diagnostics(); return result; }
+    const auto routes = SctRouteAuthoring::validate(project,scriptId,true);
+    if (hasErrors(routes)) { result.infrastructureDiagnostics = routes; return result; }
     auto activation = SctEntrypointAuthoring::lower(project,scriptId,replayed.value());
     if (!activation) { result.infrastructureDiagnostics = activation.diagnostics(); return result; }
     const auto generated = activation.value().generated;
@@ -289,7 +293,7 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
         auto current = SctProgramStateCodec::encode(*region.value()->authoredState);
         unchanged = original && current && original.value() == current.value();
     }
-    const bool reuse = mode == SctAuthoringOutputMode::ReuseUnchangedSource && unchanged && generated.empty();
+    const bool reuse = !selectedOptions && mode == SctAuthoringOutputMode::ReuseUnchangedSource && unchanged && generated.empty();
     if (reuse) replayed = Result<sct::SctDocument>::success(program.document());
     if (!reuse) {
         auto lowered = SctAuthoringMaterializer::buildSemanticDocument(replayed.value());
@@ -302,6 +306,7 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
         baseline->textConvention ? *sct::sctTextEncodingFor(*baseline->textConvention) : sct::kSctShiftJisByte7FEncoding,
         script->outputProfile->bigEndian ? sct::SctDocumentOutputByteOrder::BigEndian : sct::SctDocumentOutputByteOrder::LittleEndian,
         script->outputProfile->compressed ? sct::SctDocumentOutputWrapper::Aklz : sct::SctDocumentOutputWrapper::Raw};
+    if (selectedOptions) options = *selectedOptions;
     // Preserve understood header values, but do not give fresh layout the old
     // document's byte-placement or opaque-preservation evidence.
     if (!reuse) options.header = {sct::SctHeaderExportMode::ExplicitValues, script->outputProfile->header};
@@ -364,6 +369,11 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     result.prepared.emplace(SctPreparedAuthoringOutput{std::move(bytes), document,
         mapping(project, scriptId, region.value()->id, identity.value(), *document), digest.value(), reuse,
         reuse ? std::optional{program.evidence().receipt().sourceMap} : std::nullopt, std::move(layout), std::move(preservation)});
+    for (const auto& c : project.connections) if(c.route) {
+        SctRealizationRecord record{SctAuthoringEntityId{c.id}};
+        for(const auto& o:c.route->observations) if(o.script==scriptId) if(const auto* a=project.find(o.action)) record.locations.emplace_back(sct::SctDocumentEntityId{a->instruction});
+        if(!record.locations.empty())result.prepared->realization.records.push_back(std::move(record));
+    }
     for (const auto& record : generated) {
         auto found = std::ranges::find(result.prepared->realization.records, record.entity, &SctRealizationRecord::entity);
         if (found == result.prepared->realization.records.end()) result.prepared->realization.records.push_back(record);
@@ -696,6 +706,7 @@ Result<SctAuthoringProject> SctAuthoringMaterializer::replaceWorkingState(const 
     }
     auto reconciled = SctSequenceAuthoring::reconcileActions(next, script, *working.document);
     if (!reconciled) return Result<SctAuthoringProject>::failure(reconciled.diagnostics());
+    SctRouteAuthoring::reconcile(next, script);
     auto replayed = workingState(next, programs, script);
     if (!replayed) return Result<SctAuthoringProject>::failure(replayed.diagnostics());
     return Result<SctAuthoringProject>::success(std::move(next));
@@ -792,7 +803,7 @@ SctAuthoringMaterializationResult SctAuthoringMaterializer::materialize(
     }
     for (const auto script : scripts) {
         if (stop.stop_requested()) break;
-        try { result.scripts.push_back(prepare(*request.project, request.programs, script, request.mode, stop)); }
+        try { result.scripts.push_back(prepare(*request.project, request.programs, script, request.mode, stop, request.outputOptions.contains(script) ? &request.outputOptions.at(script) : nullptr)); }
         catch (const std::exception& e) { SctAuthoringScriptOutput failed; failed.script = script; failed.infrastructureDiagnostics.push_back(error(e.what())); result.scripts.push_back(std::move(failed)); }
     }
     if (stop.stop_requested()) {

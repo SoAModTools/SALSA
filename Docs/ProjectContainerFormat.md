@@ -22,10 +22,12 @@ Limits: 4,096 records, 240 bytes per name, 256 MiB per uncompressed record, 1 Gi
 ## Records and logical schemas
 
 - `project.json`: `jahorta.salsa.authoring-checkpoint`, schema 2. Includes workspace identity, semantic project, separate presentation, and baseline record bindings.
-- Semantic project: `jahorta.salsa.authoring-project`, schema 6. Includes project/entity identities, allocation state, ownership, module section membership, stable action/sequence ports, evidence, unresolved bindings, authored output profiles, and entrypoint response/provider bindings.
+- Semantic project: `jahorta.salsa.authoring-project`, schema 11. Includes project/entity identities, allocation state, ownership, module section membership, stable action/sequence ports, evidence, unresolved bindings, authored output profiles, and entrypoint activation and optional resource bindings, language groups, interpretations, narrative occurrences, and executable cross-script route observations.
 - Complete program content: `jahorta.salsa.program-state`, schema 1, nested in semantic content. Includes ordered sections/instructions/text, expressions, references, allocation state, control-arm metadata, text repair provenance, aliases, annotations, and folders.
 - `baselines/<baseline-id>.sct`: exact imported source bytes, verified against the baseline descriptor on load.
 - `legacy/<capsule-id>/...`: available migration capsule evidence, retained across subsequent saves. These records are not execution state.
+
+Presentation schema 3 retains independent placements for repeated narrative occurrences. Derived path proposals and publication receipts are not execution state.
 
 Container, checkpoint, semantic, presentation, and program versions are independent. Unsupported schemas fail closed. Baseline names are validated against the manifest; unrecognized checkpoint records are rejected. JSON duplicate keys and excessive nesting are rejected. No partially accepted project is returned.
 

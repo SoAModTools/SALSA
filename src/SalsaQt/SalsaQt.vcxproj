@@ -54,6 +54,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Sct\SctRouteDialog.cpp" />
     <ClCompile Include="Application\ExclusiveOperationController.cpp" />
     <ClCompile Include="Application\ExclusiveOperationCoordinator.cpp" />
     <ClCompile Include="Application\ExclusiveOperationDialog.cpp" />

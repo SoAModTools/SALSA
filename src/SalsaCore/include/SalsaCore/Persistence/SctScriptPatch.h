@@ -86,6 +86,8 @@ struct SctSemanticState final {
 // bytes or apply a patch. SPICE value types are serialized by SALSA's schema.
 class SctProgramStateCodec final {
 public:
+    [[nodiscard]] static Result<std::string> inspectInstruction(const spice::sct::SctDocument&, spice::sct::SctInstructionId);
+    [[nodiscard]] static Result<std::string> instructionFingerprint(const spice::sct::SctDocument&, spice::sct::SctInstructionId);
     // Opaque source data becomes an uninterpreted marker. The transient SPICE
     // projection uses non-source sentinels solely to satisfy its value contract;
     // semantic lowering never emits those sentinels.

@@ -374,6 +374,7 @@ TEST(ConnectivitySurveyPathsTest, ConditionalEffectsPreserveBothWritesAndDataset
     auto data=bytes();auto a=extract(data,identity(data));auto b=a;
     b["identity"]["key"]="synthetic:me002b.sct";b["identity"]["path"]="me002b.sct";
     auto graph=SctStoryPaths::propose({a,b});ASSERT_TRUE(graph);
+    EXPECT_EQ(graph.value(),SctStoryPaths::propose({b,a}).value());
     bool enables=false,inhibits=false;
     for(const auto& e:graph.value()["edges"]) {enables|=e["kind"]=="enables";inhibits|=e["kind"]=="inhibits";}
     EXPECT_TRUE(enables);EXPECT_TRUE(inhibits);

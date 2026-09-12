@@ -333,3 +333,130 @@ TEST(AuthoringControllerTest, StoryLayoutIsIndependentAndConcurrentSaveRetainsNe
     qt::SctDocumentController reopened;reopened.setWorkspace(f.workspace);EXPECT_EQ(reopened.authoringPresentation().storyPlacements.front().x,99);
     EXPECT_EQ(core::SctAuthoringCodec::encode(reopened.authoringState()->project).value(),encoded);
 }
+#include "../SalsaTests/SctRouteTestFixture.h"
+#include "SalsaCore/Authoring/SctPublicationSet.h"
+TEST(AuthoringControllerTest, RoutePairUndoReopenAndCoordinatedCapture) {
+    namespace r = salsa::tests::route;
+    auto synthetic = r::fixture();
+    struct Temp {
+        std::filesystem::path root =
+            std::filesystem::temp_directory_path() / ("salsa-qt-route-" + core::generateSctAuthoringUuid().value());
+        Temp() {
+            std::filesystem::create_directories(root / "source");
+            std::filesystem::create_directories(root / "output");
+        }
+        ~Temp() {
+            std::error_code ec;
+            std::filesystem::remove_all(root, ec);
+        }
+    } temp;
+    for (const auto &program : synthetic.state.programs) {
+        std::ofstream file(temp.root / "source" / program->baseline().source.locator.path(), std::ios::binary);
+        file.write(reinterpret_cast<const char *>(program->bytes().data()), program->bytes().size());
+    }
+    auto project =
+        core::LocalGameProject::inspect({temp.root / "source", core::GamePlatform::Dreamcast, core::GameRegion::Europe})
+            .value();
+    auto workspace = std::make_shared<const core::LocalSalsaWorkspace>(
+        core::LocalSalsaWorkspace::openOrCreate(temp.root / "workspace", project.dataset()).value());
+    auto a = core::AssetLocator::fromRelativePath("me002a.sct").value(),
+         b = core::AssetLocator::fromRelativePath("me002b.sct").value();
+    qt::SctDocumentController controller;
+    controller.setWorkspace(workspace);
+    ASSERT_TRUE(controller.openDocument(project, a));
+    ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    ASSERT_TRUE(controller.contains(a));
+    ASSERT_TRUE(controller.openDocument(project, b));
+    ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    ASSERT_TRUE(controller.contains(b));
+    auto organized = r::organize(*controller.authoringState());
+    // The fixture also has an unrelated destination load. Repair that known synthetic
+    // text explicitly; leave the source filename unresolved to exercise route selection.
+    auto destination = organized.state.project.scripts[1].id;
+    auto dw =
+        core::SctAuthoringMaterializer::workingState(organized.state.project, organized.state.programs, destination)
+            .value();
+    auto document = std::make_shared<sct::SctDocument>(*dw.document);
+    for (auto &text : document->supplementaryText)
+        if (std::holds_alternative<sct::SctOpaqueText>(text.value))
+            text.value = sct::SctPlainText{"me999a.sct"};
+    dw.document = document;
+    organized.state.project = core::SctAuthoringMaterializer::replaceWorkingState(
+                                  organized.state.project, organized.state.programs, destination, dw)
+                                  .value();
+    ASSERT_TRUE(controller.executeAuthoringCommand(
+        controller.authoringState()->project.revision, "Organize endpoints",
+        [&](const auto &) { return core::Result<core::SctAuthoringState>::success(organized.state); }));
+    const auto expected = controller.authoringState()->project.revision;
+    auto connected = controller.executeAuthoringCommand(expected, "Connect pair", [&](const auto &s) {
+        return core::SctRouteAuthoring::connect(s, organized.request);
+    });
+    ASSERT_TRUE(connected) << ([&] {
+        std::string text;
+        for (const auto &d : connected.diagnostics())
+            text += d.message + "\n";
+        return text;
+    })();
+    auto captured = controller.authoringState();
+    ASSERT_EQ(captured->project.connections.size(), 1u);
+    EXPECT_EQ(controller.authoringSourcePath(captured->project.scripts[0].id), temp.root / "source" / a.path());
+    ASSERT_TRUE(controller.undo(a));
+    EXPECT_TRUE(controller.authoringState()->project.connections.empty());
+    ASSERT_TRUE(controller.redo(b));
+    ASSERT_TRUE(controller.saveDocument(a));
+    ASSERT_TRUE(waitFor([&] { return !controller.isSaving(a); }));
+    qt::SctDocumentController reopened;
+    reopened.setWorkspace(workspace);
+    ASSERT_TRUE(reopened.authoringState());
+    ASSERT_EQ(reopened.authoringState()->project.connections.size(), 1u);
+    core::SctPublicationSetRequest request{
+        captured, captured->project.revision, temp.root / "output", {captured->project.scripts[0].id}};
+    for (const auto &script : captured->project.scripts)
+        request.targets.push_back(
+            {script.id,
+             captured->project.find(script.baseline)->source.locator.path(),
+             {sct::SctPlatform::Dreamcast, sct::kSctShiftJisByte7FEncoding,
+              sct::SctDocumentOutputByteOrder::LittleEndian, sct::SctDocumentOutputWrapper::Raw}});
+    auto prepared = core::SctPublicationSet::prepare(request);
+    ASSERT_TRUE(prepared) << ([&] {
+        std::string s;
+        for (const auto &d : prepared.diagnostics())
+            s += d.message + "\n";
+        return s;
+    })();
+    auto advanced = controller.authoringState()->project.revision;
+    ASSERT_TRUE(controller.executeAuthoringCommand(advanced, "Rename after capture", [](const auto &s) {
+        auto next = s;
+        next.project.scripts[0].name = "Newer unsaved name";
+        return core::Result<core::SctAuthoringState>::success(std::move(next));
+    }));
+    EXPECT_FALSE(controller.executeAuthoringCommand(
+        expected, "Reject stale", [](const auto &s) { return core::Result<core::SctAuthoringState>::success(s); }));
+    auto installed = core::SctPublicationSet::install(prepared.value());
+    ASSERT_TRUE(installed.receipt);
+    EXPECT_EQ(installed.receipt->revision, captured->project.revision);
+    EXPECT_NE(installed.receipt->revision, controller.authoringState()->project.revision);
+    auto direct = core::SctAuthoringMaterializer::materialize(
+        {std::make_shared<const core::SctAuthoringProject>(captured->project),
+         captured->programs,
+         {captured->project.scripts[0].id, captured->project.scripts[1].id}});
+    ASSERT_TRUE(direct.succeeded());
+    for (size_t i = 0; i < 2; ++i)
+        EXPECT_EQ(direct.scripts[i].prepared->digest, installed.receipt->outputs[i].digest);
+    bool finished = false, success = true;
+    QString message;
+    QObject::connect(&controller, &qt::SctDocumentController::publicationCompleted, &controller,
+                     [&](const QString &, bool ok, bool, const QString &text, bool) {
+                         finished = true;
+                         success = ok;
+                         message = text;
+                     });
+    ASSERT_TRUE(
+        controller.exportDocument(project, a,
+                                  {sct::SctPlatform::Dreamcast, sct::kSctShiftJisByte7FEncoding,
+                                   sct::SctDocumentOutputByteOrder::LittleEndian, sct::SctDocumentOutputWrapper::Raw},
+                                  temp.root / "half.sct", false, {}));
+    ASSERT_TRUE(waitFor([&] { return finished; }));
+    EXPECT_FALSE(success);
+    EXPECT_FALSE(std::filesystem::exists(temp.root / "half.sct"));
+}

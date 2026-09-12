@@ -159,12 +159,12 @@ Result<J> SctStoryPaths::propose(const std::vector<J> &scripts, const std::vecto
         }
         std::set<std::string> signatures;
         const auto add = [&](J edge) {
-            if (!signatures.insert(edge.dump()).second)
-                return;
+            const auto signature=edge.dump();if(signatures.contains(signature))return;
             if (out["edges"].size() >= o.maximumEdges) {
                 out["truncated"] = true;
                 return;
             }
+            signatures.insert(signature);
             edge["id"] = std::to_string(out["edges"].size() + 1);
             out["edges"].push_back(std::move(edge));
         };
@@ -275,8 +275,8 @@ Result<J> SctStoryPaths::propose(const std::vector<J> &scripts, const std::vecto
             J access;
         };
         std::map<std::string, std::vector<Write>> writers;
-        for (const auto &f : scripts)
-            if (f.at("status") == "analyzed")
+        for (const auto& [fileKey, facts] : files)
+            if (const auto& f=*facts; f.at("status") == "analyzed")
                 for (const auto &scope : f.at("scopes"))
                     for (const auto &n : scope.at("writes")) {
                         const auto &a = f.at("accesses").at(n.get<std::size_t>());
@@ -338,7 +338,14 @@ Result<J> SctStoryPaths::propose(const std::vector<J> &scripts, const std::vecto
                 }
             }
         }
-        for (const auto &r : resources) {
+        std::vector<const J*> orderedResources;for(const auto& resource:resources)orderedResources.push_back(&resource);
+        std::ranges::sort(orderedResources,[](const auto* a,const auto* b){
+            const auto left=std::pair{a->at("script").at("key"),a->at("resource").at("key")};
+            const auto right=std::pair{b->at("script").at("key"),b->at("resource").at("key")};
+            return left!=right?left<right:a->dump()<b->dump();
+        });
+        for (const auto* resource : orderedResources) {
+            const auto& r=*resource;
             auto key = r.at("script").at("key").get<std::string>();
             if (!files.contains(key))
                 continue;
@@ -480,6 +487,7 @@ Result<J> SctStoryPaths::propose(const std::vector<J> &scripts, const std::vecto
         }
         if (!todo.empty())
             out["truncated"] = true;
+        std::sort(out["gaps"].begin(),out["gaps"].end(),[](const auto& a,const auto& b){return a.dump()<b.dump();});
         return Result<J>::success(std::move(out));
     } catch (const std::exception &e) {
         return Result<J>::failure(error(e.what()));

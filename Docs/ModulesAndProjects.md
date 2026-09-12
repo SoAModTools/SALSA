@@ -10,7 +10,7 @@ Each module retains one parent script. Extraction preserves action order, target
 
 Double-click a caller or dependency to navigate to the corresponding instruction. Shared conditions explicitly update every bound use. Section adjacency is shown as a possible continuation, not a proven execution edge. Resource residency and ambient caller state still require interpretation; extraction does not establish them automatically.
 
-Module and document edits use the same project revision, Undo/Redo, and save operation. Opening a module does not create another copy to edit. Reparenting modules is unsupported. [Entrypoints and Resources](EntrypointsAndResources.md) connects existing entrypoints and selected resource entries to module responses; arbitrary graph execution remains deferred.
+Module and document edits use the same project revision, Undo/Redo, and save operation. Opening a module does not create another copy to edit. Reparenting modules is unsupported. [Entrypoints and Resources](EntrypointsAndResources.md) connects existing entrypoints and selected resource entries to module responses; [cross-script route authoring](CrossScriptRoutes.md) connects supported script loads and arrival responses separately from narrative proposals. Arbitrary graph execution remains deferred.
 
 ## Saving and reopening
 

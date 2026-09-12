@@ -45,6 +45,8 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Authoring\SctPublicationSet.h" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctRouteAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringProject.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringCodec.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringSession.h" />
@@ -107,6 +109,8 @@
     <ClInclude Include="include\SalsaCore\Sct\SctWorkingState.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Authoring\SctPublicationSet.cpp" />
+    <ClCompile Include="src\Authoring\SctRouteAuthoring.cpp" />
     <ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp" />
     <ClCompile Include="src\Authoring\SctAuthoringProject.cpp" />
     <ClCompile Include="src\Authoring\SctAuthoringCodec.cpp" />

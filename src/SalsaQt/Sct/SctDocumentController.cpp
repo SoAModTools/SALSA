@@ -1205,6 +1205,11 @@ bool SctDocumentController::discardProjectChanges() {
     restoreAuthoringProjections();
     return true;
 }
+std::optional<std::filesystem::path> SctDocumentController::authoringSourcePath(core::SctScriptId id) const {
+    if(!workspace_||!authoring_)return {};const auto* script=authoring_->state().project.find(id);if(!script)return {};
+    const auto* baseline=authoring_->state().project.find(script->baseline);if(!baseline)return {};
+    return workspace_->descriptor().dataset.root/baseline->source.locator.path();
+}
 std::shared_ptr<const core::SctAuthoringState> SctDocumentController::authoringState() const {
     return authoring_ ? authoring_->capture() : nullptr;
 }
