@@ -278,6 +278,7 @@ private:
     QAction* navigationForwardAction_ = nullptr;
     QAction* datasetOverviewAction_ = nullptr;
     QAction* editMessageAction_ = nullptr;
+    QAction* sequenceEditorAction_ = nullptr;
     QAction* createScriptSectionAction_ = nullptr;
     QAction* createIndexedStringAction_ = nullptr;
     QAction* renameSectionAction_ = nullptr;

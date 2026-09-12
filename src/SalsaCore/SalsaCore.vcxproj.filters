@@ -109,5 +109,9 @@
     <ClCompile Include="src\Sct\SctWorkingState.cpp"><Filter>SCT</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup><ClInclude Include="include\SalsaCore\Authoring\SctAuthoringSession.h"><Filter>Authoring</Filter></ClInclude><ClCompile Include="src\Authoring\SctAuthoringSession.cpp"><Filter>Authoring</Filter></ClCompile></ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Authoring\SctSequenceAuthoring.h"><Filter>Authoring</Filter></ClInclude>
+    <ClCompile Include="src\Authoring\SctSequenceAuthoring.cpp"><Filter>Authoring</Filter></ClCompile>
+  </ItemGroup>
   <ItemGroup><ClInclude Include="include\SalsaCore\Authoring\SctAuthoringStore.h"><Filter>Authoring</Filter></ClInclude><ClCompile Include="src\Authoring\SctAuthoringStore.cpp"><Filter>Authoring</Filter></ClCompile></ItemGroup>
 </Project>

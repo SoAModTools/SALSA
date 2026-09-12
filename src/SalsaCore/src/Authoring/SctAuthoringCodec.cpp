@@ -90,7 +90,7 @@ std::vector<SctAuthoringReference<SctContentId>> readUses(const Json& values) {
     std::vector<SctAuthoringReference<SctContentId>> result;
     for (const auto& value : array(values)) result.push_back(readReference<SctContentId>(value)); return result;
 }
-constexpr std::array<std::string_view, 7> EntityKinds{"script", "module", "entrypoint", "port", "connection", "content", "baseline"};
+constexpr std::array<std::string_view, 10> EntityKinds{"script", "module", "entrypoint", "port", "connection", "content", "baseline", "sequence", "action", "predicate"};
 Json entityJson(const SctAuthoringEntityId& value) {
     return {{"kind", EntityKinds.at(value.index())}, {"id", std::visit([](auto item) { return id(item); }, value)}};
 }
@@ -103,6 +103,9 @@ SctAuthoringEntityId readEntity(const Json& value) {
     if (kind == "connection") return id<SctConnectionId>(number);
     if (kind == "content") return id<SctContentId>(number);
     if (kind == "baseline") return id<SctBaselineId>(number);
+    if (kind == "sequence") return id<SctSequenceId>(number);
+    if (kind == "action") return id<SctActionId>(number);
+    if (kind == "predicate") return id<SctPredicateId>(number);
     throw std::runtime_error("Unknown authored entity kind.");
 }
 template<class Owner> Json ownerJson(const Owner& owner) {
@@ -277,6 +280,19 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
             return Json{{"id", id(c.id)},
             {"owner", ownerJson(c.owner)}, {"region", regionJson(c.region)}, {"evidence", evidenceJson(c.evidence)},
             {"literalOverrides", overridesJson(c.literalOverrides)}, {"physicalPatch", patch}}; });
+        root["sequences"] = sorted(project.sequences, [](const auto& sequence) {
+            auto actions = Json::array();
+            for (const auto& action : sequence.actions) actions.push_back({{"id", id(action.id)}, {"instruction", std::to_string(action.instruction.value())}});
+            return Json{{"id", id(sequence.id)}, {"script", id(sequence.script)}, {"name", sequence.name},
+                {"baseline", id(sequence.binding.baseline)}, {"importedDocument", sequence.binding.importedDocument.value},
+                {"section", std::to_string(sequence.section.value())}, {"actions", actions}};
+        });
+        root["predicates"] = sorted(project.predicates, [](const auto& predicate) {
+            auto uses = Json::array();
+            for (const auto& use : predicate.uses) uses.push_back({{"instruction", std::to_string(use.instruction.value())}, {"parameter", use.parameter.schemaIndex}});
+            return Json{{"id", id(predicate.id)}, {"script", id(predicate.script)}, {"name", predicate.name},
+                {"baseline", id(predicate.binding.baseline)}, {"importedDocument", predicate.binding.importedDocument.value}, {"uses", uses}};
+        });
         return Result<std::string>::success(root.dump(2), std::move(diagnostics));
     } catch (const std::exception& ex) { return Result<std::string>::failure(failure(ex)); }
 }
@@ -284,7 +300,7 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
 Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
     try {
         const auto root = parse(text); envelope(root, Format, SchemaVersion);
-        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents", "workspaceAuthoring"});
+        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents", "workspaceAuthoring", "sequences", "predicates"});
         SctAuthoringProject result;
         const auto metadataJson = root.at("workspaceAuthoring").dump();
         auto metadata = SctAuthoringCatalogCodec::deserializeWorkspace(std::as_bytes(std::span(metadataJson.data(), metadataJson.size())));
@@ -339,6 +355,26 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
                 if (!patch) return Result<SctAuthoringProject>::failure(patch.diagnostics());
                 result.contents.back().physicalPatch = std::move(patch).takeValue();
             }
+        }
+        for (const auto& sequence : array(root.at("sequences"))) {
+            keys(sequence, {"id", "script", "name", "baseline", "importedDocument", "section", "actions"});
+            SctAuthoredSequence value{id<SctSequenceId>(sequence.at("id")), id<SctScriptId>(sequence.at("script")), string(sequence.at("name")),
+                {id<SctBaselineId>(sequence.at("baseline")), {string(sequence.at("importedDocument"))}}, spice::sct::SctSectionId{decimal(sequence.at("section"))}};
+            for (const auto& action : array(sequence.at("actions"))) {
+                keys(action, {"id", "instruction"});
+                value.actions.push_back({id<SctActionId>(action.at("id")), spice::sct::SctInstructionId{decimal(action.at("instruction"))}});
+            }
+            result.sequences.push_back(std::move(value));
+        }
+        for (const auto& predicate : array(root.at("predicates"))) {
+            keys(predicate, {"id", "script", "name", "baseline", "importedDocument", "uses"});
+            SctNamedPredicate value{id<SctPredicateId>(predicate.at("id")), id<SctScriptId>(predicate.at("script")), string(predicate.at("name")),
+                {id<SctBaselineId>(predicate.at("baseline")), {string(predicate.at("importedDocument"))}}};
+            for (const auto& use : array(predicate.at("uses"))) {
+                keys(use, {"instruction", "parameter"});
+                value.uses.push_back({spice::sct::SctInstructionId{decimal(use.at("instruction"))}, {word(use.at("parameter")), {}}});
+            }
+            result.predicates.push_back(std::move(value));
         }
         auto diagnostics = result.validate();
         if (hasErrors(diagnostics)) return Result<SctAuthoringProject>::failure(std::move(diagnostics));

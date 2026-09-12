@@ -978,6 +978,7 @@ bool SctDocumentController::exportDocument(
     if (authoring_) {
         captured->revision = authoring_->state().project.revision;
         captured->historyStateToken = authoring_->capture();
+        captured->semanticOutput = true;
         if (captured->materialization) {
             captured->materialization->baseRevision = captured->revision;
             captured->materialization->targetRevision = captured->revision;
@@ -1169,6 +1170,21 @@ bool SctDocumentController::discardProjectChanges() {
     }
     restoreAuthoringProjections();
     return true;
+}
+std::shared_ptr<const core::SctAuthoringState> SctDocumentController::authoringState() const {
+    return authoring_ ? authoring_->capture() : nullptr;
+}
+core::Result<core::SctAuthoringChange> SctDocumentController::executeAuthoringCommand(
+    core::RevisionId expected, std::string description, const core::SctAuthoringSession::Command& command) {
+    if (!authoring_ || authoringLoadFailed_)
+        return core::Result<core::SctAuthoringChange>::failure({core::DiagnosticSeverity::Error,
+            core::DiagnosticCode::InvalidSctAuthoringProject, "Authoring project is unavailable."});
+    auto result = authoring_->execute(expected, description, command);
+    if (!result) { failureDiagnostics_ = result.diagnostics(); return result; }
+    failureDiagnostics_.clear();
+    restoreAuthoringProjections();
+    emit editCommitted(QStringLiteral("authoring-project"), QString::fromStdString(description));
+    return result;
 }
 bool SctDocumentController::setWorkspaceAuthoring(const core::SctWorkspaceAuthoringState& metadata) {
     if (!authoring_ || authoringLoadFailed_) return false;

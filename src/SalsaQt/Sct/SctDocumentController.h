@@ -51,6 +51,9 @@ public:
     explicit SctDocumentController(QObject* parent = nullptr);
     ~SctDocumentController() override;
 
+    [[nodiscard]] std::shared_ptr<const core::SctAuthoringState> authoringState() const;
+    [[nodiscard]] core::Result<core::SctAuthoringChange> executeAuthoringCommand(
+        core::RevisionId expected, std::string description, const core::SctAuthoringSession::Command& command);
     [[nodiscard]] bool openDocument(
         core::LocalGameProject project, const core::AssetLocator& locator);
     [[nodiscard]] bool reloadDocument(

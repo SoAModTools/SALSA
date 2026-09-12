@@ -23,6 +23,9 @@ using SctEntrypointId = SctAuthoringId<struct AuthoringEntrypointTag>;
 using SctPortId = SctAuthoringId<struct AuthoringPortTag>;
 using SctConnectionId = SctAuthoringId<struct AuthoringConnectionTag>;
 using SctContentId = SctAuthoringId<struct AuthoringContentTag>;
+using SctSequenceId = SctAuthoringId<struct AuthoringSequenceTag>;
+using SctActionId = SctAuthoringId<struct AuthoringActionTag>;
+using SctPredicateId = SctAuthoringId<struct AuthoringPredicateTag>;
 using SctBaselineId = SctAuthoringId<struct AuthoringBaselineTag>;
 
 [[nodiscard]] bool validSctAuthoringUuid(std::string_view value) noexcept;
@@ -37,7 +40,7 @@ using SctImportedDocumentId = SctAuthoringUuid<struct ImportedDocumentTag>;
 using SctRealizationId = SctAuthoringUuid<struct RealizationTag>;
 
 using SctAuthoringEntityId = std::variant<SctScriptId, SctModuleId, SctEntrypointId,
-    SctPortId, SctConnectionId, SctContentId, SctBaselineId>;
+    SctPortId, SctConnectionId, SctContentId, SctBaselineId, SctSequenceId, SctActionId, SctPredicateId>;
 using SctContentOwner = std::variant<SctScriptId, SctModuleId, SctEntrypointId>;
 using SctPortOwner = std::variant<SctModuleId, SctEntrypointId>;
 
@@ -146,6 +149,33 @@ struct SctAuthoringContent final {
     std::optional<SalsaScriptPatch> physicalPatch;
 };
 
+// Bindings address the current program descended from this immutable import.
+struct SctProgramBinding final {
+    SctBaselineId baseline;
+    SctImportedDocumentId importedDocument;
+};
+struct SctSequenceAction final {
+    SctActionId id;
+    spice::sct::SctInstructionId instruction;
+};
+struct SctAuthoredSequence final {
+    SctSequenceId id;
+    SctScriptId script;
+    std::string name;
+    SctProgramBinding binding;
+    spice::sct::SctSectionId section;
+    std::vector<SctSequenceAction> actions;
+};
+// The exact program at all uses is the definition's expression authority.
+// Binding unrelated uses requires explicit selection and exact agreement.
+struct SctNamedPredicate final {
+    SctPredicateId id;
+    SctScriptId script;
+    std::string name;
+    SctProgramBinding binding;
+    std::vector<spice::sct::SctParameterSite> uses;
+};
+
 // Construction/serialization value. SctAuthoringSession owns accepted live
 // revisions; views submit commands rather than maintaining another authority.
 struct SctAuthoringProject final {
@@ -160,6 +190,8 @@ struct SctAuthoringProject final {
     std::vector<SctAuthoringConnection> connections;
     std::vector<SctAuthoringContent> contents;
     SctWorkspaceAuthoringState workspaceAuthoring;
+    std::vector<SctAuthoredSequence> sequences;
+    std::vector<SctNamedPredicate> predicates;
 
     [[nodiscard]] static Result<SctAuthoringProject> create();
     template<class Tag> [[nodiscard]] Result<SctAuthoringId<Tag>> allocateId() {
@@ -178,6 +210,9 @@ struct SctAuthoringProject final {
     [[nodiscard]] const SctAuthoringPort* find(SctPortId id) const noexcept;
     [[nodiscard]] const SctAuthoringConnection* find(SctConnectionId id) const noexcept;
     [[nodiscard]] const SctAuthoringContent* find(SctContentId id) const noexcept;
+    [[nodiscard]] const SctAuthoredSequence* find(SctSequenceId id) const noexcept;
+    [[nodiscard]] const SctSequenceAction* find(SctActionId id) const noexcept;
+    [[nodiscard]] const SctNamedPredicate* find(SctPredicateId id) const noexcept;
     [[nodiscard]] std::optional<SctScriptId> effectiveScript(const SctContentOwner& owner) const noexcept;
     [[nodiscard]] std::vector<Diagnostic> validate() const;
 private:

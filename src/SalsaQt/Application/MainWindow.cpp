@@ -1,3 +1,4 @@
+#include "Sct/SctSequenceEditorDialog.h"
 #include "Application/MainWindow.h"
 #include "Application/ExclusiveOperationCoordinator.h"
 #include "Application/DisabledActionHintPresenter.h"
@@ -627,6 +628,14 @@ void MainWindow::buildUi() {
     saveAction_->setShortcut(QKeySequence::Save);
     exportAction_ = documentMenu->addAction(tr("&Export SCT..."));
     exportAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
+    sequenceEditorAction_ = documentMenu->addAction(tr("Sequences and Conditions..."));
+    connect(sequenceEditorAction_, &QAction::triggered, this, [this] {
+        if (auto* document = activeDocumentWidget()) {
+            const auto locator = document->locator();
+            showSctSequenceEditor(*documentController_, locator,
+                [document](core::SctNavigationTarget target) { document->selectTarget(target); }, this);
+        }
+    });
     documentMenu->addSeparator();
     editMessageAction_ = documentMenu->addAction(tr("Edit &Text"));
     insertInstructionAction_ = documentMenu->addAction(tr("&Insert Instruction..."));
@@ -2479,6 +2488,7 @@ void MainWindow::syncEditActions() {
         ? tr("Undo %1").arg(QString::fromStdString(*undoDescription)) : tr("Undo"));
     redoAction_->setToolTip(redoDescription.has_value()
         ? tr("Redo %1").arg(QString::fromStdString(*redoDescription)) : tr("Redo"));
+    applyActionAvailability(sequenceEditorAction_, {editable, unavailableReason});
     applyActionAvailability(editMessageAction_, {
         editable && widget->canEditSelectedMessage(), unavailableReason.isEmpty()
             ? tr("Select an editable text entity first.") : unavailableReason});

@@ -90,7 +90,7 @@ struct SctAuthoringMaterializationRequest final {
     std::shared_ptr<const SctAuthoringProject> project;
     SctImportedPrograms programs;
     std::vector<SctScriptId> scripts;
-    SctAuthoringOutputMode mode = SctAuthoringOutputMode::ReuseUnchangedSource;
+    SctAuthoringOutputMode mode = SctAuthoringOutputMode::Rebuild;
 };
 struct SctPreparedAuthoringOutput final {
     std::vector<std::uint8_t> bytes;
@@ -121,6 +121,14 @@ struct SctAuthoringMaterializationResult final {
 };
 class SctAuthoringMaterializer final {
 public:
+    // Lower the understood program into a fresh layout input. Imported opaque
+    // artifacts stay in the immutable baseline, never in generated output.
+    // Referenced opaque text and unknown executable operands require repair.
+    [[nodiscard]] static Result<spice::sct::SctDocument> buildSemanticDocument(
+        const spice::sct::SctDocument& working);
+    [[nodiscard]] static Result<void> verifySemanticOutput(
+        const spice::sct::SctDocument& expected, std::span<const std::uint8_t> bytes,
+        const spice::sct::SctDocumentExportOptions& options);
     [[nodiscard]] static Result<SctSemanticState> workingState(
         const SctAuthoringProject& project, const SctImportedPrograms& programs, SctScriptId script);
     [[nodiscard]] static Result<SctAuthoringProject> replaceWorkingState(

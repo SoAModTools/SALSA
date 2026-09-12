@@ -23,6 +23,8 @@ std::map<std::uint64_t, unsigned> identities(const SctAuthoringProject& project)
     const auto add = [&](const auto& values, unsigned kind) { for (const auto& value : values) result.emplace(value.id.value, kind); };
     add(project.baselines, 0); add(project.scripts, 1); add(project.modules, 2); add(project.entrypoints, 3);
     add(project.ports, 4); add(project.connections, 5); add(project.contents, 6);
+    add(project.sequences, 7); add(project.predicates, 8);
+    for (const auto& sequence : project.sequences) add(sequence.actions, 9);
     return result;
 }
 }

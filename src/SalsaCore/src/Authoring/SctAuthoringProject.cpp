@@ -89,6 +89,12 @@ const SctAuthoringEntrypoint* SctAuthoringProject::find(SctEntrypointId value) c
 const SctAuthoringPort* SctAuthoringProject::find(SctPortId value) const noexcept { return lookup(ports, value); }
 const SctAuthoringConnection* SctAuthoringProject::find(SctConnectionId value) const noexcept { return lookup(connections, value); }
 const SctAuthoringContent* SctAuthoringProject::find(SctContentId value) const noexcept { return lookup(contents, value); }
+const SctAuthoredSequence* SctAuthoringProject::find(SctSequenceId value) const noexcept { return lookup(sequences, value); }
+const SctNamedPredicate* SctAuthoringProject::find(SctPredicateId value) const noexcept { return lookup(predicates, value); }
+const SctSequenceAction* SctAuthoringProject::find(SctActionId value) const noexcept {
+    for (const auto& sequence : sequences) if (auto* action = lookup(sequence.actions, value)) return action;
+    return nullptr;
+}
 std::optional<SctScriptId> SctAuthoringProject::effectiveScript(const SctContentOwner& owner) const noexcept {
     return std::visit([&](auto value) -> std::optional<SctScriptId> {
         const auto* item = find(value);
@@ -111,6 +117,8 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     registerIds(baselines, "Baseline"); registerIds(scripts, "Script"); registerIds(modules, "Module");
     registerIds(entrypoints, "Entrypoint"); registerIds(ports, "Port");
     registerIds(connections, "Connection"); registerIds(contents, "Content");
+    registerIds(sequences, "Sequence"); registerIds(predicates, "Predicate");
+    for (const auto& sequence : sequences) registerIds(sequence.actions, "Action");
     if (nextEntityId == 0 || (!ids.empty() && nextEntityId <= *ids.rbegin()))
         out.push_back(error("Allocator must be nonzero and above every allocated ID."));
 
@@ -216,6 +224,30 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
             }
         }
         checkEvidence(item.evidence, where, out);
+    }
+    const auto checkBinding = [&](const auto& item) {
+        const auto* script = find(item.script);
+        const auto* baseline = find(item.binding.baseline);
+        if (item.name.empty() || !script || !baseline || script->baseline != item.binding.baseline
+            || baseline->importedDocument != item.binding.importedDocument)
+            out.push_back(error("Named semantic definition has an empty name or stale script/baseline binding."));
+    };
+    std::set<std::pair<SctScriptId, spice::sct::SctSectionId>> sections;
+    for (const auto& sequence : sequences) {
+        checkBinding(sequence);
+        if (!sequence.section || !sections.emplace(sequence.script, sequence.section).second)
+            out.push_back(error("Invalid or duplicate sequence section."));
+        std::set<spice::sct::SctInstructionId> actions;
+        for (const auto& action : sequence.actions) if (!action.instruction || !actions.insert(action.instruction).second)
+            out.push_back(error("Invalid or duplicate action binding."));
+    }
+    std::set<std::pair<SctScriptId, spice::sct::SctParameterSite>> uses;
+    for (const auto& predicate : predicates) {
+        checkBinding(predicate);
+        if (predicate.uses.empty()) out.push_back(error("A named predicate requires at least one use."));
+        for (const auto& use : predicate.uses) if (!use.instruction || use.parameter.repeatedGroupOrdinal
+            || !uses.emplace(predicate.script, use).second)
+            out.push_back(error("Invalid or multiply owned predicate use."));
     }
     return out;
 }

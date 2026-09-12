@@ -47,6 +47,9 @@ struct SctPublicationRevision final {
     std::shared_ptr<const SctDocumentProvenance> provenance{};
     std::shared_ptr<const SctDocumentSnapshot> verifiedSnapshot{};
     std::optional<SctMaterializationRequest> materialization{};
+    // Authoring-project publication lowers understood content into fresh layout.
+    // The standalone document workflow keeps its separate preservation contract.
+    bool semanticOutput = false;
 };
 
 struct SctPublicationRequest final {

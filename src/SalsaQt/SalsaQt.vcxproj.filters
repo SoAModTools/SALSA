@@ -35,6 +35,7 @@
     <ClCompile Include="Workspace\DatasetOverviewWidget.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Workspace\WorkspaceModel.cpp"><Filter>Workspace</Filter></ClCompile>
     <ClCompile Include="Sct\SctDocumentController.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="Sct\SctSequenceEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctCatalogEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctExportDialog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctRebaseDialog.cpp"><Filter>SCT</Filter></ClCompile>
@@ -53,6 +54,7 @@
     <QtMoc Include="Application\ExclusiveOperationCoordinator.h"><Filter>Application</Filter></QtMoc>
     <QtMoc Include="Application\ExclusiveOperationDialog.h"><Filter>Application</Filter></QtMoc>
     <QtMoc Include="Legacy\LegacyConversionDialog.h"><Filter>Legacy</Filter></QtMoc>
+    <ClInclude Include="Sct\SctSequenceEditorDialog.h"><Filter>SCT</Filter></ClInclude>
     <QtMoc Include="Sct\SctDocumentController.h"><Filter>SCT</Filter></QtMoc>
     <ClInclude Include="Sct\SctCatalogEditorDialog.h"><Filter>SCT</Filter></ClInclude>
     <QtMoc Include="Sct\SctDocumentWidget.h"><Filter>SCT</Filter></QtMoc>

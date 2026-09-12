@@ -10,6 +10,8 @@ The original Python application is preserved under `legacy/python` as a behavior
 
 User-facing documentation starts at [Docs/README.md](Docs/README.md).
 
+Imported scripts also support [named sequences, shared conditions, and previous-location selection](Docs/SequencesAndConditions.md) through **Document > Sequences and Conditions**. Project export generates fresh SCT layout from understood content; valid drafts can be saved before unresolved text or references are repaired.
+
 ## Building
 
 Clone with submodules, or initialize the pinned dependencies after cloning:

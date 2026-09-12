@@ -1,4 +1,5 @@
 #include "Sct/SctDocumentController.h"
+#include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include "SpiceSCT/SctInstructionFactory.h"
 #include <QCoreApplication>
@@ -21,7 +22,7 @@ struct Fixture {
     std::shared_ptr<const core::LocalSalsaWorkspace> workspace;
     core::AssetLocator a = core::AssetLocator::fromRelativePath("a.sct").value();
     core::AssetLocator b = core::AssetLocator::fromRelativePath("b.sct").value();
-    Fixture() {
+    Fixture(bool opaquePrefix = false) {
         std::filesystem::create_directories(root / "source");
         sct::SctDocument d;
         sct::SctDocumentInstruction instruction; instruction.id = d.allocateInstructionId(); instruction.opcode = 16;
@@ -31,6 +32,13 @@ struct Fixture {
             sct::kSctShiftJisByte7FEncoding, sct::SctDocumentOutputByteOrder::BigEndian, sct::SctDocumentOutputWrapper::Raw,
             sct::SctOpaquePreservationPolicy::RequirePreservation, {sct::SctHeaderExportMode::ExplicitValues, {2001, 1, 2, 7}}});
         if (!output.success) throw std::runtime_error("Synthetic output failed");
+        if (opaquePrefix) {
+            const auto offset = output.layout->sections.front().payloadSpan.offset;
+            output.bytes.insert(output.bytes.begin() + offset, 32, 0xff);
+            const auto indexOffset = output.layout->sections.front().indexRowSpan.offset;
+            for (unsigned byte = 0; byte < 4; ++byte)
+                output.bytes[indexOffset + byte] = static_cast<std::uint8_t>(32u >> (24 - byte * 8));
+        }
         for (const auto& locator : {a, b}) {
             std::ofstream file(root / "source" / locator.path(), std::ios::binary);
             file.write(reinterpret_cast<const char*>(output.bytes.data()), output.bytes.size());
@@ -87,6 +95,34 @@ TEST(AuthoringControllerTest, OneHistoryAcrossTabsAndProjectSaveSurvivesClosingA
     EXPECT_EQ(value(reopened, f.a), changedA); EXPECT_EQ(value(reopened, f.b), changedB);
     EXPECT_EQ(site(reopened, f.a), siteA);
 }
+TEST(AuthoringControllerTest, ProjectPublicationUsesFreshSemanticLayoutAfterGrowth) {
+    Fixture f(true); qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    const auto before = controller.authoringState(); ASSERT_TRUE(before);
+    ASSERT_FALSE(before->programs.front()->document().opaqueAttachments.empty());
+    const auto script = before->project.scripts.front().id;
+    const auto section = before->programs.front()->document().sections.front().id;
+    ASSERT_TRUE(controller.executeAuthoringCommand(before->project.revision, "Name sequence", [&](const auto& state) {
+        return core::SctSequenceAuthoring::promoteSequence(state, script, section, "Fresh sequence");
+    }));
+    const auto sequence = controller.authoringState()->project.sequences.front();
+    ASSERT_TRUE(controller.executeAuthoringCommand(controller.authoringState()->project.revision, "Add schedule", [&](const auto& state) {
+        return core::SctSequenceAuthoring::setTiming(state, sequence.id, sequence.actions.front().id,
+            sct::SctExpressionFactory::encodedDecimalLiteral(3), true);
+    }));
+    bool finished = false, succeeded = false;
+    QObject::connect(&controller, &qt::SctDocumentController::publicationCompleted, &controller,
+        [&](const QString&, bool success, bool, const QString&, bool) { finished = true; succeeded = success; });
+    ASSERT_TRUE(controller.exportDocument(*f.project, f.a,
+        {sct::SctPlatform::GameCube, sct::kSctShiftJisByte7FEncoding,
+            sct::SctDocumentOutputByteOrder::BigEndian, sct::SctDocumentOutputWrapper::Raw}, f.root / "fresh.sct", false, {}));
+    ASSERT_TRUE(waitFor([&] { return finished; })); ASSERT_TRUE(succeeded);
+    const auto receipt = controller.lastPublication(f.a); ASSERT_TRUE(receipt);
+    EXPECT_TRUE(receipt->preservation.attachments.empty());
+    ASSERT_EQ(receipt->layout.sections.size(), 1u); EXPECT_EQ(receipt->layout.sections[0].dataRelativeOffset, 0u);
+    EXPECT_EQ(receipt->revision, controller.authoringState()->project.revision);
+    EXPECT_FALSE(controller.authoringState()->programs.front()->document().opaqueAttachments.empty());
+}
 TEST(AuthoringControllerTest, FailedEditDoesNotChangeProjectAndMetadataUsesProjectUndo) {
     Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
     ASSERT_TRUE(controller.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
@@ -109,6 +145,31 @@ TEST(AuthoringControllerTest, DiscardRestoresSavedProjectAndAdvancesRevision) {
     EXPECT_GT(controller.workingRevision(f.a).value, editedRevision.value);
     qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace);
     ASSERT_TRUE(reopened.openDocument(*f.project, f.a)); EXPECT_EQ(value(reopened, f.a), savedValue);
+}
+TEST(AuthoringControllerTest, SemanticSequenceCommandsShareHistoryAndRejectStaleDialogCapture) {
+    Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    const auto before = controller.authoringState(); ASSERT_TRUE(before);
+    const auto script = before->project.scripts.front().id;
+    const auto section = before->programs.front()->document().sections.front().id;
+    auto promoted = controller.executeAuthoringCommand(before->project.revision, "Name sequence", [&](const auto& state) {
+        return core::SctSequenceAuthoring::promoteSequence(state, script, section, "Opening");
+    }); ASSERT_TRUE(promoted);
+    const auto sequence = controller.authoringState()->project.sequences.front();
+    const auto edit = [&](const auto& state) { return core::SctSequenceAuthoring::setTiming(state, sequence.id,
+        sequence.actions.front().id, *core::SctExpressionLanguage::parse("3").expression, true); };
+    EXPECT_FALSE(controller.executeAuthoringCommand(before->project.revision, "Stale dialog", edit));
+    ASSERT_TRUE(controller.executeAuthoringCommand(controller.authoringState()->project.revision, "Schedule action", edit));
+    auto views = core::SctSequenceAuthoring::actions(*controller.authoringState(), sequence.id); ASSERT_TRUE(views);
+    EXPECT_TRUE(views.value().front().instruction.skipRefresh); ASSERT_TRUE(views.value().front().instruction.scheduledExpression);
+    ASSERT_TRUE(controller.undo(f.a));
+    EXPECT_FALSE(core::SctSequenceAuthoring::actions(*controller.authoringState(), sequence.id).value().front().instruction.scheduledExpression);
+    ASSERT_TRUE(controller.redo(f.a)); controller.closeAll();
+    ASSERT_TRUE(controller.saveDocument(f.a)); ASSERT_TRUE(waitFor([&] { return !controller.isSaving(f.a); }));
+    qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace);
+    const auto restored = reopened.authoringState(); ASSERT_TRUE(restored);
+    EXPECT_EQ(restored->project.sequences.front().actions.front().id, sequence.actions.front().id);
+    EXPECT_TRUE(core::SctSequenceAuthoring::actions(*restored, sequence.id).value().front().instruction.skipRefresh);
 }
 }
 int main(int argc, char** argv) {

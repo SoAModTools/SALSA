@@ -1,7 +1,11 @@
 #include "SalsaCore/Authoring/SctAuthoringMaterializer.h"
+#include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringCodec.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
+#include "SalsaCore/Sct/SctParameterAuthoring.h"
 #include "SpiceSCT/SctDocumentIndex.h"
+#include "SpiceSCT/SctDocumentBuilder.h"
+#include "SpiceSCT/SctTextCodec.h"
 #include "SpiceSCT/SctParser.h"
 
 #include <cstring>
@@ -15,6 +19,76 @@ Diagnostic error(std::string message, DiagnosticCode code = DiagnosticCode::Inva
     return {DiagnosticSeverity::Error, code, std::move(message)};
 }
 Diagnostic cancelled() { return error("Authoring operation cancelled.", DiagnosticCode::Cancelled); }
+std::optional<std::array<std::uint64_t, 3>> referenceLocation(const sct::SctDocumentIndex& index,
+    const sct::SctDocumentParameterValue& value) {
+    return std::visit([&](const auto& typed) -> std::optional<std::array<std::uint64_t, 3>> {
+        using T = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<T, sct::SctInstructionReference>) {
+            const auto location = index.instructionLocation(typed.target);
+            if (location) return std::array<std::uint64_t, 3>{0, location->sectionOrdinal, location->instructionOrdinal};
+        } else if constexpr (std::is_same_v<T, sct::SctStringReference>) {
+            const auto location = index.stringLocation(typed.target);
+            if (location) return std::array<std::uint64_t, 3>{1, location->sectionOrdinal, 0};
+        } else if constexpr (std::is_same_v<T, sct::SctSupplementaryTextReference>) {
+            const auto ordinal = index.supplementaryTextOrdinal(typed.target);
+            if (ordinal) return std::array<std::uint64_t, 3>{2, *ordinal, 0};
+        }
+        return {};
+    }, value);
+}
+bool instructionMeaningEqual(const sct::SctDocumentInstruction& left, const sct::SctDocumentInstruction& right,
+    const sct::SctDocumentIndex& leftIndex, const sct::SctDocumentIndex& rightIndex) {
+    if (left.opcode != right.opcode || left.skipRefresh != right.skipRefresh
+        || left.scheduledExpression.has_value() != right.scheduledExpression.has_value()) return false;
+    if (left.scheduledExpression && !SctParameterAuthoringService::equivalent(*left.scheduledExpression, *right.scheduledExpression)) return false;
+    const auto parametersEqual = [&](const auto& a, const auto& b) {
+        if (a.size() != b.size()) return false;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (a[i].schemaIndex != b[i].schemaIndex || a[i].value.index() != b[i].value.index()) return false;
+            const auto target = referenceLocation(leftIndex, a[i].value);
+            if (target) { if (target != referenceLocation(rightIndex, b[i].value)) return false; }
+            else if (!SctParameterAuthoringService::equivalent(a[i].value, b[i].value)) return false;
+        }
+        return true;
+    };
+    if (!parametersEqual(left.fixedParameters, right.fixedParameters)
+        || left.repeatedParameterGroups.size() != right.repeatedParameterGroups.size()) return false;
+    for (std::size_t i = 0; i < left.repeatedParameterGroups.size(); ++i)
+        if (!parametersEqual(left.repeatedParameterGroups[i].parameters, right.repeatedParameterGroups[i].parameters)) return false;
+    return true;
+}
+bool sameProgram(const sct::SctDocument& expectedDocument, const sct::SctDocument& reparsedDocument, sct::SctTextEncoding encoding) {
+    const auto expectedIndex = sct::SctDocumentIndex::build(expectedDocument);
+    const auto actualIndex = sct::SctDocumentIndex::build(reparsedDocument);
+    const auto textEqual = [&](const auto& a, const auto& b, sct::SctTextStorage storage) {
+        const auto left = sct::encodeSctTextRecord(a.value, a.kind, storage, encoding).bytes;
+        const auto right = sct::encodeSctTextRecord(b.value, b.kind, storage, encoding).bytes;
+        return a.kind == b.kind && left && right && left == right;
+    };
+    bool sameInstructionShape = expectedDocument.sections.size() == reparsedDocument.sections.size();
+    for (std::size_t i = 0; sameInstructionShape && i < expectedDocument.sections.size(); ++i) {
+        const auto& expected = expectedDocument.sections[i];
+        const auto& actual = reparsedDocument.sections[i];
+        sameInstructionShape = expected.nameBytes == actual.nameBytes && expected.content.index() == actual.content.index();
+        if (sameInstructionShape) if (const auto* text = std::get_if<sct::SctStringSectionContent>(&expected.content)) {
+            const auto& other = std::get<sct::SctStringSectionContent>(actual.content);
+            sameInstructionShape = text->preambleWords == other.preambleWords
+                && textEqual(text->string, other.string, sct::SctTextStorage::IndexedSection);
+        }
+        if (sameInstructionShape) if (const auto* marker = std::get_if<sct::SctStringGroupMarkerSectionContent>(&expected.content))
+            sameInstructionShape = marker->preambleWords == std::get<sct::SctStringGroupMarkerSectionContent>(actual.content).preambleWords;
+        const auto* code = std::get_if<sct::SctScriptSectionContent>(&expected.content);
+        if (!sameInstructionShape || !code) continue;
+        const auto& other = std::get<sct::SctScriptSectionContent>(actual.content).instructions;
+        sameInstructionShape = code->instructions.size() == other.size();
+        for (std::size_t j = 0; sameInstructionShape && j < other.size(); ++j)
+            sameInstructionShape = instructionMeaningEqual(code->instructions[j], other[j], expectedIndex, actualIndex);
+    }
+    sameInstructionShape = sameInstructionShape && expectedDocument.supplementaryText.size() == reparsedDocument.supplementaryText.size();
+    for (std::size_t i = 0; sameInstructionShape && i < expectedDocument.supplementaryText.size(); ++i)
+        sameInstructionShape = textEqual(expectedDocument.supplementaryText[i], reparsedDocument.supplementaryText[i], sct::SctTextStorage::Footer);
+    return sameInstructionShape;
+}
 sct::SctPlatform platform(GamePlatform value) {
     return value == GamePlatform::GameCube ? sct::SctPlatform::GameCube : sct::SctPlatform::Dreamcast;
 }
@@ -138,7 +212,17 @@ SctRealizationMap mapping(const SctAuthoringProject& project, SctScriptId script
     }
     for (const auto& text : document.supplementaryText) record.locations.emplace_back(sct::SctDocumentEntityId{text.id});
     for (const auto& attachment : document.opaqueAttachments) record.locations.emplace_back(sct::SctDocumentEntityId{attachment.id});
-    return {{project.id, project.revision, script, std::move(realization)}, {std::move(record)}};
+    SctRealizationMap mapping{{project.id, project.revision, script, std::move(realization)}, {std::move(record)}};
+    for (const auto& sequence : project.sequences) if (sequence.script == script) {
+        mapping.records.push_back({sequence.id, {sct::SctDocumentEntityId{sequence.section}}});
+        for (const auto& action : sequence.actions) mapping.records.push_back({action.id, {sct::SctDocumentEntityId{action.instruction}}});
+    }
+    for (const auto& predicate : project.predicates) if (predicate.script == script) {
+        SctRealizationRecord uses{predicate.id, {}};
+        for (const auto& site : predicate.uses) uses.locations.push_back(site);
+        mapping.records.push_back(std::move(uses));
+    }
+    return mapping;
 }
 SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctImportedPrograms& programs,
     SctScriptId scriptId, SctAuthoringOutputMode mode, std::stop_token stop) {
@@ -163,22 +247,35 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     if (stop.stop_requested()) return result;
     auto replayed = replay(program, *region.value());
     if (!replayed) { result.infrastructureDiagnostics = replayed.diagnostics(); return result; }
+    auto semanticValid = SctSequenceAuthoring::validateProgram(project, scriptId, replayed.value());
+    if (!semanticValid) { result.infrastructureDiagnostics = semanticValid.diagnostics(); return result; }
+    const bool reuse = mode == SctAuthoringOutputMode::ReuseUnchangedSource && region.value()->literalOverrides.empty()
+        && (!region.value()->physicalPatch || region.value()->physicalPatch->empty());
+    if (!reuse) {
+        auto lowered = SctAuthoringMaterializer::buildSemanticDocument(replayed.value());
+        result.infrastructureDiagnostics = lowered.diagnostics();
+        if (!lowered) return result;
+        replayed = std::move(lowered);
+    }
     auto document = std::make_shared<const sct::SctDocument>(std::move(replayed).takeValue());
-    const sct::SctDocumentExportOptions options{platform(*baseline->recipe.platform),
+    sct::SctDocumentExportOptions options{platform(*baseline->recipe.platform),
         baseline->textConvention ? *sct::sctTextEncodingFor(*baseline->textConvention) : sct::kSctShiftJisByte7FEncoding,
         receipt.source.byteOrder == sct::SctSourceByteOrder::BigEndian ? sct::SctDocumentOutputByteOrder::BigEndian : sct::SctDocumentOutputByteOrder::LittleEndian,
         receipt.source.wrapper == sct::SctSourceWrapper::Aklz ? sct::SctDocumentOutputWrapper::Aklz : sct::SctDocumentOutputWrapper::Raw};
+    // Preserve understood header values, but do not give fresh layout the old
+    // document's byte-placement or opaque-preservation evidence.
+    if (!reuse && receipt.source.header.available)
+        options.header = {sct::SctHeaderExportMode::ExplicitValues, receipt.source.header.values};
+    const auto* exportEvidence = reuse ? &program.evidence() : nullptr;
     const auto neutral = sct::SctDocumentValidator::validateDocument(*document);
     appendDiagnostics(result, neutral.diagnostics, SctPipelineStage::Validation, baseline->source.locator);
     const auto target = sct::SctDocumentValidator::validateForTarget(*document, options.targetPlatform,
-        options.textEncoding, &program.evidence(), neutral.receipt ? &*neutral.receipt : nullptr);
+        options.textEncoding, exportEvidence, neutral.receipt ? &*neutral.receipt : nullptr);
     appendDiagnostics(result, target.diagnostics, SctPipelineStage::Validation, baseline->source.locator);
     if (!neutral.validDocument || !target.validForTarget) { result.readiness = sct::SctDocumentReadiness::Inspectable; return result; }
     result.readiness = sct::SctDocumentReadiness::StructurallyValid;
     if (std::ranges::any_of(result.diagnostics, [](const auto& d) { return d.severity == DiagnosticSeverity::Error; })) return result;
     if (stop.stop_requested()) return result;
-    const bool reuse = mode == SctAuthoringOutputMode::ReuseUnchangedSource && region.value()->literalOverrides.empty()
-        && (!region.value()->physicalPatch || region.value()->physicalPatch->empty());
     std::vector<std::uint8_t> bytes;
     std::optional<sct::SctDocumentLayout> layout;
     std::optional<sct::SctPreservationReport> preservation;
@@ -188,7 +285,7 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
         if (!assessed.success) return result;
         const auto original = bytesOf(program.bytes()); bytes.assign(original.begin(), original.end());
     } else {
-        auto exported = sct::SctDocumentExporter::exportDocument(*document, options, &program.evidence(), target.receipt ? &*target.receipt : nullptr);
+        auto exported = sct::SctDocumentExporter::exportDocument(*document, options, exportEvidence, target.receipt ? &*target.receipt : nullptr);
         appendDiagnostics(result, exported.diagnostics, SctPipelineStage::Publication, baseline->source.locator);
         if (!exported.success) return result;
         bytes = std::move(exported.bytes); layout = std::move(exported.layout); preservation = std::move(exported.preservation);
@@ -201,30 +298,18 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     }
     sct::SctDocumentImportOptions importOptions;
     importOptions.declaredSourcePlatform = options.targetPlatform;
-    if (baseline->textConvention) importOptions.sourceTextEncoding = options.textEncoding;
-    importOptions.footerTextPromotion = baseline->recipe.trustSelectedTextEncoding
+    if (!reuse || baseline->textConvention) importOptions.sourceTextEncoding = options.textEncoding;
+    importOptions.footerTextPromotion = !reuse || baseline->recipe.trustSelectedTextEncoding
         ? sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding : sct::SctFooterTextPromotionPolicy::PreserveAmbiguous;
     auto verified = sct::SctDocumentWorkflow::importForEditing(parsed, importOptions);
     appendDiagnostics(result, verified.import.diagnostics, SctPipelineStage::Validation, baseline->source.locator);
     appendDiagnostics(result, verified.documentValidation.diagnostics, SctPipelineStage::Validation, baseline->source.locator);
     if (!verified.import.document || !verified.documentValidation.validDocument) return result;
-    // Successful parsing/validation is insufficient: layout must not make opaque
-    // bytes executable by moving an indexed section start across a preserved gap.
+    // Successful parsing alone does not prove that lowering retained behavior.
     const auto& reparsedDocument = *verified.import.document;
-    bool sameInstructionShape = document->sections.size() == reparsedDocument.sections.size();
-    for (std::size_t i = 0; sameInstructionShape && i < document->sections.size(); ++i) {
-        const auto& expected = document->sections[i];
-        const auto& actual = reparsedDocument.sections[i];
-        sameInstructionShape = expected.nameBytes == actual.nameBytes && expected.content.index() == actual.content.index();
-        const auto* code = std::get_if<sct::SctScriptSectionContent>(&expected.content);
-        if (!sameInstructionShape || !code) continue;
-        const auto& other = std::get<sct::SctScriptSectionContent>(actual.content).instructions;
-        sameInstructionShape = code->instructions.size() == other.size();
-        for (std::size_t j = 0; sameInstructionShape && j < other.size(); ++j)
-            sameInstructionShape = code->instructions[j].opcode == other[j].opcode;
-    }
+    const bool sameInstructionShape = sameProgram(*document, reparsedDocument, options.textEncoding);
     if (!sameInstructionShape) {
-        result.infrastructureDiagnostics.push_back(error("SPICE output changed the preserved section/instruction shape on reimport."));
+        result.infrastructureDiagnostics.push_back(error("SPICE output changed instruction order, operands, scheduling, refresh, or reference destinations on reimport."));
         return result;
     }
     auto bound = verified.import.context.bind(verified.import.context.revisionProvenance());
@@ -244,6 +329,86 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     return result;
 }
 } // namespace
+
+Result<void> SctAuthoringMaterializer::verifySemanticOutput(const sct::SctDocument& expected,
+    std::span<const std::uint8_t> bytes, const sct::SctDocumentExportOptions& options) {
+    auto parsed = sct::SctParser{}.parse(bytes);
+    if (!parsed.parseOk || std::ranges::any_of(parsed.diagnostics,
+        [](const auto& d) { return d.severity == sct::SctDiagnosticSeverity::Error; }))
+        return Result<void>::failure(error("Generated SCT failed reparsing."));
+    auto imported = sct::SctDocumentWorkflow::importForEditing(parsed,
+        {options.targetPlatform, options.textEncoding, sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding});
+    if (!imported.import.document || !imported.documentValidation.validDocument
+        || !sameProgram(expected, *imported.import.document, options.textEncoding))
+        return Result<void>::failure(error("Generated SCT changed instructions, text, or reference destinations on reimport."));
+    return Result<void>::success();
+}
+
+Result<sct::SctDocument> SctAuthoringMaterializer::buildSemanticDocument(const sct::SctDocument& working) {
+    sct::SctDocument generated;
+    std::vector<Diagnostic> diagnostics;
+    const auto omitted = [&](std::string description) {
+        diagnostics.push_back({DiagnosticSeverity::Info, DiagnosticCode::SctSourceArtifactOmitted,
+            std::move(description) + " remains in the imported baseline and is omitted from semantic output."});
+    };
+    std::set<sct::SctStringId> opaqueStrings;
+    std::set<sct::SctSupplementaryTextId> opaqueFooter;
+    for (const auto& section : working.sections) {
+        if (std::holds_alternative<sct::SctOpaqueSectionContent>(section.content)) {
+            omitted("Opaque section " + std::to_string(section.id.value()));
+            continue;
+        }
+        if (const auto* text = std::get_if<sct::SctStringSectionContent>(&section.content);
+            text && std::holds_alternative<sct::SctOpaqueText>(text->string.value)) {
+            opaqueStrings.insert(text->string.id);
+            omitted("Opaque indexed text " + std::to_string(text->string.id.value()));
+            continue;
+        }
+        generated.sections.push_back(section);
+    }
+    for (const auto& text : working.supplementaryText) {
+        if (std::holds_alternative<sct::SctOpaqueText>(text.value)) {
+            opaqueFooter.insert(text.id);
+            omitted("Opaque supplementary text " + std::to_string(text.id.value()));
+        } else generated.supplementaryText.push_back(text);
+    }
+    if (!working.opaqueAttachments.empty())
+        omitted(std::to_string(working.opaqueAttachments.size()) + " opaque source attachment(s)");
+    for (const auto& section : generated.sections) {
+        const auto* code = std::get_if<sct::SctScriptSectionContent>(&section.content);
+        if (!code) continue;
+        for (const auto& instruction : code->instructions) {
+            const auto unknown = [&](std::string message) {
+                diagnostics.push_back(error("Instruction " + std::to_string(instruction.id.value()) + ": " + std::move(message)));
+            };
+            const auto checkExpression = [&](const sct::SctCanonicalExpression& expression) {
+                if (std::holds_alternative<sct::SctOpaqueExpression>(expression.body))
+                    unknown("opaque executable expression requires interpretation before semantic export.");
+            };
+            if (instruction.scheduledExpression) checkExpression(*instruction.scheduledExpression);
+            const auto check = [&](const sct::SctDocumentParameter& parameter) {
+                if (const auto* ref = std::get_if<sct::SctStringReference>(&parameter.value);
+                    ref && opaqueStrings.contains(ref->target))
+                    unknown("referenced indexed text " + std::to_string(ref->target.value()) + " is opaque; select its encoding or repair the text before export.");
+                if (const auto* ref = std::get_if<sct::SctSupplementaryTextReference>(&parameter.value);
+                    ref && opaqueFooter.contains(ref->target))
+                    unknown("referenced supplementary text " + std::to_string(ref->target.value()) + " is opaque; select its encoding or repair the text before export.");
+                if (std::holds_alternative<sct::SctOpaqueParameterValue>(parameter.value))
+                    unknown("opaque executable operand requires interpretation before semantic export.");
+                if (const auto* expression = std::get_if<sct::SctCanonicalExpression>(&parameter.value)) checkExpression(*expression);
+            };
+            for (const auto& parameter : instruction.fixedParameters) check(parameter);
+            for (const auto& group : instruction.repeatedParameterGroups)
+                for (const auto& parameter : group.parameters) check(parameter);
+        }
+    }
+    if (hasErrors(diagnostics)) return Result<sct::SctDocument>::failure(std::move(diagnostics));
+    // IDs carry the existing authoring bindings through this derived document;
+    // layout and offsets are freshly generated. No allocator loop over sparse IDs.
+    auto built = sct::SctDocumentBuilder::reconstitute(std::move(generated));
+    if (!built.document) return Result<sct::SctDocument>::failure(error("Generated semantic document has invalid identities."));
+    return Result<sct::SctDocument>::success(std::move(*built.document), std::move(diagnostics));
+}
 
 SctImportedProgram::SctImportedProgram(SctAuthoringProjectId project, SctAuthoringBaseline baseline,
     std::vector<std::byte> bytes, spice::sct::SctDocument document, spice::sct::SctBoundImportEvidence evidence,
@@ -363,10 +528,17 @@ Result<SctSemanticState> SctAuthoringMaterializer::workingState(const SctAuthori
     if (!program) return Result<SctSemanticState>::failure(program.diagnostics());
     auto content = wholeRegion(project, script, *program.value());
     if (!content) return Result<SctSemanticState>::failure(content.diagnostics());
-    if (content.value()->physicalPatch)
-        return SalsaScriptPatchService::apply({std::make_shared<const sct::SctDocument>(program.value()->document())}, *content.value()->physicalPatch);
+    if (content.value()->physicalPatch) {
+        auto working = SalsaScriptPatchService::apply({std::make_shared<const sct::SctDocument>(program.value()->document())}, *content.value()->physicalPatch);
+        if (!working) return working;
+        auto valid = SctSequenceAuthoring::validateProgram(project, script, *working.value().document);
+        if (!valid) return Result<SctSemanticState>::failure(valid.diagnostics());
+        return working;
+    }
     auto document = replay(*program.value(), *content.value());
     if (!document) return Result<SctSemanticState>::failure(document.diagnostics());
+    auto valid = SctSequenceAuthoring::validateProgram(project, script, document.value());
+    if (!valid) return Result<SctSemanticState>::failure(valid.diagnostics());
     return Result<SctSemanticState>::success({std::make_shared<const sct::SctDocument>(std::move(document).takeValue())});
 }
 
@@ -400,6 +572,8 @@ Result<SctAuthoringProject> SctAuthoringMaterializer::replaceWorkingState(const 
     auto& content = *std::ranges::find(next.contents, std::get<SctContentId>(context.contentUses.front()), &SctAuthoringContent::id);
     content.literalOverrides.clear();
     content.physicalPatch = patch.value().empty() ? std::nullopt : std::optional{std::move(patch).takeValue()};
+    auto reconciled = SctSequenceAuthoring::reconcileActions(next, script, *working.document);
+    if (!reconciled) return Result<SctAuthoringProject>::failure(reconciled.diagnostics());
     auto replayed = workingState(next, programs, script);
     if (!replayed) return Result<SctAuthoringProject>::failure(replayed.diagnostics());
     return Result<SctAuthoringProject>::success(std::move(next));

@@ -135,6 +135,28 @@ TEST(SctPublicationTest, ExportsVerifiedRevisionAndReturnsReceipt) {
     EXPECT_TRUE(parsed.parseOk);
 }
 
+TEST(SctPublicationTest, UnresolvedSemanticTextDoesNotReplaceExistingDestination) {
+    PublicationFixture fixture;
+    const auto destination = fixture.temporary.path() / L"output" / L"existing.sct";
+    const auto prior = sourceBytes(); writeBytes(destination, prior);
+    auto request = fixture.request(destination);
+    auto snapshot = std::make_shared<SctDocumentSnapshot>(*fixture.snapshot);
+    auto document = std::make_shared<SctDocument>(*snapshot->document);
+    const auto text = document->allocateSupplementaryTextId();
+    document->supplementaryText.push_back({text, SctTextKind::PlainString, SctOpaqueText{{0xff, 0}}});
+    auto& instructions = std::get<SctScriptSectionContent>(document->sections[0].content).instructions;
+    instructions.insert(instructions.begin(), {document->allocateInstructionId(), 24, false, {}, {{0, SctSupplementaryTextReference{text}}}});
+    snapshot->document = document;
+    request.capturedRevision.verifiedSnapshot = snapshot;
+    request.capturedRevision.semanticOutput = true;
+    const auto result = SctPublicationService::publish(fixture.project, request);
+    EXPECT_FALSE(result.succeeded()); EXPECT_FALSE(result.receipt);
+    EXPECT_EQ(readBytes(destination), prior);
+    EXPECT_TRUE(std::ranges::any_of(result.infrastructureDiagnostics, [](const auto& d) {
+        return d.message.find("referenced supplementary text") != std::string::npos;
+    }));
+}
+
 TEST(SctPublicationTest, ReportsOrderedPreparationAndAtomicInstallPhases) {
     PublicationFixture fixture;
     const auto destination = fixture.temporary.path() / L"output" / L"observed.sct";

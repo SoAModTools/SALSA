@@ -157,7 +157,7 @@ TEST(SctAuthoringMaterializerTest, CancellationAndUnknownPlatformCannotProduceOu
     auto imported = SctAuthoringImporter::import(a.project, a.project.revision, std::move(unknown)); ASSERT_TRUE(imported);
     auto output = prepare(imported.value(), imported.value().project); EXPECT_FALSE(output.succeeded()); EXPECT_FALSE(output.scripts[0].prepared);
 }
-TEST(SctAuthoringMaterializerTest, RebuildPreservesIndexedStartBeyondOpaquePrefix) {
+TEST(SctAuthoringMaterializerTest, RebuildOmitsOpaquePrefixAndGeneratesNewIndexedStart) {
     // One synthetic index row points past a 32-byte opaque prefix. The prefix
     // happens to encode opcode 79; it must never become part of the section.
     std::vector<std::byte> bytes(68, std::byte{0});
@@ -179,15 +179,54 @@ TEST(SctAuthoringMaterializerTest, RebuildPreservesIndexedStartBeyondOpaquePrefi
     auto rebuilt = prepare(a.value(), a.value().project);
     ASSERT_TRUE(rebuilt.succeeded()) << messages(rebuilt);
     const auto& output = *rebuilt.scripts[0].prepared;
-    EXPECT_EQ(output.digest, hash);
+    EXPECT_NE(output.digest, hash);
     ASSERT_TRUE(output.layout);
     ASSERT_EQ(output.layout->sections.size(), 1);
-    EXPECT_EQ(output.layout->sections[0].dataRelativeOffset, 32);
+    EXPECT_EQ(output.layout->sections[0].dataRelativeOffset, 0);
+    EXPECT_TRUE(output.document->opaqueAttachments.empty());
+    EXPECT_FALSE(a.value().program->document().opaqueAttachments.empty());
     auto reimported = sct::SctDocumentImporter::import(sct::SctParser{}.parse(output.bytes), {{sct::SctPlatform::GameCube}, {}});
     ASSERT_TRUE(reimported.document);
     const auto& instructions = std::get<sct::SctScriptSectionContent>(reimported.document->sections[0].content).instructions;
     ASSERT_EQ(instructions.size(), 1);
     EXPECT_EQ(instructions[0].opcode, 12);
+}
+TEST(SctAuthoringMaterializerTest, SemanticLoweringOmitsArtifactsButRejectsReferencedOpaqueText) {
+    sct::SctDocument source;
+    const auto code = source.allocateSectionId(), unused = source.allocateSectionId();
+    const auto opaqueString = source.allocateStringId();
+    const auto opaqueFooter = source.allocateSupplementaryTextId();
+    const auto ret = source.allocateInstructionId();
+    source.sections.push_back({code, "loop", sct::SctScriptSectionContent{{{ret, 12}}}});
+    source.sections.push_back({unused, "unknown", sct::SctOpaqueSectionContent{}});
+    source.sections.push_back({source.allocateSectionId(), "text", sct::SctStringSectionContent{
+        {opaqueString, sct::SctOpaqueText{{0xff, 0}}, sct::SctTextKind::SctString}}});
+    source.supplementaryText.push_back({opaqueFooter, sct::SctTextKind::PlainString, sct::SctOpaqueText{{0x82, 0xa0, 0}}});
+    source.opaqueAttachments.push_back({source.allocateOpaqueAttachmentId(), {0xff}, unused,
+        sct::SctOpaquePlacement::FixedOffset, 4096});
+    auto lowered = SctAuthoringMaterializer::buildSemanticDocument(source); ASSERT_TRUE(lowered);
+    EXPECT_EQ(lowered.value().sections.size(), 1u); EXPECT_TRUE(lowered.value().opaqueAttachments.empty());
+    EXPECT_TRUE(lowered.value().supplementaryText.empty()); EXPECT_FALSE(lowered.diagnostics().empty());
+    EXPECT_EQ(source.sections.size(), 3u); EXPECT_EQ(source.opaqueAttachments.size(), 1u);
+    auto& instructions = std::get<sct::SctScriptSectionContent>(source.sections[0].content).instructions;
+    instructions.push_back({source.allocateInstructionId(), 24, false, {}, {{0, sct::SctSupplementaryTextReference{opaqueFooter}}}});
+    auto rejected = SctAuthoringMaterializer::buildSemanticDocument(source); EXPECT_FALSE(rejected);
+    ASSERT_FALSE(rejected.diagnostics().empty());
+    EXPECT_TRUE(std::ranges::any_of(rejected.diagnostics(), [](const auto& d) { return d.message.find("referenced supplementary text") != std::string::npos; }));
+    // Explicit text repair resolves the logical message without importing its old layout.
+    source.supplementaryText[0].value = sct::SctPlainText{"Repaired debug message"};
+    auto repaired = SctAuthoringMaterializer::buildSemanticDocument(source); ASSERT_TRUE(repaired);
+    ASSERT_EQ(repaired.value().supplementaryText.size(), 1u);
+    EXPECT_EQ(repaired.value().supplementaryText[0].id, opaqueFooter);
+    EXPECT_EQ(std::get<sct::SctSupplementaryTextReference>(std::get<sct::SctScriptSectionContent>(repaired.value().sections[0].content).instructions[1].fixedParameters[0].value).target, opaqueFooter);
+    instructions[1].fixedParameters[0].value = sct::SctStringReference{opaqueString};
+    EXPECT_FALSE(SctAuthoringMaterializer::buildSemanticDocument(source));
+}
+TEST(SctAuthoringMaterializerTest, SemanticLoweringDoesNotEmitOpaqueExecutableOperands) {
+    auto a = adopted(); auto source = a.program->document();
+    auto& instruction = std::get<sct::SctScriptSectionContent>(source.sections[0].content).instructions[0];
+    instruction.fixedParameters[0].value = sct::SctOpaqueParameterValue{{1}};
+    EXPECT_FALSE(SctAuthoringMaterializer::buildSemanticDocument(source));
 }
 TEST(SctAuthoringMaterializerTest, SourceReuseCannotBypassUnresolvedInstructionReferences) {
     std::vector<std::byte> bytes(44, std::byte{0});
@@ -214,8 +253,10 @@ TEST(SctAuthoringMaterializerTest, EditingOneScriptLeavesOtherOutputUntouched) {
     auto edited = SctPreservedEditService::replaceLiteral(second.value().project, programs, request); ASSERT_TRUE(edited);
     const auto result = SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(edited.value().project), programs, {first.script, second.value().script}});
     ASSERT_TRUE(result.succeeded()) << messages(result);
-    EXPECT_FALSE(result.scripts[0].prepared->reusedSource); EXPECT_TRUE(result.scripts[1].prepared->reusedSource);
-    EXPECT_EQ(result.scripts[1].prepared->digest, second.value().program->baseline().source.revision.digest);
+    EXPECT_FALSE(result.scripts[0].prepared->reusedSource); EXPECT_FALSE(result.scripts[1].prepared->reusedSource);
+    const auto before = SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(second.value().project), programs, {second.value().script}});
+    ASSERT_TRUE(before.succeeded());
+    EXPECT_EQ(result.scripts[1].prepared->digest, before.scripts[0].prepared->digest);
 }
 TEST(SctAuthoringMaterializerTest, SchemaRejectsMalformedAndDuplicateOverrides) {
     auto a = adopted(); auto edited = SctPreservedEditService::replaceLiteral(a.project, {a.program}, editRequest(a)); ASSERT_TRUE(edited);
@@ -249,7 +290,7 @@ TEST(SctAuthoringMaterializerTest, EditsFloatAndInlineConstantsWithoutChangingWi
         auto output = prepare(a, reloaded.value()); ASSERT_TRUE(output.succeeded()) << messages(output);
         auto inspected = SctPreservedEditService::inspectLiteral(*output.scripts[0].prepared->document, request.site, 16, request.value);
         ASSERT_TRUE(inspected); EXPECT_EQ(inspected.value(), request.value);
-        EXPECT_EQ(output.scripts[0].prepared->bytes.size(), a.program->bytes().size());
+        EXPECT_EQ(output.scripts[0].prepared->bytes.size(), prepare(a, a.project).scripts[0].prepared->bytes.size());
     }
 }
 TEST(SctAuthoringMaterializerTest, ExcludesVariablesCompoundProgramsAndEncodingFamilyChanges) {

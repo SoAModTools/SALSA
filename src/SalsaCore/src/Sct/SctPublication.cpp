@@ -1,4 +1,5 @@
 #include "SalsaCore/Sct/SctPublication.h"
+#include "SalsaCore/Authoring/SctAuthoringMaterializer.h"
 
 #include "SalsaCore/Persistence/AtomicFile.h"
 
@@ -183,7 +184,7 @@ SctPublicationResult SctPublicationService::publish(
         return result;
     }
 
-    const spice::sct::SctDocumentExportOptions options{
+    spice::sct::SctDocumentExportOptions options{
         request.options.platform,
         request.options.textEncoding,
         request.options.byteOrder,
@@ -192,11 +193,25 @@ SctPublicationResult SctPublicationService::publish(
         {}};
     const auto* evidence = snapshot->provenance && snapshot->provenance->importEvidence
         ? &*snapshot->provenance->importEvidence : nullptr;
+    auto outputDocument = snapshot->document;
+    if (request.capturedRevision.semanticOutput) {
+        auto lowered = SctAuthoringMaterializer::buildSemanticDocument(*outputDocument);
+        result.infrastructureDiagnostics = lowered.diagnostics();
+        if (!lowered) return result;
+        outputDocument = std::make_shared<const spice::sct::SctDocument>(std::move(lowered).takeValue());
+        if (evidence && evidence->receipt().source.header.available)
+            options.header = {spice::sct::SctHeaderExportMode::ExplicitValues, evidence->receipt().source.header.values};
+        evidence = nullptr;
+    }
     progress(SctPublicationPhase::Encoding, 0);
     auto exported = spice::sct::SctDocumentExporter::exportDocument(
-        *snapshot->document, options, evidence);
+        *outputDocument, options, evidence);
     appendExportDiagnostics(result, exported.diagnostics, request.locator);
     if (!exported.success || !exported.layout) return result;
+    if (request.capturedRevision.semanticOutput) {
+        auto verified = SctAuthoringMaterializer::verifySemanticOutput(*outputDocument, exported.bytes, options);
+        if (!verified) { result.infrastructureDiagnostics = verified.diagnostics(); return result; }
+    }
     progress(SctPublicationPhase::Encoding, 1);
     if (stopToken.stop_requested()) return cancel();
 
