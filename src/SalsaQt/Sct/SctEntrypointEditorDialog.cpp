@@ -1,4 +1,5 @@
 #include "SctEntrypointEditorDialog.h"
+#include "SctEntrypointTools.h"
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SpiceSCT/SctDocumentIndex.h"
 #include <QComboBox>
@@ -32,32 +33,42 @@ void showSctEntrypointEditor(SctDocumentController& controller, const AssetLocat
     const GameProjectContext& context, QWidget* parent) {
     QDialog dialog(parent); dialog.setWindowTitle(QObject::tr("Entrypoints and Resources")); dialog.resize(1040, 760);
     auto* layout = new QVBoxLayout(&dialog);
-    auto* help = new QLabel(QObject::tr("Select base or auxiliary MLDs explicitly. Available entries do not establish residency. Eventhook bit candidates remain inferred. Streamed tiles are deferred."), &dialog); help->setWordWrap(true); layout->addWidget(help);
+    auto* help = new QLabel(QObject::tr("init and loop are required and always enabled. MLDs are optional editing context. Available tile entries and handler matches do not establish runtime invocation or residency."), &dialog); help->setWordWrap(true); layout->addWidget(help);
     auto* resourceRow = new QHBoxLayout; layout->addLayout(resourceRow);
     auto* resources = new QComboBox(&dialog); resources->setMinimumContentsLength(35); resourceRow->addWidget(resources, 1);
     std::vector<AssetLocator> assets;
-    for (const auto& asset : context.assets().snapshot().assets) if (rel::assetKey(asset.locator.path().extension().string()) == ".mld" && !rel::assetKey(asset.locator.path().stem().string()).starts_with("fiel")) {
+    for (const auto& asset : context.assets().snapshot().assets) if (rel::assetKey(asset.locator.path().extension().string()) == ".mld") {
         assets.push_back(asset.locator); resources->addItem(QString::fromStdString(asset.locator.path().generic_string()));
     }
-    auto* role = new QComboBox(&dialog); role->addItems({QObject::tr("Base"), QObject::tr("Auxiliary")}); resourceRow->addWidget(role);
+    auto* role = new QComboBox(&dialog); role->addItems({QObject::tr("Base"), QObject::tr("Auxiliary"), QObject::tr("Streamed tile")}); resourceRow->addWidget(role);
     auto* inspect = new QPushButton(QObject::tr("Inspect / refresh MLD"), &dialog); resourceRow->addWidget(inspect);
     auto* list = new QListWidget(&dialog); layout->addWidget(list, 1);
     auto* details = new QTextEdit(&dialog); details->setReadOnly(true); layout->addWidget(details, 1);
     auto* bindButton = new QPushButton(QObject::tr("Connect response to module…"), &dialog); layout->addWidget(bindButton);
+    auto* declareButton = new QPushButton(QObject::tr("Declare named entrypoint…"), &dialog); layout->addWidget(declareButton);
+    auto* boundaryButton = new QPushButton(QObject::tr("Activation boundary…"), &dialog); layout->addWidget(boundaryButton);
+    auto* enabledButton = new QPushButton(QObject::tr("Enable / disable entrypoint"), &dialog); layout->addWidget(enabledButton);
+    auto* tileButton = new QPushButton(QObject::tr("Overworld selectors…"), &dialog); layout->addWidget(tileButton);
     rel::Catalog catalog; std::vector<Candidate> candidates; std::shared_ptr<const SctAuthoringState> snapshot; SctScriptId script;
     const auto refresh = [&] {
         snapshot = controller.authoringState(); list->clear(); candidates.clear(); details->clear(); if (!snapshot) return;
         for (const auto& s : snapshot->project.scripts) if (snapshot->project.find(s.baseline)->source.locator == locator) script = s.id;
         if (!script.valid()) return;
+        if (catalog.resources.empty()) for (const auto& association : snapshot->project.find(script)->resources) {
+            auto resourceLocator = AssetLocator::fromRelativePath(association.resource.asset);
+            if (!resourceLocator) continue;
+            auto inspected = SctEntrypointAuthoring::inspectResource(context,resourceLocator.value(),association.role);
+            if (inspected) catalog.resources.push_back(std::move(inspected).takeValue());
+        }
         auto working = SctAuthoringMaterializer::workingState(snapshot->project, snapshot->programs, script); if (!working) { details->setPlainText(errors(working.diagnostics())); return; }
         const auto& doc = *working.value().document;
         const auto add = [&](Candidate c) { list->addItem(QString::fromStdString(c.name)); candidates.push_back(std::move(c)); };
         for (const auto& e : snapshot->project.entrypoints) if (e.script == script && e.binding) {
             const auto* seq = snapshot->project.find(e.binding->sequence);
-            add({"Bound: " + e.name, *e.binding, seq ? seq->section : sct::SctSectionId{}, false, e.id});
+            add({(e.binding->kind == SctEntrypointKind::Lifecycle ? "Required: " : e.enabled ? "Enabled: " : "Disabled: ") + e.name, *e.binding, seq ? seq->section : sct::SctSectionId{}, false, e.id});
         }
         for (const auto& section : doc.sections) if (const auto* body = std::get_if<sct::SctScriptSectionContent>(&section.content)) {
-            if (section.nameBytes == "init" || section.nameBytes == "loop") add({"Lifecycle: " + section.nameBytes, {}, section.id});
+            if (section.nameBytes == "init" || section.nameBytes == "loop") add({"Required lifecycle: " + section.nameBytes, {}, section.id});
             for (const auto& i : body->instructions) if (i.opcode == 0 || i.opcode == 3) for (const auto& p : i.fixedParameters) if (p.schemaIndex == 0)
                 if (const auto* expression = std::get_if<sct::SctCanonicalExpression>(&p.value)) {
                     for (const auto& read : rel::reads(*expression)) {
@@ -90,12 +101,29 @@ void showSctEntrypointEditor(SctDocumentController& controller, const AssetLocat
     };
     QObject::connect(inspect, &QPushButton::clicked, &dialog, [&] {
         if (resources->currentIndex() < 0) return;
-        auto result = SctEntrypointAuthoring::inspectResource(context, assets[resources->currentIndex()], role->currentIndex() == 0 ? rel::ResourceRole::Base : rel::ResourceRole::Auxiliary);
+        auto result = SctEntrypointAuthoring::inspectResource(context, assets[resources->currentIndex()], role->currentIndex() == 0 ? rel::ResourceRole::Base : role->currentIndex() == 1 ? rel::ResourceRole::Auxiliary : rel::ResourceRole::StreamedTile);
         if (!result) { QMessageBox::warning(&dialog, QObject::tr("Resource"), errors(result.diagnostics())); return; }
+        auto associated = controller.executeAuthoringCommand(snapshot->project.revision,"Associate optional MLD",[&](const auto& state) { return SctEntrypointAuthoring::associateResource(state,script,result.value()); });
+        if (!associated) { QMessageBox::warning(&dialog,QObject::tr("Resource"),errors(associated.diagnostics())); return; }
         std::erase_if(catalog.resources, [&](const auto& r) { return r.identity.asset == result.value().identity.asset; });
         catalog.resources.push_back(std::move(result).takeValue()); refresh();
     });
+    QObject::connect(declareButton,&QPushButton::clicked,&dialog,[&] { showSctNamedEntryEditor(controller,script,&dialog); refresh(); });
+    QObject::connect(boundaryButton,&QPushButton::clicked,&dialog,[&] {
+        const auto row = list->currentRow(); if (row < 0 || row >= static_cast<int>(candidates.size()) || !candidates[row].existing) return;
+        showSctActivationEditor(controller,*candidates[row].existing,&dialog); refresh();
+    });
+    QObject::connect(enabledButton,&QPushButton::clicked,&dialog,[&] {
+        const auto row = list->currentRow(); if (row < 0 || row >= static_cast<int>(candidates.size()) || !candidates[row].existing || !snapshot) return;
+        const auto id = *candidates[row].existing; const auto* e = snapshot->project.find(id);
+        auto result = controller.executeAuthoringCommand(snapshot->project.revision,"Change entrypoint activation",[&](const auto& state) { return SctEntrypointAuthoring::setEnabled(state,id,!e->enabled); });
+        if (!result) QMessageBox::warning(&dialog,QObject::tr("Activation"),errors(result.diagnostics())); refresh();
+    });
+    QObject::connect(tileButton,&QPushButton::clicked,&dialog,[&] { showSctTileSelectorEditor(controller,script,context,&dialog); refresh(); });
     QObject::connect(list, &QListWidget::currentRowChanged, &dialog, [&](int row) {
+        const bool editable = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].existing.has_value()
+            && candidates[row].binding.kind != SctEntrypointKind::Lifecycle;
+        boundaryButton->setEnabled(editable); enabledButton->setEnabled(editable);
         if (row < 0 || row >= static_cast<int>(candidates.size()) || !snapshot) return;
         const auto& c = candidates[row]; QString text = QString::fromStdString(c.name) + '\n';
         if (c.binding.provider) if (const auto* entry = std::get_if<rel::Entry>(&*c.binding.provider)) {
@@ -116,6 +144,8 @@ void showSctEntrypointEditor(SctDocumentController& controller, const AssetLocat
     QObject::connect(bindButton, &QPushButton::clicked, &dialog, [&] {
         const int row = list->currentRow(); if (row < 0 || row >= static_cast<int>(candidates.size()) || !snapshot) return;
         auto candidate = candidates[row]; auto b = candidate.binding;
+        if (candidate.existing) candidate.name = snapshot->project.find(*candidate.existing)->name;
+        bool selectedEvidence = !candidate.existing && b.provider && std::holds_alternative<rel::Entry>(*b.provider);
         QStringList labels; std::vector<SctPortId> ports;
         for (const auto& port : snapshot->project.ports) if (port.action) if (const auto* owner = std::get_if<SctModuleId>(&port.owner)) {
             const auto* module = snapshot->project.find(*owner); if (module && module->script == script) { labels << QString::fromStdString(module->name + " / " + port.name); ports.push_back(port.id); }
@@ -123,18 +153,31 @@ void showSctEntrypointEditor(SctDocumentController& controller, const AssetLocat
         if (ports.empty()) { QMessageBox::information(&dialog, QObject::tr("Response"), QObject::tr("Create or extract a module with an action first.")); return; }
         bool ok = false; const auto label = QInputDialog::getItem(&dialog, QObject::tr("Response"), QObject::tr("Module action port"), labels, 0, false, &ok); if (!ok) return;
         b.response = ports[labels.indexOf(label)];
-        if (b.provider && b.kind == SctEntrypointKind::DirectHandler && candidate.existing) {
-            QStringList entries; std::vector<std::pair<rel::Entry,rel::ResourceRole>> choices;
+        if (candidate.existing && (b.kind == SctEntrypointKind::DirectHandler || b.kind == SctEntrypointKind::NamedSection)) {
+            QStringList entries{QObject::tr("Keep current optional resource evidence")}; std::vector<std::pair<rel::Entry,rel::ResourceRole>> choices;
             for (const auto& r : catalog.resources) for (const auto& e : r.entries) if (rel::handlerName(e.tableId)) { choices.push_back({e,r.role}); entries << QString::fromStdString(e.resource.asset) + QObject::tr(" · index %1 · tblId %2 · ").arg(e.tableIndex).arg(e.tableId) + QString::fromStdString(e.function); }
-            const auto selected = QInputDialog::getItem(&dialog, QObject::tr("Resolve source"), QObject::tr("Select the current MLD entry explicitly"), entries, 0, false, &ok); if (!ok || entries.empty()) return;
-            b.provider = choices[entries.indexOf(selected)].first; b.resourceRole = choices[entries.indexOf(selected)].second;
+            const auto selected = QInputDialog::getItem(&dialog, QObject::tr("Optional source"), QObject::tr("Retain evidence or explicitly select an MLD entry"), entries, 0, false, &ok); if (!ok) return;
+            if (const auto choice = entries.indexOf(selected); choice > 0) {
+                b.provider = choices[choice-1].first; b.resourceRole = choices[choice-1].second;
+                b.kind = SctEntrypointKind::DirectHandler; selectedEvidence = true;
+            }
         }
         if (b.kind == SctEntrypointKind::SignalConsumer) {
-            const auto providers = rel::signalProviders(catalog); QStringList names{QObject::tr("Keep provider unresolved")}; std::vector<rel::SignalProvider> matching;
+            const auto providers = rel::signalProviders(catalog); QStringList names{QObject::tr("Keep current optional provider evidence")}; std::vector<rel::SignalProvider> matching;
             for (const auto& p : providers) if (p.bit == b.signalBit) { matching.push_back(p); names << QString::fromStdString(p.entry.resource.asset) + QObject::tr(" · index %1 · candidate BitVar[%2]").arg(p.entry.tableIndex).arg(p.bit); }
             const auto selected = QInputDialog::getItem(&dialog, QObject::tr("Signal provider"), QObject::tr("Parameter 8 candidates are inferred; selection is your assertion"), names, 0, false, &ok); if (!ok) return;
-            if (names.indexOf(selected) == 0) b.provider = SctUnresolvedBinding{"Observed bit consumer", "Provider not selected.", {}};
-            else { b.provider = matching[names.indexOf(selected)-1].entry; for (const auto& r : catalog.resources) if (r.identity == matching[names.indexOf(selected)-1].entry.resource) b.resourceRole = r.role; }
+            if (names.indexOf(selected) > 0) { b.provider = matching[names.indexOf(selected)-1].entry; selectedEvidence = true; for (const auto& r : catalog.resources) if (r.identity == matching[names.indexOf(selected)-1].entry.resource) b.resourceRole = r.role; }
+        }
+        if (selectedEvidence) {
+            const auto& entry = std::get<rel::Entry>(*b.provider);
+            auto resourceLocator = AssetLocator::fromRelativePath(entry.resource.asset);
+            if (!resourceLocator) { QMessageBox::warning(&dialog,QObject::tr("Resource"),errors(resourceLocator.diagnostics())); return; }
+            auto current = SctEntrypointAuthoring::inspectResource(context,resourceLocator.value(),b.resourceRole);
+            if (!current) { QMessageBox::warning(&dialog,QObject::tr("Resource"),errors(current.diagnostics())); return; }
+            const auto resolution = rel::resolve(entry,{{current.value()}});
+            if (resolution.status != rel::Status::Exact) {
+                QMessageBox::warning(&dialog,QObject::tr("Resource changed"),QString::fromStdString(resolution.explanation)); return;
+            }
         }
         if (!candidate.newHandler) {
             auto working = SctAuthoringMaterializer::workingState(snapshot->project, snapshot->programs, script); if (!working) return;

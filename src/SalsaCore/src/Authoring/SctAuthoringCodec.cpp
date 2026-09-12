@@ -270,9 +270,9 @@ std::optional<SctEntrypointBinding> readBinding(const Json& j) {
     if (j.is_null()) return {};
     keys(j, {"kind", "sequence", "responseSite", "predicate", "response", "provider", "resourceRole", "signalBit"});
     SctEntrypointBinding b;
-    b.kind = static_cast<SctEntrypointKind>(word(j.at("kind"), 3)); b.sequence = id<SctSequenceId>(j.at("sequence"));
+    b.kind = static_cast<SctEntrypointKind>(word(j.at("kind"), 4)); b.sequence = id<SctSequenceId>(j.at("sequence"));
     b.responseSite = readSite(j.at("responseSite")); b.predicate = readSite(j.at("predicate")); b.response = readReference<SctPortId>(j.at("response"));
-    b.resourceRole = static_cast<smores::script::ResourceRole>(word(j.at("resourceRole"), 2));
+    b.resourceRole = static_cast<smores::script::ResourceRole>(word(j.at("resourceRole"), 3));
     if (!j.at("signalBit").is_null()) b.signalBit = word(j.at("signalBit"), 0xffffff);
     const auto& p = j.at("provider");
     if (!p.is_null()) {
@@ -294,6 +294,35 @@ std::optional<SctEntrypointBinding> readBinding(const Json& j) {
     }
     return b;
 }
+Json resourceJson(const smores::script::ResourceIdentity& r) {
+    return {{"dataset",r.dataset},{"asset",r.asset},{"revision",r.revision},{"document",r.document}};
+}
+smores::script::ResourceIdentity readResource(const Json& j) {
+    keys(j,{"dataset","asset","revision","document"});
+    return {string(j.at("dataset")),string(j.at("asset")),string(j.at("revision")),string(j.at("document"))};
+}
+Json activationJson(const SctEntrypointActivation& a) {
+    if (const auto* n = std::get_if<SctNamedActivation>(&a))
+        return {{"kind","named"},{"name",n->externalName},{"body",id(n->body)}};
+    if (const auto* l = std::get_if<SctLocalActivation>(&a))
+        return {{"kind","local"},{"source",id(l->source)},{"start",id(l->start)},{"continuation",id(l->continuation)},{"lifecycleEntry",l->lifecycleEntry},
+            {"operand",l->operand ? Json{{"parameter",l->operand->schemaIndex},{"group",l->operand->repeatedGroupOrdinal ? Json(*l->operand->repeatedGroupOrdinal) : Json(nullptr)}} : Json(nullptr)}};
+    const auto& u = std::get<SctUnresolvedBinding>(a);
+    return {{"kind","unresolved"},{"originalEvidence",u.originalEvidence},{"explanation",u.explanation},{"evidence",evidenceJson(u.evidence)}};
+}
+SctEntrypointActivation readActivation(const Json& j) {
+    const auto kind = string(j.at("kind"));
+    if (kind == "named") { keys(j,{"kind","name","body"}); return SctNamedActivation{string(j.at("name")),id<SctActionId>(j.at("body"))}; }
+    if (kind == "local") {
+        keys(j,{"kind","source","start","continuation","operand","lifecycleEntry"});
+        SctLocalActivation a{id<SctActionId>(j.at("source")),{},id<SctActionId>(j.at("start")),id<SctActionId>(j.at("continuation"))};
+        a.lifecycleEntry = boolean(j.at("lifecycleEntry"));
+        const auto& p = j.at("operand"); if (!p.is_null()) { keys(p,{"parameter","group"}); a.operand = spice::sct::SctParameterAddress{word(p.at("parameter")),p.at("group").is_null() ? std::nullopt : std::optional{word(p.at("group"))}}; }
+        return a;
+    }
+    require(kind == "unresolved", "Unknown activation kind."); keys(j,{"kind","originalEvidence","explanation","evidence"});
+    return SctUnresolvedBinding{string(j.at("originalEvidence")),string(j.at("explanation")),readEvidence(j.at("evidence"))};
+}
 } // namespace
 
 Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project) {
@@ -314,19 +343,22 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
                 {"recipe", {{"platform", enumJson(b.recipe.platform, Platforms)}, {"trustSelectedTextEncoding", b.recipe.trustSelectedTextEncoding}}}};
         });
         root["scripts"] = sorted(project.scripts, [](const auto& s) {
+            auto resources = Json::array(); auto associations = s.resources;
+            std::ranges::sort(associations, {}, &SctScriptContext::ResourceAssociation::resource);
+            for (const auto& r : associations) resources.push_back({{"resource",resourceJson(r.resource)},{"role",static_cast<unsigned>(r.role)}});
             Json profile = nullptr;
             if (s.outputProfile) { const auto& p = *s.outputProfile; profile = Json{{"bigEndian", p.bigEndian}, {"compressed", p.compressed},
                 {"header", {std::to_string(p.header.sourceYear), std::to_string(p.header.sourceMonth), std::to_string(p.header.sourceDay), std::to_string(p.header.fourthValue)}}}; }
             return Json{{"id", id(s.id)}, {"name", s.name}, {"baseline", id(s.baseline)},
                 {"platform", enumJson(s.platform, Platforms)}, {"region", enumJson(s.region, Regions)},
-                {"legacyOrigin", legacyJson(s.legacyOrigin)}, {"contentUses", usesJson(s.contentUses)}, {"outputProfile", profile}};
+                {"legacyOrigin", legacyJson(s.legacyOrigin)}, {"contentUses", usesJson(s.contentUses)}, {"outputProfile", profile}, {"resources",resources}};
         });
         const auto owned = [](const auto& m) {
             Json value{{"id", id(m.id)}, {"script", id(m.script)}, {"name", m.name}, {"contentUses", usesJson(m.contentUses)}, {"evidence", evidenceJson(m.evidence)}};
             if constexpr (std::is_same_v<std::decay_t<decltype(m)>, SctAuthoringModule>) {
                 value["sections"] = Json::array(); for (const auto section : m.sections) value["sections"].push_back(std::to_string(section.value()));
             }
-            else value["binding"] = bindingJson(m.binding);
+            else { value["binding"] = bindingJson(m.binding); value["enabled"] = m.enabled; value["activation"] = activationJson(m.activation); }
             return value;
         };
         root["modules"] = sorted(project.modules, owned); root["entrypoints"] = sorted(project.entrypoints, owned);
@@ -386,10 +418,11 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
                 {readEnum<GamePlatform>(b.at("recipe").at("platform"), Platforms), boolean(b.at("recipe").at("trustSelectedTextEncoding"))}});
         }
         for (const auto& s : array(root.at("scripts"))) {
-            keys(s, {"id", "name", "baseline", "platform", "region", "legacyOrigin", "contentUses", "outputProfile"});
+            keys(s, {"id", "name", "baseline", "platform", "region", "legacyOrigin", "contentUses", "outputProfile", "resources"});
             result.scripts.push_back({id<SctScriptId>(s.at("id")), string(s.at("name")), id<SctBaselineId>(s.at("baseline")),
                 readEnum<GamePlatform>(s.at("platform"), Platforms), readEnum<GameRegion>(s.at("region"), Regions),
                 readLegacy(s.at("legacyOrigin")), readUses(s.at("contentUses"))});
+            for (const auto& r : array(s.at("resources"))) { keys(r,{"resource","role"}); result.scripts.back().resources.push_back({readResource(r.at("resource")),static_cast<smores::script::ResourceRole>(word(r.at("role"),3))}); }
             if (!s.at("outputProfile").is_null()) {
                 const auto& p = s.at("outputProfile"); keys(p, {"bigEndian", "compressed", "header"});
                 const auto& h = array(p.at("header")); require(h.size() == 4, "Expected four header values.");
@@ -402,12 +435,12 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
             using Item = typename std::decay_t<decltype(destination)>::value_type;
             for (const auto& m : array(values)) {
                 if constexpr (std::is_same_v<Item, SctAuthoringModule>) keys(m, {"id", "script", "name", "contentUses", "evidence", "sections"});
-                else keys(m, {"id", "script", "name", "contentUses", "evidence", "binding"});
+                else keys(m, {"id", "script", "name", "contentUses", "evidence", "binding", "enabled", "activation"});
                 destination.push_back(Item{id<decltype(Item::id)>(m.at("id")), id<SctScriptId>(m.at("script")),
                     string(m.at("name")), readUses(m.at("contentUses")), readEvidence(m.at("evidence"))});
                 if constexpr (std::is_same_v<Item, SctAuthoringModule>)
                     for (const auto& section : array(m.at("sections"))) destination.back().sections.push_back(spice::sct::SctSectionId{decimal(section)});
-                else destination.back().binding = readBinding(m.at("binding"));
+                else { destination.back().binding = readBinding(m.at("binding")); destination.back().enabled = boolean(m.at("enabled")); destination.back().activation = readActivation(m.at("activation")); }
             }
         };
         readOwned(root.at("modules"), result.modules); readOwned(root.at("entrypoints"), result.entrypoints);

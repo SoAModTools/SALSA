@@ -113,7 +113,7 @@ TEST(SctAuthoringProjectTest, UnresolvedBindingsRoundTripAsWarningsWithEvidence)
     p.connections[0].destination = unresolved;
     p.modules[0].contentUses.push_back(unresolved);
     auto result = SctAuthoringCodec::decode(encoded(p)); ASSERT_TRUE(result);
-    ASSERT_EQ(result.diagnostics().size(), 2);
+    ASSERT_EQ(result.diagnostics().size(), 2 + p.entrypoints.size()); // unresolved uses and activation descriptors
     for (const auto& d : result.diagnostics()) {
         EXPECT_EQ(d.severity, DiagnosticSeverity::Warning); EXPECT_EQ(d.code, DiagnosticCode::UnresolvedSctAuthoringBinding);
     }

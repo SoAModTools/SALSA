@@ -2,6 +2,8 @@
 #include "SalsaCore/Authoring/SctModuleAuthoring.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
+#include "SalsaCore/Authoring/SctOverworldAuthoring.h"
+#include "SpiceSCT/SctDocumentIndex.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
 #include "SpiceSCT/SctScptEncoding.h"
 #include <gtest/gtest.h>
@@ -35,6 +37,7 @@ SctAuthoringState initial(bool fixedGap = false) {
         {{{2, sct::SctEncodedWordValue{331}}, {3, sct::SctInstructionReference{b}}}},
         {{{2, sct::SctEncodedWordValue{UINT32_MAX}}, {3, sct::SctInstructionReference{callee}}}}};
     document.sections.push_back({document.allocateSectionId(), "arrivalDispatch", sct::SctScriptSectionContent{{dispatch}}});
+    document.sections.push_back({document.allocateSectionId(), "init", sct::SctScriptSectionContent{{{document.allocateInstructionId(),12}}}});
     auto output = sct::SctDocumentExporter::exportDocument(document, sct::SctDocumentExportOptions{sct::SctPlatform::GameCube,
         sct::kSctShiftJisByte7FEncoding, sct::SctDocumentOutputByteOrder::BigEndian, sct::SctDocumentOutputWrapper::Raw,
         sct::SctOpaquePreservationPolicy::RequirePreservation, {sct::SctHeaderExportMode::ExplicitValues, {2001, 1, 2, 7}}});
@@ -148,10 +151,10 @@ TEST(SctSequenceAuthoringTest, ArrivalPickerPreservesReadModeAndRejectsAmbiguous
 }
 TEST(SctSequenceAuthoringTest, ArrivalSwitchRetainsCaseOrderTargetsAndDefaultBehavior) {
     const auto state = promoted(); const auto script = state.project.scripts.front().id;
-    const auto& before = std::get<sct::SctScriptSectionContent>(state.programs.front()->document().sections.back().content).instructions.front();
+    const auto& before = std::get<sct::SctScriptSectionContent>(state.programs.front()->document().sections[2].content).instructions.front();
     auto changed = SctSequenceAuthoring::selectArrivalCase(state, script, before.id, 0, "me099a"); ASSERT_TRUE(changed);
     auto working = SctAuthoringMaterializer::workingState(changed.value().project, state.programs, script).value();
-    const auto& after = std::get<sct::SctScriptSectionContent>(working.document->sections.back().content).instructions.front();
+    const auto& after = std::get<sct::SctScriptSectionContent>(working.document->sections[2].content).instructions.front();
     EXPECT_EQ(std::get<sct::SctEncodedWordValue>(after.repeatedParameterGroups[0].parameters[0].value).value, 990u);
     for (std::size_t i = 0; i < 3; ++i) EXPECT_EQ(std::get<sct::SctInstructionReference>(before.repeatedParameterGroups[i].parameters[1].value).target,
         std::get<sct::SctInstructionReference>(after.repeatedParameterGroups[i].parameters[1].value).target);
@@ -347,10 +350,12 @@ TEST(SctEntrypointAuthoring, StaleAndMissingResourcesRemainExplicit) {
     ASSERT_EQ(missing.size(), 1); EXPECT_EQ(missing[0].severity, DiagnosticSeverity::Warning);
     catalog.resources[0].entries[3].entryId++;
     const auto stale = SctEntrypointAuthoring::inspectBindings(added.value().project, script, catalog);
-    ASSERT_EQ(stale.size(), 1); EXPECT_EQ(stale[0].severity, DiagnosticSeverity::Error);
+    ASSERT_EQ(stale.size(), 1); EXPECT_EQ(stale[0].severity, DiagnosticSeverity::Warning);
     EXPECT_TRUE(SctAuthoringCodec::encode(added.value().project));
     const auto& bound = added.value().project.entrypoints.front();
-    EXPECT_FALSE(SctEntrypointAuthoring::bind(added.value(), script, bound.name, *bound.binding, catalog, bound.id));
+    EXPECT_TRUE(SctEntrypointAuthoring::bind(added.value(), script, bound.name, *bound.binding, {}, bound.id));
+    auto reselect = *bound.binding; reselect.provider = catalog.resources[0].entries[3];
+    EXPECT_FALSE(SctEntrypointAuthoring::bind(added.value(), script, bound.name, reselect, {}, bound.id));
 }
 TEST(SctEntrypointAuthoring, SignalKeepsLevelPredicateAndOrderedConsumption) {
     auto state = withResponseModule(); const auto script = state.project.scripts.front().id;
@@ -374,6 +379,20 @@ TEST(SctEntrypointAuthoring, SignalKeepsLevelPredicateAndOrderedConsumption) {
     auto restored = SctAuthoringCodec::decode(encoded.value()); ASSERT_TRUE(restored);
     EXPECT_TRUE(std::holds_alternative<SctUnresolvedBinding>(*restored.value().entrypoints.front().binding->provider));
     EXPECT_EQ(output(next), before);
+    const auto& actions = next.project.find(seq)->actions;
+    const auto entry = next.project.entrypoints.front().id;
+    auto disabled = SctEntrypointAuthoring::setActivation(next, entry,
+        SctLocalActivation{actions[1].id, {}, actions[2].id, actions.back().id});
+    ASSERT_TRUE(disabled);
+    disabled = SctEntrypointAuthoring::setEnabled(disabled.value(), entry, false); ASSERT_TRUE(disabled);
+    auto current = SctAuthoringMaterializer::workingState(disabled.value().project, disabled.value().programs, script).value();
+    auto lowered = SctEntrypointAuthoring::lower(disabled.value().project, script, *current.document); ASSERT_TRUE(lowered);
+    const auto& emitted = std::get<sct::SctScriptSectionContent>(lowered.value().document.sections.front().content).instructions;
+    ASSERT_EQ(emitted[2].opcode, 10);
+    EXPECT_EQ(std::get<sct::SctInstructionReference>(emitted[2].fixedParameters[0].value).target, actions.back().instruction);
+    EXPECT_EQ(emitted[3].id, actions[2].instruction); // preparation retained behind bypass
+    EXPECT_EQ(emitted[5].id, clear); EXPECT_EQ(emitted[5].opcode, 18); // consumption retained, also bypassed
+    EXPECT_FALSE(output(disabled.value()).empty());
 }
 TEST(SctEntrypointAuthoring, ArrivalBindsExistingCallWithoutRewritingConditions) {
     auto state = withResponseModule(); const auto script = state.project.scripts.front().id;
@@ -397,8 +416,12 @@ TEST(SctEntrypointAuthoring, ReselectKeepsIdentityAndEditsOnlyTheSelectedTarget)
     const auto port=state.project.ports.back().id;
     const auto before=SctAuthoringMaterializer::workingState(state.project,state.programs,script).value();
     auto b=*entry.binding; b.response=port;
-    auto result=SctEntrypointAuthoring::bind(state,script,"New response",b,catalog,entry.id); ASSERT_TRUE(result);
+    state=SctEntrypointAuthoring::setEnabled(state,entry.id,false).value();
+    auto result=SctEntrypointAuthoring::bind(state,script,"New response",b,{},entry.id); ASSERT_TRUE(result);
     EXPECT_EQ(result.value().project.entrypoints.front().id,entry.id);
+    EXPECT_FALSE(result.value().project.entrypoints.front().enabled);
+    EXPECT_EQ(std::get<SctNamedActivation>(result.value().project.entrypoints.front().activation).body,
+        std::get<SctNamedActivation>(entry.activation).body);
     auto after=SctAuthoringMaterializer::workingState(result.value().project,result.value().programs,script).value();
     auto expected=std::make_shared<sct::SctDocument>(*before.document);
     for(auto& section:expected->sections) if(auto* body=std::get_if<sct::SctScriptSectionContent>(&section.content)) for(auto& i:body->instructions)
@@ -440,11 +463,168 @@ TEST(SctEntrypointAuthoring, NewResourceSnapshotDoesNotRewriteImmutableScriptBas
     const auto entry=state.project.entrypoints.front();
     auto& resource=catalog.resources[0]; resource.identity.dataset=sha256(std::span<const std::byte>{}).value().toHex(); resource.identity.revision="updated";
     for(auto& e:resource.entries) e.resource=resource.identity;
-    EXPECT_TRUE(hasErrors(SctEntrypointAuthoring::inspectBindings(state.project,script,catalog)));
+    EXPECT_FALSE(hasErrors(SctEntrypointAuthoring::inspectBindings(state.project,script,catalog)));
     auto binding=*entry.binding; binding.provider=resource.entries[3];
     auto selected=SctEntrypointAuthoring::bind(state,script,entry.name,binding,catalog,entry.id); ASSERT_TRUE(selected);
     EXPECT_EQ(selected.value().project.baselines.front().datasetFingerprint,originalBaseline);
     EXPECT_EQ(selected.value().project.entrypoints.front().id,entry.id);
     EXPECT_TRUE(SctEntrypointAuthoring::inspectBindings(selected.value().project,script,catalog).empty());
     EXPECT_TRUE(SctAuthoringCodec::decode(SctAuthoringCodec::encode(selected.value().project).value()));
+}
+
+TEST(SctActivationTest, RequiredRootsAreEditableWithoutModulePortsButCannotBeDisabledOrRemoved) {
+    auto state=initial(); const auto script=state.project.scripts.front().id;
+    const auto original=output(state);
+    for (const auto& section:state.programs.front()->document().sections) if(section.nameBytes=="init" || section.nameBytes=="loop") {
+        auto declared=SctEntrypointAuthoring::declareNamed(state,script,section.id); ASSERT_TRUE(declared); state=declared.value();
+        EXPECT_FALSE(SctEntrypointAuthoring::setEnabled(state,state.project.entrypoints.back().id,false));
+    }
+    EXPECT_EQ(output(state),original);
+    auto session=SctAuthoringSession::open(state); ASSERT_TRUE(session);
+    EXPECT_FALSE(session.value()->execute(state.project.revision,"Remove root",[](const auto& s) {
+        auto next=s; next.project.entrypoints.erase(next.project.entrypoints.begin()); return Result<SctAuthoringState>::success(next);
+    }));
+    EXPECT_FALSE(session.value()->execute(state.project.revision,"Rename loop",[&](const auto& s) {
+        auto next=s; auto w=SctAuthoringMaterializer::workingState(s.project,s.programs,script).value();
+        auto d=std::make_shared<sct::SctDocument>(*w.document); d->sections.front().nameBytes="different"; w.document=d;
+        auto changed=SctAuthoringMaterializer::replaceWorkingState(s.project,s.programs,script,w);
+        if(!changed) return Result<SctAuthoringState>::failure(changed.diagnostics()); next.project=changed.value(); return Result<SctAuthoringState>::success(next);
+    }));
+}
+TEST(SctActivationTest, MissingRootsRemainSaveableDraftsAndBlockExport) {
+    auto state=initial(); const auto script=state.project.scripts.front().id;
+    auto w=SctAuthoringMaterializer::workingState(state.project,state.programs,script).value();
+    auto d=std::make_shared<sct::SctDocument>(*w.document); std::erase_if(d->sections,[](const auto& s){return s.nameBytes=="init";}); w.document=d;
+    state.project=SctAuthoringMaterializer::replaceWorkingState(state.project,state.programs,script,w).value();
+    EXPECT_TRUE(SctAuthoringCodec::encode(state.project)); EXPECT_TRUE(SctAuthoringSession::open(state));
+    auto result=SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(state.project),state.programs,{script}});
+    ASSERT_FALSE(result.succeeded()); EXPECT_FALSE(result.scripts.front().prepared);
+}
+TEST(SctActivationTest, NamedDisableRetainsBodyAndInternalTargetsAndReenablesExactly) {
+    auto state=initial(); const auto script=state.project.scripts.front().id; const auto section=state.programs.front()->document().sections[1].id;
+    state=SctEntrypointAuthoring::declareNamed(state,script,section).value(); const auto id=state.project.entrypoints.back().id;
+    const auto original=output(state); const auto before=state;
+    auto session=SctAuthoringSession::open(state).takeValue();
+    ASSERT_TRUE(session->execute(state.project.revision,"Disable",[&](const auto& s){return SctEntrypointAuthoring::setEnabled(s,id,false);})); state=session->state();
+    auto working=SctAuthoringMaterializer::workingState(state.project,state.programs,script).value();
+    auto lowered=SctEntrypointAuthoring::lower(state.project,script,*working.document); ASSERT_TRUE(lowered);
+    const auto& d=lowered.value().document;
+    const auto wrapper=std::ranges::find(d.sections,std::string("called"),&sct::SctDocumentSection::nameBytes); ASSERT_NE(wrapper,d.sections.end());
+    EXPECT_NE(wrapper->id,section); EXPECT_EQ(std::get<sct::SctScriptSectionContent>(wrapper->content).instructions.front().opcode,0);
+    EXPECT_EQ(std::get<sct::SctInstructionReference>(std::get<sct::SctScriptSectionContent>(d.sections.front().content).instructions[3].fixedParameters[0].value).target,
+        std::get<sct::SctInstructionReference>(std::get<sct::SctScriptSectionContent>(working.document->sections.front().content).instructions[3].fixedParameters[0].value).target);
+    const auto disabled=output(state); EXPECT_NE(disabled,original); EXPECT_EQ(output(state),disabled);
+    auto encoded=SctAuthoringCodec::encode(state.project); ASSERT_TRUE(encoded); auto decoded=SctAuthoringCodec::decode(encoded.value()); ASSERT_TRUE(decoded);
+    EXPECT_FALSE(decoded.value().find(id)->enabled); EXPECT_EQ(SctAuthoringCodec::encode(decoded.value()).value(),encoded.value());
+    ASSERT_TRUE(session->undo()); EXPECT_EQ(output(session->state()),original); ASSERT_TRUE(session->redo()); EXPECT_EQ(output(session->state()),disabled);
+    auto enabled=SctEntrypointAuthoring::setEnabled(state,id,true); ASSERT_TRUE(enabled); EXPECT_EQ(output(enabled.value()),original);
+    auto materialized=SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(state.project),state.programs,{script},SctAuthoringOutputMode::ReuseUnchangedSource});
+    ASSERT_TRUE(materialized.succeeded()); EXPECT_FALSE(materialized.scripts.front().prepared->reusedSource);
+    const auto& records=materialized.scripts.front().prepared->realization.records;
+    const auto record=std::ranges::find(records,SctAuthoringEntityId{id},&SctRealizationRecord::entity); ASSERT_NE(record,records.end()); EXPECT_GT(record->locations.size(),2);
+}
+TEST(SctActivationTest, WholeActivationBypassesPreparationAndResponseWithoutChangingOtherEdges) {
+    auto state=withResponseModule(); const auto script=state.project.scripts.front().id;
+    state=SctSequenceAuthoring::promoteSequence(state,script,state.programs.front()->document().sections.front().id,"Arrival").value();
+    const auto seq=state.project.sequences.back();
+    SctEntrypointBinding b{SctEntrypointKind::Arrival,seq.id,sct::SctParameterSite{seq.actions[3].instruction,{0,{}}},sct::SctParameterSite{seq.actions[0].instruction,{0,{}}},state.project.ports.front().id};
+    state=SctEntrypointAuthoring::bind(state,script,"Arrival",b,{}).value(); const auto id=state.project.entrypoints.back().id;
+    SctLocalActivation edge{seq.actions[0].id,sct::SctParameterAddress{1,{}},seq.actions[2].id,seq.actions[4].id};
+    state=SctEntrypointAuthoring::setActivation(state,id,edge).value(); state=SctEntrypointAuthoring::setEnabled(state,id,false).value();
+    const auto w=SctAuthoringMaterializer::workingState(state.project,state.programs,script).value();
+    auto lowered=SctEntrypointAuthoring::lower(state.project,script,*w.document); ASSERT_TRUE(lowered);
+    const auto& code=std::get<sct::SctScriptSectionContent>(lowered.value().document.sections.front().content).instructions;
+    EXPECT_EQ(std::get<sct::SctInstructionReference>(code[0].fixedParameters[1].value).target,seq.actions[4].instruction);
+    const auto& preparation=std::get<sct::SctScriptSectionContent>(w.document->sections.front().content).instructions[2];
+    EXPECT_EQ(code[2].id,preparation.id); EXPECT_EQ(code[2].opcode,preparation.opcode); EXPECT_EQ(code[2].skipRefresh,preparation.skipRefresh);
+    ASSERT_TRUE(code[2].scheduledExpression); EXPECT_EQ(sct::encodeSctCanonicalExpressionWords(*code[2].scheduledExpression),sct::encodeSctCanonicalExpressionWords(*preparation.scheduledExpression));
+    EXPECT_FALSE(output(state).empty());
+    auto duplicate=state; auto e=duplicate.project.entrypoints.back(); e.id=duplicate.project.allocate<SctEntrypointId>().value(); duplicate.project.entrypoints.push_back(e);
+    EXPECT_FALSE(SctAuthoringSession::validate(duplicate));
+    edge.operand.reset(); edge.source=seq.actions[1].id; // true fallthrough into preparation
+    state=SctEntrypointAuthoring::setActivation(state,id,edge).value();
+    lowered=SctEntrypointAuthoring::lower(state.project,script,*w.document); ASSERT_TRUE(lowered);
+    const auto& fall=std::get<sct::SctScriptSectionContent>(lowered.value().document.sections.front().content).instructions;
+    EXPECT_EQ(fall[2].opcode,10); EXPECT_TRUE(fall[2].skipRefresh); EXPECT_EQ(fall[3].id,seq.actions[2].instruction);
+    edge={seq.actions[0].id,{},seq.actions[0].id,seq.actions[4].id,true};
+    state=SctEntrypointAuthoring::setActivation(state,id,edge).value(); EXPECT_FALSE(output(state).empty());
+}
+TEST(SctActivationTest, UnresolvedDisabledBoundaryIsSaveableButCannotExport) {
+    auto state=withResponseModule(); const auto script=state.project.scripts.front().id; const auto catalog=entryCatalog(state);
+    state=SctEntrypointAuthoring::createDirectHandler(state,script,catalog.resources[0].entries[3],smores::script::ResourceRole::Base,state.project.ports.front().id,catalog).value();
+    const auto id=state.project.entrypoints.back().id;
+    state=SctEntrypointAuthoring::setActivation(state,id,SctUnresolvedBinding{"Manual draft","Choose the activation boundary.",{}}).value();
+    state=SctEntrypointAuthoring::setEnabled(state,id,false).value();
+    EXPECT_TRUE(SctAuthoringCodec::encode(state.project));
+    auto w=SctAuthoringMaterializer::workingState(state.project,state.programs,script).value(); EXPECT_FALSE(SctEntrypointAuthoring::lower(state.project,script,*w.document));
+}
+TEST(SctActivationTest, SwitchOrdinalsOwnSeparateEdgesAndMayShareBodies) {
+    auto state = initial(); const auto script = state.project.scripts.front().id;
+    const auto& sections = state.programs.front()->document().sections;
+    state = SctEntrypointAuthoring::declareNamed(state, script, sections.front().id).value();
+    state = SctEntrypointAuthoring::declareNamed(state, script, sections[2].id).value();
+    const auto loop = state.project.sequences.front(), dispatch = state.project.sequences.back();
+    // Two independent case operands activate the same body.
+    auto w = SctAuthoringMaterializer::workingState(state.project, state.programs, script).value();
+    auto d = std::make_shared<sct::SctDocument>(*w.document);
+    auto& sw = std::get<sct::SctScriptSectionContent>(d->sections[2].content).instructions.front();
+    sw.repeatedParameterGroups[1].parameters[1].value = sct::SctInstructionReference{loop.actions.front().instruction};
+    w.document = d;
+    state.project = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, w).value();
+    const auto first = state.project.entrypoints.back().id;
+    state = SctEntrypointAuthoring::setActivation(state, first,
+        SctLocalActivation{dispatch.actions.front().id, sct::SctParameterAddress{3,0}, loop.actions.front().id, loop.actions.back().id}).value();
+    auto second = state.project.entrypoints.back(); second.id = state.project.allocate<SctEntrypointId>().value();
+    std::get<SctLocalActivation>(second.activation).operand->repeatedGroupOrdinal = 1;
+    state.project.entrypoints.push_back(second);
+    ASSERT_TRUE(SctAuthoringSession::validate(state));
+    state = SctEntrypointAuthoring::setEnabled(state, first, false).value();
+    auto lowered = SctEntrypointAuthoring::lower(state.project, script, *d); ASSERT_TRUE(lowered);
+    const auto& result = std::get<sct::SctScriptSectionContent>(lowered.value().document.sections[2].content).instructions.front();
+    EXPECT_EQ(std::get<sct::SctInstructionReference>(result.repeatedParameterGroups[0].parameters[1].value).target, loop.actions.back().instruction);
+    EXPECT_EQ(std::get<sct::SctInstructionReference>(result.repeatedParameterGroups[1].parameters[1].value).target, loop.actions.front().instruction);
+    EXPECT_EQ(std::get<sct::SctInstructionReference>(result.repeatedParameterGroups[2].parameters[1].value).target,
+        std::get<sct::SctInstructionReference>(sw.repeatedParameterGroups[2].parameters[1].value).target);
+    EXPECT_FALSE(output(state).empty());
+}
+TEST(SctActivationTest, NamedWrapperPreservesPhysicalFallthroughIntoOriginalBody) {
+    auto state = initial(); const auto script = state.project.scripts.front().id;
+    auto w = SctAuthoringMaterializer::workingState(state.project, state.programs, script).value();
+    auto d = std::make_shared<sct::SctDocument>(*w.document);
+    const auto predecessor = d->allocateInstructionId();
+    d->sections.insert(d->sections.begin()+1, {d->allocateSectionId(), "prior", sct::SctScriptSectionContent{{
+        {predecessor,16,false,{},{{0,expression("1")}}}}}});
+    w.document = d; state.project = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, w).value();
+    state = SctEntrypointAuthoring::declareNamed(state, script, d->sections[2].id).value();
+    const auto originalBody = state.project.sequences.back().actions.front().instruction;
+    state = SctEntrypointAuthoring::setEnabled(state, state.project.entrypoints.back().id, false).value();
+    auto lowered = SctEntrypointAuthoring::lower(state.project, script, *d); ASSERT_TRUE(lowered);
+    const auto& prior = std::get<sct::SctScriptSectionContent>(lowered.value().document.sections[1].content).instructions;
+    ASSERT_EQ(prior.size(),2); EXPECT_EQ(prior.front().id,predecessor); EXPECT_FALSE(prior.front().skipRefresh);
+    EXPECT_EQ(prior.back().opcode,10); EXPECT_TRUE(prior.back().skipRefresh);
+    EXPECT_EQ(std::get<sct::SctInstructionReference>(prior.back().fixedParameters[0].value).target,originalBody);
+    EXPECT_FALSE(output(state).empty());
+}
+TEST(SctOverworldAuthoringTest, BatchAssignmentsCopiesAndUnknownsRemainOrderedAndUndoable) {
+    auto state=promoted(); const auto seq=state.project.sequences.front(); const auto anchor=seq.actions.back().id;
+    const auto original=output(state); auto session=SctAuthoringSession::open(state).takeValue();
+    std::vector<SctSelectorEdit> edits{{{},7,expression("6")},{ {},45,expression("4")},{ {},6,expression("ByteVar[63]")}};
+    ASSERT_TRUE(session->execute(state.project.revision,"Configure",[&](const auto& s){return SctOverworldAuthoring::edit(s,seq.id,anchor,edits);}));
+    state=session->state(); const auto* after=state.project.find(seq.id); ASSERT_EQ(after->actions.size(),seq.actions.size()+3);
+    auto preview=SctOverworldAuthoring::preview(state,seq.id,after->actions[4].id,after->actions[6].id,{{63,16}}); ASSERT_TRUE(preview);
+    EXPECT_EQ(smores::script::selectTile("32",preview.value()).filename,"fiel32g.mld"); EXPECT_EQ(smores::script::selectOverworld(true,preview.value()).filename,"me099q.sct");
+    auto unknown=SctOverworldAuthoring::preview(state,seq.id,after->actions[4].id,after->actions[6].id,{}); ASSERT_TRUE(unknown); EXPECT_FALSE(unknown.value()[6]);
+    EXPECT_FALSE(SctOverworldAuthoring::preview(state,seq.id,after->actions.front().id,after->actions.back().id,{}));
+    EXPECT_FALSE(output(state).empty()); ASSERT_TRUE(session->undo()); EXPECT_EQ(output(session->state()),original); ASSERT_TRUE(session->redo());
+    EXPECT_EQ(output(session->state()),output(state));
+    auto replacement=SctOverworldAuthoring::edit(state,seq.id,{},{{after->actions[4].id,7,expression("ByteVar[12]")}}); ASSERT_TRUE(replacement);
+    EXPECT_EQ(replacement.value().project.find(seq.id)->actions[4].id,after->actions[4].id);
+}
+TEST(SctOverworldAuthoringTest, ResourceAssociationsAreOptionalAndRoundTripIndependentlyOfBindings) {
+    auto state=initial(); const auto script=state.project.scripts.front().id; auto resource=entryCatalog(state).resources.front();
+    resource.role=smores::script::ResourceRole::StreamedTile; resource.identity.asset="mods/fiel32z.mld";
+    auto next=SctEntrypointAuthoring::associateResource(state,script,resource); ASSERT_TRUE(next);
+    EXPECT_EQ(output(next.value()),output(state)); auto encoded=SctAuthoringCodec::encode(next.value().project); ASSERT_TRUE(encoded);
+    auto decoded=SctAuthoringCodec::decode(encoded.value()); ASSERT_TRUE(decoded); EXPECT_EQ(decoded.value().find(script)->resources.front().resource,resource.identity);
+    EXPECT_FALSE(hasErrors(SctEntrypointAuthoring::inspectBindings(next.value().project,script,{})));
 }

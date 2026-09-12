@@ -30,6 +30,7 @@ struct Fixture {
         sct::SctDocumentInstruction instruction; instruction.id = d.allocateInstructionId(); instruction.opcode = 16;
         instruction.fixedParameters = {{0, sct::SctExpressionFactory::encodedDecimalLiteral(12)}};
         d.sections.push_back({d.allocateSectionId(), "MAIN", sct::SctScriptSectionContent{{instruction}}});
+        for (const auto name : {"init","loop"}) d.sections.push_back({d.allocateSectionId(),name,sct::SctScriptSectionContent{{{d.allocateInstructionId(),12}}}});
         auto output = sct::SctDocumentExporter::exportDocument(d, sct::SctDocumentExportOptions{sct::SctPlatform::GameCube,
             sct::kSctShiftJisByte7FEncoding, sct::SctDocumentOutputByteOrder::BigEndian, sct::SctDocumentOutputWrapper::Raw,
             sct::SctOpaquePreservationPolicy::RequirePreservation, {sct::SctHeaderExportMode::ExplicitValues, {2001, 1, 2, 7}}});
@@ -37,9 +38,8 @@ struct Fixture {
         if (opaquePrefix) {
             const auto offset = output.layout->sections.front().payloadSpan.offset;
             output.bytes.insert(output.bytes.begin() + offset, 32, 0xff);
-            const auto indexOffset = output.layout->sections.front().indexRowSpan.offset;
-            for (unsigned byte = 0; byte < 4; ++byte)
-                output.bytes[indexOffset + byte] = static_cast<std::uint8_t>(32u >> (24 - byte * 8));
+            for (const auto& section : output.layout->sections) for (unsigned byte=0;byte<4;++byte)
+                output.bytes[section.indexRowSpan.offset+byte] = static_cast<std::uint8_t>((section.dataRelativeOffset+32u) >> (24-byte*8));
         }
         for (const auto& locator : {a, b}) {
             std::ofstream file(root / "source" / locator.path(), std::ios::binary);
@@ -123,7 +123,7 @@ TEST(AuthoringControllerTest, ProjectPublicationUsesFreshSemanticLayoutAfterGrow
     ASSERT_TRUE(waitFor([&] { return finished; })); ASSERT_TRUE(succeeded);
     const auto receipt = controller.lastPublication(f.a); ASSERT_TRUE(receipt);
     EXPECT_TRUE(receipt->preservation.attachments.empty());
-    ASSERT_EQ(receipt->layout.sections.size(), 1u); EXPECT_EQ(receipt->layout.sections[0].dataRelativeOffset, 0u);
+    ASSERT_EQ(receipt->layout.sections.size(), 3u); EXPECT_EQ(receipt->layout.sections[0].dataRelativeOffset, 0u);
     EXPECT_EQ(receipt->revision, controller.authoringState()->project.revision);
     EXPECT_FALSE(controller.authoringState()->programs.front()->document().opaqueAttachments.empty());
     ASSERT_TRUE(controller.saveDocument(f.a)); ASSERT_TRUE(waitFor([&] { return !controller.isSaving(f.a); }));
@@ -225,6 +225,38 @@ TEST(AuthoringControllerTest, EntrypointConnectionsUseSharedHistoryAndContainer)
     qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace); ASSERT_TRUE(reopened.authoringState());
     const auto& restored = reopened.authoringState()->project; ASSERT_EQ(restored.entrypoints.size(),1); EXPECT_EQ(restored.entrypoints.front().id,id);
     EXPECT_EQ(std::get<rel::Entry>(*restored.entrypoints.front().binding->provider),entry);
+}
+
+TEST(AuthoringControllerTest, DisabledNamedEntryUsesSameLoweringAsCoreWithoutMldContext) {
+    Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project,f.a)); ASSERT_TRUE(waitFor([&]{return !controller.busy();}));
+    const auto before=controller.authoringState(); const auto script=before->project.scripts.front().id;
+    const auto section=before->programs.front()->document().sections.front().id;
+    ASSERT_TRUE(controller.executeAuthoringCommand(before->project.revision,"Declare entry",[&](const auto& s){return core::SctEntrypointAuthoring::declareNamed(s,script,section);}));
+    const auto id=controller.authoringState()->project.entrypoints.back().id;
+    ASSERT_TRUE(controller.executeAuthoringCommand(controller.authoringState()->project.revision,"Disable entry",[&](const auto& s){return core::SctEntrypointAuthoring::setEnabled(s,id,false);}));
+    smores::script::Resource absent{{"optional","missing/fiel32z.mld","revision","document"},smores::script::ResourceRole::StreamedTile,{}};
+    ASSERT_TRUE(controller.executeAuthoringCommand(controller.authoringState()->project.revision,"Optional missing MLD",[&](const auto& s){return core::SctEntrypointAuthoring::associateResource(s,script,absent);}));
+    ASSERT_TRUE(waitFor([&]{return !controller.busy();}));
+    const auto captured=controller.authoringState();
+    const auto coreOutput=core::SctAuthoringMaterializer::materialize({std::make_shared<const core::SctAuthoringProject>(captured->project),captured->programs,{script}}); ASSERT_TRUE(coreOutput.succeeded());
+    bool finished=false,success=false; QObject::connect(&controller,&qt::SctDocumentController::publicationCompleted,&controller,[&](const QString&,bool ok,bool,const QString&,bool){finished=true;success=ok;});
+    ASSERT_TRUE(controller.exportDocument(*f.project,f.a,{sct::SctPlatform::GameCube,sct::kSctShiftJisByte7FEncoding,sct::SctDocumentOutputByteOrder::BigEndian,sct::SctDocumentOutputWrapper::Raw},f.root/"disabled.sct",false,{}));
+    ASSERT_TRUE(waitFor([&]{return finished;})); ASSERT_TRUE(success);
+    EXPECT_EQ(controller.lastPublication(f.a)->outputDigest,coreOutput.scripts[0].prepared->digest);
+    const auto published=controller.lastPublication(f.a);
+    const auto& generated=published->activationRealization;
+    ASSERT_TRUE(generated); EXPECT_EQ(generated->key.project,captured->project.id);
+    EXPECT_EQ(generated->key.revision,captured->project.revision);
+    ASSERT_EQ(generated->records.size(),1); EXPECT_EQ(generated->records.front().entity,core::SctAuthoringEntityId{id});
+    EXPECT_GT(generated->records.front().locations.size(),2);
+    ASSERT_TRUE(controller.undo(f.a)); ASSERT_TRUE(controller.undo(f.a)); EXPECT_TRUE(controller.authoringState()->project.find(id)->enabled);
+    ASSERT_TRUE(controller.redo(f.a)); EXPECT_FALSE(controller.authoringState()->project.find(id)->enabled);
+    controller.closeAll(); ASSERT_TRUE(controller.saveDocument(f.a));
+    ASSERT_TRUE(waitFor([&]{return !controller.isSaving(f.a);}));
+    qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace); ASSERT_TRUE(reopened.authoringState());
+    const auto* restored=reopened.authoringState()->project.find(id); ASSERT_NE(restored,nullptr);
+    EXPECT_FALSE(restored->enabled); EXPECT_TRUE(std::holds_alternative<core::SctNamedActivation>(restored->activation));
 }
 
 }

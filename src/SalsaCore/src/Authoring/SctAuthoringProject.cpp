@@ -179,10 +179,35 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
         }
     };
     checkOwned(modules, "Module"); checkOwned(entrypoints, "Entrypoint");
+    for (const auto& script : scripts) {
+        std::set<std::string> resources;
+        for (const auto& r : script.resources)
+            if (!smores::script::valid(r.resource) || static_cast<unsigned>(r.role) > 3 || !resources.insert(r.resource.asset).second)
+                out.push_back(error("Invalid or duplicate optional resource association."));
+    }
+    for (const auto& e : entrypoints) {
+        const auto actionOwned = [&](SctActionId id) {
+            return std::ranges::any_of(sequences,[&](const auto& seq) { return seq.script == e.script
+                && std::ranges::any_of(seq.actions,[&](const auto& a) { return a.id == id; }); });
+        };
+        if (const auto* a = std::get_if<SctNamedActivation>(&e.activation)) {
+            if (!actionOwned(a->body) || a->externalName.empty()) out.push_back(error("Named activation has a dangling or foreign body."));
+            if ((a->externalName == "init" || a->externalName == "loop") && !e.enabled) out.push_back(error("Required lifecycle entrypoints are always enabled."));
+        }
+        if (const auto* a = std::get_if<SctLocalActivation>(&e.activation))
+            if (!actionOwned(a->source) || !actionOwned(a->start) || !actionOwned(a->continuation)) out.push_back(error("Local activation has a dangling or foreign action."));
+        if (e.binding && e.binding->kind == SctEntrypointKind::Lifecycle && !e.enabled)
+            out.push_back(error("Required lifecycle entrypoints are always enabled."));
+        if (const auto* u = std::get_if<SctUnresolvedBinding>(&e.activation)) {
+            if (u->originalEvidence.empty() || u->explanation.empty()) out.push_back(error("Unresolved activation requires an explanation."));
+            checkEvidence(u->evidence, "Activation: ", out);
+            out.push_back({DiagnosticSeverity::Warning,DiagnosticCode::UnresolvedSctAuthoringBinding,e.name + ": " + u->explanation});
+        }
+    }
     for (const auto& entry : entrypoints) if (entry.binding) {
         const auto& b = *entry.binding;
         const auto* sequence = find(b.sequence);
-        if (!sequence || sequence->script != entry.script || static_cast<unsigned>(b.kind) > 3 || static_cast<unsigned>(b.resourceRole) > 2)
+        if (!sequence || sequence->script != entry.script || static_cast<unsigned>(b.kind) > 4 || static_cast<unsigned>(b.resourceRole) > 3)
             out.push_back(error("Entrypoint has invalid kind, role, or sequence ownership."));
         checkReference(b.response, "Entrypoint response: ");
         if (const auto* id = std::get_if<SctPortId>(&b.response)) {

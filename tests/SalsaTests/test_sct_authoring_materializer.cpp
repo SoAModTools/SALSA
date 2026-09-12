@@ -40,6 +40,7 @@ SctAuthoringImportRequest source(GamePlatform platform = GamePlatform::GameCube,
     ret.id = returnB; d.sections.push_back({helperB, "HELPER_B", sct::SctScriptSectionContent{{ret}}});
     d.sections.push_back({d.allocateSectionId(), "MS0001", sct::SctStringSectionContent{
         {d.allocateStringId(), sct::SctOpaqueText{{0x82, 0xa0, 0x7f, 0x81, 0x40, 0}}, sct::SctTextKind::SctString}}});
+    for (const auto name : {"init","loop"}) d.sections.push_back({d.allocateSectionId(),name,sct::SctScriptSectionContent{{{d.allocateInstructionId(),12}}}});
     const auto exported = sct::SctDocumentExporter::exportDocument(d, sct::SctDocumentExportOptions{platform == GamePlatform::GameCube ? sct::SctPlatform::GameCube : sct::SctPlatform::Dreamcast,
         sct::kSctShiftJisByte7FEncoding, platform == GamePlatform::GameCube ? sct::SctDocumentOutputByteOrder::BigEndian : sct::SctDocumentOutputByteOrder::LittleEndian,
         wrapper, sct::SctOpaquePreservationPolicy::RequirePreservation,
@@ -174,6 +175,12 @@ TEST(SctAuthoringMaterializerTest, RebuildOmitsOpaquePrefixAndGeneratesNewIndexe
             {GamePlatform::GameCube, GameRegion::Japan, {hash}}, {GamePlatform::GameCube, false}, {}, "prefix"});
     ASSERT_TRUE(a);
     ASSERT_EQ(std::get<sct::SctScriptSectionContent>(a.value().program->document().sections[0].content).instructions.size(), 1);
+    EXPECT_FALSE(prepare(a.value(),a.value().project).succeeded()); // incomplete imported lifecycle draft
+    auto working = SctAuthoringMaterializer::workingState(a.value().project,{a.value().program},a.value().script).value();
+    auto complete = std::make_shared<sct::SctDocument>(*working.document);
+    for (const auto name : {"init","loop"}) complete->sections.push_back({complete->allocateSectionId(),name,sct::SctScriptSectionContent{{{complete->allocateInstructionId(),12}}}});
+    working.document = complete;
+    a.value().project = SctAuthoringMaterializer::replaceWorkingState(a.value().project,{a.value().program},a.value().script,working).value();
     auto reused = prepare(a.value(), a.value().project, SctAuthoringOutputMode::ReuseUnchangedSource);
     ASSERT_TRUE(reused.succeeded()) << messages(reused);
     auto rebuilt = prepare(a.value(), a.value().project);
@@ -181,7 +188,7 @@ TEST(SctAuthoringMaterializerTest, RebuildOmitsOpaquePrefixAndGeneratesNewIndexe
     const auto& output = *rebuilt.scripts[0].prepared;
     EXPECT_NE(output.digest, hash);
     ASSERT_TRUE(output.layout);
-    ASSERT_EQ(output.layout->sections.size(), 1);
+    ASSERT_EQ(output.layout->sections.size(), 3);
     EXPECT_EQ(output.layout->sections[0].dataRelativeOffset, 0);
     EXPECT_TRUE(output.document->opaqueAttachments.empty());
     EXPECT_FALSE(a.value().program->document().opaqueAttachments.empty());

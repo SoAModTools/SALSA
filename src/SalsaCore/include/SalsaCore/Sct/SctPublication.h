@@ -5,6 +5,7 @@
 #include "SalsaCore/Project/GameProjectContext.h"
 #include "SalsaCore/Sct/SctDocumentMaterializer.h"
 #include "SpiceSCT/SctDocumentExporter.h"
+#include "SalsaCore/Authoring/SctAuthoringProject.h"
 
 #include <filesystem>
 #include <functional>
@@ -50,6 +51,9 @@ struct SctPublicationRevision final {
     // Authoring-project publication lowers understood content into fresh layout.
     // The standalone document workflow keeps its separate preservation contract.
     bool semanticOutput = false;
+    std::shared_ptr<const SctAuthoringProject> authoringProject;
+    SctScriptId authoringScript;
+    RevisionId authoringRevision;
 };
 
 struct SctPublicationRequest final {
@@ -75,6 +79,8 @@ struct SctPublicationReceipt final {
     spice::sct::SctDocumentLayout layout;
     spice::sct::SctPreservationReport preservation;
     bool replacedSource = false;
+    // Generated activation locations are qualified by this exact publication.
+    std::optional<SctRealizationMap> activationRealization;
 };
 
 struct SctPublicationResult final {

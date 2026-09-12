@@ -4,7 +4,17 @@
 namespace salsa::core {
 class SctEntrypointAuthoring final {
 public:
-    // Selected resource inputs only. No filename pairing or tile discovery.
+    struct Lowered final {
+        spice::sct::SctDocument document;
+        std::vector<SctRealizationRecord> generated;
+    };
+    [[nodiscard]] static Result<Lowered> lower(const SctAuthoringProject&, SctScriptId, const spice::sct::SctDocument&);
+    [[nodiscard]] static Result<SctAuthoringState> setEnabled(const SctAuthoringState&, SctEntrypointId, bool);
+    [[nodiscard]] static Result<SctAuthoringState> setActivation(const SctAuthoringState&, SctEntrypointId, SctEntrypointActivation);
+    [[nodiscard]] static Result<SctAuthoringState> declareNamed(const SctAuthoringState&, SctScriptId, spice::sct::SctSectionId);
+    [[nodiscard]] static Result<SctAuthoringState> associateResource(const SctAuthoringState&, SctScriptId, const smores::script::Resource&);
+    [[nodiscard]] static Result<void> validateActivations(const SctAuthoringProject&, SctScriptId, const spice::sct::SctDocument&);
+    // Selected optional context, including streamed tiles.
     [[nodiscard]] static Result<smores::script::Resource> inspectResource(const GameProjectContext&,
         const AssetLocator&, smores::script::ResourceRole);
     [[nodiscard]] static Result<SctAuthoringState> bind(const SctAuthoringState&, SctScriptId,

@@ -268,13 +268,17 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     auto semanticValid = SctSequenceAuthoring::validateProgram(project, scriptId, replayed.value());
     if (semanticValid) semanticValid = SctEntrypointAuthoring::validateProgram(project, scriptId, replayed.value(), true);
     if (!semanticValid) { result.infrastructureDiagnostics = semanticValid.diagnostics(); return result; }
+    auto activation = SctEntrypointAuthoring::lower(project,scriptId,replayed.value());
+    if (!activation) { result.infrastructureDiagnostics = activation.diagnostics(); return result; }
+    const auto generated = activation.value().generated;
+    replayed = Result<sct::SctDocument>::success(std::move(activation.value().document));
     bool unchanged = region.value()->literalOverrides.empty() && (!region.value()->physicalPatch || region.value()->physicalPatch->empty());
     if (mode == SctAuthoringOutputMode::ReuseUnchangedSource && region.value()->authoredState) {
         auto original = SctProgramStateCodec::encode({authoredCopy(program.document())});
         auto current = SctProgramStateCodec::encode(*region.value()->authoredState);
         unchanged = original && current && original.value() == current.value();
     }
-    const bool reuse = mode == SctAuthoringOutputMode::ReuseUnchangedSource && unchanged;
+    const bool reuse = mode == SctAuthoringOutputMode::ReuseUnchangedSource && unchanged && generated.empty();
     if (reuse) replayed = Result<sct::SctDocument>::success(program.document());
     if (!reuse) {
         auto lowered = SctAuthoringMaterializer::buildSemanticDocument(replayed.value());
@@ -349,6 +353,11 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     result.prepared.emplace(SctPreparedAuthoringOutput{std::move(bytes), document,
         mapping(project, scriptId, region.value()->id, identity.value(), *document), digest.value(), reuse,
         reuse ? std::optional{program.evidence().receipt().sourceMap} : std::nullopt, std::move(layout), std::move(preservation)});
+    for (const auto& record : generated) {
+        auto found = std::ranges::find(result.prepared->realization.records, record.entity, &SctRealizationRecord::entity);
+        if (found == result.prepared->realization.records.end()) result.prepared->realization.records.push_back(record);
+        else found->locations.insert(found->locations.end(),record.locations.begin(),record.locations.end());
+    }
     result.readiness = sct::SctDocumentReadiness::ExportReady;
     return result;
 }

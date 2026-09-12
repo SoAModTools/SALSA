@@ -4,6 +4,8 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include <array>
+#include <map>
 
 namespace smores::script {
 enum class Status { Exact, Provisional, MissingInput, Ambiguous, Stale, Unsupported, Invalid };
@@ -14,7 +16,7 @@ struct ResourceIdentity {
     std::string dataset, asset, revision, document;
     auto operator<=>(const ResourceIdentity&) const = default;
 };
-enum class ResourceRole { Base, Auxiliary, Unclassified };
+enum class ResourceRole { Base, Auxiliary, Unclassified, StreamedTile };
 struct Entry {
     ResourceIdentity resource;
     std::uint64_t tableIndex = 0;
@@ -54,4 +56,32 @@ struct ResourceOperation {
 };
 // Source order within each section, not an inferred global execution timeline.
 [[nodiscard]] std::vector<ResourceOperation> resourceOperations(const spice::sct::SctDocument&);
+
+struct TileFamily { std::string key; std::optional<std::uint32_t> byteVariable; };
+[[nodiscard]] const std::array<TileFamily,42>& tileFamilies();
+// Static observations qualify these portable defaults; availability and runtime
+// reachability remain separate questions for the consuming project.
+[[nodiscard]] const std::array<Evidence,3>& tileRuleEvidence();
+struct TileVariant { std::string key; unsigned char suffix; };
+[[nodiscard]] std::optional<TileVariant> tileVariant(std::string asset);
+// GC US coordinate observation: filename digits are (5 - rowZ, columnX).
+[[nodiscard]] std::optional<std::pair<unsigned,unsigned>> tileGrid(std::string_view key);
+using KnownBytes = std::map<std::uint32_t,std::optional<std::uint8_t>>;
+enum class SelectionState { Known, Unknown, Unrepresentable };
+struct ResourceSelection {
+    SelectionState state = SelectionState::Unknown;
+    std::string filename;
+    Status availability = Status::MissingInput;
+    std::vector<ResourceIdentity> candidates;
+};
+[[nodiscard]] ResourceSelection selectTile(std::string_view key, const KnownBytes&, const Catalog& = {});
+[[nodiscard]] ResourceSelection selectOverworld(bool script, const KnownBytes&, const std::vector<ResourceIdentity>& = {});
+[[nodiscard]] bool isOverworldSelector(std::uint32_t index);
+struct ByteAssignment {
+    spice::sct::SctInstructionId instruction;
+    std::uint32_t destination;
+    spice::sct::SctCanonicalExpression expression;
+};
+[[nodiscard]] std::optional<ByteAssignment> byteAssignment(const spice::sct::SctDocumentInstruction&);
+[[nodiscard]] std::optional<std::uint8_t> evaluateByte(const spice::sct::SctCanonicalExpression&, const KnownBytes&);
 }

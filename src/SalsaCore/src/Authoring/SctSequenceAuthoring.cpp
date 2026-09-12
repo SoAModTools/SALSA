@@ -86,6 +86,13 @@ Result<void> SctSequenceAuthoring::reconcileActions(SctAuthoringProject& project
         }
         sequence.actions = std::move(actions);
     }
+    // Named activation follows the section's editable body, not a stale first
+    // instruction after insertion. External identity stays with the section.
+    for (auto& entry : project.entrypoints) if (entry.script == script && entry.binding)
+        if (auto* named = std::get_if<SctNamedActivation>(&entry.activation)) {
+            const auto* seq = project.find(entry.binding->sequence);
+            if (seq && !seq->actions.empty()) named->body = seq->actions.front().id;
+        }
     return validateProgram(project, script, document);
 }
 Result<SctAuthoringState> SctSequenceAuthoring::promoteSequence(const SctAuthoringState& state,

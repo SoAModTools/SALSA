@@ -1,31 +1,59 @@
 # Entrypoints and resources
 
-Open an imported script and choose **Document > Entrypoints and Resources**. Select a base or auxiliary MLD and use **Inspect / refresh MLD**. Selection is explicit; a matching filename does not establish a resource relationship. Streamed tile relationships are deferred pending research.
+Open an imported script and choose **Document > Entrypoints and Resources**. The inspector works without MLD files. Optional base, auxiliary, and streamed-tile MLDs add entry discovery and source context.
 
-The list exposes lifecycle sections, arrival predicates, bit consumers, saved bindings, and entries in the selected MLDs. Resource entries show table index, physical entryId, tblId, function, and source revision. A numeric handler-name match is a candidate association, not proof of runtime dispatch. All entries remain available for inspection; their function must be considered before asserting a handler relationship. Same-name handlers in different scripts remain independent.
+## Required lifecycle
 
-## Connecting a response
+Every exported script requires nonempty `init` and `loop` sections. `init` runs once before the VM uses `loop`; `loop` remains the permanent bottom stack entry. Both are always enabled. Their bodies remain editable, including optional activation routes inside them. Commands cannot remove or rename existing lifecycle section identities.
 
-Create or extract a module using **Script Modules**, then select an entrypoint/resource candidate and choose **Connect response to module**. Select an action port within a module owned by the same script. For an existing entrypoint, choose its existing call/branch target operand, or identify a section that already starts at that module port. The operand picker shows opcode, instruction, parameter, and repeated-group ordinal. Selecting a false-branch target retains that branch's actual polarity; it does not turn it into a positive event.
+An imported script missing a root remains an inspectable, editable, saveable draft. Repair the missing root explicitly before export. SALSA does not synthesize startup calls or infer a replacement body.
 
-For an absent direct handler, SALSA creates a section named from the selected tblId containing an explicit call and return. It rejects duplicate handler names and appending after an unterminated trailing sequence. Existing handlers require explicit selection of their body or response operand. A response can enter a module at an interior action. Empty modules need an action before they can receive execution.
+## Declaring and connecting entries
 
-Lifecycle bindings use existing `init` or `loop` sections. Arrival bindings retain a predicate or switch selector reading `Low16IntVar[15]`; use **Sequences and Conditions** to edit the previous-location comparison or select an existing switch case. S6 does not invent new arrival dispatch tables or alter the meaning of tentative special return values.
+Use **Declare named entrypoint** to expose an existing section or create an editable named body, including an `M` handler without an MLD. A new body has a leading true condition and a return. Its declaration does not claim the engine invokes it.
 
-Signal consumers retain their physical bit predicate and ordered response. The eventhook picker offers matching parameter-8 candidates as **inference**; selecting one records a user assertion separately from source observations. Unknown providers remain explicit and saveable. The inspector lists the complete section, including explicit clears, caller preparation, waits, and continuation. Retargeting changes only the selected existing operand. Predicates remain level checks, and consumption instructions keep their original order. Source order alone does not prove control-flow dominance or engine signaling behavior.
+Create or extract a module using **Script Modules**, then use **Connect response to module**. Select a module action port in the same script and the existing response target operand. The picker retains opcode, parameter, and repeated-group ordinal. A false-branch operand retains its actual polarity. A named or lifecycle body can be declared without extracting it into a module.
 
-## Resource qualification
+Arrival and signal candidates retain their existing physical predicates. Arrival predicates read `Low16IntVar[15]`; signal consumers read a selected bit. Provider inference is separate from execution targets and user assertions. SALSA makes no runtime-reachability assurance.
 
-A selected entry records dataset fingerprint, normalized relative resource key, exact source revision, imported-document identity, table index, SPICE document-local ID, physical entryId, tblId, function, and function parameters. Table index and tblId are never interchangeable. Reloaded or reordered entries require explicit reselection; selecting a saved binding opens the same response editor and preserves the entrypoint ID. An incomplete catalog reports missing input without deleting bindings or claiming that handlers are orphaned.
+## Enabling and disabling
 
-The adapter verifies source hashes and delegates MLD parsing to SPICE. Its deterministic imported-document discriminator is `spice-mld-s6-v1:<source digest>`; changing that import contract requires changing the discriminator. Binding checks also compare all captured entry fields, including the document-local ID. Resource catalogs are transient read-only views, while selected binding descriptors persist in the compressed project. MLD bytes are not copied into authoring content. A newly selected resource snapshot may have a newer dataset fingerprint than the script's immutable imported baseline; explicit reselection updates only the resource binding.
+Optional entries have durable enabled state. **Activation boundary** defines what disabling bypasses; **Enable / disable entrypoint** changes the state through project history. Required lifecycle entries have no disable control.
 
-Load, wait, and release observations retain section/instruction order, target text when understood, and schedule/refresh indicators. They are not a computed global residency timeline. Available entries do not establish currently loaded resources, simultaneous tblId scope, or runtime dispatch precedence. Resource asset editing remains outside SALSA.
+For a named entry, disabling emits an inert external wrapper and retains its original body under a generated private label. Other instruction references continue to target the original body. The wrapper retains the leading-condition convention used by direct section dispatch.
 
-Publication through the editor checks execution bindings and reloads each selected MLD before publishing. A changed or unverifiable selected resource blocks publication with a resolution diagnostic. An explicitly unknown signal provider does not prevent exporting its already-authored physical predicate and response. The lower-level in-memory materializer validates the authored program; callers supplying external resource context should use `SctEntrypointAuthoring::verifyResources` before publication.
+For an arrival or signal consumer, select the first action of the whole activation block, its bypass continuation, and the incoming edge to redirect. Structured analysis suggests boundaries where available; manual selection is supported. Review preparation, response, and consumption together. Only the selected incoming edge bypasses the block; other callers and routes remain intact. A block at the beginning of `init` or `loop` can be bypassed while its required lifecycle entry stays enabled.
 
-## Ownership and persistence
+Disabled bodies remain authored, editable, and emitted. This is not footprint reduction. Unknown activation boundaries can be saved as drafts, but a disabled entry requires a concrete boundary before export. Structural execution-reference errors still require repair. Reenabling restores the route without reconstructing deleted content.
 
-Entrypoints, module ports, and selected responses use stable authoring identities and the existing session's revision checks, Undo/Redo, save, and reopen. Reparenting is unsupported. This slice uses entrypoint response bindings; arbitrary port-to-port graph execution, new event scheduling, streamed tile relationships, and a 3D viewer remain outside S6.
+Core materialization and editor publication use the same captured-revision lowering. Generated wrappers and bypasses are output artifacts, with realization mappings back to the entrypoint; they do not become a second editable document authority.
 
-[SmoresScript](../SmoresScript/README.md) contains the portable relationship definitions and static queries. It depends only on standard C++ and public immutable SPICE types. SALSA supplies resource context and owns authored decisions, serialization, history, and UI. The library is intended for transfer to SMORES without taking a SalsaCore or Qt dependency.
+## Optional resource context
+
+Select an MLD and role, then use **Inspect / refresh MLD**. The script association persists independently of entrypoint bindings. Entries show table index, physical entryId, tblId, function, and source revision. A numeric handler-name match is an inferred association. Consider the entry's function when declaring a response.
+
+Selected evidence records dataset fingerprint, normalized resource key, exact revision, imported-document identity, table index, SPICE local ID, physical entryId, tblId, function, and parameters. A changed or reordered entry requires explicit reselection to adopt its new evidence; SALSA never silently rebinds by index or name. Inspecting a new resource snapshot does not rewrite the script's immutable baseline.
+
+Missing, stale, ambiguous, and unresolved MLD context is advisory. It does not block editing, saving, or export. These states do not establish deletion, residency, or an orphaned handler. Script execution targets remain independent of MLD evidence. Modded resource combinations are permitted regardless of retail inventories.
+
+SPICE parses MLDs. Catalogs remain derived views; MLD bytes are not stored as authored execution content. The deterministic inspection discriminator remains `spice-mld-s6-v1:<source digest>`.
+
+## Overworld selectors
+
+**Overworld selectors** displays each tile family, its ByteVar selector, computed variant, and optional project availability. **Select tile or overworld variant** chooses a family and letter without requiring knowledge of its physical variable index. Insert the assignment before the selected action or replace a selected byte assignment.
+
+The advanced assignment editor accepts ordered `index=expression` lines, including copies such as `6=ByteVar[63]`. Insertions are one undoable batch. Replacements preserve existing scheduling and refresh modifiers. Unspecified variables remain unchanged.
+
+Preview an inclusive range in one sequence using optional known byte values. The preview propagates literal assignments and known copies; unsupported expressions and scheduled assignments yield unknown values. It does not execute branches, calls, or other effects: narrow the range to byte assignments and waits. Preview inputs are transient; authored assignments save normally.
+
+The filename plan is selected for **subsequent overworld initialization**. Selector writes do not immediately reload tiles. Ordinary streaming reuses captured filenames. Tile selectors are independent of ByteVar[6], which selects the overworld SCT and base MLD. There is no global story-stage enum or implicit filename fallback.
+
+The portable rules describe 42 tile keys, 27 coordinate-specific selectors, and fixed `a` variants for unmapped keys. Keep filename keys separate from spatial coordinates: the GC US observation maps digits to `(5 - gridRowZ, gridColumnX)`. Rule evidence must not be confused with current resource residency. Retail regions/discs are not availability whitelists; the actual project catalog supplies availability.
+
+## Ownership and output
+
+[SmoresScript](../SmoresScript/README.md) holds portable relationships intended for donation to SMORES. SALSA owns authored decisions, history, schema, and UI. SPICE owns file formats. Future SALT coordination supplies workspace services; MLD context remains optional authoring assistance.
+
+The semantic schema is version 7. Presentation and compressed container encoding are unchanged. Development-schema compatibility is not provided; Python SALSA v7 import remains supported.
+
+Release output settings concern endianness, supported text conventions/localizations, and compression. Game-binary packaging is outside SALSA. Graph editing, spatial viewing, and unused-library removal are separate slices; footprint reduction is on hold pending the engine-entrypoint inventory.

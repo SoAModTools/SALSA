@@ -95,6 +95,11 @@ struct SctScriptContext final {
     std::optional<SctLegacyOrigin> legacyOrigin;
     std::vector<SctAuthoringReference<SctContentId>> contentUses;
     std::optional<SctAuthoredOutputProfile> outputProfile;
+    struct ResourceAssociation final {
+        smores::script::ResourceIdentity resource;
+        smores::script::ResourceRole role = smores::script::ResourceRole::Unclassified;
+    };
+    std::vector<ResourceAssociation> resources;
 };
 struct SctAuthoringModule final {
     SctModuleId id;
@@ -106,7 +111,20 @@ struct SctAuthoringModule final {
     // program pool. The script retains assembly order across module boundaries.
     std::vector<spice::sct::SctSectionId> sections;
 };
-enum class SctEntrypointKind { Lifecycle, Arrival, DirectHandler, SignalConsumer };
+enum class SctEntrypointKind { Lifecycle, Arrival, DirectHandler, SignalConsumer, NamedSection };
+struct SctNamedActivation final {
+    std::string externalName;
+    SctActionId body;
+};
+struct SctLocalActivation final {
+    SctActionId source;
+    // Absent denotes the source instruction's physical fallthrough edge.
+    std::optional<spice::sct::SctParameterAddress> operand;
+    SctActionId start;
+    SctActionId continuation;
+    bool lifecycleEntry = false;
+};
+using SctEntrypointActivation = std::variant<SctUnresolvedBinding, SctNamedActivation, SctLocalActivation>;
 struct SctEntrypointBinding final {
     SctEntrypointKind kind = SctEntrypointKind::Lifecycle;
     SctSequenceId sequence;
@@ -125,6 +143,8 @@ struct SctAuthoringEntrypoint final {
     std::vector<SctAuthoringReference<SctContentId>> contentUses;
     std::vector<SctAuthoringEvidence> evidence;
     std::optional<SctEntrypointBinding> binding;
+    bool enabled = true;
+    SctEntrypointActivation activation = SctUnresolvedBinding{"Imported entry", "Activation boundary not selected.", {}};
 };
 struct SctAuthoringPort final {
     SctPortId id;

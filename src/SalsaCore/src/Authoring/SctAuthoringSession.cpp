@@ -82,6 +82,21 @@ Result<SctAuthoringChange> SctAuthoringSession::execute(RevisionId expected, std
         for (const auto& entry : current_->project.entrypoints) {
             const auto* after = next.project.find(entry.id);
             if (after && after->script != entry.script) return Result<SctAuthoringChange>::failure(error("Entrypoint reparenting is not supported."));
+            if (entry.binding && entry.binding->kind == SctEntrypointKind::Lifecycle
+                && (!after || !after->enabled || after->name != entry.name || !after->binding
+                    || after->binding->kind != SctEntrypointKind::Lifecycle || after->binding->sequence != entry.binding->sequence))
+                return Result<SctAuthoringChange>::failure(error("Required lifecycle entry identities cannot be removed, renamed, or disabled."));
+        }
+        for (const auto& script : current_->project.scripts) if (next.project.find(script.id)) {
+            auto prior = SctAuthoringMaterializer::workingState(current_->project,current_->programs,script.id);
+            auto after = SctAuthoringMaterializer::workingState(next.project,next.programs,script.id);
+            if (!prior || !after) return Result<SctAuthoringChange>::failure(error("Cannot validate lifecycle section identity."));
+            for (const auto& section : prior.value().document->sections) if (section.nameBytes == "init" || section.nameBytes == "loop") {
+                const auto found = std::ranges::find(after.value().document->sections,section.id,&spice::sct::SctDocumentSection::id);
+                if (found == after.value().document->sections.end() || found->nameBytes != section.nameBytes
+                    || !std::holds_alternative<spice::sct::SctScriptSectionContent>(found->content))
+                    return Result<SctAuthoringChange>::failure(error("Required init/loop section identities cannot be removed or renamed."));
+            }
         }
         const auto priorIds = identities(current_->project);
         for (const auto& [id, kind] : identities(next.project)) {

@@ -16,6 +16,7 @@ SctAuthoringImportRequest source(std::string name) {
     sct::SctDocumentInstruction word; word.id = d.allocateInstructionId(); word.opcode = 16;
     word.fixedParameters = {{0, sct::SctExpressionFactory::encodedDecimalLiteral(12)}};
     d.sections.push_back({d.allocateSectionId(), "MAIN", sct::SctScriptSectionContent{{word}}});
+    for (const auto name : {"init","loop"}) d.sections.push_back({d.allocateSectionId(),name,sct::SctScriptSectionContent{{{d.allocateInstructionId(),12}}}});
     auto output = sct::SctDocumentExporter::exportDocument(d, sct::SctDocumentExportOptions{sct::SctPlatform::GameCube,
         sct::kSctShiftJisByte7FEncoding, sct::SctDocumentOutputByteOrder::BigEndian,
         sct::SctDocumentOutputWrapper::Raw, sct::SctOpaquePreservationPolicy::RequirePreservation,

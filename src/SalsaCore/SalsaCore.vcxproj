@@ -111,6 +111,9 @@
     <ClCompile Include="src\Authoring\SctAuthoringStore.cpp" />
     <ClCompile Include="src\Authoring\SctModuleAuthoring.cpp" />
     <ClCompile Include="src\Authoring\SctEntrypointAuthoring.cpp" />
+    <ClCompile Include="src\Authoring\SctEntrypointActivation.cpp" />
+    <ClCompile Include="src\Authoring\SctOverworldAuthoring.cpp" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctOverworldAuthoring.h" />
     <ClCompile Include="src\Authoring\SctProjectContainer.cpp" />
     <ClCompile Include="src\Authoring\SctAuthoringMaterializer.cpp" />
     <ClCompile Include="src\Application\ApplicationInfo.cpp" />

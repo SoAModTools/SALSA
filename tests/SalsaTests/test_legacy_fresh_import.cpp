@@ -873,6 +873,8 @@ TEST(LegacyFreshImportTest, V7AuthoringProjectPreservesPromotedMetadataAndCanReo
     ASSERT_FALSE(current.value().folders.empty());
     auto document = std::make_shared<spice::sct::SctDocument>(*current.value().document);
     document->sections.front().nameBytes = "RENAMED";
+    // This minimal v7 fixture omits lifecycle roots; explicitly repair the draft.
+    for (const auto name : {"init","loop"}) document->sections.push_back({document->allocateSectionId(),name,spice::sct::SctScriptSectionContent{{{document->allocateInstructionId(),12}}}});
     current.value().document = document;
     auto edited = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, current.value()); ASSERT_TRUE(edited);
     state.project = edited.value(); ++state.project.revision.value;

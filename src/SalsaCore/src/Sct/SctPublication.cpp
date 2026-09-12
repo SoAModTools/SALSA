@@ -1,5 +1,6 @@
 #include "SalsaCore/Sct/SctPublication.h"
 #include "SalsaCore/Authoring/SctAuthoringMaterializer.h"
+#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 
 #include "SalsaCore/Persistence/AtomicFile.h"
 
@@ -194,6 +195,18 @@ SctPublicationResult SctPublicationService::publish(
     const auto* evidence = snapshot->provenance && snapshot->provenance->importEvidence
         ? &*snapshot->provenance->importEvidence : nullptr;
     auto outputDocument = snapshot->document;
+    std::vector<SctRealizationRecord> generated;
+    if (request.capturedRevision.authoringProject) {
+        const auto& captured = request.capturedRevision;
+        if (!captured.semanticOutput || captured.authoringRevision != captured.authoringProject->revision) {
+            result.infrastructureDiagnostics.push_back(publicationDiagnostic(DiagnosticSeverity::Error, DiagnosticCode::SctExportFailed, "Captured authoring revision is inconsistent."));
+            return result;
+        }
+        auto activation = SctEntrypointAuthoring::lower(*captured.authoringProject,captured.authoringScript,*outputDocument);
+        if (!activation) { result.infrastructureDiagnostics = activation.diagnostics(); return result; }
+        generated = std::move(activation.value().generated);
+        outputDocument = std::make_shared<const spice::sct::SctDocument>(std::move(activation.value().document));
+    }
     if (request.capturedRevision.semanticOutput) {
         auto lowered = SctAuthoringMaterializer::buildSemanticDocument(*outputDocument);
         result.infrastructureDiagnostics = lowered.diagnostics();
@@ -254,6 +267,13 @@ SctPublicationResult SctPublicationService::publish(
         std::move(exported.preservation),
         replacingSource,
     });
+    if (request.capturedRevision.authoringProject) {
+        const auto& captured = request.capturedRevision;
+        auto hex = digest.value().toHex().substr(0,32); hex[12]='8'; hex[16]='8';
+        SctRealizationId realization{hex.substr(0,8)+"-"+hex.substr(8,4)+"-"+hex.substr(12,4)+"-"+hex.substr(16,4)+"-"+hex.substr(20)};
+        result.receipt->activationRealization = SctRealizationMap{
+            {captured.authoringProject->id,captured.authoringRevision,captured.authoringScript,std::move(realization)},std::move(generated)};
+    }
     return result;
 }
 

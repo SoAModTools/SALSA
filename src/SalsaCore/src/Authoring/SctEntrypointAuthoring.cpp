@@ -1,6 +1,7 @@
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SpiceMLD/MldDocumentImporter.h"
 #include "SpiceSCT/SctDocumentIndex.h"
+#include <set>
 namespace salsa::core {
 namespace {
 namespace sct = spice::sct;
@@ -22,9 +23,6 @@ std::optional<sct::SctInstructionId> target(const SctAuthoringProject& p, SctPor
 }
 Result<rel::Resource> SctEntrypointAuthoring::inspectResource(const GameProjectContext& context,
     const AssetLocator& locator, rel::ResourceRole role) {
-    // Streamed tile relationships deliberately deferred pending research.
-    if (rel::assetKey(locator.path().stem().string()).starts_with("fiel"))
-        return Result<rel::Resource>::failure(error("Streamed tile relationships are deferred."));
     auto source = context.assets().loadAsset(locator); if (!source) return Result<rel::Resource>::failure(source.diagnostics());
     const auto hash = sha256(source.value().bytes); if (!hash) return Result<rel::Resource>::failure(hash.diagnostics());
     if (hash.value() != source.value().descriptor.revision.digest) return Result<rel::Resource>::failure(error("MLD source changed while loading."));
@@ -40,25 +38,32 @@ Result<rel::Resource> SctEntrypointAuthoring::inspectResource(const GameProjectC
 }
 Result<void> SctEntrypointAuthoring::verifyResources(const SctAuthoringProject& project, SctScriptId script, const GameProjectContext& context) {
     rel::Catalog catalog;
+    if (const auto* owner = project.find(script)) for (const auto& association : owner->resources) {
+        auto locator = AssetLocator::fromRelativePath(association.resource.asset); if (!locator) continue;
+        auto resource = inspectResource(context, locator.value(), association.role);
+        if (resource) catalog.resources.push_back(std::move(resource).takeValue());
+    }
     for (const auto& e : project.entrypoints) if (e.script == script && e.binding && e.binding->provider)
         if (const auto* entry = std::get_if<rel::Entry>(&*e.binding->provider)) {
             if (std::ranges::any_of(catalog.resources, [&](const auto& r) { return r.identity.asset == entry->resource.asset; })) continue;
-            auto locator = AssetLocator::fromRelativePath(entry->resource.asset); if (!locator) return Result<void>::failure(locator.diagnostics());
+            auto locator = AssetLocator::fromRelativePath(entry->resource.asset); if (!locator) continue;
             auto resource = inspectResource(context, locator.value(), e.binding->resourceRole);
-            if (!resource) return Result<void>::failure(error("Cannot verify selected MLD binding before publication: " + entry->resource.asset + ". Refresh the source context or explicitly resolve the binding."));
+            if (!resource) continue;
             catalog.resources.push_back(std::move(resource).takeValue());
         }
     auto diagnostics = inspectBindings(project, script, catalog);
-    if (hasErrors(diagnostics) || std::ranges::any_of(diagnostics, [](const auto& d) { return d.message.find("Resource not inspected") != std::string::npos; }))
-        return Result<void>::failure(error("Selected MLD bindings changed; explicitly resolve them before publication."));
     return Result<void>::success(std::move(diagnostics));
 }
 std::vector<Diagnostic> SctEntrypointAuthoring::inspectBindings(const SctAuthoringProject& project, SctScriptId script, const rel::Catalog& catalog) {
     std::vector<Diagnostic> result;
+    if (const auto* context = project.find(script)) for (const auto& a : context->resources) {
+        const auto matches = std::ranges::count_if(catalog.resources,[&](const auto& r) { return r.identity == a.resource; });
+        if (matches != 1) result.push_back({DiagnosticSeverity::Warning,DiagnosticCode::UnresolvedSctAuthoringBinding,a.resource.asset + ": optional resource context is unavailable, changed, or ambiguous."});
+    }
     for (const auto& e : project.entrypoints) if (e.script == script && e.binding && e.binding->provider) {
         if (const auto* source = std::get_if<rel::Entry>(&*e.binding->provider)) {
             const auto resolved = rel::resolve(*source, catalog);
-            if (resolved.status != rel::Status::Exact) result.push_back({resolved.status == rel::Status::MissingInput ? DiagnosticSeverity::Warning : DiagnosticSeverity::Error,
+            if (resolved.status != rel::Status::Exact) result.push_back({DiagnosticSeverity::Warning,
                 DiagnosticCode::UnresolvedSctAuthoringBinding, e.name + ": " + resolved.explanation});
         } else result.push_back({DiagnosticSeverity::Warning, DiagnosticCode::UnresolvedSctAuthoringBinding, e.name + ": provider unresolved."});
     }
@@ -66,6 +71,15 @@ std::vector<Diagnostic> SctEntrypointAuthoring::inspectBindings(const SctAuthori
 }
 Result<void> SctEntrypointAuthoring::validateProgram(const SctAuthoringProject& project, SctScriptId script, const sct::SctDocument& doc, bool forOutput) {
     const auto index = sct::SctDocumentIndex::build(doc);
+    if (forOutput) for (const auto name : {"init", "loop"}) {
+        const auto count = std::ranges::count_if(doc.sections, [&](const auto& s) {
+            const auto* body = std::get_if<sct::SctScriptSectionContent>(&s.content);
+            return s.nameBytes == name && body && !body->instructions.empty();
+        });
+        if (count != 1) return Result<void>::failure(error(std::string("Export requires one nonempty ") + name + " lifecycle section. Repair the imported draft explicitly."));
+    }
+    auto activationValid = validateActivations(project, script, doc);
+    if (!activationValid) return activationValid;
     for (const auto& e : project.entrypoints) if (e.script == script) {
         if (!e.binding) { if (forOutput) return Result<void>::failure(error("Entrypoint has no execution binding.")); continue; }
         const auto& b = *e.binding; const auto* seq = project.find(b.sequence);
@@ -111,7 +125,8 @@ Result<void> SctEntrypointAuthoring::validateProgram(const SctAuthoringProject& 
                     return Result<void>::failure(error("Entrypoint response operand no longer targets its selected module port."));
             } else if (body->instructions.empty() || body->instructions.front().id != *expected)
                 return Result<void>::failure(error("Section entry no longer starts at its module response port."));
-        } else if (forOutput) return Result<void>::failure(error("Entrypoint response is unresolved."));
+        } else if (forOutput && b.kind != SctEntrypointKind::Lifecycle && b.kind != SctEntrypointKind::NamedSection)
+            return Result<void>::failure(error("Entrypoint response is unresolved."));
     }
     return Result<void>::success();
 }
@@ -119,8 +134,15 @@ Result<SctAuthoringState> SctEntrypointAuthoring::bind(const SctAuthoringState& 
     std::string name, SctEntrypointBinding binding, const rel::Catalog& catalog, std::optional<SctEntrypointId> replace) {
     const auto* context = state.project.find(script); if (!context) return Result<SctAuthoringState>::failure(error("Script is missing."));
     if (binding.provider) if (const auto* entry = std::get_if<rel::Entry>(&*binding.provider)) {
-        const auto resolution = rel::resolve(*entry, catalog);
-        if (resolution.status != rel::Status::Exact) return Result<SctAuthoringState>::failure(error(resolution.explanation));
+        const auto* previous = replace ? state.project.find(*replace) : nullptr;
+        const auto* retained = previous && previous->binding && previous->binding->provider
+            ? std::get_if<rel::Entry>(&*previous->binding->provider) : nullptr;
+        // Editing a response retains its selected evidence even when the MLD is
+        // unavailable. Only a new selection requires a fresh inspected snapshot.
+        if (!retained || *retained != *entry || previous->binding->resourceRole != binding.resourceRole) {
+            const auto resolution = rel::resolve(*entry, catalog);
+            if (resolution.status != rel::Status::Exact) return Result<SctAuthoringState>::failure(error(resolution.explanation));
+        }
         // The selected resource snapshot may be newer than the immutable SCT
         // import baseline. Explicit selection, not baseline fingerprint equality,
         // establishes this authored association.
@@ -172,8 +194,11 @@ Result<SctAuthoringState> SctEntrypointAuthoring::createDirectHandler(const SctA
             return Result<SctAuthoringState>::failure(error("Adding a handler would extend an unterminated trailing sequence. Define its continuation explicitly first."));
     }
     const auto section = document->allocateSectionId();
-    const auto call = document->allocateInstructionId(), ret = document->allocateInstructionId();
-    document->sections.push_back({section, *name, sct::SctScriptSectionContent{{{call, 11, false, {}, {{0, sct::SctInstructionReference{*destination}}}}, {ret, 12}}}});
+    const auto guard = document->allocateInstructionId(), call = document->allocateInstructionId(), ret = document->allocateInstructionId();
+    const auto yes = SctExpressionLanguage::parse("1");
+    document->sections.push_back({section, *name, sct::SctScriptSectionContent{{
+        {guard,0,true,{},{{0,*yes.expression},{1,sct::SctInstructionReference{ret}}}},
+        {call, 11, false, {}, {{0, sct::SctInstructionReference{*destination}}}}, {ret, 12}}}});
     working.value().document = document;
     auto changed = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, working.value());
     if (!changed) return Result<SctAuthoringState>::failure(changed.diagnostics());
@@ -182,6 +207,9 @@ Result<SctAuthoringState> SctEntrypointAuthoring::createDirectHandler(const SctA
     next = std::move(promoted).takeValue();
     const auto seq = std::ranges::find(next.project.sequences, section, &SctAuthoredSequence::section);
     SctEntrypointBinding b{SctEntrypointKind::DirectHandler, seq->id, sct::SctParameterSite{call, {0, {}}}, {}, response, entry, role};
-    return bind(next, script, *name, std::move(b), catalog);
+    const auto body = seq->actions.front().id;
+    auto bound = bind(next, script, *name, std::move(b), catalog);
+    if (!bound) return bound;
+    return setActivation(bound.value(),bound.value().project.entrypoints.back().id,SctNamedActivation{*name,body});
 }
 }

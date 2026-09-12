@@ -2,6 +2,7 @@
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
 #include "SalsaCore/Sct/SctPublication.h"
+#include "SalsaCore/Authoring/SctAuthoringMaterializer.h"
 
 #include "SpiceSCT/SctDocumentBuilder.h"
 #include "SpiceSCT/SctDocumentExporter.h"
@@ -133,6 +134,32 @@ TEST(SctPublicationTest, ExportsVerifiedRevisionAndReturnsReceipt) {
     const auto parsed = SctParser{}.parse(std::span<const std::uint8_t>{
         reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()});
     EXPECT_TRUE(parsed.parseOk);
+}
+TEST(SctPublicationTest, AuthoringCaptureRejectsStaleRevisionForeignScriptAndMissingRoots) {
+    PublicationFixture fixture;
+    const auto destination = fixture.temporary.path() / L"output" / L"draft.sct";
+    auto project = SctAuthoringProject::create().value();
+    const auto bytes = sourceBytes(); const auto hash = sha256(bytes).value();
+    auto imported = SctAuthoringImporter::import(project,project.revision,
+        {{{fixture.locator,bytes.size(),{hash}},bytes},{GamePlatform::GameCube,GameRegion::Japan,{hash}},
+            {GamePlatform::GameCube,false}, {}, "Draft"}); ASSERT_TRUE(imported);
+    auto request = fixture.request(destination);
+    auto& captured = request.capturedRevision;
+    captured.semanticOutput = true;
+    captured.authoringProject = std::make_shared<const SctAuthoringProject>(imported.value().project);
+    captured.authoringScript = imported.value().script;
+    captured.authoringRevision = {captured.authoringProject->revision.value+1};
+    auto result = SctPublicationService::publish(fixture.project,request);
+    ASSERT_FALSE(result.succeeded()); ASSERT_FALSE(result.infrastructureDiagnostics.empty());
+    EXPECT_NE(result.infrastructureDiagnostics.front().message.find("revision"),std::string::npos);
+    captured.authoringRevision = captured.authoringProject->revision;
+    captured.authoringScript = SctScriptId{999999};
+    result = SctPublicationService::publish(fixture.project,request); ASSERT_FALSE(result.succeeded());
+    EXPECT_NE(result.infrastructureDiagnostics.front().message.find("script"),std::string::npos);
+    captured.authoringScript = imported.value().script;
+    result = SctPublicationService::publish(fixture.project,request); ASSERT_FALSE(result.succeeded());
+    EXPECT_NE(result.infrastructureDiagnostics.front().message.find("init"),std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(destination));
 }
 
 TEST(SctPublicationTest, UnresolvedSemanticTextDoesNotReplaceExistingDestination) {
