@@ -88,10 +88,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Sct\SctEntrypointEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClCompile Include="Sct\SctInterpretationDialog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctLanguageEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctEntrypointTools.cpp"><Filter>SCT</Filter></ClCompile>
     <ClInclude Include="Sct\SctEntrypointTools.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="Sct\SctEntrypointEditorDialog.h"><Filter>SCT</Filter></ClInclude>
+    <ClInclude Include="Sct\SctInterpretationDialog.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="Sct\SctLanguageEditorDialog.h"><Filter>SCT</Filter></ClInclude>
   </ItemGroup>
 </Project>

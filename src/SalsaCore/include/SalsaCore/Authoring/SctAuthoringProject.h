@@ -32,6 +32,8 @@ using SctLanguageGroupId = SctAuthoringId<struct AuthoringLanguageGroupTag>;
 using SctTextResourceId = SctAuthoringId<struct AuthoringTextResourceTag>;
 using SctLogicalTextId = SctAuthoringId<struct AuthoringLogicalTextTag>;
 using SctBaselineId = SctAuthoringId<struct AuthoringBaselineTag>;
+using SctMeaningId = SctAuthoringId<struct AuthoringMeaningTag>;
+using SctExplanationId = SctAuthoringId<struct AuthoringExplanationTag>;
 
 [[nodiscard]] bool validSctAuthoringUuid(std::string_view value) noexcept;
 [[nodiscard]] Result<std::string> generateSctAuthoringUuid();
@@ -252,6 +254,39 @@ struct SctLogicalText final {
     std::optional<SctModuleId> module;
 };
 
+// Interpretation targets do not own execution content. Physical points are
+// qualified by script and imported-document identity, never by an offset/name.
+struct SctMeaningTarget final {
+    SctScriptId script; // zero permits a project-wide variable definition
+    std::optional<SctAuthoringEntityId> entity;
+    std::optional<SctVariableKey> variable;
+    std::optional<std::int64_t> value;
+    std::optional<spice::sct::SctSectionId> section;
+    std::optional<spice::sct::SctParameterSite> site;
+    std::optional<smores::script::Entry> resource;
+    SctImportedDocumentId document;
+    auto operator<=>(const SctMeaningTarget&) const = default;
+};
+enum class SctInterpretationDecision { Suggested, Accepted, Rejected, Superseded };
+struct SctExplanationRecord final {
+    SctExplanationId id;
+    std::string key, rule, ruleVersion, interpretation, reasoning, qualification;
+    SctEvidenceKind origin = SctEvidenceKind::Inference;
+    SctInterpretationDecision decision = SctInterpretationDecision::Suggested;
+    RevisionId revision;
+    std::vector<SctMeaningTarget> subjects;
+    // Evidence is a captured observation, not a live execution reference.
+    std::vector<SctMeaningTarget> evidence;
+    std::vector<std::string> observations;
+    std::optional<SctExplanationId> supersedes;
+};
+struct SctMeaning final {
+    SctMeaningId id;
+    SctMeaningTarget target;
+    std::string name;
+    std::optional<SctExplanationId> explanation;
+};
+
 // Construction/serialization value. SctAuthoringSession owns accepted live
 // revisions; views submit commands rather than maintaining another authority.
 struct SctAuthoringProject final {
@@ -271,6 +306,8 @@ struct SctAuthoringProject final {
     std::vector<SctLanguageGroup> languageGroups;
     std::vector<SctAuthoredText> texts;
     std::vector<SctLogicalText> logicalTexts;
+    std::vector<SctMeaning> meanings;
+    std::vector<SctExplanationRecord> explanations;
 
     [[nodiscard]] static Result<SctAuthoringProject> create();
     template<class Tag> [[nodiscard]] Result<SctAuthoringId<Tag>> allocateId() {

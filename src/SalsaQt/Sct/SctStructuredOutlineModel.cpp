@@ -139,8 +139,10 @@ int SctStructuredOutlineModel::columnCount(const QModelIndex&) const { return 2;
 QVariant SctStructuredOutlineModel::data(const QModelIndex& modelIndex, const int role) const {
     if (!modelIndex.isValid()) return {};
     const auto* node = static_cast<Node*>(modelIndex.internalPointer());
-    if (role == Qt::DisplayRole)
+    if (role == Qt::DisplayRole) {
+        if (modelIndex.column() == 0 && node->target && labelRenderer_) return labelRenderer_(*node->target,node->label);
         return modelIndex.column() == 0 ? node->label : node->secondary;
+    }
     if (role == Qt::DecorationRole && modelIndex.column() == 0
         && node->importedEvidenceCount != 0u)
         return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);

@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctInterpretation.h"
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctModuleAuthoring.h"
 #include "SalsaCore/Authoring/SctTextAuthoring.h"
@@ -297,4 +298,19 @@ int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
     testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+TEST(AuthoringControllerTest, InterpretationMetadataPersistsThroughControllerHistory) {
+    Fixture f; qt::SctDocumentController controller;controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project,f.a));ASSERT_TRUE(waitFor([&]{return !controller.busy();}));
+    auto state=controller.authoringState();ASSERT_TRUE(state);const auto script=state->project.scripts.front().id;
+    const auto target=core::SctInterpretation::siteTarget(state->project,script,site(controller,f.a));
+    ASSERT_TRUE(controller.executeAuthoringCommand(state->project.revision,"Name interaction",[&](const auto& s){return core::SctInterpretation::setName(s,target,"Chest preparation");}));
+    const auto id=controller.authoringState()->project.meanings.front().id;
+    EXPECT_EQ(value(controller,f.a),core::SctLiteralConstant::fromExpression(sct::SctExpressionFactory::encodedDecimalLiteral(12)));
+    ASSERT_TRUE(controller.undo(f.a));EXPECT_TRUE(controller.authoringState()->project.meanings.empty());ASSERT_TRUE(controller.redo(f.a));
+    ASSERT_TRUE(controller.saveDocument(f.a));ASSERT_TRUE(waitFor([&]{return !controller.isSaving(f.a);}));
+    qt::SctDocumentController reopened;reopened.setWorkspace(f.workspace);ASSERT_TRUE(reopened.openDocument(*f.project,f.a));ASSERT_TRUE(waitFor([&]{return !reopened.busy();}));
+    ASSERT_EQ(reopened.authoringState()->project.meanings.size(),1u);EXPECT_EQ(reopened.authoringState()->project.meanings.front().id,id);
+    EXPECT_EQ(core::SctInterpretation::label(*reopened.authoringState(),target,"raw"),"Chest preparation");
 }

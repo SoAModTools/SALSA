@@ -7,6 +7,7 @@
 #include <QStringList>
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -45,6 +46,7 @@ public:
         int row, int column, const QModelIndex& parent) override;
     Qt::DropActions supportedDropActions() const override;
 
+    void setLabelRenderer(std::function<QString(core::SctNavigationTarget, QString)> renderer) { labelRenderer_ = std::move(renderer); }
     void resetFrom(std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
         std::shared_ptr<const core::SctSemanticEditorProjection> projection);
     void setDeveloperOptions(bool showBasicBlocks, bool showRejectedEvidence,
@@ -102,6 +104,7 @@ private:
     [[nodiscard]] int rowOf(const Node* node) const;
     [[nodiscard]] static QString key(core::SctNavigationTarget target);
 
+    std::function<QString(core::SctNavigationTarget, QString)> labelRenderer_;
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot_{};
     std::shared_ptr<const core::SctSemanticEditorProjection> projection_{};
     bool showBasicBlocks_ = false;

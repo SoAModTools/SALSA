@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctInterpretation.h"
 #include "SctEntrypointEditorDialog.h"
 #include "SctEntrypointTools.h"
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
@@ -48,6 +49,7 @@ void showSctEntrypointEditor(SctDocumentController& controller, const AssetLocat
     auto* declareButton = new QPushButton(QObject::tr("Declare named entrypoint…"), &dialog); layout->addWidget(declareButton);
     auto* boundaryButton = new QPushButton(QObject::tr("Activation boundary…"), &dialog); layout->addWidget(boundaryButton);
     auto* enabledButton = new QPushButton(QObject::tr("Enable / disable entrypoint"), &dialog); layout->addWidget(enabledButton);
+    auto* aliasButton = new QPushButton(QObject::tr("Name selected handler or resource entry..."), &dialog); layout->addWidget(aliasButton);
     auto* tileButton = new QPushButton(QObject::tr("Overworld selectors…"), &dialog); layout->addWidget(tileButton);
     rel::Catalog catalog; std::vector<Candidate> candidates; std::shared_ptr<const SctAuthoringState> snapshot; SctScriptId script;
     const auto refresh = [&] {
@@ -62,7 +64,13 @@ void showSctEntrypointEditor(SctDocumentController& controller, const AssetLocat
         }
         auto working = SctAuthoringMaterializer::workingState(snapshot->project, snapshot->programs, script); if (!working) { details->setPlainText(errors(working.diagnostics())); return; }
         const auto& doc = *working.value().document;
-        const auto add = [&](Candidate c) { list->addItem(QString::fromStdString(c.name)); candidates.push_back(std::move(c)); };
+        const auto add = [&](Candidate c) {
+            SctMeaningTarget target;target.script=script;
+            if(c.existing)target.entity=*c.existing;
+            else if(c.binding.provider && std::holds_alternative<rel::Entry>(*c.binding.provider))target.resource=std::get<rel::Entry>(*c.binding.provider);
+            else target=SctInterpretation::sectionTarget(snapshot->project,script,c.section);
+            auto alias=SctInterpretation::label(*snapshot,target,"");list->addItem(QString::fromStdString(alias.empty()?c.name:alias+" — "+c.name)); candidates.push_back(std::move(c));
+        };
         for (const auto& e : snapshot->project.entrypoints) if (e.script == script && e.binding) {
             const auto* seq = snapshot->project.find(e.binding->sequence);
             add({(e.binding->kind == SctEntrypointKind::Lifecycle ? "Required: " : e.enabled ? "Enabled: " : "Disabled: ") + e.name, *e.binding, seq ? seq->section : sct::SctSectionId{}, false, e.id});
@@ -118,6 +126,15 @@ void showSctEntrypointEditor(SctDocumentController& controller, const AssetLocat
         const auto id = *candidates[row].existing; const auto* e = snapshot->project.find(id);
         auto result = controller.executeAuthoringCommand(snapshot->project.revision,"Change entrypoint activation",[&](const auto& state) { return SctEntrypointAuthoring::setEnabled(state,id,!e->enabled); });
         if (!result) QMessageBox::warning(&dialog,QObject::tr("Activation"),errors(result.diagnostics())); refresh();
+    });
+    QObject::connect(aliasButton,&QPushButton::clicked,&dialog,[&] {
+        const auto row=list->currentRow();if(row<0||row>=static_cast<int>(candidates.size())||!snapshot)return;
+        const auto& c=candidates[row];SctMeaningTarget t;t.script=script;
+        if(c.existing)t.entity=*c.existing;
+        else if(c.binding.provider && std::holds_alternative<rel::Entry>(*c.binding.provider))t.resource=std::get<rel::Entry>(*c.binding.provider);
+        else t=SctInterpretation::sectionTarget(snapshot->project,script,c.section);
+        bool ok=false;auto name=QInputDialog::getText(&dialog,QObject::tr("Display alias"),QString::fromStdString(SctInterpretation::describe(*snapshot,t)),QLineEdit::Normal,{},&ok);
+        if(ok&&!name.trimmed().isEmpty()){auto result=controller.executeAuthoringCommand(snapshot->project.revision,"Name entrypoint or resource",[&](const auto& state){return SctInterpretation::setName(state,t,name.toStdString());});if(!result)QMessageBox::warning(&dialog,QObject::tr("Alias"),errors(result.diagnostics()));refresh();}
     });
     QObject::connect(tileButton,&QPushButton::clicked,&dialog,[&] { showSctTileSelectorEditor(controller,script,context,&dialog); refresh(); });
     QObject::connect(list, &QListWidget::currentRowChanged, &dialog, [&](int row) {

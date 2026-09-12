@@ -1,3 +1,4 @@
+#include "Sct/SctInterpretationDialog.h"
 #include "Sct/SctEntrypointEditorDialog.h"
 #include "Sct/SctLanguageEditorDialog.h"
 #include "Sct/SctSequenceEditorDialog.h"
@@ -638,6 +639,11 @@ void MainWindow::buildUi() {
     auto* languageAction = documentMenu->addAction(tr("Language Groups and Text..."));
     connect(languageAction, &QAction::triggered, this, [this] {
         if (auto* document = activeDocumentWidget()) showSctLanguageEditor(*documentController_,document->locator(),this);
+    });
+    auto* interpretationAction = documentMenu->addAction(tr("Interactions and Interpretations..."));
+    connect(interpretationAction, &QAction::triggered, this, [this] {
+        if (auto* document = activeDocumentWidget()) showSctInterpretationEditor(*documentController_, document->locator(),
+            [this](core::AssetLocator locator, core::SctNavigationTarget target) { (void)navigateTo({locator,target}); },this);
     });
     auto* entrypointAction = documentMenu->addAction(tr("Entrypoints and Resources..."));
     connect(entrypointAction, &QAction::triggered, this, [this] {

@@ -1,5 +1,6 @@
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctTextAuthoring.h"
+#include "SalsaCore/Authoring/SctInterpretation.h"
 #include "SalsaCore/Authoring/SctAuthoringProject.h"
 #include "SpiceSCT/SctScptEncoding.h"
 
@@ -124,6 +125,7 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     registerIds(connections, "Connection"); registerIds(contents, "Content");
     registerIds(sequences, "Sequence"); registerIds(predicates, "Predicate");
     registerIds(languageGroups,"Language group"); registerIds(texts,"Text resource"); registerIds(logicalTexts,"Logical text");
+    registerIds(meanings,"Meaning"); registerIds(explanations,"Explanation");
     for (const auto& sequence : sequences) registerIds(sequence.actions, "Action");
     if (nextEntityId == 0 || (!ids.empty() && nextEntityId <= *ids.rbegin()))
         out.push_back(error("Allocator must be nonzero and above every allocated ID."));
@@ -374,6 +376,8 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
             if (valid) valid = SctTextAuthoring::validateProgram(*this,*script,*content.authoredState->document);
             if (!valid) out.insert(out.end(), valid.diagnostics().begin(), valid.diagnostics().end()); }
     }
+    auto interpretations = SctInterpretation::validate(*this);
+    out.insert(out.end(), interpretations.begin(), interpretations.end());
     return out;
 }
 

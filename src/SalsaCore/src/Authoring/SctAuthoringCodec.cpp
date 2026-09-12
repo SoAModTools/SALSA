@@ -304,6 +304,40 @@ smores::script::ResourceIdentity readResource(const Json& j) {
     keys(j,{"dataset","asset","revision","document"});
     return {string(j.at("dataset")),string(j.at("asset")),string(j.at("revision")),string(j.at("document"))};
 }
+Json meaningTargetJson(const SctMeaningTarget& t) {
+    Json resource = nullptr;
+    if (t.resource) { const auto& e=*t.resource;
+        resource={{"identity",resourceJson(e.resource)},{"index",std::to_string(e.tableIndex)},
+            {"localId",std::to_string(e.localId.value)},{"entryId",e.entryId},{"tableId",e.tableId},{"function",e.function},{"parameters",e.parameters}};
+    }
+    return {{"script",id(t.script)},{"entity",t.entity?entityJson(*t.entity):Json(nullptr)},
+        {"variable",t.variable?Json{{"kind",static_cast<unsigned>(t.variable->kind)},{"index",t.variable->index}}:Json(nullptr)},
+        {"value",t.value?Json(std::to_string(*t.value)):Json(nullptr)},
+        {"section",t.section?Json(std::to_string(t.section->value())):Json(nullptr)},
+        {"site",siteJson(t.site)},{"resource",resource},{"document",t.document.value}};
+}
+SctMeaningTarget readMeaningTarget(const Json& j) {
+    keys(j,{"script","entity","variable","value","section","site","resource","document"});
+    SctMeaningTarget t; t.script={decimal(j.at("script"))}; t.document={string(j.at("document"))};
+    if(!j.at("entity").is_null()) t.entity=readEntity(j.at("entity"));
+    if(!j.at("variable").is_null()) { const auto& v=j.at("variable"); keys(v,{"kind","index"}); t.variable=SctVariableKey{static_cast<SctVariableKind>(word(v.at("kind"),3)),word(v.at("index"))}; }
+    if(!j.at("value").is_null()) {
+        auto v=string(j.at("value")); std::int64_t n=0; auto parsed=std::from_chars(v.data(),v.data()+v.size(),n);
+        require(parsed.ec==std::errc{} && parsed.ptr==v.data()+v.size() && std::to_string(n)==v,"Invalid value alias integer."); t.value=n;
+    }
+    if(!j.at("section").is_null()) t.section=spice::sct::SctSectionId{decimal(j.at("section"))};
+    t.site=readSite(j.at("site"));
+    if(!j.at("resource").is_null()) {
+        const auto& e=j.at("resource"); keys(e,{"identity","index","localId","entryId","tableId","function","parameters"});
+        require(e.at("tableId").is_number_integer(),"Invalid table ID.");
+        const auto n=e.at("tableId").get<std::int64_t>(); require(n>=INT32_MIN&&n<=INT32_MAX,"Table ID overflow.");
+        smores::script::Entry value{readResource(e.at("identity")),decimal(e.at("index")),{decimal(e.at("localId"))},word(e.at("entryId")),static_cast<std::int32_t>(n),string(e.at("function"))};
+        for(const auto& v:array(e.at("parameters"))) value.parameters.push_back(word(v)); t.resource=std::move(value);
+    }
+    return t;
+}
+Json targetsJson(const std::vector<SctMeaningTarget>& targets) { auto j=Json::array(); for(const auto& t:targets) j.push_back(meaningTargetJson(t)); return j; }
+std::vector<SctMeaningTarget> readTargets(const Json& j) { std::vector<SctMeaningTarget> r; for(const auto& v:array(j)) r.push_back(readMeaningTarget(v)); return r; }
 Json activationJson(const SctEntrypointActivation& a) {
     if (const auto* n = std::get_if<SctNamedActivation>(&a))
         return {{"kind","named"},{"name",n->externalName},{"body",id(n->body)}};
@@ -407,6 +441,11 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
             auto variants=Json::array(); for(auto v:t.variants) variants.push_back(id(v));
             return Json{{"id",id(t.id)},{"script",id(t.script)},{"name",t.name},{"variants",variants},{"module",t.module ? Json(id(*t.module)) : Json(nullptr)}};
         });
+        root["meanings"]=sorted(project.meanings,[](const auto& m) { return Json{{"id",id(m.id)},{"target",meaningTargetJson(m.target)}, {"name",m.name},{"explanation",m.explanation?Json(id(*m.explanation)):Json(nullptr)}}; });
+        root["explanations"]=sorted(project.explanations,[](const auto& e) { return Json{{"id",id(e.id)},{"key",e.key},{"rule",e.rule},{"ruleVersion",e.ruleVersion},
+            {"interpretation",e.interpretation},{"reasoning",e.reasoning},{"qualification",e.qualification},{"origin",static_cast<unsigned>(e.origin)},
+            {"decision",static_cast<unsigned>(e.decision)},{"revision",id(e.revision)},{"subjects",targetsJson(e.subjects)},{"evidence",targetsJson(e.evidence)},
+            {"observations",e.observations},{"supersedes",e.supersedes?Json(id(*e.supersedes)):Json(nullptr)}}; });
         return Result<std::string>::success(root.dump(2), std::move(diagnostics));
     } catch (const std::exception& ex) { return Result<std::string>::failure(failure(ex)); }
 }
@@ -414,7 +453,7 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
 Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
     try {
         const auto root = parse(text); envelope(root, Format, SchemaVersion);
-        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents", "workspaceAuthoring", "sequences", "predicates", "languageGroups", "texts", "logicalTexts"});
+        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents", "workspaceAuthoring", "sequences", "predicates", "languageGroups", "texts", "logicalTexts", "meanings", "explanations"});
         SctAuthoringProject result;
         const auto metadataJson = root.at("workspaceAuthoring").dump();
         auto metadata = SctAuthoringCatalogCodec::deserializeWorkspace(std::as_bytes(std::span(metadataJson.data(), metadataJson.size())));
@@ -528,6 +567,18 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
             for(const auto& v:array(t.at("variants"))) logical.variants.push_back(id<SctTextResourceId>(v));
             if(!t.at("module").is_null()) logical.module=id<SctModuleId>(t.at("module"));
             result.logicalTexts.push_back(std::move(logical));
+        }
+        for(const auto& m:array(root.at("meanings"))) {
+            keys(m,{"id","target","name","explanation"}); SctMeaning v{id<SctMeaningId>(m.at("id")),readMeaningTarget(m.at("target")),string(m.at("name"))};
+            if(!m.at("explanation").is_null()) v.explanation=id<SctExplanationId>(m.at("explanation")); result.meanings.push_back(std::move(v));
+        }
+        for(const auto& e:array(root.at("explanations"))) {
+            keys(e,{"id","key","rule","ruleVersion","interpretation","reasoning","qualification","origin","decision","revision","subjects","evidence","observations","supersedes"});
+            SctExplanationRecord v; v.id=id<SctExplanationId>(e.at("id")); v.key=string(e.at("key")); v.rule=string(e.at("rule")); v.ruleVersion=string(e.at("ruleVersion"));
+            v.interpretation=string(e.at("interpretation")); v.reasoning=string(e.at("reasoning")); v.qualification=string(e.at("qualification"));
+            v.origin=static_cast<SctEvidenceKind>(word(e.at("origin"),2)); v.decision=static_cast<SctInterpretationDecision>(word(e.at("decision"),3)); v.revision=id<RevisionId>(e.at("revision"));
+            v.subjects=readTargets(e.at("subjects")); v.evidence=readTargets(e.at("evidence")); for(const auto& o:array(e.at("observations"))) v.observations.push_back(string(o));
+            if(!e.at("supersedes").is_null()) v.supersedes=id<SctExplanationId>(e.at("supersedes")); result.explanations.push_back(std::move(v));
         }
         auto diagnostics = result.validate();
         if (hasErrors(diagnostics)) return Result<SctAuthoringProject>::failure(std::move(diagnostics));

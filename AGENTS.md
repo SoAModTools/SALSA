@@ -12,3 +12,5 @@
 - Required acceptance cases must fail when configured inputs are missing rather than silently skip. Report unavailable platform/region/disc coverage explicitly.
 - Dreamcast discs have expected differences in their asset inventories. Define cases from each disc's catalog and report absent assets as coverage differences; they are not defects. Missing inputs for a declared acceptance case still fail.
 - Run private corpus tests only in Release, in the sister private testing repository, following its mutex and corpus-boundary rules. This coverage policy is SALSA-specific, not a global SoAModTools rule.
+
+- User-approved S8 story-connectivity exception: private acceptance uses only the `me002*.sct` family in Dreamcast EU, on available relevant discs. Do not expand this connectivity matrix to other platforms or regions. Other SALSA corpus behavior retains the general policy above.

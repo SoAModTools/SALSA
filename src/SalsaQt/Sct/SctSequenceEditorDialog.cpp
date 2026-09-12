@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctInterpretation.h"
 #include "SctSequenceEditorDialog.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SalsaCore/Authoring/SctModuleAuthoring.h"
@@ -140,7 +141,10 @@ private:
         for (int row = 0; row < static_cast<int>(views_.size()); ++row) {
             const auto& view = views_[row]; QStringList targets;
             for (const auto target : view.targets) targets << QString::number(target.value());
-            const QStringList values{QString::fromStdString(view.label), kinds[static_cast<int>(view.kind)],
+            auto label = view.label;
+            if (view.instruction.opcode == 0 || view.instruction.opcode == 3) for (const auto& p : view.instruction.fixedParameters)
+                if (p.schemaIndex == 0) if (const auto* e = std::get_if<sct::SctCanonicalExpression>(&p.value)) label += ": " + SctInterpretation::condition(*state_, script_, *e);
+            const QStringList values{QString::fromStdString(label), kinds[static_cast<int>(view.kind)],
                 view.instruction.scheduledExpression ? text(*view.instruction.scheduledExpression) : tr("Immediate"),
                 view.instruction.skipRefresh ? tr("Yes") : tr("No"), targets.join(", ")};
             for (int column = 0; column < values.size(); ++column) actions_->setItem(row, column, new QTableWidgetItem(values[column]));
@@ -153,7 +157,8 @@ private:
         expression_->clear(); uses_->clear(); const auto* predicate = selectedPredicate(); if (!predicate) return;
         auto expression = SctSequenceAuthoring::predicate(*state_, predicate->id);
         if (!expression) { failure(expression.diagnostics()); return; }
-        expression_->setText(text(expression.value()));
+        expression_->setText(QString::fromStdString(SctInterpretation::condition(*state_, script_, expression.value())));
+        expression_->setToolTip(text(expression.value()));
         for (const auto& use : predicate->uses) uses_->addItem(tr("Instruction %1 · condition").arg(use.instruction.value()));
         uses_->setCurrentRow(0);
     }
