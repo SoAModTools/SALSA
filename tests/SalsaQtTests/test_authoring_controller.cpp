@@ -1,5 +1,6 @@
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctModuleAuthoring.h"
+#include "SalsaCore/Authoring/SctTextAuthoring.h"
 #include "Sct/SctDocumentController.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SpiceSCT/SctDocumentExporter.h"
@@ -225,6 +226,38 @@ TEST(AuthoringControllerTest, EntrypointConnectionsUseSharedHistoryAndContainer)
     qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace); ASSERT_TRUE(reopened.authoringState());
     const auto& restored = reopened.authoringState()->project; ASSERT_EQ(restored.entrypoints.size(),1); EXPECT_EQ(restored.entrypoints.front().id,id);
     EXPECT_EQ(std::get<rel::Entry>(*restored.entrypoints.front().binding->provider),entry);
+}
+
+TEST(AuthoringControllerTest, LanguageTextCommandsShareHistoryPublicationAndCompressedPersistence) {
+    Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project,f.a)); ASSERT_TRUE(waitFor([&]{return !controller.busy();}));
+    const auto script=controller.authoringState()->project.scripts.front().id;
+    ASSERT_TRUE(controller.executeAuthoringCommand(controller.authoringState()->project.revision,"Custom language",[](const auto& s){return core::SctTextAuthoring::createLanguage(s,"Mod language");}));
+    const auto group=controller.authoringState()->project.languageGroups.back().id;
+    ASSERT_TRUE(controller.executeAuthoringCommand(controller.authoringState()->project.revision,"Create text",[&](const auto& s){return core::SctTextAuthoring::createText(s,script,"newText",sct::SctTextKind::SctString,sct::SctTextStorage::IndexedSection,sct::SctMessage{{},{{sct::SctTextChunk{"Hello"}}}},{group},sct::kSctShiftJisByte7FEncoding);}));
+    const auto text=controller.authoringState()->project.texts.back().id;
+    ASSERT_TRUE(controller.executeAuthoringCommand(controller.authoringState()->project.revision,"Link text",[&](const auto& s){return core::SctTextAuthoring::link(s,script,"Greeting",{text});}));
+    const auto logical=controller.authoringState()->project.logicalTexts.back().id;
+    ASSERT_TRUE(controller.deleteTextEntity(f.a,controller.authoringState()->project.find(text)->target));
+    EXPECT_EQ(controller.authoringState()->project.find(text),nullptr);
+    EXPECT_TRUE(controller.authoringState()->project.find(logical)->variants.empty());
+    ASSERT_TRUE(controller.undo(f.a)); ASSERT_NE(controller.authoringState()->project.find(text),nullptr);
+    EXPECT_EQ(controller.authoringState()->project.find(logical)->variants,std::vector{text});
+    ASSERT_TRUE(controller.redo(f.a)); EXPECT_EQ(controller.authoringState()->project.find(text),nullptr); ASSERT_TRUE(controller.undo(f.a));
+    ASSERT_TRUE(controller.executeAuthoringCommand(controller.authoringState()->project.revision,"Edit text",[&](const auto& s){return core::SctTextAuthoring::edit(s,{{text,sct::SctMessage{{},{{sct::SctTextChunk{"Changed"}}}}}},sct::kSctShiftJisByte7FEncoding);}));
+    ASSERT_TRUE(controller.undo(f.a)); ASSERT_TRUE(controller.redo(f.a));
+    const auto captured=controller.authoringState();
+    const auto coreOutput=core::SctAuthoringMaterializer::materialize({std::make_shared<const core::SctAuthoringProject>(captured->project),captured->programs,{script}}); ASSERT_TRUE(coreOutput.succeeded());
+    bool finished=false,success=false; QObject::connect(&controller,&qt::SctDocumentController::publicationCompleted,&controller,[&](const QString&,bool ok,bool,const QString&,bool){finished=true;success=ok;});
+    ASSERT_TRUE(controller.exportDocument(*f.project,f.a,{sct::SctPlatform::GameCube,sct::kSctShiftJisByte7FEncoding,sct::SctDocumentOutputByteOrder::BigEndian,sct::SctDocumentOutputWrapper::Raw},f.root/"language.sct",false,{}));
+    ASSERT_TRUE(waitFor([&]{return finished;})); ASSERT_TRUE(success); EXPECT_EQ(controller.lastPublication(f.a)->outputDigest,coreOutput.scripts[0].prepared->digest);
+    controller.closeAll(); ASSERT_TRUE(controller.saveDocument(f.a)); ASSERT_TRUE(waitFor([&]{return !controller.isSaving(f.a);}));
+    qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace); ASSERT_TRUE(reopened.authoringState());
+    const auto restored=reopened.authoringState(); ASSERT_NE(restored->project.find(text),nullptr);
+    EXPECT_EQ(restored->project.find(text)->languages,std::vector{group}); EXPECT_EQ(restored->project.find(group)->name,"Mod language");
+    EXPECT_EQ(restored->project.find(text)->target,captured->project.find(text)->target);
+    const auto output=core::SctAuthoringMaterializer::materialize({std::make_shared<const core::SctAuthoringProject>(restored->project),restored->programs,{script}});
+    ASSERT_TRUE(output.succeeded()); EXPECT_EQ(output.scripts[0].prepared->digest,coreOutput.scripts[0].prepared->digest);
 }
 
 TEST(AuthoringControllerTest, DisabledNamedEntryUsesSameLoweringAsCoreWithoutMldContext) {

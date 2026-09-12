@@ -1,4 +1,5 @@
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
+#include "SalsaCore/Authoring/SctTextAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringProject.h"
 #include "SpiceSCT/SctScptEncoding.h"
 
@@ -92,6 +93,9 @@ const SctAuthoringConnection* SctAuthoringProject::find(SctConnectionId value) c
 const SctAuthoringContent* SctAuthoringProject::find(SctContentId value) const noexcept { return lookup(contents, value); }
 const SctAuthoredSequence* SctAuthoringProject::find(SctSequenceId value) const noexcept { return lookup(sequences, value); }
 const SctNamedPredicate* SctAuthoringProject::find(SctPredicateId value) const noexcept { return lookup(predicates, value); }
+const SctLanguageGroup* SctAuthoringProject::find(SctLanguageGroupId value) const noexcept { return lookup(languageGroups, value); }
+const SctAuthoredText* SctAuthoringProject::find(SctTextResourceId value) const noexcept { return lookup(texts, value); }
+const SctLogicalText* SctAuthoringProject::find(SctLogicalTextId value) const noexcept { return lookup(logicalTexts, value); }
 const SctSequenceAction* SctAuthoringProject::find(SctActionId value) const noexcept {
     for (const auto& sequence : sequences) if (auto* action = lookup(sequence.actions, value)) return action;
     return nullptr;
@@ -119,6 +123,7 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     registerIds(entrypoints, "Entrypoint"); registerIds(ports, "Port");
     registerIds(connections, "Connection"); registerIds(contents, "Content");
     registerIds(sequences, "Sequence"); registerIds(predicates, "Predicate");
+    registerIds(languageGroups,"Language group"); registerIds(texts,"Text resource"); registerIds(logicalTexts,"Logical text");
     for (const auto& sequence : sequences) registerIds(sequence.actions, "Action");
     if (nextEntityId == 0 || (!ids.empty() && nextEntityId <= *ids.rbegin()))
         out.push_back(error("Allocator must be nonzero and above every allocated ID."));
@@ -150,6 +155,27 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
             } else if (!find(target)) out.push_back(error(where + "dangling resolved reference " + std::to_string(target.value) + "."));
         }, ref);
     };
+    std::set<std::string> recognitionKeys;
+    for (const auto& group : languageGroups) {
+        if (group.name.empty()) out.push_back(error("Language group name cannot be empty."));
+        if (!group.recognitionKey.empty() && !recognitionKeys.insert(group.recognitionKey).second)
+            out.push_back(error("Duplicate language recognition key."));
+    }
+    std::set<std::pair<SctScriptId,spice::sct::SctTextEntityId>> textTargets;
+    for (const auto& text : texts) {
+        if (!find(text.script) || !std::visit([](auto id){return id.value()!=0;},text.target)
+            || !textTargets.emplace(text.script,text.target).second) out.push_back(error("Text target is invalid or multiply owned."));
+        std::set<SctLanguageGroupId> groups;
+        for (auto group : text.languages) if (!find(group) || !groups.insert(group).second) out.push_back(error("Invalid or duplicate text language assignment."));
+        checkEvidence(text.evidence,"Text: ",out);
+    }
+    for (const auto& logical : logicalTexts) {
+        if (!find(logical.script) || logical.name.empty()) out.push_back(error("Invalid logical text identity."));
+        if (logical.module && (!find(*logical.module) || find(*logical.module)->script != logical.script)) out.push_back(error("Logical text module belongs to another script."));
+        std::set<SctTextResourceId> variants;
+        for (auto id : logical.variants) if (!find(id) || find(id)->script != logical.script || !variants.insert(id).second)
+            out.push_back(error("Logical text has a missing, foreign, or duplicate resource."));
+    }
     const auto checkUses = [&](const auto& uses, SctScriptId script, const std::string& where) {
         for (const auto& use : uses) {
             checkReference(use, where);
@@ -345,6 +371,7 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     for (const auto& content : contents) if (content.authoredState && content.authoredState->document) {
         const auto script = effectiveScript(content.owner);
         if (script) { auto valid = SctEntrypointAuthoring::validateProgram(*this, *script, *content.authoredState->document);
+            if (valid) valid = SctTextAuthoring::validateProgram(*this,*script,*content.authoredState->document);
             if (!valid) out.insert(out.end(), valid.diagnostics().begin(), valid.diagnostics().end()); }
     }
     return out;

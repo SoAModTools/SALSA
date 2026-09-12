@@ -28,6 +28,9 @@ using SctContentId = SctAuthoringId<struct AuthoringContentTag>;
 using SctSequenceId = SctAuthoringId<struct AuthoringSequenceTag>;
 using SctActionId = SctAuthoringId<struct AuthoringActionTag>;
 using SctPredicateId = SctAuthoringId<struct AuthoringPredicateTag>;
+using SctLanguageGroupId = SctAuthoringId<struct AuthoringLanguageGroupTag>;
+using SctTextResourceId = SctAuthoringId<struct AuthoringTextResourceTag>;
+using SctLogicalTextId = SctAuthoringId<struct AuthoringLogicalTextTag>;
 using SctBaselineId = SctAuthoringId<struct AuthoringBaselineTag>;
 
 [[nodiscard]] bool validSctAuthoringUuid(std::string_view value) noexcept;
@@ -42,7 +45,8 @@ using SctImportedDocumentId = SctAuthoringUuid<struct ImportedDocumentTag>;
 using SctRealizationId = SctAuthoringUuid<struct RealizationTag>;
 
 using SctAuthoringEntityId = std::variant<SctScriptId, SctModuleId, SctEntrypointId,
-    SctPortId, SctConnectionId, SctContentId, SctBaselineId, SctSequenceId, SctActionId, SctPredicateId>;
+    SctPortId, SctConnectionId, SctContentId, SctBaselineId, SctSequenceId, SctActionId, SctPredicateId,
+    SctLanguageGroupId, SctTextResourceId, SctLogicalTextId>;
 using SctContentOwner = std::variant<SctScriptId, SctModuleId, SctEntrypointId>;
 using SctPortOwner = std::variant<SctModuleId, SctEntrypointId>;
 
@@ -225,6 +229,29 @@ struct SctNamedPredicate final {
     std::vector<spice::sct::SctParameterSite> uses;
 };
 
+struct SctLanguageGroup final {
+    SctLanguageGroupId id;
+    std::string name;
+    // Recognition key survives user rename; empty for custom groups.
+    std::string recognitionKey;
+};
+struct SctAuthoredText final {
+    SctTextResourceId id;
+    SctScriptId script;
+    spice::sct::SctTextEntityId target;
+    std::string sourceName, sourceGroup, correspondenceKey;
+    std::vector<SctLanguageGroupId> languages;
+    bool explicitAssignment = false;
+    std::vector<SctAuthoringEvidence> evidence;
+};
+struct SctLogicalText final {
+    SctLogicalTextId id;
+    SctScriptId script;
+    std::string name;
+    std::vector<SctTextResourceId> variants;
+    std::optional<SctModuleId> module;
+};
+
 // Construction/serialization value. SctAuthoringSession owns accepted live
 // revisions; views submit commands rather than maintaining another authority.
 struct SctAuthoringProject final {
@@ -241,6 +268,9 @@ struct SctAuthoringProject final {
     SctWorkspaceAuthoringState workspaceAuthoring;
     std::vector<SctAuthoredSequence> sequences;
     std::vector<SctNamedPredicate> predicates;
+    std::vector<SctLanguageGroup> languageGroups;
+    std::vector<SctAuthoredText> texts;
+    std::vector<SctLogicalText> logicalTexts;
 
     [[nodiscard]] static Result<SctAuthoringProject> create();
     template<class Tag> [[nodiscard]] Result<SctAuthoringId<Tag>> allocateId() {
@@ -262,6 +292,9 @@ struct SctAuthoringProject final {
     [[nodiscard]] const SctAuthoredSequence* find(SctSequenceId id) const noexcept;
     [[nodiscard]] const SctSequenceAction* find(SctActionId id) const noexcept;
     [[nodiscard]] const SctNamedPredicate* find(SctPredicateId id) const noexcept;
+    [[nodiscard]] const SctLanguageGroup* find(SctLanguageGroupId id) const noexcept;
+    [[nodiscard]] const SctAuthoredText* find(SctTextResourceId id) const noexcept;
+    [[nodiscard]] const SctLogicalText* find(SctLogicalTextId id) const noexcept;
     [[nodiscard]] std::optional<SctScriptId> effectiveScript(const SctContentOwner& owner) const noexcept;
     [[nodiscard]] std::vector<Diagnostic> validate() const;
 private:

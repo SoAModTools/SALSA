@@ -52,6 +52,7 @@
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringStore.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctModuleAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctEntrypointAuthoring.h" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctTextAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctProjectContainer.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringMaterializer.h" />
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h" />
@@ -111,6 +112,7 @@
     <ClCompile Include="src\Authoring\SctAuthoringStore.cpp" />
     <ClCompile Include="src\Authoring\SctModuleAuthoring.cpp" />
     <ClCompile Include="src\Authoring\SctEntrypointAuthoring.cpp" />
+    <ClCompile Include="src\Authoring\SctTextAuthoring.cpp" />
     <ClCompile Include="src\Authoring\SctEntrypointActivation.cpp" />
     <ClCompile Include="src\Authoring\SctOverworldAuthoring.cpp" />
     <ClInclude Include="include\SalsaCore\Authoring\SctOverworldAuthoring.h" />

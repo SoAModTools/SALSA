@@ -67,6 +67,7 @@
     <ClCompile Include="Sct\SctDocumentController.cpp" />
     <ClCompile Include="Sct\SctSequenceEditorDialog.cpp" />
     <ClCompile Include="Sct\SctEntrypointEditorDialog.cpp" />
+    <ClCompile Include="Sct\SctLanguageEditorDialog.cpp" />
     <!-- MSVC 14.51 crashes in LTCG for this dialog TU; retain ordinary /O2. -->
     <ClCompile Include="Sct\SctEntrypointTools.cpp"><WholeProgramOptimization>false</WholeProgramOptimization></ClCompile>
     <ClInclude Include="Sct\SctEntrypointTools.h" />
@@ -97,6 +98,7 @@
     <QtMoc Include="Legacy\LegacyConversionDialog.h" />
     <ClInclude Include="Sct\SctSequenceEditorDialog.h" />
     <ClInclude Include="Sct\SctEntrypointEditorDialog.h" />
+    <ClInclude Include="Sct\SctLanguageEditorDialog.h" />
     <QtMoc Include="Sct\SctDocumentController.h" />
     <ClInclude Include="Sct\SctCatalogEditorDialog.h" />
     <QtMoc Include="Sct\SctExportDialog.h" />

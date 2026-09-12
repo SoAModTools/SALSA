@@ -26,6 +26,8 @@ Build outputs are written to `bin/<platform>/<configuration>`.
 
 See [Entrypoints and resource context](Docs/EntrypointsAndResources.md) and the [portable SmoresScript library](SmoresScript/README.md) for S6 authoring and relationship contracts.
 
+[Language groups and text](Docs/LanguageGroupsAndText.md) provides editable name-based grouping, custom language groups, logical text correspondence, compound edits, and explicit insertion and splitting of shared strings through **Document > Language Groups and Text**.
+
 ## Testing
 
 Run the relevant filtered suites in `bin/x64/Debug/SalsaTests.exe` after building. `SalsaQtTests.exe` exercises the document controller with a Qt event loop and synthetic assets; it does not drive widgets or require game data. Manual testing covers the rendered GUI. Private corpus tests live in the sister testing repository and run only in Release.

@@ -235,6 +235,17 @@ SctRealizationMap mapping(const SctAuthoringProject& project, SctScriptId script
         for (const auto& site : predicate.uses) uses.locations.push_back(site);
         mapping.records.push_back(std::move(uses));
     }
+    std::set<sct::SctTextEntityId> emittedText;
+    for(const auto& section:document.sections) if(const auto* text=std::get_if<sct::SctStringSectionContent>(&section.content)) emittedText.insert(text->string.id);
+    for(const auto& text:document.supplementaryText) emittedText.insert(text.id);
+    for(const auto& text:project.texts) if(text.script==script && emittedText.contains(text.target))
+        mapping.records.push_back({text.id,{std::visit([](auto id){return sct::SctDiagnosticLocation{sct::SctDocumentEntityId{id}};},text.target)}});
+    for(const auto& logical:project.logicalTexts) if(logical.script==script) {
+        SctRealizationRecord record{logical.id,{}};
+        for(auto id:logical.variants) if(const auto* text=project.find(id); text && emittedText.contains(text->target))
+            record.locations.push_back(std::visit([](auto id){return sct::SctDiagnosticLocation{sct::SctDocumentEntityId{id}};},text->target));
+        mapping.records.push_back(std::move(record));
+    }
     for (const auto& module : project.modules) if (module.script == script) {
         SctRealizationRecord record{module.id, {}};
         for (const auto section : module.sections) record.locations.emplace_back(sct::SctDocumentEntityId{section});
@@ -563,6 +574,8 @@ Result<SctAuthoringAdoption> SctAuthoringImporter::replaceImportedScript(const S
     auto diagnostics = project.validate();
     if (hasErrors(diagnostics)) return Result<SctAuthoringAdoption>::failure(std::move(diagnostics));
     const auto* prior = project.find(id);
+    if (std::ranges::any_of(project.texts, [&](const auto& text) { return text.script == id; }))
+        return Result<SctAuthoringAdoption>::failure(error("Authored text bindings require explicit reconciliation before replacing their baseline."));
     if (!prior || prior->contentUses.size() != 1 || !std::holds_alternative<SctContentId>(prior->contentUses.front()))
         return Result<SctAuthoringAdoption>::failure(error("Replacing a baseline requires one preserved script content."));
     const auto contentId = std::get<SctContentId>(prior->contentUses.front());
@@ -650,6 +663,19 @@ Result<SctAuthoringProject> SctAuthoringMaterializer::replaceWorkingState(const 
     content.physicalPatch.reset();
     content.authoredState = working;
     content.authoredState->document = authoredCopy(*working.document);
+    // Explicit program deletion also removes its resource membership. Logical
+    // correspondence keeps its identity and may become an incomplete draft.
+    std::set<sct::SctTextEntityId> retainedText;
+    for (const auto& section : working.document->sections)
+        if (const auto* text = std::get_if<sct::SctStringSectionContent>(&section.content)) retainedText.insert(text->string.id);
+    for (const auto& text : working.document->supplementaryText) retainedText.insert(text.id);
+    std::set<SctTextResourceId> removedText;
+    std::erase_if(next.texts, [&](const auto& text) {
+        if (text.script != script || retainedText.contains(text.target)) return false;
+        removedText.insert(text.id); return true;
+    });
+    for (auto& logical : next.logicalTexts)
+        std::erase_if(logical.variants, [&](auto id) { return removedText.contains(id); });
     // Repairing an authored placeholder still refers to the original
     // source record for provenance, not to an invented empty source file.
     for (auto& repair : content.authoredState->textRepairs) {

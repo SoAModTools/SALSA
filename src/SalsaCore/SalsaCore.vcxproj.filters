@@ -120,9 +120,11 @@
     <ClCompile Include="src\Authoring\SctProjectContainer.cpp"><Filter>Authoring</Filter></ClCompile></ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Authoring\SctEntrypointAuthoring.cpp"><Filter>Authoring</Filter></ClCompile>
+    <ClCompile Include="src\Authoring\SctTextAuthoring.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctEntrypointActivation.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctOverworldAuthoring.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClInclude Include="include\SalsaCore\Authoring\SctOverworldAuthoring.h"><Filter>Authoring</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Authoring\SctEntrypointAuthoring.h"><Filter>Authoring</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Authoring\SctTextAuthoring.h"><Filter>Authoring</Filter></ClInclude>
   </ItemGroup>
 </Project>

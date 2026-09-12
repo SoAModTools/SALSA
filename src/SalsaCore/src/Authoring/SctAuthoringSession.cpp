@@ -24,6 +24,7 @@ std::map<std::uint64_t, unsigned> identities(const SctAuthoringProject& project)
     add(project.baselines, 0); add(project.scripts, 1); add(project.modules, 2); add(project.entrypoints, 3);
     add(project.ports, 4); add(project.connections, 5); add(project.contents, 6);
     add(project.sequences, 7); add(project.predicates, 8);
+    add(project.languageGroups,10); add(project.texts,11); add(project.logicalTexts,12);
     for (const auto& sequence : project.sequences) add(sequence.actions, 9);
     return result;
 }
@@ -86,6 +87,16 @@ Result<SctAuthoringChange> SctAuthoringSession::execute(RevisionId expected, std
                 && (!after || !after->enabled || after->name != entry.name || !after->binding
                     || after->binding->kind != SctEntrypointKind::Lifecycle || after->binding->sequence != entry.binding->sequence))
                 return Result<SctAuthoringChange>::failure(error("Required lifecycle entry identities cannot be removed, renamed, or disabled."));
+        }
+        for (const auto& text : current_->project.texts) {
+            const auto* after = next.project.find(text.id);
+            if (after && (after->script != text.script || after->target != text.target))
+                return Result<SctAuthoringChange>::failure(error("A text resource cannot be rebound to another script or physical resource."));
+        }
+        for (const auto& text : current_->project.logicalTexts) {
+            const auto* after = next.project.find(text.id);
+            if (after && after->script != text.script)
+                return Result<SctAuthoringChange>::failure(error("Logical text reparenting is not supported."));
         }
         for (const auto& script : current_->project.scripts) if (next.project.find(script.id)) {
             auto prior = SctAuthoringMaterializer::workingState(current_->project,current_->programs,script.id);

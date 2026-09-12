@@ -90,7 +90,7 @@ std::vector<SctAuthoringReference<SctContentId>> readUses(const Json& values) {
     std::vector<SctAuthoringReference<SctContentId>> result;
     for (const auto& value : array(values)) result.push_back(readReference<SctContentId>(value)); return result;
 }
-constexpr std::array<std::string_view, 10> EntityKinds{"script", "module", "entrypoint", "port", "connection", "content", "baseline", "sequence", "action", "predicate"};
+constexpr std::array<std::string_view, 13> EntityKinds{"script", "module", "entrypoint", "port", "connection", "content", "baseline", "sequence", "action", "predicate", "language-group", "text-resource", "logical-text"};
 Json entityJson(const SctAuthoringEntityId& value) {
     return {{"kind", EntityKinds.at(value.index())}, {"id", std::visit([](auto item) { return id(item); }, value)}};
 }
@@ -106,6 +106,9 @@ SctAuthoringEntityId readEntity(const Json& value) {
     if (kind == "sequence") return id<SctSequenceId>(number);
     if (kind == "action") return id<SctActionId>(number);
     if (kind == "predicate") return id<SctPredicateId>(number);
+    if (kind == "language-group") return id<SctLanguageGroupId>(number);
+    if (kind == "text-resource") return id<SctTextResourceId>(number);
+    if (kind == "logical-text") return id<SctLogicalTextId>(number);
     throw std::runtime_error("Unknown authored entity kind.");
 }
 template<class Owner> Json ownerJson(const Owner& owner) {
@@ -389,6 +392,21 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
             return Json{{"id", id(predicate.id)}, {"script", id(predicate.script)}, {"name", predicate.name},
                 {"baseline", id(predicate.binding.baseline)}, {"importedDocument", predicate.binding.importedDocument.value}, {"uses", uses}};
         });
+        root["languageGroups"] = sorted(project.languageGroups,[](const auto& g) {
+            return Json{{"id",id(g.id)},{"name",g.name},{"recognitionKey",g.recognitionKey}};
+        });
+        root["texts"] = sorted(project.texts,[](const auto& t) {
+            auto groups=t.languages; std::ranges::sort(groups); auto languages=Json::array();
+            for(auto g:groups) languages.push_back(id(g));
+            return Json{{"id",id(t.id)},{"script",id(t.script)},
+                {"target",std::visit([](auto target){return sourceEntityJson(spice::sct::SctDocumentEntityId{target});},t.target)},
+                {"sourceName",t.sourceName},{"sourceGroup",t.sourceGroup},{"correspondenceKey",t.correspondenceKey},
+                {"languages",languages},{"explicitAssignment",t.explicitAssignment},{"evidence",evidenceJson(t.evidence)}};
+        });
+        root["logicalTexts"] = sorted(project.logicalTexts,[](const auto& t) {
+            auto variants=Json::array(); for(auto v:t.variants) variants.push_back(id(v));
+            return Json{{"id",id(t.id)},{"script",id(t.script)},{"name",t.name},{"variants",variants},{"module",t.module ? Json(id(*t.module)) : Json(nullptr)}};
+        });
         return Result<std::string>::success(root.dump(2), std::move(diagnostics));
     } catch (const std::exception& ex) { return Result<std::string>::failure(failure(ex)); }
 }
@@ -396,7 +414,7 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
 Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
     try {
         const auto root = parse(text); envelope(root, Format, SchemaVersion);
-        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents", "workspaceAuthoring", "sequences", "predicates"});
+        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents", "workspaceAuthoring", "sequences", "predicates", "languageGroups", "texts", "logicalTexts"});
         SctAuthoringProject result;
         const auto metadataJson = root.at("workspaceAuthoring").dump();
         auto metadata = SctAuthoringCatalogCodec::deserializeWorkspace(std::as_bytes(std::span(metadataJson.data(), metadataJson.size())));
@@ -488,6 +506,28 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
                 value.uses.push_back({spice::sct::SctInstructionId{decimal(use.at("instruction"))}, {word(use.at("parameter")), {}}});
             }
             result.predicates.push_back(std::move(value));
+        }
+        for (const auto& g:array(root.at("languageGroups"))) {
+            keys(g,{"id","name","recognitionKey"});
+            result.languageGroups.push_back({id<SctLanguageGroupId>(g.at("id")),string(g.at("name")),string(g.at("recognitionKey"))});
+        }
+        for (const auto& t:array(root.at("texts"))) {
+            keys(t,{"id","script","target","sourceName","sourceGroup","correspondenceKey","languages","explicitAssignment","evidence"});
+            const auto target=std::visit([](auto value)->spice::sct::SctTextEntityId {
+                if constexpr(std::is_constructible_v<spice::sct::SctTextEntityId,decltype(value)>) return value;
+                else throw std::runtime_error("Text target must be indexed or supplementary text.");
+            },readSourceEntity(t.at("target")));
+            SctAuthoredText text{id<SctTextResourceId>(t.at("id")),id<SctScriptId>(t.at("script")),target,
+                string(t.at("sourceName")),string(t.at("sourceGroup")),string(t.at("correspondenceKey")),{},boolean(t.at("explicitAssignment")),readEvidence(t.at("evidence"))};
+            for(const auto& g:array(t.at("languages"))) text.languages.push_back(id<SctLanguageGroupId>(g));
+            result.texts.push_back(std::move(text));
+        }
+        for (const auto& t:array(root.at("logicalTexts"))) {
+            keys(t,{"id","script","name","variants","module"});
+            SctLogicalText logical{id<SctLogicalTextId>(t.at("id")),id<SctScriptId>(t.at("script")),string(t.at("name"))};
+            for(const auto& v:array(t.at("variants"))) logical.variants.push_back(id<SctTextResourceId>(v));
+            if(!t.at("module").is_null()) logical.module=id<SctModuleId>(t.at("module"));
+            result.logicalTexts.push_back(std::move(logical));
         }
         auto diagnostics = result.validate();
         if (hasErrors(diagnostics)) return Result<SctAuthoringProject>::failure(std::move(diagnostics));

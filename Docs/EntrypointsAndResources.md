@@ -54,6 +54,6 @@ The portable rules describe 42 tile keys, 27 coordinate-specific selectors, and 
 
 [SmoresScript](../SmoresScript/README.md) holds portable relationships intended for donation to SMORES. SALSA owns authored decisions, history, schema, and UI. SPICE owns file formats. Future SALT coordination supplies workspace services; MLD context remains optional authoring assistance.
 
-The semantic schema is version 7. Presentation and compressed container encoding are unchanged. Development-schema compatibility is not provided; Python SALSA v7 import remains supported.
+Activation was introduced in semantic schema 7; [language groups and text](LanguageGroupsAndText.md) advance the current semantic schema to 8. Presentation and compressed container encoding are unchanged. Development-schema compatibility is not provided; Python SALSA v7 import remains supported.
 
 Release output settings concern endianness, supported text conventions/localizations, and compression. Game-binary packaging is outside SALSA. Graph editing, spatial viewing, and unused-library removal are separate slices; footprint reduction is on hold pending the engine-entrypoint inventory.

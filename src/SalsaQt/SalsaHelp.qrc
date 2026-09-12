@@ -4,6 +4,7 @@
     <file alias="LegacyImport.md">../../Docs/LegacyImport.md</file>
     <file alias="Exporting.md">../../Docs/Exporting.md</file>
     <file alias="Parameters.md">../../Docs/Parameters.md</file>
+    <file alias="LanguageGroupsAndText.md">../../Docs/LanguageGroupsAndText.md</file>
     <file alias="KeyboardShortcuts.md">../../Docs/KeyboardShortcuts.md</file>
   </qresource>
 </RCC>

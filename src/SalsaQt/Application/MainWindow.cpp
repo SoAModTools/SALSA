@@ -1,4 +1,5 @@
 #include "Sct/SctEntrypointEditorDialog.h"
+#include "Sct/SctLanguageEditorDialog.h"
 #include "Sct/SctSequenceEditorDialog.h"
 #include "Application/MainWindow.h"
 #include "Application/ExclusiveOperationCoordinator.h"
@@ -633,6 +634,10 @@ void MainWindow::buildUi() {
     connect(moduleEditorAction, &QAction::triggered, this, [this] {
         if (auto* document = activeDocumentWidget()) showSctModuleBrowser(*documentController_, document->locator(),
             [document](core::SctNavigationTarget target) { document->selectTarget(target); }, this);
+    });
+    auto* languageAction = documentMenu->addAction(tr("Language Groups and Text..."));
+    connect(languageAction, &QAction::triggered, this, [this] {
+        if (auto* document = activeDocumentWidget()) showSctLanguageEditor(*documentController_,document->locator(),this);
     });
     auto* entrypointAction = documentMenu->addAction(tr("Entrypoints and Resources..."));
     connect(entrypointAction, &QAction::triggered, this, [this] {
