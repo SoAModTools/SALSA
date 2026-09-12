@@ -51,6 +51,7 @@
     <ClInclude Include="include\SalsaCore\Authoring\SctSequenceAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringStore.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctModuleAuthoring.h" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctEntrypointAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctProjectContainer.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringMaterializer.h" />
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h" />
@@ -109,6 +110,7 @@
     <ClCompile Include="src\Authoring\SctSequenceAuthoring.cpp" />
     <ClCompile Include="src\Authoring\SctAuthoringStore.cpp" />
     <ClCompile Include="src\Authoring\SctModuleAuthoring.cpp" />
+    <ClCompile Include="src\Authoring\SctEntrypointAuthoring.cpp" />
     <ClCompile Include="src\Authoring\SctProjectContainer.cpp" />
     <ClCompile Include="src\Authoring\SctAuthoringMaterializer.cpp" />
     <ClCompile Include="src\Application\ApplicationInfo.cpp" />
@@ -160,6 +162,14 @@
     </ProjectReference>
     <ProjectReference Include="..\..\third-party\SPICE\SpiceSCT\SpiceSCT.vcxproj">
       <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\SmoresScript\SmoresScript.vcxproj">
+      <Project>{7571C912-7C9A-49F2-968F-5E8C19A77617}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\..\third-party\SPICE\SpiceMLD\SpiceMLD.vcxproj">
+      <Project>{C44D37F8-61F5-4A1C-B983-16D79FBC9954}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctModuleAuthoring.h"
 #include "Sct/SctDocumentController.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
@@ -199,6 +200,31 @@ TEST(AuthoringControllerTest, ModuleCommandsShareEditorHistoryAndSurviveContaine
     qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace); ASSERT_TRUE(reopened.authoringState());
     EXPECT_EQ(reopened.authoringState()->project.modules.front().id, module);
     EXPECT_EQ(reopened.authoringState()->project.find(sequence)->actions.size(), 2u);
+}
+
+TEST(AuthoringControllerTest, EntrypointConnectionsUseSharedHistoryAndContainer) {
+    Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    const auto before = controller.authoringState(); const auto script = before->project.scripts.front().id;
+    const auto section = before->programs.front()->document().sections.front().id;
+    ASSERT_TRUE(controller.executeAuthoringCommand(before->project.revision,"Prepare response",[&](const auto& state) -> core::Result<core::SctAuthoringState> {
+        auto extracted = core::SctModuleAuthoring::extract(state,script,{section},"Response"); if (!extracted) return extracted;
+        return core::SctModuleAuthoring::appendAction(extracted.value(),extracted.value().project.modules.front().id,extracted.value().project.sequences.front().id,12);
+    }));
+    const auto state = controller.authoringState(); namespace rel = smores::script;
+    rel::ResourceIdentity identity{state->project.baselines.front().datasetFingerprint.digest.toHex(),"synthetic.mld","revision","document"};
+    rel::Entry entry{identity,0,{1},99,4000,"goscript",{}};
+    rel::Catalog catalog{{{identity,rel::ResourceRole::Base,{entry}}}};
+    ASSERT_TRUE(controller.executeAuthoringCommand(state->project.revision,"Connect trigger",[&](const auto& current) {
+        return core::SctEntrypointAuthoring::createDirectHandler(current,script,entry,rel::ResourceRole::Base,current.project.ports.front().id,catalog);
+    }));
+    const auto id = controller.authoringState()->project.entrypoints.front().id;
+    ASSERT_TRUE(controller.undo(f.a)); EXPECT_TRUE(controller.authoringState()->project.entrypoints.empty());
+    ASSERT_TRUE(controller.redo(f.a)); EXPECT_EQ(controller.authoringState()->project.entrypoints.front().id,id);
+    controller.closeAll(); ASSERT_TRUE(controller.saveDocument(f.a)); ASSERT_TRUE(waitFor([&] { return !controller.isSaving(f.a); }));
+    qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace); ASSERT_TRUE(reopened.authoringState());
+    const auto& restored = reopened.authoringState()->project; ASSERT_EQ(restored.entrypoints.size(),1); EXPECT_EQ(restored.entrypoints.front().id,id);
+    EXPECT_EQ(std::get<rel::Entry>(*restored.entrypoints.front().binding->provider),entry);
 }
 
 }

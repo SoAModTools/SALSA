@@ -24,6 +24,8 @@ Open `SALSA.sln` in Visual Studio 18 and build the `Debug|x64` or `Release|x64` 
 
 Build outputs are written to `bin/<platform>/<configuration>`.
 
+See [Entrypoints and resource context](Docs/EntrypointsAndResources.md) and the [portable SmoresScript library](SmoresScript/README.md) for S6 authoring and relationship contracts.
+
 ## Testing
 
 Run the relevant filtered suites in `bin/x64/Debug/SalsaTests.exe` after building. `SalsaQtTests.exe` exercises the document controller with a Qt event loop and synthetic assets; it does not drive widgets or require game data. Manual testing covers the rendered GUI. Private corpus tests live in the sister testing repository and run only in Release.

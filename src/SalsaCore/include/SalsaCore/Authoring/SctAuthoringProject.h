@@ -7,6 +7,7 @@
 #include "SpiceSCT/SctDocument.h"
 #include "SpiceSCT/SctHeaderContract.h"
 
+#include "smores/script/Relationships.h"
 #include <algorithm>
 #include <limits>
 #include <variant>
@@ -105,12 +106,25 @@ struct SctAuthoringModule final {
     // program pool. The script retains assembly order across module boundaries.
     std::vector<spice::sct::SctSectionId> sections;
 };
+enum class SctEntrypointKind { Lifecycle, Arrival, DirectHandler, SignalConsumer };
+struct SctEntrypointBinding final {
+    SctEntrypointKind kind = SctEntrypointKind::Lifecycle;
+    SctSequenceId sequence;
+    // Existing call or branch operand; absent means the section's first action.
+    std::optional<spice::sct::SctParameterSite> responseSite;
+    std::optional<spice::sct::SctParameterSite> predicate;
+    SctAuthoringReference<SctPortId> response = SctUnresolvedBinding{"Unselected response", "Select a module response.", {}};
+    std::optional<std::variant<smores::script::Entry, SctUnresolvedBinding>> provider;
+    smores::script::ResourceRole resourceRole = smores::script::ResourceRole::Unclassified;
+    std::optional<std::uint32_t> signalBit;
+};
 struct SctAuthoringEntrypoint final {
     SctEntrypointId id;
     SctScriptId script;
     std::string name;
     std::vector<SctAuthoringReference<SctContentId>> contentUses;
     std::vector<SctAuthoringEvidence> evidence;
+    std::optional<SctEntrypointBinding> binding;
 };
 struct SctAuthoringPort final {
     SctPortId id;

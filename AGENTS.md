@@ -10,4 +10,5 @@
 - For new or changed SALSA corpus-backed behavior, test representative scripts across GameCube and Dreamcast and every available JP, US, and EU release. Include available disc variants where relevant.
 - Keep the matrix focused on the affected SCT behavior and script groupings; this does not require unrelated suites or whole-corpus runs.
 - Required acceptance cases must fail when configured inputs are missing rather than silently skip. Report unavailable platform/region/disc coverage explicitly.
+- Dreamcast discs have expected differences in their asset inventories. Define cases from each disc's catalog and report absent assets as coverage differences; they are not defects. Missing inputs for a declared acceptance case still fail.
 - Run private corpus tests only in Release, in the sister private testing repository, following its mutex and corpus-boundary rules. This coverage policy is SALSA-specific, not a global SoAModTools rule.

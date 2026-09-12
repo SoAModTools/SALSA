@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "Sct/SctDocumentController.h"
 #include "Application/SalsaLogging.h"
 
@@ -1000,9 +1001,18 @@ bool SctDocumentController::exportDocument(
     publicationStop_ = std::stop_source{};
     const auto token = publicationStop_.get_token();
     publicationLocator_ = locator;
+    const auto authored = authoring_ ? authoring_->capture() : nullptr;
+    const auto scriptId = authoringScript(locator);
     publicationWatcher_.setFuture(QtConcurrent::run(
-        [project = std::move(project), request = std::move(request), token,
+        [project = std::move(project), request = std::move(request), token, authored, scriptId,
             observer = std::move(observer)] {
+            if (authored && scriptId) {
+                auto working = core::SctAuthoringMaterializer::workingState(authored->project, authored->programs, *scriptId);
+                if (!working) { core::SctPublicationResult failed; failed.infrastructureDiagnostics = working.diagnostics(); return failed; }
+                auto checked = core::SctEntrypointAuthoring::validateProgram(authored->project, *scriptId, *working.value().document, true);
+                if (checked) checked = core::SctEntrypointAuthoring::verifyResources(authored->project, *scriptId, project);
+                if (!checked) { core::SctPublicationResult failed; failed.infrastructureDiagnostics = checked.diagnostics(); return failed; }
+            }
             return core::SctPublicationService::publish(project, request, token, observer);
         }));
     return true;

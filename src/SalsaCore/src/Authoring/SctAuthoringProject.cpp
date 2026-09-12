@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringProject.h"
 #include "SpiceSCT/SctScptEncoding.h"
 
@@ -178,6 +179,38 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
         }
     };
     checkOwned(modules, "Module"); checkOwned(entrypoints, "Entrypoint");
+    for (const auto& entry : entrypoints) if (entry.binding) {
+        const auto& b = *entry.binding;
+        const auto* sequence = find(b.sequence);
+        if (!sequence || sequence->script != entry.script || static_cast<unsigned>(b.kind) > 3 || static_cast<unsigned>(b.resourceRole) > 2)
+            out.push_back(error("Entrypoint has invalid kind, role, or sequence ownership."));
+        checkReference(b.response, "Entrypoint response: ");
+        if (const auto* id = std::get_if<SctPortId>(&b.response)) {
+            const auto* port = find(*id); const auto* moduleId = port ? std::get_if<SctModuleId>(&port->owner) : nullptr;
+            const auto* module = moduleId ? find(*moduleId) : nullptr;
+            if (!module || module->script != entry.script) out.push_back(error("Entrypoint response must belong to a module in its parent script."));
+        }
+        if ((b.kind == SctEntrypointKind::SignalConsumer || b.kind == SctEntrypointKind::Arrival) && !b.predicate)
+            out.push_back(error("Signal and arrival entrypoints require their existing predicate."));
+        if ((b.kind == SctEntrypointKind::SignalConsumer || b.kind == SctEntrypointKind::DirectHandler) && !b.provider)
+            out.push_back(error("Resource entrypoint requires a selected or explicitly unresolved provider."));
+        if (b.kind == SctEntrypointKind::SignalConsumer && (!b.signalBit || *b.signalBit > 0xffffff))
+            out.push_back(error("Signal entrypoint requires a valid physical bit."));
+        if (b.kind != SctEntrypointKind::SignalConsumer && b.signalBit) out.push_back(error("Only signal consumers have a signal bit."));
+        if (b.provider) {
+            if (const auto* provider = std::get_if<smores::script::Entry>(&*b.provider)) {
+                if (!smores::script::valid(provider->resource) || !provider->localId)
+                    out.push_back(error("Entrypoint provider has invalid source qualification."));
+                if (b.kind == SctEntrypointKind::SignalConsumer && (smores::script::assetKey(provider->function) != "eventhook" || provider->parameters.size() <= 8 || provider->parameters[8] != b.signalBit))
+                    out.push_back(error("Eventhook provider does not agree with the selected candidate bit."));
+            } else {
+                const auto& u = std::get<SctUnresolvedBinding>(*b.provider);
+                if (u.originalEvidence.empty() || u.explanation.empty()) out.push_back(error("Unknown provider requires evidence and explanation."));
+                checkEvidence(u.evidence, "Entrypoint provider: ", out);
+                out.push_back({DiagnosticSeverity::Warning, DiagnosticCode::UnresolvedSctAuthoringBinding, u.explanation});
+            }
+        }
+    }
     for (const auto& item : ports) {
         if (!std::visit([&](auto owner) { return effectiveScript(SctContentOwner{owner}).has_value(); }, item.owner))
             out.push_back(error(context("Port", item.id.value) + "owner does not exist or has no valid script."));
@@ -283,6 +316,11 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
             if (seq.script == module->script && std::ranges::find(module->sections, seq.section) != module->sections.end())
                 for (const auto& action : seq.actions) if (action.id == *port.action) found = true;
         if (!found) out.push_back(error("Port action does not belong to its module."));
+    }
+    for (const auto& content : contents) if (content.authoredState && content.authoredState->document) {
+        const auto script = effectiveScript(content.owner);
+        if (script) { auto valid = SctEntrypointAuthoring::validateProgram(*this, *script, *content.authoredState->document);
+            if (!valid) out.insert(out.end(), valid.diagnostics().begin(), valid.diagnostics().end()); }
     }
     return out;
 }

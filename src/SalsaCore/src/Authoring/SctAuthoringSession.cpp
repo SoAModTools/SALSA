@@ -79,6 +79,10 @@ Result<SctAuthoringChange> SctAuthoringSession::execute(RevisionId expected, std
             const auto* after = next.project.find(module.id);
             if (after && after->script != module.script) return Result<SctAuthoringChange>::failure(error("Module reparenting is not supported."));
         }
+        for (const auto& entry : current_->project.entrypoints) {
+            const auto* after = next.project.find(entry.id);
+            if (after && after->script != entry.script) return Result<SctAuthoringChange>::failure(error("Entrypoint reparenting is not supported."));
+        }
         const auto priorIds = identities(current_->project);
         for (const auto& [id, kind] : identities(next.project)) {
             const auto found = priorIds.find(id);

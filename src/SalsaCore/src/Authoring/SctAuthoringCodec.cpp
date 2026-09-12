@@ -240,6 +240,60 @@ std::vector<SctPreservedLiteralOverride> readOverrides(const Json& values) {
     }
     return result;
 }
+Json siteJson(const std::optional<spice::sct::SctParameterSite>& site) {
+    if (!site) return nullptr;
+    return {{"instruction", std::to_string(site->instruction.value())}, {"parameter", site->parameter.schemaIndex},
+        {"group", site->parameter.repeatedGroupOrdinal ? Json(*site->parameter.repeatedGroupOrdinal) : Json(nullptr)}};
+}
+std::optional<spice::sct::SctParameterSite> readSite(const Json& j) {
+    if (j.is_null()) return {};
+    keys(j, {"instruction", "parameter", "group"});
+    return spice::sct::SctParameterSite{spice::sct::SctInstructionId{decimal(j.at("instruction"))}, {word(j.at("parameter")), j.at("group").is_null() ? std::nullopt : std::optional{word(j.at("group"))}}};
+}
+Json bindingJson(const std::optional<SctEntrypointBinding>& b) {
+    if (!b) return nullptr;
+    Json provider = nullptr;
+    if (b->provider) {
+        if (const auto* e = std::get_if<smores::script::Entry>(&*b->provider)) {
+            auto parameters = Json::array(); for (auto p : e->parameters) parameters.push_back(std::to_string(p));
+            provider = {{"state", "selected"}, {"dataset", e->resource.dataset}, {"asset", e->resource.asset}, {"revision", e->resource.revision}, {"document", e->resource.document},
+                {"index", std::to_string(e->tableIndex)}, {"localId", std::to_string(e->localId.value)}, {"entryId", std::to_string(e->entryId)}, {"tblId", e->tableId}, {"function", e->function}, {"parameters", parameters}};
+        } else {
+            const auto& u = std::get<SctUnresolvedBinding>(*b->provider);
+            provider = {{"state", "unresolved"}, {"originalEvidence", u.originalEvidence}, {"explanation", u.explanation}, {"evidence", evidenceJson(u.evidence)}};
+        }
+    }
+    return {{"kind", static_cast<unsigned>(b->kind)}, {"sequence", id(b->sequence)}, {"responseSite", siteJson(b->responseSite)}, {"predicate", siteJson(b->predicate)},
+        {"response", referenceJson(b->response)}, {"provider", provider}, {"resourceRole", static_cast<unsigned>(b->resourceRole)}, {"signalBit", b->signalBit ? Json(*b->signalBit) : Json(nullptr)}};
+}
+std::optional<SctEntrypointBinding> readBinding(const Json& j) {
+    if (j.is_null()) return {};
+    keys(j, {"kind", "sequence", "responseSite", "predicate", "response", "provider", "resourceRole", "signalBit"});
+    SctEntrypointBinding b;
+    b.kind = static_cast<SctEntrypointKind>(word(j.at("kind"), 3)); b.sequence = id<SctSequenceId>(j.at("sequence"));
+    b.responseSite = readSite(j.at("responseSite")); b.predicate = readSite(j.at("predicate")); b.response = readReference<SctPortId>(j.at("response"));
+    b.resourceRole = static_cast<smores::script::ResourceRole>(word(j.at("resourceRole"), 2));
+    if (!j.at("signalBit").is_null()) b.signalBit = word(j.at("signalBit"), 0xffffff);
+    const auto& p = j.at("provider");
+    if (!p.is_null()) {
+        if (string(p.at("state")) == "selected") {
+            keys(p, {"state", "dataset", "asset", "revision", "document", "index", "localId", "entryId", "tblId", "function", "parameters"});
+            require(p.at("tblId").is_number_integer(), "tblId must be an integer.");
+            if (p.at("tblId").is_number_unsigned()) require(p.at("tblId").get<std::uint64_t>() <= INT32_MAX, "tblId overflow.");
+            auto table = p.at("tblId").get<std::int64_t>(); require(table >= INT32_MIN && table <= INT32_MAX, "tblId overflow.");
+            auto entryId = decimal(p.at("entryId")); require(entryId <= UINT32_MAX, "entryId overflow.");
+            smores::script::Entry e{{string(p.at("dataset")), string(p.at("asset")), string(p.at("revision")), string(p.at("document"))}, decimal(p.at("index")),
+                {decimal(p.at("localId"))}, static_cast<std::uint32_t>(entryId), static_cast<std::int32_t>(table), string(p.at("function")), {}};
+            for (const auto& value : array(p.at("parameters"))) { const auto n = decimal(value); require(n <= UINT32_MAX, "Function parameter overflow."); e.parameters.push_back(static_cast<std::uint32_t>(n)); }
+            b.provider = std::move(e);
+        } else {
+            require(string(p.at("state")) == "unresolved", "Unknown provider resolution.");
+            keys(p, {"state", "originalEvidence", "explanation", "evidence"});
+            b.provider = SctUnresolvedBinding{string(p.at("originalEvidence")), string(p.at("explanation")), readEvidence(p.at("evidence"))};
+        }
+    }
+    return b;
+}
 } // namespace
 
 Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project) {
@@ -272,6 +326,7 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
             if constexpr (std::is_same_v<std::decay_t<decltype(m)>, SctAuthoringModule>) {
                 value["sections"] = Json::array(); for (const auto section : m.sections) value["sections"].push_back(std::to_string(section.value()));
             }
+            else value["binding"] = bindingJson(m.binding);
             return value;
         };
         root["modules"] = sorted(project.modules, owned); root["entrypoints"] = sorted(project.entrypoints, owned);
@@ -347,11 +402,12 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
             using Item = typename std::decay_t<decltype(destination)>::value_type;
             for (const auto& m : array(values)) {
                 if constexpr (std::is_same_v<Item, SctAuthoringModule>) keys(m, {"id", "script", "name", "contentUses", "evidence", "sections"});
-                else keys(m, {"id", "script", "name", "contentUses", "evidence"});
+                else keys(m, {"id", "script", "name", "contentUses", "evidence", "binding"});
                 destination.push_back(Item{id<decltype(Item::id)>(m.at("id")), id<SctScriptId>(m.at("script")),
                     string(m.at("name")), readUses(m.at("contentUses")), readEvidence(m.at("evidence"))});
                 if constexpr (std::is_same_v<Item, SctAuthoringModule>)
                     for (const auto& section : array(m.at("sections"))) destination.back().sections.push_back(spice::sct::SctSectionId{decimal(section)});
+                else destination.back().binding = readBinding(m.at("binding"));
             }
         };
         readOwned(root.at("modules"), result.modules); readOwned(root.at("entrypoints"), result.entrypoints);

@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctModuleAuthoring.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
@@ -302,4 +303,148 @@ TEST(SctModuleAuthoringTest, EmptyModuleIsDurableAndCanReceiveItsFirstAction) {
     EXPECT_EQ(decoded.value().modules.back().id, module.id);
 }
 
+}
+
+namespace {
+smores::script::Catalog entryCatalog(const SctAuthoringState& state, bool eventhook = false) {
+    namespace rel = smores::script;
+    rel::ResourceIdentity identity{state.project.baselines.front().datasetFingerprint.digest.toHex(), "field/a002a.mld", "revision", "document"};
+    rel::Entry entry{identity, 3, {44}, 1234, 4000, eventhook ? "eventhook" : "goscript", {}};
+    if (eventhook) { entry.parameters.resize(9); entry.parameters[8] = 42; }
+    rel::Resource r{identity, rel::ResourceRole::Base, {}};
+    for (unsigned i = 0; i < 4; ++i) { auto e = entry; e.tableIndex = i; e.localId.value += i; r.entries.push_back(e); }
+    return {{r}};
+}
+SctAuthoringState withResponseModule() {
+    auto state = initial(); const auto script = state.project.scripts.front().id;
+    const auto section = state.programs.front()->document().sections[1].id;
+    return SctModuleAuthoring::extract(state, script, {section}, "Response").value();
+}
+}
+TEST(SctEntrypointAuthoring, NewDirectHandlerRoundTripsAndPreservesOriginalProgram) {
+    auto state = withResponseModule(); const auto script = state.project.scripts.front().id;
+    const auto catalog = entryCatalog(state); const auto entry = catalog.resources[0].entries[3]; const auto port = state.project.ports.front().id;
+    auto result = SctEntrypointAuthoring::createDirectHandler(state, script, entry, smores::script::ResourceRole::Base, port, catalog);
+    ASSERT_TRUE(result) << result.diagnostics().front().message;
+    auto next = result.value(); ASSERT_EQ(next.project.entrypoints.size(), 1); const auto id = next.project.entrypoints.front().id;
+    EXPECT_EQ(next.project.modules.front().id, state.project.modules.front().id);
+    EXPECT_FALSE(SctEntrypointAuthoring::createDirectHandler(next, script, entry, smores::script::ResourceRole::Base, port, catalog));
+    const auto encoded = SctAuthoringCodec::encode(next.project); ASSERT_TRUE(encoded);
+    const auto decoded = SctAuthoringCodec::decode(encoded.value()); ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value().entrypoints.front().id, id);
+    EXPECT_EQ(SctAuthoringCodec::encode(decoded.value()).value(), encoded.value());
+    EXPECT_FALSE(output(next).empty());
+    auto session = SctAuthoringSession::open(state); ASSERT_TRUE(session);
+    ASSERT_TRUE(session.value()->execute(state.project.revision, "Add trigger", [&](const auto&) { return result; }));
+    ASSERT_TRUE(session.value()->undo()); EXPECT_TRUE(session.value()->state().project.entrypoints.empty());
+    ASSERT_TRUE(session.value()->redo()); EXPECT_EQ(session.value()->state().project.entrypoints.front().id, id);
+}
+TEST(SctEntrypointAuthoring, StaleAndMissingResourcesRemainExplicit) {
+    auto state = withResponseModule(); const auto script = state.project.scripts.front().id; auto catalog = entryCatalog(state);
+    const auto entry = catalog.resources[0].entries[3];
+    auto added = SctEntrypointAuthoring::createDirectHandler(state, script, entry, smores::script::ResourceRole::Auxiliary, state.project.ports.front().id, catalog); ASSERT_TRUE(added);
+    const auto missing = SctEntrypointAuthoring::inspectBindings(added.value().project, script, {});
+    ASSERT_EQ(missing.size(), 1); EXPECT_EQ(missing[0].severity, DiagnosticSeverity::Warning);
+    catalog.resources[0].entries[3].entryId++;
+    const auto stale = SctEntrypointAuthoring::inspectBindings(added.value().project, script, catalog);
+    ASSERT_EQ(stale.size(), 1); EXPECT_EQ(stale[0].severity, DiagnosticSeverity::Error);
+    EXPECT_TRUE(SctAuthoringCodec::encode(added.value().project));
+    const auto& bound = added.value().project.entrypoints.front();
+    EXPECT_FALSE(SctEntrypointAuthoring::bind(added.value(), script, bound.name, *bound.binding, catalog, bound.id));
+}
+TEST(SctEntrypointAuthoring, SignalKeepsLevelPredicateAndOrderedConsumption) {
+    auto state = withResponseModule(); const auto script = state.project.scripts.front().id;
+    auto working = SctAuthoringMaterializer::workingState(state.project, state.programs, script).value();
+    auto doc = std::make_shared<sct::SctDocument>(*working.document); auto& body = std::get<sct::SctScriptSectionContent>(doc->sections.front().content);
+    body.instructions.front().fixedParameters.front().value = expression("BitVar[42] == 1");
+    const auto call = body.instructions[3].id; const auto predicate = body.instructions.front().id;
+    const auto clear = doc->allocateInstructionId(); body.instructions.insert(body.instructions.begin() + 4, {clear, 18, false, {}, {{0, expression("42")}}});
+    working.document = doc; state.project = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, working).value();
+    state = SctSequenceAuthoring::promoteSequence(state, script, doc->sections.front().id, "Loop").value();
+    const auto seq = state.project.sequences.back().id; const auto catalog = entryCatalog(state, true);
+    SctEntrypointBinding b{SctEntrypointKind::SignalConsumer, seq, sct::SctParameterSite{call,{0,{}}}, sct::SctParameterSite{predicate,{0,{}}},
+        state.project.ports.front().id, catalog.resources[0].entries[3], smores::script::ResourceRole::Base, 42};
+    const auto before = output(state);
+    auto bound = SctEntrypointAuthoring::bind(state, script, "Signal response", b, catalog); ASSERT_TRUE(bound) << bound.diagnostics().front().message;
+    EXPECT_EQ(output(bound.value()), before);
+    auto next = bound.value(); auto& binding = *next.project.entrypoints.front().binding;
+    binding.signalBit = 43; EXPECT_FALSE(SctAuthoringSession::validate(next));
+    next = bound.value(); next.project.entrypoints.front().binding->provider = SctUnresolvedBinding{"Unknown runtime provider", "Provider not inspected.", {{SctEvidenceKind::Inference, "Observed bit consumer"}}};
+    auto encoded = SctAuthoringCodec::encode(next.project); ASSERT_TRUE(encoded); EXPECT_FALSE(encoded.diagnostics().empty());
+    auto restored = SctAuthoringCodec::decode(encoded.value()); ASSERT_TRUE(restored);
+    EXPECT_TRUE(std::holds_alternative<SctUnresolvedBinding>(*restored.value().entrypoints.front().binding->provider));
+    EXPECT_EQ(output(next), before);
+}
+TEST(SctEntrypointAuthoring, ArrivalBindsExistingCallWithoutRewritingConditions) {
+    auto state = withResponseModule(); const auto script = state.project.scripts.front().id;
+    const auto& doc = state.programs.front()->document(); const auto& body = std::get<sct::SctScriptSectionContent>(doc.sections.front().content);
+    state = SctSequenceAuthoring::promoteSequence(state, script, doc.sections.front().id, "Arrival").value();
+    SctEntrypointBinding b{SctEntrypointKind::Arrival, state.project.sequences.back().id,
+        sct::SctParameterSite{body.instructions[3].id, {0,{}}}, sct::SctParameterSite{body.instructions[0].id, {0,{}}}, state.project.ports.front().id};
+    auto result = SctEntrypointAuthoring::bind(state, script, "Arrival response", b, {}); ASSERT_TRUE(result);
+    EXPECT_EQ(output(result.value()), output(state));
+    auto invalid = result.value(); invalid.project.entrypoints.front().binding->sequence = {999999}; EXPECT_FALSE(SctAuthoringCodec::encode(invalid.project));
+    invalid = result.value(); invalid.project.entrypoints.front().binding->responseSite->instruction = sct::SctInstructionId{999999}; EXPECT_FALSE(SctAuthoringSession::validate(invalid));
+}
+
+TEST(SctEntrypointAuthoring, ReselectKeepsIdentityAndEditsOnlyTheSelectedTarget) {
+    auto state=withResponseModule(); const auto script=state.project.scripts.front().id; const auto catalog=entryCatalog(state);
+    state=SctEntrypointAuthoring::createDirectHandler(state,script,catalog.resources[0].entries[3],smores::script::ResourceRole::Base,state.project.ports.front().id,catalog).value();
+    const auto entry=state.project.entrypoints.front();
+    state=SctModuleAuthoring::createEmpty(state,script,"Second response").value();
+    const auto module=state.project.modules.back().id; const auto sequence=state.project.sequences.back().id;
+    state=SctModuleAuthoring::appendAction(state,module,sequence,12).value();
+    const auto port=state.project.ports.back().id;
+    const auto before=SctAuthoringMaterializer::workingState(state.project,state.programs,script).value();
+    auto b=*entry.binding; b.response=port;
+    auto result=SctEntrypointAuthoring::bind(state,script,"New response",b,catalog,entry.id); ASSERT_TRUE(result);
+    EXPECT_EQ(result.value().project.entrypoints.front().id,entry.id);
+    auto after=SctAuthoringMaterializer::workingState(result.value().project,result.value().programs,script).value();
+    auto expected=std::make_shared<sct::SctDocument>(*before.document);
+    for(auto& section:expected->sections) if(auto* body=std::get_if<sct::SctScriptSectionContent>(&section.content)) for(auto& i:body->instructions)
+        if(i.id==b.responseSite->instruction) i.fixedParameters.front().value=sct::SctInstructionReference{result.value().project.find(*result.value().project.find(port)->action)->instruction};
+    auto intended=before; intended.document=expected;
+    EXPECT_EQ(SctProgramStateCodec::encode(after).value(),SctProgramStateCodec::encode(intended).value());
+    EXPECT_FALSE(output(result.value()).empty());
+    auto malformed=nlohmann::ordered_json::parse(SctAuthoringCodec::encode(result.value().project).value());
+    auto overflow = malformed; overflow["entrypoints"][0]["binding"]["provider"]["tblId"] = UINT64_MAX;
+    EXPECT_FALSE(SctAuthoringCodec::decode(overflow.dump()));
+    malformed["entrypoints"][0]["binding"]["predicate"]={{"instruction","99999"},{"parameter",0},{"group",nullptr}};
+    EXPECT_FALSE(SctAuthoringCodec::decode(malformed.dump()));
+    auto unresolved = result.value(); auto& binding = *unresolved.project.entrypoints.front().binding;
+    binding.response = SctUnresolvedBinding{"Unselected module", "Choose a response.", {}};
+    EXPECT_TRUE(SctAuthoringCodec::encode(unresolved.project));
+    binding.responseSite->instruction = sct::SctInstructionId{999999};
+    EXPECT_FALSE(SctAuthoringCodec::encode(unresolved.project));
+}
+TEST(SctEntrypointAuthoring, LifecycleRequiresKnownSectionAndWrapperCannotExtendFallthrough) {
+    auto state=withResponseModule(); const auto script=state.project.scripts.front().id;
+    auto working=SctAuthoringMaterializer::workingState(state.project,state.programs,script).value();
+    const auto section=working.document->sections.front().id;
+    state=SctModuleAuthoring::extract(state,script,{section},"Loop lifecycle").value();
+    const auto seq=std::ranges::find(state.project.sequences,section,&SctAuthoredSequence::section);
+    const auto port=std::ranges::find_if(state.project.ports,[&](const auto& p){return p.action==seq->actions.front().id;});
+    SctEntrypointBinding binding{SctEntrypointKind::Lifecycle,seq->id,{}, {},port->id};
+    auto result=SctEntrypointAuthoring::bind(state,script,"Loop",binding,{}); ASSERT_TRUE(result); EXPECT_EQ(output(result.value()),output(state));
+    auto document=std::make_shared<sct::SctDocument>(*working.document);
+    document->sections.push_back({document->allocateSectionId(),"trailing",sct::SctScriptSectionContent{}}); working.document=document;
+    state.project=SctAuthoringMaterializer::replaceWorkingState(state.project,state.programs,script,working).value();
+    auto catalog=entryCatalog(state);
+    EXPECT_FALSE(SctEntrypointAuthoring::createDirectHandler(state,script,catalog.resources[0].entries[3],smores::script::ResourceRole::Base,state.project.ports.front().id,catalog));
+}
+
+TEST(SctEntrypointAuthoring, NewResourceSnapshotDoesNotRewriteImmutableScriptBaseline) {
+    auto state=withResponseModule(); const auto script=state.project.scripts.front().id; auto catalog=entryCatalog(state);
+    const auto originalBaseline=state.project.baselines.front().datasetFingerprint;
+    state=SctEntrypointAuthoring::createDirectHandler(state,script,catalog.resources[0].entries[3],smores::script::ResourceRole::Base,state.project.ports.front().id,catalog).value();
+    const auto entry=state.project.entrypoints.front();
+    auto& resource=catalog.resources[0]; resource.identity.dataset=sha256(std::span<const std::byte>{}).value().toHex(); resource.identity.revision="updated";
+    for(auto& e:resource.entries) e.resource=resource.identity;
+    EXPECT_TRUE(hasErrors(SctEntrypointAuthoring::inspectBindings(state.project,script,catalog)));
+    auto binding=*entry.binding; binding.provider=resource.entries[3];
+    auto selected=SctEntrypointAuthoring::bind(state,script,entry.name,binding,catalog,entry.id); ASSERT_TRUE(selected);
+    EXPECT_EQ(selected.value().project.baselines.front().datasetFingerprint,originalBaseline);
+    EXPECT_EQ(selected.value().project.entrypoints.front().id,entry.id);
+    EXPECT_TRUE(SctEntrypointAuthoring::inspectBindings(selected.value().project,script,catalog).empty());
+    EXPECT_TRUE(SctAuthoringCodec::decode(SctAuthoringCodec::encode(selected.value().project).value()));
 }

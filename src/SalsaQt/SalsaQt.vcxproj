@@ -66,6 +66,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Sct\SctDocumentController.cpp" />
     <ClCompile Include="Sct\SctSequenceEditorDialog.cpp" />
+    <ClCompile Include="Sct\SctEntrypointEditorDialog.cpp" />
     <ClCompile Include="Sct\SctCatalogEditorDialog.cpp" />
     <ClCompile Include="Sct\SctExportDialog.cpp" />
     <ClCompile Include="Sct\SctRebaseDialog.cpp" />
@@ -92,6 +93,7 @@
     <QtMoc Include="Workspace\WorkspaceMaintenanceController.h" />
     <QtMoc Include="Legacy\LegacyConversionDialog.h" />
     <ClInclude Include="Sct\SctSequenceEditorDialog.h" />
+    <ClInclude Include="Sct\SctEntrypointEditorDialog.h" />
     <QtMoc Include="Sct\SctDocumentController.h" />
     <ClInclude Include="Sct\SctCatalogEditorDialog.h" />
     <QtMoc Include="Sct\SctExportDialog.h" />

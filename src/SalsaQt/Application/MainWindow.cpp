@@ -1,3 +1,4 @@
+#include "Sct/SctEntrypointEditorDialog.h"
 #include "Sct/SctSequenceEditorDialog.h"
 #include "Application/MainWindow.h"
 #include "Application/ExclusiveOperationCoordinator.h"
@@ -632,6 +633,12 @@ void MainWindow::buildUi() {
     connect(moduleEditorAction, &QAction::triggered, this, [this] {
         if (auto* document = activeDocumentWidget()) showSctModuleBrowser(*documentController_, document->locator(),
             [document](core::SctNavigationTarget target) { document->selectTarget(target); }, this);
+    });
+    auto* entrypointAction = documentMenu->addAction(tr("Entrypoints and Resources..."));
+    connect(entrypointAction, &QAction::triggered, this, [this] {
+        const auto project = controller_->projectSnapshot();
+        if (auto* document = activeDocumentWidget(); document && project)
+            showSctEntrypointEditor(*documentController_, document->locator(), *project, this);
     });
     sequenceEditorAction_ = documentMenu->addAction(tr("Sequences and Conditions..."));
     connect(sequenceEditorAction_, &QAction::triggered, this, [this] {

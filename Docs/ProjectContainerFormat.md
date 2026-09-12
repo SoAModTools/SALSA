@@ -22,7 +22,7 @@ Limits: 4,096 records, 240 bytes per name, 256 MiB per uncompressed record, 1 Gi
 ## Records and logical schemas
 
 - `project.json`: `jahorta.salsa.authoring-checkpoint`, schema 2. Includes workspace identity, semantic project, separate presentation, and baseline record bindings.
-- Semantic project: `jahorta.salsa.authoring-project`, schema 5. Includes project/entity identities, allocation state, ownership, module section membership, stable action/sequence ports, evidence, unresolved bindings, and authored output profiles.
+- Semantic project: `jahorta.salsa.authoring-project`, schema 6. Includes project/entity identities, allocation state, ownership, module section membership, stable action/sequence ports, evidence, unresolved bindings, authored output profiles, and entrypoint response/provider bindings.
 - Complete program content: `jahorta.salsa.program-state`, schema 1, nested in semantic content. Includes ordered sections/instructions/text, expressions, references, allocation state, control-arm metadata, text repair provenance, aliases, annotations, and folders.
 - `baselines/<baseline-id>.sct`: exact imported source bytes, verified against the baseline descriptor on load.
 - `legacy/<capsule-id>/...`: available migration capsule evidence, retained across subsequent saves. These records are not execution state.

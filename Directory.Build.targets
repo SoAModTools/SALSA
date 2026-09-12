@@ -1,0 +1,7 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Supply dependency include roots for MLD/PVM builds hosted by SALSA.
+       These projects otherwise depend on SPICE solution-relative paths. -->
+  <ItemDefinitionGroup Condition="'$(MSBuildProjectName)' == 'SpicePvm' Or '$(MSBuildProjectName)' == 'SpiceMLD'">
+    <ClCompile><AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)third-party\SPICE;$(MSBuildThisFileDirectory)third-party\SPICE\SpiceModeling;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
+  </ItemDefinitionGroup>
+</Project>

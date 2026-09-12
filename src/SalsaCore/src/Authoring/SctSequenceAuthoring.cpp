@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
 #include "SpiceSCT/SctDocumentIndex.h"
@@ -63,7 +64,7 @@ Result<void> SctSequenceAuthoring::validateProgram(const SctAuthoringProject& pr
             expected = std::move(words);
         }
     }
-    return Result<void>::success();
+    return SctEntrypointAuthoring::validateProgram(project, script, document);
 }
 Result<void> SctSequenceAuthoring::reconcileActions(SctAuthoringProject& project, SctScriptId script,
     const sct::SctDocument& document) {

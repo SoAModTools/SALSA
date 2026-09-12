@@ -86,4 +86,8 @@
   <ItemGroup>
     <QtRcc Include="SalsaHelp.qrc"><Filter>Application</Filter></QtRcc>
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Sct\SctEntrypointEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
+    <ClInclude Include="Sct\SctEntrypointEditorDialog.h"><Filter>SCT</Filter></ClInclude>
+  </ItemGroup>
 </Project>

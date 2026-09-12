@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringMaterializer.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringCodec.h"
@@ -124,9 +125,8 @@ Result<const SctAuthoringContent*> wholeRegion(const SctAuthoringProject& projec
     if (!context) return Result<const SctAuthoringContent*>::failure(error("Selected script does not exist."));
     if (context->platform != program.baseline().recipe.platform)
         return Result<const SctAuthoringContent*>::failure(error("Script platform differs from its immutable import recipe."));
-    if (std::ranges::any_of(project.modules, [&](const auto& m) { return m.script == script && m.sections.empty(); })
-        || std::ranges::any_of(project.entrypoints, [&](const auto& e) { return e.script == script; }))
-        return Result<const SctAuthoringContent*>::failure(error("Empty module descriptors and entrypoint lowering are not supported."));
+    if (std::ranges::any_of(project.modules, [&](const auto& m) { return m.script == script && m.sections.empty(); }))
+        return Result<const SctAuthoringContent*>::failure(error("Empty module descriptors are not supported."));
     for (const auto& connection : project.connections) {
         for (const auto* endpoint : {&connection.source, &connection.destination}) {
             const auto* portId = std::get_if<SctPortId>(endpoint);
@@ -217,6 +217,15 @@ SctRealizationMap mapping(const SctAuthoringProject& project, SctScriptId script
     for (const auto& text : document.supplementaryText) record.locations.emplace_back(sct::SctDocumentEntityId{text.id});
     for (const auto& attachment : document.opaqueAttachments) record.locations.emplace_back(sct::SctDocumentEntityId{attachment.id});
     SctRealizationMap mapping{{project.id, project.revision, script, std::move(realization)}, {std::move(record)}};
+    for (const auto& e : project.entrypoints) if (e.script == script && e.binding) {
+        const auto* sequence = project.find(e.binding->sequence);
+        if (sequence) {
+            SctRealizationRecord record{e.id, {sct::SctDocumentEntityId{sequence->section}}};
+            if (e.binding->predicate) record.locations.push_back(*e.binding->predicate);
+            if (e.binding->responseSite) record.locations.push_back(*e.binding->responseSite);
+            mapping.records.push_back(std::move(record));
+        }
+    }
     for (const auto& sequence : project.sequences) if (sequence.script == script) {
         mapping.records.push_back({sequence.id, {sct::SctDocumentEntityId{sequence.section}}});
         for (const auto& action : sequence.actions) mapping.records.push_back({action.id, {sct::SctDocumentEntityId{action.instruction}}});
@@ -257,6 +266,7 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     auto replayed = replay(program, *region.value());
     if (!replayed) { result.infrastructureDiagnostics = replayed.diagnostics(); return result; }
     auto semanticValid = SctSequenceAuthoring::validateProgram(project, scriptId, replayed.value());
+    if (semanticValid) semanticValid = SctEntrypointAuthoring::validateProgram(project, scriptId, replayed.value(), true);
     if (!semanticValid) { result.infrastructureDiagnostics = semanticValid.diagnostics(); return result; }
     bool unchanged = region.value()->literalOverrides.empty() && (!region.value()->physicalPatch || region.value()->physicalPatch->empty());
     if (mode == SctAuthoringOutputMode::ReuseUnchangedSource && region.value()->authoredState) {
