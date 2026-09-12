@@ -1,8 +1,9 @@
 #include "SalsaCore/Authoring/SctInterpretation.h"
+#include "SpiceSCT/SctDocumentAnalysis.h"
 #include "SpiceSCT/SctDocumentIndex.h"
 #include "SpiceSCT/SctScptEncoding.h"
-#include <charconv>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <map>
 #include <regex>
@@ -38,12 +39,14 @@ std::optional<std::int64_t> number(const sct::SctDocumentParameter &p) {
         return w->value;
     if (const auto *e = std::get_if<sct::SctCanonicalExpression>(&p.value)) {
         if (auto literal = SctLiteralConstant::fromExpression(*e)) {
-            if (literal->operation.kind == sct::SctScptValueKind::FloatLiteral && literal->operation.payloadWords.size() == 1) {
+            if (literal->operation.kind == sct::SctScptValueKind::FloatLiteral &&
+                literal->operation.payloadWords.size() == 1) {
                 const auto value = std::bit_cast<float>(literal->operation.payloadWords.front());
                 if (std::isfinite(value) && std::floor(value) == value && value >= 0 && value <= UINT32_MAX)
                     return static_cast<std::int64_t>(value);
             }
-            if (literal->operation.kind == sct::SctScptValueKind::InlineValue) return literal->operation.encodingWord;
+            if (literal->operation.kind == sct::SctScptValueKind::InlineValue)
+                return literal->operation.encodingWord;
         }
 
         auto text = SctExpressionLanguage::project(*e).text;
@@ -59,7 +62,7 @@ std::optional<SctVariableKey> written(const sct::SctDocumentInstruction &i) {
         return {};
     if (i.opcode >= 17 && i.opcode <= 19) {
         auto n = number(i.fixedParameters.front());
-        if (n && *n >= 0 && *n <= 65535)
+        if (n && *n >= 0 && *n <= UINT32_MAX)
             return SctVariableKey{SctVariableKind::Bit, static_cast<std::uint32_t>(*n)};
     }
     if (i.opcode >= 5 && i.opcode <= 7) {
@@ -147,7 +150,7 @@ std::vector<Diagnostic> SctInterpretation::validate(const SctAuthoringProject &p
         if (count != 1 || (t.value && !t.variable) || (!t.script.valid() && !t.variable) ||
             (t.script.valid() && !p.find(t.script)))
             ds.push_back(error("Invalid interpretation target or scope."));
-        if (t.variable && (static_cast<unsigned>(t.variable->kind) > 3 || t.variable->index > 65535 ||
+        if (t.variable && (static_cast<unsigned>(t.variable->kind) > 3 ||
                            (t.value && t.variable->kind == SctVariableKind::Bit && (*t.value < 0 || *t.value > 1)) ||
                            (t.value && t.variable->kind == SctVariableKind::Byte && (*t.value < 0 || *t.value > 255))))
             ds.push_back(error("Invalid variable/value definition."));
@@ -162,6 +165,15 @@ std::vector<Diagnostic> SctInterpretation::validate(const SctAuthoringProject &p
         if (t.entity && !std::visit([](auto id) { return id.valid(); }, *t.entity))
             ds.push_back(error("Invalid authored interpretation identity."));
     };
+    for (const auto &story : p.storylines) {
+        if (story.name.empty())
+            ds.push_back(error("Storyline needs a name."));
+        for (const auto &step : story.steps) {
+            target(step);
+            if (!step.section && (!step.entity || !std::holds_alternative<SctModuleId>(*step.entity)))
+                ds.push_back(error("Storyline steps must identify modules or sections."));
+        }
+    }
     std::set<SctMeaningTarget> named;
     for (const auto &m : p.meanings) {
         target(m.target);
@@ -286,7 +298,7 @@ std::string SctInterpretation::condition(const SctAuthoringState &state, SctScri
     // expression rewriting or algebraic simplification enters authored content.
     const std::regex comparison(R"(\b(BitVar|ByteVar|IntVar)\[(\d+)\] (==|!=) (-?\d+)(?:\.0+f)?(?![\w.]))");
     std::string result;
-    std::vector<std::pair<std::size_t,std::size_t>> protectedNames;
+    std::vector<std::pair<std::size_t, std::size_t>> protectedNames;
     std::size_t position = 0;
     for (std::sregex_iterator i(text.begin(), text.end(), comparison), end; i != end; ++i) {
         const auto &m = *i;
@@ -317,7 +329,7 @@ std::string SctInterpretation::condition(const SctAuthoringState &state, SctScri
         }
         if (!name.empty()) {
             part = negate ? "NOT {" + name + "}" : "{" + name + "}";
-            protectedNames.emplace_back(result.size(),result.size()+part.size());
+            protectedNames.emplace_back(result.size(), result.size() + part.size());
         }
         result += part;
         position = m.position() + m.length();
@@ -331,8 +343,13 @@ std::string SctInterpretation::condition(const SctAuthoringState &state, SctScri
     for (std::sregex_iterator i(text.begin(), text.end(), variable), end; i != end; ++i) {
         const auto &m = *i;
         result += text.substr(position, m.position() - position);
-        if(std::ranges::any_of(protectedNames,[&](const auto& span){return static_cast<std::size_t>(m.position())>=span.first && static_cast<std::size_t>(m.position())<span.second;})) {
-            result+=m.str();position=m.position()+m.length();continue;
+        if (std::ranges::any_of(protectedNames, [&](const auto &span) {
+                return static_cast<std::size_t>(m.position()) >= span.first &&
+                       static_cast<std::size_t>(m.position()) < span.second;
+            })) {
+            result += m.str();
+            position = m.position() + m.length();
+            continue;
         }
         SctMeaningTarget t;
         t.script = script;
@@ -363,6 +380,60 @@ std::string SctInterpretation::condition(const SctAuthoringState &state, SctScri
     result += text.substr(position);
     return result;
 }
+Result<std::vector<sct::SctInstructionId>> SctInterpretation::generatedInstructions(
+    const SctAuthoringState &state, const SctMeaningTarget &target, const SctPreparedAuthoringOutput &output,
+    const SctRealizationKey &expected) {
+    using Instructions = std::vector<sct::SctInstructionId>;
+    if (!output.document || !output.realization.isFresh(expected) || expected.project != state.project.id ||
+        expected.revision != state.project.revision || target.script != expected.script)
+        return Result<Instructions>::failure(
+            error("Generated inspection belongs to a different project, revision, script or realization."));
+    const auto *script = state.project.find(target.script);
+    if (!script ||
+        ((target.section || target.site) && state.project.find(script->baseline)->importedDocument != target.document))
+        return Result<Instructions>::failure(error("Generated inspection has a foreign source qualification."));
+    std::set<sct::SctInstructionId> instructions;
+    const auto index = sct::SctDocumentIndex::build(*output.document);
+    const auto section = [&](sct::SctSectionId id) {
+        if (const auto *sec = index.find(*output.document, id))
+            if (const auto *body = std::get_if<sct::SctScriptSectionContent>(&sec->content))
+                for (const auto &i : body->instructions)
+                    instructions.insert(i.id);
+    };
+    if (target.site)
+        instructions.insert(target.site->instruction);
+    if (target.section)
+        section(*target.section);
+    if (target.entity)
+        for (const auto &record : output.realization.records)
+            if (record.entity == *target.entity)
+                for (const auto &location : record.locations)
+                    std::visit(
+                        [&](const auto &loc) {
+                            using T = std::decay_t<decltype(loc)>;
+                            if constexpr (std::is_same_v<T, sct::SctDocumentEntityId>)
+                                std::visit(
+                                    [&](auto id) {
+                                        using Id = decltype(id);
+                                        if constexpr (std::is_same_v<Id, sct::SctInstructionId>)
+                                            instructions.insert(id);
+                                        if constexpr (std::is_same_v<Id, sct::SctSectionId>)
+                                            section(id);
+                                    },
+                                    loc);
+                            else if constexpr (std::is_same_v<T, sct::SctParameterSite>)
+                                instructions.insert(loc.instruction);
+                        },
+                        location);
+    Instructions ordered;
+    for (const auto &sec : output.document->sections)
+        if (const auto *body = std::get_if<sct::SctScriptSectionContent>(&sec.content))
+            for (const auto &i : body->instructions)
+                if (instructions.contains(i.id))
+                    ordered.push_back(i.id);
+    return Result<Instructions>::success(std::move(ordered));
+}
+
 SctInterpretationAnalysis SctInterpretation::analyze(const SctAuthoringState &state) {
     SctInterpretationAnalysis a{state.project.id, state.project.revision};
     std::vector<std::pair<SctMeaningTarget, SctStateAccess>> entries;
@@ -404,9 +475,11 @@ SctInterpretationAnalysis SctInterpretation::analyze(const SctAuthoringState &st
                                               signature(i), false};
                         a.accesses.push_back(access);
                         std::size_t entryOrdinal = 0;
-                    if (!b->instructions.empty() && b->instructions[0].opcode == 9) ++entryOrdinal;
-                    if (entryOrdinal < b->instructions.size() && b->instructions[entryOrdinal].opcode == 0) ++entryOrdinal;
-                    const bool entry = ordinal == entryOrdinal;
+                        if (!b->instructions.empty() && b->instructions[0].opcode == 9)
+                            ++entryOrdinal;
+                        if (entryOrdinal < b->instructions.size() && b->instructions[entryOrdinal].opcode == 0)
+                            ++entryOrdinal;
+                        const bool entry = ordinal == entryOrdinal;
                         const bool candidate =
                             std::regex_match(sec.nameBytes, std::regex("me[0-9]{3}[a-z][a-z][0-9]+"));
                         const bool owned = std::ranges::any_of(state.project.modules, [&](const auto &m) {
@@ -414,25 +487,98 @@ SctInterpretationAnalysis SctInterpretation::analyze(const SctAuthoringState &st
                         });
                         if (entry && !i.scheduledExpression && kind == SctStateAccessKind::Set && (candidate || owned))
                             entries.push_back({sectionTarget(state.project, script.id, sec.id), access});
-                    } else if (i.opcode >= 17 && i.opcode <= 19)
-                        a.diagnostics.push_back({DiagnosticSeverity::Warning,
-                                                 DiagnosticCode::UnresolvedSctAuthoringBinding,
-                                                 "Dynamic bit write at " + script.name + " / " +
-                                                     std::to_string(i.id.value()) + "; writer identity is unknown."});
+                    } else if (i.opcode >= 17 && i.opcode <= 19) {
+                        const auto kind = i.opcode == 17   ? SctStateAccessKind::Set
+                                          : i.opcode == 18 ? SctStateAccessKind::Clear
+                                                           : SctStateAccessKind::Toggle;
+                        std::string expression = signature(i);
+                        if (!i.fixedParameters.empty())
+                            if (const auto *e =
+                                    std::get_if<sct::SctCanonicalExpression>(&i.fixedParameters.front().value))
+                                expression = SctExpressionLanguage::project(*e).text;
+                        a.unresolvedWrites.push_back(
+                            {siteTarget(state.project, script.id, {i.id, {0, {}}}), kind, expression});
+                    }
                 }
             }
+        // Analyze entire section bodies and transitively referenced helpers. Both
+        // branch arms, switches and scheduled instructions are included. The
+        // closure is an analysis scope, never a change in module ownership.
+        const auto index = sct::SctDocumentIndex::build(*d);
+        const auto flow = sct::SctControlFlowIndex::build(*d);
+        std::map<sct::SctSectionId, std::set<sct::SctSectionId>> successors;
+        for (const auto &edge : flow.currentEdges()) {
+            const auto from = index.instructionLocation(edge.sourceInstruction);
+            const auto to = edge.targetInstruction ? index.instructionLocation(*edge.targetInstruction) : std::nullopt;
+            if (from && to && from->sectionId != to->sectionId)
+                successors[from->sectionId].insert(to->sectionId);
+        }
+        // SPICE's current index models intra-section fallthrough. Section labels
+        // do not terminate execution: include adjacent authored code when the
+        // final opcode can continue, using the same contract as activation lowering.
+        for (std::size_t n = 0; n + 1 < d->sections.size(); ++n) {
+            const auto *body = std::get_if<sct::SctScriptSectionContent>(&d->sections[n].content);
+            const auto *next = std::get_if<sct::SctScriptSectionContent>(&d->sections[n + 1].content);
+            if (!body || !next)
+                continue;
+            bool falls = body->instructions.empty();
+            if (!falls)
+                if (const auto *schema = sct::findSctOpcodeSchema(body->instructions.back().opcode))
+                    falls = schema->semantic.controlRole != sct::SctOpcodeControlRole::Jump &&
+                            schema->semantic.controlRole != sct::SctOpcodeControlRole::Return;
+            if (falls)
+                successors[d->sections[n].id].insert(d->sections[n + 1].id);
+        }
+        std::vector<std::pair<SctMeaningTarget, std::vector<sct::SctSectionId>>> roots;
+        std::set<sct::SctSectionId> owned;
+        for (const auto &module : state.project.modules)
+            if (module.script == script.id) {
+                SctMeaningTarget target;
+                target.script = script.id;
+                target.entity = module.id;
+                roots.push_back({target, module.sections});
+                owned.insert(module.sections.begin(), module.sections.end());
+            }
+        const std::regex sceneName("me[0-9]{3}[a-z][a-z][0-9]+");
+        for (const auto &section : d->sections)
+            if (!owned.contains(section.id) && std::regex_match(section.nameBytes, sceneName))
+                roots.push_back({sectionTarget(state.project, script.id, section.id), {section.id}});
+        for (const auto &[root, seeds] : roots) {
+            std::set<sct::SctSectionId> included(seeds.begin(), seeds.end());
+            std::vector<sct::SctSectionId> pending = seeds;
+            for (std::size_t cursor = 0; cursor < pending.size(); ++cursor)
+                for (const auto next : successors[pending[cursor]])
+                    if (included.insert(next).second)
+                        pending.push_back(next);
+            SctStateEffectScope effect;
+            effect.root = root;
+            for (const auto &section : d->sections)
+                if (included.contains(section.id))
+                    effect.sections.push_back(sectionTarget(state.project, script.id, section.id));
+            const auto contains = [&](const SctMeaningTarget &target) {
+                if (target.script != script.id || !target.site)
+                    return false;
+                const auto loc = index.instructionLocation(target.site->instruction);
+                return loc && included.contains(loc->sectionId);
+            };
+            for (std::size_t n = 0; n < a.accesses.size(); ++n)
+                if (a.accesses[n].kind != SctStateAccessKind::Read && contains(a.accesses[n].target))
+                    effect.writes.push_back(n);
+            for (std::size_t n = 0; n < a.unresolvedWrites.size(); ++n)
+                if (contains(a.unresolvedWrites[n].target))
+                    effect.unresolvedWrites.push_back(n);
+            a.effects.push_back(std::move(effect));
+        }
     }
     std::map<SctVariableKey, std::vector<const SctStateAccess *>> writers, readers;
     for (const auto &x : a.accesses)
         (x.kind == SctStateAccessKind::Read ? readers : writers)[x.variable].push_back(&x);
-    std::set<SctVariableKey> storyVariables;
-    for (const auto &entry : entries)
-        storyVariables.insert(entry.second.variable);
-    for (const auto &v : storyVariables)
-        for (const auto *w : writers[v])
-            for (const auto *r : readers[v])
-                if (r->condition)
-                    a.dependencies.push_back({w->target, r->target, v});
+    // Connectivity is independent of naming suggestions, flag ranges, write
+    // position, exclusivity and whether a read happens to be an If condition.
+    for (const auto &[variable, sources] : writers)
+        for (const auto *w : sources)
+            for (const auto *r : readers[variable])
+                a.dependencies.push_back({w->target, r->target, variable});
     for (const auto &[scene, write] : entries) {
         SctMeaningTarget variable;
         variable.variable = write.variable;
@@ -443,13 +589,14 @@ SctInterpretationAnalysis SctInterpretation::analyze(const SctAuthoringState &st
         e.ruleVersion = "1";
         e.revision = state.project.revision;
         e.interpretation = label(state, scene, describe(state, scene)) + " has been entered";
-        e.reasoning = "A literal SetBit occurs at the section entry, optionally after its label prefix and leading condition. Section "
+        e.reasoning = "A literal SetBit occurs at the section entry, optionally after its label prefix and leading "
+                      "condition. Section "
                       "naming or explicit module ownership identifies a scene candidate.";
         e.qualification = "Entered does not mean completed. Static state dependency, not runtime reachability. Helpers "
                           "and other writers can change this state.";
         if (writers[write.variable].size() != 1)
             e.qualification += " Multiple writers: a scene-specific alias needs user interpretation.";
-        if (!a.diagnostics.empty())
+        if (!a.diagnostics.empty() || !a.unresolvedWrites.empty())
             e.qualification += " Analysis is incomplete; dynamic writes or unavailable scripts may affect this flag.";
         e.subjects = {scene, write.target, variable};
         e.evidence = {scene, variable};

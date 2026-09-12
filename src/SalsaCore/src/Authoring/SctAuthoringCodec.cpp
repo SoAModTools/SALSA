@@ -441,6 +441,7 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
             auto variants=Json::array(); for(auto v:t.variants) variants.push_back(id(v));
             return Json{{"id",id(t.id)},{"script",id(t.script)},{"name",t.name},{"variants",variants},{"module",t.module ? Json(id(*t.module)) : Json(nullptr)}};
         });
+        root["storylines"]=sorted(project.storylines,[](const auto& story) {return Json{{"id",id(story.id)},{"name",story.name},{"steps",targetsJson(story.steps)}};});
         root["meanings"]=sorted(project.meanings,[](const auto& m) { return Json{{"id",id(m.id)},{"target",meaningTargetJson(m.target)}, {"name",m.name},{"explanation",m.explanation?Json(id(*m.explanation)):Json(nullptr)}}; });
         root["explanations"]=sorted(project.explanations,[](const auto& e) { return Json{{"id",id(e.id)},{"key",e.key},{"rule",e.rule},{"ruleVersion",e.ruleVersion},
             {"interpretation",e.interpretation},{"reasoning",e.reasoning},{"qualification",e.qualification},{"origin",static_cast<unsigned>(e.origin)},
@@ -453,7 +454,7 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
 Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
     try {
         const auto root = parse(text); envelope(root, Format, SchemaVersion);
-        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents", "workspaceAuthoring", "sequences", "predicates", "languageGroups", "texts", "logicalTexts", "meanings", "explanations"});
+        keys(root, {"format", "schemaVersion", "projectId", "revision", "nextEntityId", "baselines", "scripts", "modules", "entrypoints", "ports", "connections", "contents", "workspaceAuthoring", "sequences", "predicates", "languageGroups", "texts", "logicalTexts", "meanings", "explanations", "storylines"});
         SctAuthoringProject result;
         const auto metadataJson = root.at("workspaceAuthoring").dump();
         auto metadata = SctAuthoringCatalogCodec::deserializeWorkspace(std::as_bytes(std::span(metadataJson.data(), metadataJson.size())));
@@ -568,6 +569,7 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
             if(!t.at("module").is_null()) logical.module=id<SctModuleId>(t.at("module"));
             result.logicalTexts.push_back(std::move(logical));
         }
+        for(const auto& story:array(root.at("storylines"))) {keys(story,{"id","name","steps"}); result.storylines.push_back({id<SctStorylineId>(story.at("id")),string(story.at("name")),readTargets(story.at("steps"))});}
         for(const auto& m:array(root.at("meanings"))) {
             keys(m,{"id","target","name","explanation"}); SctMeaning v{id<SctMeaningId>(m.at("id")),readMeaningTarget(m.at("target")),string(m.at("name"))};
             if(!m.at("explanation").is_null()) v.explanation=id<SctExplanationId>(m.at("explanation")); result.meanings.push_back(std::move(v));
@@ -592,6 +594,9 @@ Result<std::string> SctAuthoringPresentationCodec::encode(const SctAuthoringPres
     try {
         Json root{{"format", Format}, {"schemaVersion", SchemaVersion}, {"projectId", view.project.value},
             {"placements", Json::array()}, {"selection", Json::array()}};
+        root["storyZoom"]=view.storyZoom; root["storyPlacements"]=Json::array();
+        auto storyPositions=view.storyPlacements;std::ranges::sort(storyPositions,{},&SctStoryPlacement::target);
+        for(const auto& p:storyPositions)root["storyPlacements"].push_back({{"target",meaningTargetJson(p.target)},{"x",p.x},{"y",p.y}});
         auto placements = view.placements;
         std::ranges::sort(placements, {}, &SctGraphPlacement::entity);
         for (const auto& p : placements) root["placements"].push_back({{"entity", entityJson(p.entity)}, {"x", p.x}, {"y", p.y}, {"collapsed", p.collapsed}});
@@ -603,8 +608,10 @@ Result<std::string> SctAuthoringPresentationCodec::encode(const SctAuthoringPres
 Result<SctAuthoringPresentation> SctAuthoringPresentationCodec::decode(std::string_view text, const SctAuthoringProject& project) {
     try {
         const auto root = parse(text); envelope(root, Format, SchemaVersion);
-        keys(root, {"format", "schemaVersion", "projectId", "placements", "selection"});
+        keys(root, {"format", "schemaVersion", "projectId", "placements", "selection", "storyPlacements", "storyZoom"});
         SctAuthoringPresentation result{{string(root.at("projectId"))}, {}, {}};
+        require(root.at("storyZoom").is_number(),"Invalid story zoom.");result.storyZoom=root.at("storyZoom").get<double>();
+        for(const auto& p:array(root.at("storyPlacements"))) {keys(p,{"target","x","y"});require(p.at("x").is_number()&&p.at("y").is_number(),"Invalid story position.");result.storyPlacements.push_back({readMeaningTarget(p.at("target")),p.at("x").get<double>(),p.at("y").get<double>()});}
         for (const auto& p : array(root.at("placements"))) {
             keys(p, {"entity", "x", "y", "collapsed"});
             require(p.at("x").is_number() && p.at("y").is_number(), "Coordinates must be numbers.");

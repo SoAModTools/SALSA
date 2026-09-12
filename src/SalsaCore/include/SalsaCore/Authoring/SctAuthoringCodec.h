@@ -6,14 +6,14 @@ namespace salsa::core {
 class SctAuthoringCodec final {
 public:
     static constexpr std::string_view Format = "jahorta.salsa.authoring-project";
-    static constexpr std::uint32_t SchemaVersion = 9;
+    static constexpr std::uint32_t SchemaVersion = 10;
     [[nodiscard]] static Result<std::string> encode(const SctAuthoringProject& project);
     [[nodiscard]] static Result<SctAuthoringProject> decode(std::string_view json);
 };
 class SctAuthoringPresentationCodec final {
 public:
     static constexpr std::string_view Format = "jahorta.salsa.authoring-presentation";
-    static constexpr std::uint32_t SchemaVersion = 1;
+    static constexpr std::uint32_t SchemaVersion = 2;
     [[nodiscard]] static Result<std::string> encode(
         const SctAuthoringPresentation& presentation, const SctAuthoringProject& project);
     [[nodiscard]] static Result<SctAuthoringPresentation> decode(

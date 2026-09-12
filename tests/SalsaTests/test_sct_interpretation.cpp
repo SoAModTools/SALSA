@@ -1,4 +1,6 @@
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
+#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
+#include "SalsaCore/Authoring/SctModuleAuthoring.h"
 #include "SalsaCore/Authoring/SctInterpretation.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
 #include "SpiceSCT/SctDocumentExporter.h"
@@ -8,9 +10,9 @@ namespace {
 using namespace salsa::core;
 namespace sct = spice::sct;
 sct::SctCanonicalExpression expr(std::string s) {
-    auto r = SctExpressionLanguage::parse(std::move(s));
+    auto r = SctExpressionLanguage::parse(s);
     if (!r.succeeded())
-        throw std::runtime_error("Bad fixture expression");
+        throw std::runtime_error("Bad fixture expression: " + s);
     return *r.expression;
 }
 SctAuthoringState fixture() {
@@ -194,29 +196,187 @@ TEST(SctInterpretationTest, MultipleWritersAreDisclosedAndNewWritersInvalidateEv
 }
 
 TEST(SctInterpretationTest, IntegralFloatBitOperandsAndComparisonsRetainTheirEncoding) {
-    auto state=fixture();auto script=state.project.scripts.front().id;
-    auto w=SctAuthoringMaterializer::workingState(state.project,state.programs,script).value();
-    auto doc=std::make_shared<sct::SctDocument>(*w.document);auto& body=std::get<sct::SctScriptSectionContent>(doc->sections[2].content);
-    body.instructions[0].fixedParameters[0].value=expr("21.0f");
+    auto state = fixture();
+    auto script = state.project.scripts.front().id;
+    auto w = SctAuthoringMaterializer::workingState(state.project, state.programs, script).value();
+    auto doc = std::make_shared<sct::SctDocument>(*w.document);
+    auto &body = std::get<sct::SctScriptSectionContent>(doc->sections[2].content);
+    body.instructions[0].fixedParameters[0].value = expr("21.0f");
     // An explicit label prefix is a physical instruction, not a scene action.
-    body.instructions.insert(body.instructions.begin(),{doc->allocateInstructionId(),9,false,{},{{0,sct::SctTerminatedWordSequenceValue{{0x1d}}}}});
-    w.document=doc;state.project.contents[0].authoredState=w;
-    auto a=SctInterpretation::analyze(state);ASSERT_EQ(a.suggestions.size(),2u);
-    SctMeaningTarget t;t.variable=SctVariableKey{SctVariableKind::Bit,21};t.value=1;
-    auto named=SctInterpretation::setName(state,t,"Scene entered");ASSERT_TRUE(named);state=named.value();
-    const auto e=expr("BitVar[21] == 1.0f && BitVar[21] != 0.5f");
-    auto text=SctInterpretation::condition(state,script,e);
-    EXPECT_NE(text.find("{Scene entered}"),std::string::npos);
-    EXPECT_NE(text.find("0.5f"),std::string::npos);
-    EXPECT_EQ(SctInterpretation::condition(state,script,e,false),SctExpressionLanguage::project(e).text);
+    body.instructions.insert(
+        body.instructions.begin(),
+        {doc->allocateInstructionId(), 9, false, {}, {{0, sct::SctTerminatedWordSequenceValue{{0x1d}}}}});
+    w.document = doc;
+    state.project.contents[0].authoredState = w;
+    auto a = SctInterpretation::analyze(state);
+    ASSERT_EQ(a.suggestions.size(), 2u);
+    SctMeaningTarget t;
+    t.variable = SctVariableKey{SctVariableKind::Bit, 21};
+    t.value = 1;
+    auto named = SctInterpretation::setName(state, t, "Scene entered");
+    ASSERT_TRUE(named);
+    state = named.value();
+    const auto e = expr("BitVar[21] == 1.0f && BitVar[21] != 0.5f");
+    auto text = SctInterpretation::condition(state, script, e);
+    EXPECT_NE(text.find("{Scene entered}"), std::string::npos);
+    EXPECT_NE(text.find("0.5f"), std::string::npos);
+    EXPECT_EQ(SctInterpretation::condition(state, script, e, false), SctExpressionLanguage::project(e).text);
 }
 
 TEST(SctInterpretationTest, FriendlyRenderingDoesNotInterpretAliasTextOrLow16Access) {
-    auto state=fixture();SctMeaningTarget value;value.variable=SctVariableKey{SctVariableKind::Bit,21};value.value=1;
-    state=SctInterpretation::setName(state,value,"Check ByteVar[42]").value();
-    SctMeaningTarget variable;variable.variable=SctVariableKey{SctVariableKind::Byte,42};state=SctInterpretation::setName(state,variable,"Harbor").value();
-    variable.variable=SctVariableKey{SctVariableKind::Integer,15};state=SctInterpretation::setName(state,variable,"Arrival").value();
-    auto text=SctInterpretation::condition(state,state.project.scripts.front().id,expr("BitVar[21] == 1 && Low16IntVar[15] == 20"));
-    EXPECT_NE(text.find("{Check ByteVar[42]}"),std::string::npos);EXPECT_NE(text.find("Low16IntVar[15]"),std::string::npos);
+    auto state = fixture();
+    SctMeaningTarget value;
+    value.variable = SctVariableKey{SctVariableKind::Bit, 21};
+    value.value = 1;
+    state = SctInterpretation::setName(state, value, "Check ByteVar[42]").value();
+    SctMeaningTarget variable;
+    variable.variable = SctVariableKey{SctVariableKind::Byte, 42};
+    state = SctInterpretation::setName(state, variable, "Harbor").value();
+    variable.variable = SctVariableKey{SctVariableKind::Integer, 15};
+    state = SctInterpretation::setName(state, variable, "Arrival").value();
+    auto text = SctInterpretation::condition(state, state.project.scripts.front().id,
+                                             expr("BitVar[21] == 1 && Low16IntVar[15] == 20"));
+    EXPECT_NE(text.find("{Check ByteVar[42]}"), std::string::npos);
+    EXPECT_NE(text.find("Low16IntVar[15]"), std::string::npos);
+}
+TEST(SctInterpretationTest, WholeCutsceneEffectsIncludeHelpersBranchesSchedulesAndRestoredFlags) {
+    auto state = fixture();
+    auto script = state.project.scripts.front().id;
+    auto working = SctAuthoringMaterializer::workingState(state.project, state.programs, script).value();
+    auto doc = std::make_shared<sct::SctDocument>(*working.document);
+    auto helper = doc->allocateInstructionId();
+    auto back = doc->allocateInstructionId();
+    auto set = doc->allocateInstructionId(), clear = doc->allocateInstructionId();
+    auto late = doc->allocateInstructionId(), toggle = doc->allocateInstructionId(),
+         dynamic = doc->allocateInstructionId();
+    auto &scene = std::get<sct::SctScriptSectionContent>(doc->sections[2].content);
+    // No SetBit at the entry. The former entry-only connectivity misses this scene.
+    scene.instructions = {{doc->allocateInstructionId(), 11, false, {}, {{0, sct::SctInstructionReference{helper}}}},
+                          {doc->allocateInstructionId(),
+                           0,
+                           false,
+                           {},
+                           {{0, expr("ByteVar[6] == 0")}, {1, sct::SctInstructionReference{late}}}},
+                          {set, 17, false, {}, {{0, expr("1960")}}},
+                          {doc->allocateInstructionId(), 11, false, {}, {{0, sct::SctInstructionReference{helper}}}},
+                          {late, 17, false, expr("1"), {{0, expr("24001")}}},
+                          {clear, 18, false, {}, {{0, expr("1960")}}},
+                          {dynamic, 17, false, {}, {{0, expr("ByteVar[42]")}}},
+                          {back, 12}};
+    doc->sections.push_back({doc->allocateSectionId(), "shared_helper",
+                             sct::SctScriptSectionContent{
+                                 {{helper, 17, false, {}, {{0, expr("70000.0f")}}},
+                                  {toggle, 19, false, {}, {{0, expr("70001.0f")}}},
+                                  {doc->allocateInstructionId(),
+                                   11,
+                                   false,
+                                   {},
+                                   {{0, sct::SctInstructionReference{helper}}}}, // recursive call terminates analysis
+                                  {doc->allocateInstructionId(), 12}}}});
+    auto &interaction = std::get<sct::SctScriptSectionContent>(doc->sections[3].content);
+    interaction.instructions.insert(
+        interaction.instructions.begin(),
+        {doc->allocateInstructionId(), 5, false, {}, {{0, sct::SctEncodedWordValue{42}}, {1, expr("BitVar[24001]")}}});
+    // The scene's named setup section falls into another section before any calls.
+    auto continuation = std::move(doc->sections[2].content);
+    doc->sections[2].content = sct::SctScriptSectionContent{{{doc->allocateInstructionId(), 45}}};
+    doc->sections.insert(doc->sections.begin() + 3,
+                         {doc->allocateSectionId(), "scene_continuation", std::move(continuation)});
+    working.document = doc;
+    state.project.contents.front().authoredState = working;
+    const auto analysis = SctInterpretation::analyze(state);
+    ASSERT_EQ(analysis.effects.size(), 2u);
+    const auto &effect = analysis.effects.front();
+    ASSERT_EQ(effect.sections.size(), 3u);
+    EXPECT_EQ(effect.writes.size(), 5u);
+    ASSERT_EQ(effect.unresolvedWrites.size(), 1u);
+    EXPECT_EQ(analysis.unresolvedWrites[effect.unresolvedWrites.front()].expression, "ByteVar[42]");
+    std::vector<SctStateAccessKind> inputWrites;
+    for (auto n : effect.writes)
+        if (analysis.accesses[n].variable.index == 1960)
+            inputWrites.push_back(analysis.accesses[n].kind);
+    EXPECT_EQ(inputWrites, (std::vector<SctStateAccessKind>{SctStateAccessKind::Set, SctStateAccessKind::Clear}));
+    EXPECT_TRUE(std::ranges::any_of(analysis.dependencies, [&](const auto &link) {
+        return link.variable.index == 24001 && link.writer.site->instruction == late;
+    }));
+    EXPECT_TRUE(
+        std::ranges::any_of(effect.writes, [&](auto n) { return analysis.accesses[n].variable.index == 70000; }));
+    // There is no script reader for this helper write; it still belongs in the effect inventory.
+    EXPECT_FALSE(
+        std::ranges::any_of(analysis.dependencies, [](const auto &link) { return link.variable.index == 70000; }));
+    EXPECT_EQ(analysis.suggestions.size(), 1u); // optional entry-name rule is independent
+}
+TEST(SctInterpretationTest, StoryOrderAndPresentationPersistWithoutChangingProgram) {
+    auto state = fixture();
+    const auto before = output(state);
+    auto effects = SctInterpretation::analyze(state).effects;
+    auto id = state.project.allocate<SctStorylineId>().value();
+    state.project.storylines.push_back({id, "Main storyline", {effects[1].root, effects[0].root, effects[1].root}});
+    ASSERT_FALSE(hasErrors(state.project.validate()));
+    const auto encoded = SctAuthoringCodec::encode(state.project).value();
+    auto decoded = SctAuthoringCodec::decode(encoded);
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value().storylines.front().steps, state.project.storylines.front().steps);
+    EXPECT_EQ(output(state), before);
+    SctAuthoringPresentation view{state.project.id};
+    view.storyPlacements.push_back({effects[0].root, 13, 47});
+    view.storyZoom = 1.25;
+    const auto presentation = SctAuthoringPresentationCodec::encode(view, state.project);
+    ASSERT_TRUE(presentation);
+    EXPECT_TRUE(SctAuthoringPresentationCodec::decode(presentation.value(), state.project));
+    EXPECT_EQ(SctAuthoringCodec::encode(state.project).value(), encoded);
+    view.storyPlacements.push_back(view.storyPlacements.front());
+    EXPECT_FALSE(SctAuthoringPresentationCodec::encode(view, state.project));
+    state.project.storylines.front().id.value = state.project.scripts.front().id.value;
+    EXPECT_TRUE(hasErrors(state.project.validate()));
+}
+TEST(SctInterpretationTest, GeneratedInspectionIncludesWrappersAndRejectsForeignRevisionKeys) {
+    auto state = fixture();
+    const auto script = state.project.scripts.front().id;
+    const auto working = SctAuthoringMaterializer::workingState(state.project, state.programs, script).value();
+    auto declared = SctEntrypointAuthoring::declareNamed(state, script, working.document->sections.back().id);
+    ASSERT_TRUE(declared);
+    state = declared.value();
+    auto entry = state.project.entrypoints.back().id;
+    auto disabled = SctEntrypointAuthoring::setEnabled(state, entry, false);
+    ASSERT_TRUE(disabled);
+    state = disabled.value();
+    auto output = SctAuthoringMaterializer::materialize(
+        {std::make_shared<const SctAuthoringProject>(state.project), state.programs, {script}});
+    ASSERT_TRUE(output.succeeded());
+    const auto &prepared = *output.scripts.front().prepared;
+    const auto key = prepared.realization.key;
+    SctMeaningTarget t;
+    t.script = script;
+    t.entity = entry;
+    auto generated = SctInterpretation::generatedInstructions(state, t, prepared, key);
+    ASSERT_TRUE(generated);
+    EXPECT_GT(generated.value().size(), 2u);
+    auto wrong = key;
+    wrong.revision.value++;
+    EXPECT_FALSE(SctInterpretation::generatedInstructions(state, t, prepared, wrong));
+    wrong = key;
+    wrong.project = SctAuthoringProject::create().value().id;
+    EXPECT_FALSE(SctInterpretation::generatedInstructions(state, t, prepared, wrong));
+    wrong = key;
+    wrong.script = state.project.scripts.back().id;
+    EXPECT_FALSE(SctInterpretation::generatedInstructions(state, t, prepared, wrong));
+    wrong = key;
+    wrong.realization.value = SctAuthoringProject::create().value().id.value;
+    EXPECT_FALSE(SctInterpretation::generatedInstructions(state, t, prepared, wrong));
+    auto changed = state;
+    changed.project.revision.value++;
+    EXPECT_FALSE(SctInterpretation::generatedInstructions(changed, t, prepared, key));
+}
+TEST(SctInterpretationTest, ExplicitModuleSectionsDefineScopeWithoutNamingOrEntryPattern) {
+    auto state=fixture();const auto script=state.project.scripts.front().id;
+    const auto working=SctAuthoringMaterializer::workingState(state.project,state.programs,script).value();
+    const auto scene=working.document->sections[2].id,interaction=working.document->sections[3].id;
+    auto extracted=SctModuleAuthoring::extract(state,script,{scene,interaction},"User-selected event");ASSERT_TRUE(extracted);state=extracted.value();
+    auto analysis=SctInterpretation::analyze(state);ASSERT_EQ(analysis.effects.size(),2u);
+    const auto effect=std::ranges::find_if(analysis.effects,[](const auto& e){return e.root.entity.has_value();});ASSERT_NE(effect,analysis.effects.end());
+    EXPECT_EQ(effect->root.entity,SctAuthoringEntityId{state.project.modules.back().id});
+    EXPECT_EQ(effect->sections.size(),2u);EXPECT_EQ(effect->writes.size(),1u);
+    EXPECT_EQ(analysis.accesses[effect->writes.front()].variable,(SctVariableKey{SctVariableKind::Bit,21}));
 }
 } // namespace

@@ -314,3 +314,22 @@ TEST(AuthoringControllerTest, InterpretationMetadataPersistsThroughControllerHis
     ASSERT_EQ(reopened.authoringState()->project.meanings.size(),1u);EXPECT_EQ(reopened.authoringState()->project.meanings.front().id,id);
     EXPECT_EQ(core::SctInterpretation::label(*reopened.authoringState(),target,"raw"),"Chest preparation");
 }
+
+TEST(AuthoringControllerTest, StoryLayoutIsIndependentAndConcurrentSaveRetainsNewerLayoutDirtyState) {
+    Fixture f;qt::SctDocumentController controller;controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project,f.a));ASSERT_TRUE(waitFor([&]{return !controller.busy();}));
+    ASSERT_TRUE(controller.saveDocument(f.a));ASSERT_TRUE(waitFor([&]{return !controller.isSaving(f.a);}));
+    const auto state=controller.authoringState();const auto encoded=core::SctAuthoringCodec::encode(state->project).value();
+    auto presentation=controller.authoringPresentation();
+    auto target=core::SctInterpretation::siteTarget(state->project,state->project.scripts.front().id,site(controller,f.a));
+    presentation.storyPlacements.push_back({target,12,34});
+    ASSERT_TRUE(controller.setAuthoringPresentation(presentation));EXPECT_TRUE(controller.projectDirty());EXPECT_TRUE(controller.isDirty(f.a));
+    EXPECT_EQ(core::SctAuthoringCodec::encode(controller.authoringState()->project).value(),encoded);
+    ASSERT_TRUE(controller.saveDocument(f.a));presentation.storyPlacements.front().x=99;
+    ASSERT_TRUE(controller.setAuthoringPresentation(presentation));ASSERT_TRUE(waitFor([&]{return !controller.isSaving(f.a);}));
+    EXPECT_TRUE(controller.projectDirty());
+    qt::SctDocumentController snapshot;snapshot.setWorkspace(f.workspace);EXPECT_EQ(snapshot.authoringPresentation().storyPlacements.front().x,12);
+    ASSERT_TRUE(controller.saveDocument(f.a));ASSERT_TRUE(waitFor([&]{return !controller.isSaving(f.a);}));EXPECT_FALSE(controller.projectDirty());
+    qt::SctDocumentController reopened;reopened.setWorkspace(f.workspace);EXPECT_EQ(reopened.authoringPresentation().storyPlacements.front().x,99);
+    EXPECT_EQ(core::SctAuthoringCodec::encode(reopened.authoringState()->project).value(),encoded);
+}

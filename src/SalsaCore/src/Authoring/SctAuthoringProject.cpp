@@ -125,7 +125,7 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     registerIds(connections, "Connection"); registerIds(contents, "Content");
     registerIds(sequences, "Sequence"); registerIds(predicates, "Predicate");
     registerIds(languageGroups,"Language group"); registerIds(texts,"Text resource"); registerIds(logicalTexts,"Logical text");
-    registerIds(meanings,"Meaning"); registerIds(explanations,"Explanation");
+    registerIds(storylines,"Storyline"); registerIds(meanings,"Meaning"); registerIds(explanations,"Explanation");
     for (const auto& sequence : sequences) registerIds(sequence.actions, "Action");
     if (nextEntityId == 0 || (!ids.empty() && nextEntityId <= *ids.rbegin()))
         out.push_back(error("Allocator must be nonzero and above every allocated ID."));
@@ -396,6 +396,18 @@ std::vector<Diagnostic> SctAuthoringPresentation::validate(const SctAuthoringPro
         if (!exists(semantic, item.entity) || !placed.insert(item.entity).second)
             report("Presentation placement references a missing or duplicate entity.");
         if (!std::isfinite(item.x) || !std::isfinite(item.y)) report("Presentation coordinates must be finite.");
+    }
+    if (!std::isfinite(storyZoom) || storyZoom <= 0) report("Story zoom must be finite and positive.");
+    std::set<SctMeaningTarget> storyTargets;
+    auto probe = semantic;
+    probe.meanings.clear(); probe.explanations.clear(); probe.storylines.clear();
+    for (const auto& item : storyPlacements) {
+        // Historical placements may outlive their source item, like aliases.
+        probe.meanings.clear();
+        probe.meanings.push_back({{}, item.target, "placement"});
+        if (hasErrors(SctInterpretation::validate(probe)) || !storyTargets.insert(item.target).second)
+            report("Story placement has an invalid or duplicate target.");
+        if (!std::isfinite(item.x) || !std::isfinite(item.y)) report("Story coordinates must be finite.");
     }
     std::set<SctAuthoringEntityId> selected;
     for (const auto& item : selection)

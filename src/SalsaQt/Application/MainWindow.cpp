@@ -640,6 +640,11 @@ void MainWindow::buildUi() {
     connect(languageAction, &QAction::triggered, this, [this] {
         if (auto* document = activeDocumentWidget()) showSctLanguageEditor(*documentController_,document->locator(),this);
     });
+    auto* storyAction = documentMenu->addAction(tr("Story State and Cutscene Effects..."));
+    connect(storyAction, &QAction::triggered, this, [this] {
+        if (auto* document = activeDocumentWidget()) showSctStoryStateEditor(*documentController_, document->locator(),
+            [this](auto locator, auto target) { (void)navigateTo({locator, target}); }, this);
+    });
     auto* interpretationAction = documentMenu->addAction(tr("Interactions and Interpretations..."));
     connect(interpretationAction, &QAction::triggered, this, [this] {
         if (auto* document = activeDocumentWidget()) showSctInterpretationEditor(*documentController_, document->locator(),

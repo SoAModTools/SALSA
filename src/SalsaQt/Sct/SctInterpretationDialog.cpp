@@ -19,6 +19,7 @@
 #include <QTreeView>
 #include <QVBoxLayout>
 #include <regex>
+#include <limits>
 namespace salsa::qt {
 namespace {
 using namespace core;
@@ -334,7 +335,7 @@ class InterpretationDialog final : public QDialog {
                                           false, &ok);
         if (!ok)
             return;
-        int index = QInputDialog::getInt(this, tr("Variable"), tr("Index"), 0, 0, 65535, 1, &ok);
+        int index = QInputDialog::getInt(this, tr("Variable"), tr("Index"), 0, 0, std::numeric_limits<int>::max(), 1, &ok);
         if (!ok)
             return;
         auto value =

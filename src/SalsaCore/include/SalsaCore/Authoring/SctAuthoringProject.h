@@ -32,6 +32,7 @@ using SctLanguageGroupId = SctAuthoringId<struct AuthoringLanguageGroupTag>;
 using SctTextResourceId = SctAuthoringId<struct AuthoringTextResourceTag>;
 using SctLogicalTextId = SctAuthoringId<struct AuthoringLogicalTextTag>;
 using SctBaselineId = SctAuthoringId<struct AuthoringBaselineTag>;
+using SctStorylineId = SctAuthoringId<struct AuthoringStorylineTag>;
 using SctMeaningId = SctAuthoringId<struct AuthoringMeaningTag>;
 using SctExplanationId = SctAuthoringId<struct AuthoringExplanationTag>;
 
@@ -287,6 +288,16 @@ struct SctMeaning final {
     std::optional<SctExplanationId> explanation;
 };
 
+struct SctStoryline final {
+    SctStorylineId id;
+    std::string name;
+    std::vector<SctMeaningTarget> steps; // authored narrative order, not execution
+};
+struct SctStoryPlacement final {
+    SctMeaningTarget target;
+    double x = 0, y = 0;
+};
+
 // Construction/serialization value. SctAuthoringSession owns accepted live
 // revisions; views submit commands rather than maintaining another authority.
 struct SctAuthoringProject final {
@@ -306,6 +317,7 @@ struct SctAuthoringProject final {
     std::vector<SctLanguageGroup> languageGroups;
     std::vector<SctAuthoredText> texts;
     std::vector<SctLogicalText> logicalTexts;
+    std::vector<SctStoryline> storylines;
     std::vector<SctMeaning> meanings;
     std::vector<SctExplanationRecord> explanations;
 
@@ -367,6 +379,8 @@ struct SctAuthoringPresentation final {
     SctAuthoringProjectId project;
     std::vector<SctGraphPlacement> placements;
     std::vector<SctAuthoringEntityId> selection;
+    std::vector<SctStoryPlacement> storyPlacements;
+    double storyZoom = 1;
     [[nodiscard]] std::vector<Diagnostic> validate(const SctAuthoringProject& semantic) const;
 };
 

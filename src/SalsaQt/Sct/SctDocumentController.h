@@ -290,6 +290,7 @@ private:
     void restoreAuthoringProjection(const std::string& key);
     std::unique_ptr<core::SctAuthoringSession> authoring_;
     core::SctAuthoringPresentation authoringPresentation_;
+    std::uint64_t presentationGeneration_ = 0, savedPresentationGeneration_ = 0, savingPresentationGeneration_ = 0;
     std::optional<core::Sha256Digest> authoringCheckpoint_;
     bool authoringLoadFailed_ = false;
     QFutureWatcher<core::Result<core::Sha256Digest>> authoringSaveWatcher_;
@@ -302,7 +303,9 @@ public:
     [[nodiscard]] bool setWorkspaceAuthoring(const core::SctWorkspaceAuthoringState& metadata);
     [[nodiscard]] bool adoptWorkspaceCheckpoint();
     [[nodiscard]] bool discardProjectChanges();
-    [[nodiscard]] bool projectDirty() const { return authoring_ && authoring_->isDirty(); }
+    [[nodiscard]] const core::SctAuthoringPresentation& authoringPresentation() const { return authoringPresentation_; }
+    [[nodiscard]] core::Result<void> setAuthoringPresentation(core::SctAuthoringPresentation presentation);
+    [[nodiscard]] bool projectDirty() const { return authoring_ && (authoring_->isDirty() || presentationGeneration_ != savedPresentationGeneration_); }
 private:
     enum class Operation { None, Opening, Reloading, Reimporting };
     struct DocumentState {

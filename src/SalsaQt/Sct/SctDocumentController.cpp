@@ -63,6 +63,7 @@ SctDocumentController::SctDocumentController(QObject* parent) : QObject(parent) 
             && authoring_->state().project.id == savingAuthoring_->project.id) {
             authoringCheckpoint_ = saved.value();
             authoring_->markSaved(*savingAuthoring_);
+            savedPresentationGeneration_ = savingPresentationGeneration_;
         }
         failureDiagnostics_ = saved.diagnostics();
         savingAuthoring_.reset(); savingAuthoringLocator_.reset();
@@ -407,7 +408,7 @@ bool SctDocumentController::structurallyValid(const core::AssetLocator& locator)
 
 bool SctDocumentController::isDirty(const core::AssetLocator& locator) const {
     const auto* state = findState(locator);
-    return state != nullptr && authoring_ && authoring_->isDirty();
+    return state != nullptr && projectDirty();
 }
 
 core::RevisionId SctDocumentController::workingRevision(
@@ -464,7 +465,7 @@ std::optional<std::string> SctDocumentController::redoDescription(
 
 std::vector<core::AssetLocator> SctDocumentController::dirtyLocators() const {
     std::vector<core::AssetLocator> result;
-    if (authoring_ && authoring_->isDirty())
+    if (projectDirty())
         for (const auto& script : authoring_->state().project.scripts)
             result.push_back(authoring_->state().project.find(script.baseline)->source.locator);
     std::ranges::sort(result);
@@ -944,9 +945,24 @@ bool SctDocumentController::redo(const core::AssetLocator& locator) {
     return true;
 }
 
+core::Result<void> SctDocumentController::setAuthoringPresentation(core::SctAuthoringPresentation presentation) {
+    if (!authoring_) return core::Result<void>::failure({core::DiagnosticSeverity::Error,
+        core::DiagnosticCode::InvalidSctAuthoringPresentation,"No authoring project is open."});
+    auto diagnostics = presentation.validate(authoring_->state().project);
+    if (core::hasErrors(diagnostics)) return core::Result<void>::failure(std::move(diagnostics));
+    const auto previous = core::SctAuthoringPresentationCodec::encode(authoringPresentation_,authoring_->state().project);
+    const auto encoded = core::SctAuthoringPresentationCodec::encode(presentation,authoring_->state().project);
+    if (previous && encoded && previous.value() == encoded.value()) return core::Result<void>::success();
+    authoringPresentation_ = std::move(presentation); ++presentationGeneration_;
+    for (const auto& [key,state] : documents_) emit documentChanged(QString::fromStdString(key),
+        SctDocumentUpdate{SctDocumentUpdateKind::SourceStatus,state.session->currentSnapshot(),{},state.session->semanticProjection()});
+    return core::Result<void>::success();
+}
+
 bool SctDocumentController::saveDocument(const core::AssetLocator& locator) {
     if (!authoring_ || !workspace_ || authoringLoadFailed_ || savingAuthoring_) return false;
     savingAuthoring_ = authoring_->capture();
+    savingPresentationGeneration_ = presentationGeneration_;
     savingAuthoringLocator_ = locator;
     auto workspace = workspace_;
     auto captured = savingAuthoring_;
@@ -1030,6 +1046,7 @@ void SctDocumentController::setWorkspace(
         if (saved && authoring_) authoring_->markSaved(*savingAuthoring_);
         savingAuthoring_.reset(); savingAuthoringLocator_.reset();
     }
+    presentationGeneration_ = savedPresentationGeneration_ = 0;
     workspace_ = std::move(workspace);
     authoring_.reset(); authoringCheckpoint_.reset(); authoringLoadFailed_ = false;
     if (workspace_) {
@@ -1039,6 +1056,7 @@ void SctDocumentController::setWorkspace(
         }
         if (loaded.value()) {
             authoringPresentation_ = loaded.value()->presentation;
+            presentationGeneration_ = savedPresentationGeneration_ = 0;
             authoringCheckpoint_ = loaded.value()->digest;
             auto session = core::SctAuthoringSession::open(std::move(loaded.value()->state));
             if (!session) { failureDiagnostics_ = session.diagnostics(); authoringLoadFailed_ = true; return; }
@@ -1134,7 +1152,7 @@ core::SctWorkspaceAuthoringState SctDocumentController::workspaceAuthoring() con
     return authoring_ ? authoring_->state().project.workspaceAuthoring : core::SctWorkspaceAuthoringState{};
 }
 bool SctDocumentController::adoptWorkspaceCheckpoint() {
-    if (!workspace_ || !authoring_ || authoring_->isDirty() || savingAuthoring_) return false;
+    if (!workspace_ || !authoring_ || projectDirty() || savingAuthoring_) return false;
     auto loaded = core::SctAuthoringStore::load(*workspace_);
     if (!loaded || !loaded.value()) return false;
     auto next = loaded.value()->state;
@@ -1174,6 +1192,7 @@ bool SctDocumentController::discardProjectChanges() {
         if (!session) { failureDiagnostics_ = session.diagnostics(); return false; }
         authoring_ = std::move(session).takeValue(); authoringCheckpoint_ = loaded.value()->digest;
         authoringPresentation_ = loaded.value()->presentation;
+        presentationGeneration_ = savedPresentationGeneration_ = 0;
     } else {
         auto project = core::SctAuthoringProject::create();
         if (!project) return false;
@@ -1181,6 +1200,7 @@ bool SctDocumentController::discardProjectChanges() {
         if (!session) return false;
         authoring_ = std::move(session).takeValue(); authoringCheckpoint_.reset();
         authoringPresentation_ = {authoring_->state().project.id};
+        presentationGeneration_ = savedPresentationGeneration_ = 0;
     }
     restoreAuthoringProjections();
     return true;
