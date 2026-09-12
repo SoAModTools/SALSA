@@ -3,6 +3,9 @@
 #include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
 #include "SalsaCore/Foundation/Hashing.h"
 #include "SpiceSCT/SctScptEncoding.h"
+#include "SpiceSCT/SctDocumentBuilder.h"
+#include "SpiceSCT/SctDocumentIndex.h"
+#include "SpiceSCT/SctInstructionFactory.h"
 
 #include <nlohmann/json.hpp>
 
@@ -1139,6 +1142,211 @@ void validateAuthoringState(const spice::sct::SctDocument& document,
 }
 
 }  // namespace
+
+spice::sct::SctDocument SctProgramStateCodec::authoredDocument(const spice::sct::SctDocument& source) {
+    namespace sct = spice::sct;
+    auto document = source;
+    document.opaqueAttachments.clear();
+    std::erase_if(document.sections, [](const auto& section) { return std::holds_alternative<sct::SctOpaqueSectionContent>(section.content); });
+    const auto text = [](auto& value) { if (auto* opaque = std::get_if<sct::SctOpaqueText>(&value)) opaque->bytes = {0}; };
+    const auto expression = [](auto& value) {
+        if (auto* opaque = std::get_if<sct::SctOpaqueExpression>(&value.body)) {
+            const auto placeholder = value.termination == sct::SctExpressionTermination::InlineValue
+                ? sct::SctExpressionFactory::oneWordValue(sct::SctExpressionOneWordValue::Value00800000)
+                : sct::SctExpressionFactory::encodedDecimalLiteral(0);
+            opaque->words = sct::encodeSctCanonicalExpressionWords(placeholder);
+        }
+    };
+    const auto parameters = [&](auto& values) { for (auto& parameter : values) {
+        if (auto* opaque = std::get_if<sct::SctOpaqueParameterValue>(&parameter.value)) opaque->words = {0};
+        if (auto* expr = std::get_if<sct::SctCanonicalExpression>(&parameter.value)) expression(*expr);
+    }};
+    for (auto& section : document.sections) {
+        if (auto* value = std::get_if<sct::SctStringSectionContent>(&section.content)) text(value->string.value);
+        if (auto* code = std::get_if<sct::SctScriptSectionContent>(&section.content)) for (auto& instruction : code->instructions) {
+            if (instruction.scheduledExpression) expression(*instruction.scheduledExpression);
+            parameters(instruction.fixedParameters); for (auto& group : instruction.repeatedParameterGroups) parameters(group.parameters);
+        }
+    }
+    for (auto& value : document.supplementaryText) text(value.value);
+    return document;
+}
+
+Result<std::string> SctProgramStateCodec::encode(const SctSemanticState& state) {
+    try {
+        if (!state.document) throw std::runtime_error("Missing authored program.");
+        const auto document = authoredDocument(*state.document);
+        if (!spice::sct::SctDocumentValidator::validateDocument(document).validDocument)
+            throw std::runtime_error("Invalid authored program structure.");
+        // The public builder restores live IDs directly, but advancing past
+        // retired IDs still requires one allocation per ID. Apply the decode
+        // bound on save too, so an accepted save can always be reopened.
+        SctPatchedAllocatorState minimum;
+        for (const auto& section : document.sections) {
+            minimum.nextSectionId = std::max(minimum.nextSectionId, section.id.value() + 1);
+            if (const auto* code = std::get_if<spice::sct::SctScriptSectionContent>(&section.content))
+                for (const auto& instruction : code->instructions)
+                    minimum.nextInstructionId = std::max(minimum.nextInstructionId, instruction.id.value() + 1);
+            if (const auto* text = std::get_if<spice::sct::SctStringSectionContent>(&section.content))
+                minimum.nextStringId = std::max(minimum.nextStringId, text->string.id.value() + 1);
+        }
+        for (const auto& text : document.supplementaryText)
+            minimum.nextSupplementaryTextId = std::max(minimum.nextSupplementaryTextId, text.id.value() + 1);
+        const auto target = allocatorState(document);
+        const auto bounded = [](std::uint64_t a, std::uint64_t b) { return b >= a && b - a <= 1000000; };
+        if (!bounded(minimum.nextSectionId, target.nextSectionId) || !bounded(minimum.nextInstructionId, target.nextInstructionId)
+            || !bounded(minimum.nextStringId, target.nextStringId) || !bounded(minimum.nextSupplementaryTextId, target.nextSupplementaryTextId)
+            || !bounded(minimum.nextOpaqueAttachmentId, target.nextOpaqueAttachmentId))
+            throw std::runtime_error("Invalid or excessive retired identity range.");
+        validateAuthoringState(document, state.aliases, state.annotations, state.folders);
+        const auto index = spice::sct::SctDocumentIndex::build(document);
+        std::set<SctAuthoredArmId> arms;
+        for (const auto& arm : state.authoredArms) {
+            (void)parseArm(encodeArm(arm));
+            const auto where = index.instructionLocation(arm.controller.instruction);
+            if (!arm.id.valid() || !arms.insert(arm.id).second || !where || where->sectionId != arm.controller.section
+                || (arm.expectedJoin && !index.find(document, *arm.expectedJoin)))
+                throw std::runtime_error("Invalid authored control-arm reference.");
+            for (const auto* list : {&arm.members, &arm.managedScaffolding}) {
+                std::set<spice::sct::SctInstructionId> unique;
+                for (const auto id : *list) if (!unique.insert(id).second || !index.find(document, id))
+                    throw std::runtime_error("Invalid control-arm member reference.");
+            }
+        }
+        std::set<std::string> repairs;
+        for (const auto& repair : state.textRepairs) {
+            (void)parseRepair(encodeRepair(repair));
+            const auto* value = findText(document, repair.target);
+            if (!repairs.insert(targetKey(repair.target)).second || !value || std::holds_alternative<spice::sct::SctOpaqueText>(*value))
+                throw std::runtime_error("Invalid repaired-text reference.");
+        }
+        std::set<spice::sct::SctParameterSite> unbound;
+        for (const auto& reference : state.unboundReferences) {
+            (void)parseUnboundOrigin(encodeUnboundOrigin(reference));
+            const auto* instruction = index.find(document, reference.site.instruction);
+            if (!instruction || !unbound.insert(reference.site).second) throw std::runtime_error("Invalid unbound reference site.");
+            const auto& address = reference.site.parameter;
+            const auto* parameters = &instruction->fixedParameters;
+            if (address.repeatedGroupOrdinal) {
+                if (*address.repeatedGroupOrdinal >= instruction->repeatedParameterGroups.size()) throw std::runtime_error("Missing repeated reference group.");
+                parameters = &instruction->repeatedParameterGroups[*address.repeatedGroupOrdinal].parameters;
+            }
+            if (std::ranges::find(*parameters, address.schemaIndex, &spice::sct::SctDocumentParameter::schemaIndex) == parameters->end())
+                throw std::runtime_error("Missing reference parameter.");
+        }
+        auto metadata = state;
+        std::ranges::sort(metadata.authoredArms, {}, &SctAuthoredArm::id);
+        std::ranges::sort(metadata.textRepairs, {}, [](const auto& repair) { return targetKey(repair.target); });
+        std::ranges::sort(metadata.unboundReferences, {}, &SctUnboundReferenceOrigin::site);
+        std::ranges::sort(metadata.aliases, {}, &SctVariableAlias::variable);
+        std::ranges::sort(metadata.annotations, {}, &SctEntityAnnotation::target);
+        std::ranges::sort(metadata.folders, {}, &SctSectionFolder::id);
+
+        Json root{{"format", "jahorta.salsa.program-state"}, {"schemaVersion", 1},
+            {"allocators", encodeAllocatorState(allocatorState(document))}};
+        const auto put = [&](const char* key, const auto& values, auto encode) {
+            auto& array = root[key] = Json::array();
+            for (const auto& value : values) array.push_back(encode(value));
+        };
+        put("sections", document.sections, encodeSection);
+        put("supplementaryText", document.supplementaryText, encodeSupplementaryText);
+        put("authoredArms", metadata.authoredArms, encodeArm);
+        put("textRepairs", metadata.textRepairs, encodeRepair);
+        put("unboundReferences", metadata.unboundReferences, encodeUnboundOrigin);
+        put("aliases", metadata.aliases, encodeAlias);
+        put("annotations", metadata.annotations, encodeAnnotation);
+        put("folders", metadata.folders, encodeFolder);
+        const auto markers = [&](auto&& self, Json& value) -> void {
+            if (value.is_object() && value.value("kind", Json{}) == "opaque") {
+                if (value.contains("bytes")) value = Json{{"kind", "uninterpreted-text"}};
+                else if (value.contains("words")) value = Json{{"kind", "uninterpreted-operand"}};
+            } else if (value.is_structured()) for (auto& child : value) self(self, child);
+        };
+        markers(markers, root);
+        // All integer fields use decimal strings in the private authoring
+        // payload, including nested IDs handled by the older value codecs.
+        const auto strings = [&](auto&& self, Json& value) -> void {
+            if (value.is_number_unsigned()) value = Json{{"$unsigned", std::to_string(value.get<std::uint64_t>())}};
+            else if (value.is_number_integer()) value = Json{{"$signed", std::to_string(value.get<std::int64_t>())}};
+            else if (value.is_structured()) for (auto& child : value) self(self, child);
+        };
+        strings(strings, root);
+        return Result<std::string>::success(root.dump());
+    } catch (const std::exception& e) {
+        return Result<std::string>::failure(patchError(std::string("Cannot encode authored content: ") + e.what()));
+    }
+}
+
+Result<SctSemanticState> SctProgramStateCodec::decode(std::string_view json) {
+    try {
+        if (json.size() > 256u * 1024u * 1024u) throw std::runtime_error("Program record is too large.");
+        std::vector<std::set<std::string>> keys;
+        auto root = Json::parse(json, [&](int depth, Json::parse_event_t event, Json& value) {
+            if (depth > 128) throw std::runtime_error("Program nesting limit exceeded.");
+            if (event == Json::parse_event_t::object_start) keys.emplace_back();
+            if (event == Json::parse_event_t::key && !keys.back().insert(value.get<std::string>()).second)
+                throw std::runtime_error("Duplicate program field.");
+            if (event == Json::parse_event_t::object_end) keys.pop_back();
+            return true;
+        });
+        requireObject(root, {"format", "schemaVersion", "allocators", "sections", "supplementaryText",
+            "authoredArms", "textRepairs", "unboundReferences", "aliases", "annotations", "folders"});
+        if (root.at("format") != "jahorta.salsa.program-state" || root.at("schemaVersion") != Json{{"$signed", "1"}})
+            throw std::runtime_error("Unsupported program schema.");
+        // Tagged decimal scalars preserve full-width IDs and never reinterpret
+        // numeric-looking user text. The tag also retains signedness.
+        const auto numeric = [&](auto&& self, Json& value) -> void {
+            if (value.is_object() && value.size() == 1 && (value.contains("$unsigned") || value.contains("$signed"))) {
+                const bool sign = value.contains("$signed");
+                const auto text = value.begin().value().get<std::string>();
+                std::size_t end = 0;
+                if (sign) value = std::stoll(text, &end);
+                else { if (text.empty() || text.front() == '-') throw std::runtime_error("Invalid unsigned scalar."); value = std::stoull(text, &end); }
+                if (end != text.size()) throw std::runtime_error("Invalid decimal scalar.");
+            } else if (value.is_structured()) for (auto& child : value) self(self, child);
+        };
+        numeric(numeric, root);
+        const auto markers = [&](auto&& self, Json& value) -> void {
+            if (value.is_object() && value.size() == 1 && value.value("kind", Json{}) == "uninterpreted-text")
+                value = Json{{"kind", "opaque"}, {"bytes", Json::array({0u})}};
+            else if (value.is_object() && value.size() == 1 && value.value("kind", Json{}) == "uninterpreted-operand")
+                value = Json{{"kind", "opaque"}, {"words", Json::array({0u})}};
+            else if (value.is_structured()) for (auto& child : value) self(self, child);
+        };
+        markers(markers, root);
+        spice::sct::SctDocument document;
+        SctSemanticState state;
+        const auto read = [&](const char* key, auto& values, auto parse) {
+            if (!root.at(key).is_array()) throw std::runtime_error("Expected program array.");
+            for (const auto& value : root.at(key)) values.push_back(parse(value));
+        };
+        read("sections", document.sections, parseSection);
+        read("supplementaryText", document.supplementaryText, parseSupplementaryText);
+        read("authoredArms", state.authoredArms, parseArm);
+        read("textRepairs", state.textRepairs, parseRepair);
+        read("unboundReferences", state.unboundReferences, parseUnboundOrigin);
+        read("aliases", state.aliases, parseAlias);
+        read("annotations", state.annotations, parseAnnotation);
+        read("folders", state.folders, parseFolder);
+        auto built = spice::sct::SctDocumentBuilder::reconstitute(authoredDocument(document));
+        if (!built.document) throw std::runtime_error("Invalid program identities.");
+        auto target = parseAllocatorState(root.at("allocators"));
+        const auto current = allocatorState(*built.document);
+        const auto bounded = [](std::uint64_t a, std::uint64_t b) { return b >= a && b - a <= 1000000; };
+        if (!bounded(current.nextSectionId, target.nextSectionId) || !bounded(current.nextInstructionId, target.nextInstructionId)
+            || !bounded(current.nextStringId, target.nextStringId) || !bounded(current.nextSupplementaryTextId, target.nextSupplementaryTextId)
+            || !bounded(current.nextOpaqueAttachmentId, target.nextOpaqueAttachmentId))
+            throw std::runtime_error("Invalid or excessive retired identity range.");
+        advanceAllocatorsTo(*built.document, target);
+        state.document = std::make_shared<const spice::sct::SctDocument>(std::move(*built.document));
+        auto encoded = encode(state);
+        if (!encoded) return Result<SctSemanticState>::failure(encoded.diagnostics());
+        if (Json::parse(encoded.value()) != Json::parse(json)) throw std::runtime_error("Noncanonical program fields.");
+        return Result<SctSemanticState>::success(std::move(state));
+    } catch (const std::exception& e) {
+        return Result<SctSemanticState>::failure(patchError(std::string("Cannot decode authored content: ") + e.what()));
+    }
+}
 
 bool SalsaScriptPatch::empty() const noexcept {
     return !allocatorState.has_value()

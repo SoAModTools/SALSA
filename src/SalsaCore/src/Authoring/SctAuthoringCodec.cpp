@@ -260,18 +260,27 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
                 {"recipe", {{"platform", enumJson(b.recipe.platform, Platforms)}, {"trustSelectedTextEncoding", b.recipe.trustSelectedTextEncoding}}}};
         });
         root["scripts"] = sorted(project.scripts, [](const auto& s) {
+            Json profile = nullptr;
+            if (s.outputProfile) { const auto& p = *s.outputProfile; profile = Json{{"bigEndian", p.bigEndian}, {"compressed", p.compressed},
+                {"header", {std::to_string(p.header.sourceYear), std::to_string(p.header.sourceMonth), std::to_string(p.header.sourceDay), std::to_string(p.header.fourthValue)}}}; }
             return Json{{"id", id(s.id)}, {"name", s.name}, {"baseline", id(s.baseline)},
                 {"platform", enumJson(s.platform, Platforms)}, {"region", enumJson(s.region, Regions)},
-                {"legacyOrigin", legacyJson(s.legacyOrigin)}, {"contentUses", usesJson(s.contentUses)}};
+                {"legacyOrigin", legacyJson(s.legacyOrigin)}, {"contentUses", usesJson(s.contentUses)}, {"outputProfile", profile}};
         });
-        const auto owned = [](const auto& m) { return Json{{"id", id(m.id)}, {"script", id(m.script)},
-            {"name", m.name}, {"contentUses", usesJson(m.contentUses)}, {"evidence", evidenceJson(m.evidence)}}; };
+        const auto owned = [](const auto& m) {
+            Json value{{"id", id(m.id)}, {"script", id(m.script)}, {"name", m.name}, {"contentUses", usesJson(m.contentUses)}, {"evidence", evidenceJson(m.evidence)}};
+            if constexpr (std::is_same_v<std::decay_t<decltype(m)>, SctAuthoringModule>) {
+                value["sections"] = Json::array(); for (const auto section : m.sections) value["sections"].push_back(std::to_string(section.value()));
+            }
+            return value;
+        };
         root["modules"] = sorted(project.modules, owned); root["entrypoints"] = sorted(project.entrypoints, owned);
-        root["ports"] = sorted(project.ports, [](const auto& p) { return Json{{"id", id(p.id)}, {"owner", ownerJson(p.owner)}, {"name", p.name}}; });
+        root["ports"] = sorted(project.ports, [](const auto& p) { return Json{{"id", id(p.id)}, {"owner", ownerJson(p.owner)}, {"name", p.name}, {"action", p.action ? Json(id(*p.action)) : Json(nullptr)}, {"sequence", p.sequence ? Json(id(*p.sequence)) : Json(nullptr)}}; });
         root["connections"] = sorted(project.connections, [](const auto& c) { return Json{{"id", id(c.id)},
             {"source", referenceJson(c.source)}, {"destination", referenceJson(c.destination)}, {"evidence", evidenceJson(c.evidence)}}; });
         root["contents"] = sorted(project.contents, [](const auto& c) {
-            Json patch = nullptr;
+            Json patch = nullptr; Json authored = nullptr;
+            if (c.authoredState) { auto encoded = SctProgramStateCodec::encode(*c.authoredState); require(static_cast<bool>(encoded), "Invalid authored content."); authored = Json::parse(encoded.value()); }
             if (c.physicalPatch) {
                 auto encoded = SalsaScriptPatchCodec::serialize(*c.physicalPatch);
                 require(static_cast<bool>(encoded), "Invalid physical patch.");
@@ -279,7 +288,7 @@ Result<std::string> SctAuthoringCodec::encode(const SctAuthoringProject& project
             }
             return Json{{"id", id(c.id)},
             {"owner", ownerJson(c.owner)}, {"region", regionJson(c.region)}, {"evidence", evidenceJson(c.evidence)},
-            {"literalOverrides", overridesJson(c.literalOverrides)}, {"physicalPatch", patch}}; });
+            {"literalOverrides", overridesJson(c.literalOverrides)}, {"physicalPatch", patch}, {"authoredState", authored}}; });
         root["sequences"] = sorted(project.sequences, [](const auto& sequence) {
             auto actions = Json::array();
             for (const auto& action : sequence.actions) actions.push_back({{"id", id(action.id)}, {"instruction", std::to_string(action.instruction.value())}});
@@ -322,23 +331,33 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
                 {readEnum<GamePlatform>(b.at("recipe").at("platform"), Platforms), boolean(b.at("recipe").at("trustSelectedTextEncoding"))}});
         }
         for (const auto& s : array(root.at("scripts"))) {
-            keys(s, {"id", "name", "baseline", "platform", "region", "legacyOrigin", "contentUses"});
+            keys(s, {"id", "name", "baseline", "platform", "region", "legacyOrigin", "contentUses", "outputProfile"});
             result.scripts.push_back({id<SctScriptId>(s.at("id")), string(s.at("name")), id<SctBaselineId>(s.at("baseline")),
                 readEnum<GamePlatform>(s.at("platform"), Platforms), readEnum<GameRegion>(s.at("region"), Regions),
                 readLegacy(s.at("legacyOrigin")), readUses(s.at("contentUses"))});
+            if (!s.at("outputProfile").is_null()) {
+                const auto& p = s.at("outputProfile"); keys(p, {"bigEndian", "compressed", "header"});
+                const auto& h = array(p.at("header")); require(h.size() == 4, "Expected four header values.");
+                std::array<std::uint16_t, 4> values{};
+                for (std::size_t i = 0; i < 4; ++i) { const auto n = decimal(h[i]); require(n <= UINT16_MAX, "Header value overflow."); values[i] = static_cast<std::uint16_t>(n); }
+                result.scripts.back().outputProfile = SctAuthoredOutputProfile{boolean(p.at("bigEndian")), boolean(p.at("compressed")), {values[0], values[1], values[2], values[3]}};
+            }
         }
         const auto readOwned = [](const Json& values, auto& destination) {
             using Item = typename std::decay_t<decltype(destination)>::value_type;
             for (const auto& m : array(values)) {
-                keys(m, {"id", "script", "name", "contentUses", "evidence"});
+                if constexpr (std::is_same_v<Item, SctAuthoringModule>) keys(m, {"id", "script", "name", "contentUses", "evidence", "sections"});
+                else keys(m, {"id", "script", "name", "contentUses", "evidence"});
                 destination.push_back(Item{id<decltype(Item::id)>(m.at("id")), id<SctScriptId>(m.at("script")),
                     string(m.at("name")), readUses(m.at("contentUses")), readEvidence(m.at("evidence"))});
+                if constexpr (std::is_same_v<Item, SctAuthoringModule>)
+                    for (const auto& section : array(m.at("sections"))) destination.back().sections.push_back(spice::sct::SctSectionId{decimal(section)});
             }
         };
         readOwned(root.at("modules"), result.modules); readOwned(root.at("entrypoints"), result.entrypoints);
         for (const auto& p : array(root.at("ports"))) {
-            keys(p, {"id", "owner", "name"});
-            result.ports.push_back({id<SctPortId>(p.at("id")), readOwner<SctPortOwner>(p.at("owner")), string(p.at("name"))});
+            keys(p, {"id", "owner", "name", "action", "sequence"});
+            result.ports.push_back({id<SctPortId>(p.at("id")), readOwner<SctPortOwner>(p.at("owner")), string(p.at("name")), p.at("action").is_null() ? std::nullopt : std::optional{id<SctActionId>(p.at("action"))}, p.at("sequence").is_null() ? std::nullopt : std::optional{id<SctSequenceId>(p.at("sequence"))}});
         }
         for (const auto& c : array(root.at("connections"))) {
             keys(c, {"id", "source", "destination", "evidence"});
@@ -346,9 +365,14 @@ Result<SctAuthoringProject> SctAuthoringCodec::decode(std::string_view text) {
                 readReference<SctPortId>(c.at("destination")), readEvidence(c.at("evidence"))});
         }
         for (const auto& c : array(root.at("contents"))) {
-            keys(c, {"id", "owner", "region", "evidence", "literalOverrides", "physicalPatch"});
+            keys(c, {"id", "owner", "region", "evidence", "literalOverrides", "physicalPatch", "authoredState"});
             result.contents.push_back({id<SctContentId>(c.at("id")), readOwner<SctContentOwner>(c.at("owner")),
                 readRegion(c.at("region")), readEvidence(c.at("evidence")), readOverrides(c.at("literalOverrides"))});
+            if (!c.at("authoredState").is_null()) {
+                auto state = SctProgramStateCodec::decode(c.at("authoredState").dump());
+                if (!state) return Result<SctAuthoringProject>::failure(state.diagnostics());
+                result.contents.back().authoredState = std::move(state).takeValue();
+            }
             if (!c.at("physicalPatch").is_null()) {
                 const auto text = c.at("physicalPatch").dump();
                 auto patch = SalsaScriptPatchCodec::deserialize(std::as_bytes(std::span(text.data(), text.size())));

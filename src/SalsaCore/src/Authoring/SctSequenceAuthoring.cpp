@@ -38,7 +38,7 @@ Result<SctAuthoringState> changed(const SctAuthoringState& state, SctScriptId sc
     if (!project) return Result<SctAuthoringState>::failure(project.diagnostics());
     // Valid drafts may still need text/reference repair before export. Output
     // readiness is assessed by materialization, not by accepting a command.
-    return Result<SctAuthoringState>::success({std::move(project).takeValue(), state.programs});
+    return Result<SctAuthoringState>::success({std::move(project).takeValue(), state.programs, state.retainedEvidence});
 }
 }
 Result<void> SctSequenceAuthoring::validateProgram(const SctAuthoringProject& project, SctScriptId script,

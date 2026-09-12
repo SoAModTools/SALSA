@@ -1,6 +1,8 @@
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
+#include "SalsaCore/Authoring/SctProjectContainer.h"
 #include "SalsaCore/Persistence/PatchEnvelopeCodec.h"
 #include <nlohmann/json.hpp>
+#include <Windows.h>
 #include <fstream>
 #include <set>
 
@@ -11,31 +13,17 @@ Diagnostic error(std::string message, DiagnosticCode code = DiagnosticCode::Pers
     return {DiagnosticSeverity::Error, code, std::move(message)};
 }
 Result<std::string> read(const std::filesystem::path& path) {
+    std::error_code sizeError;
+    const auto size = std::filesystem::file_size(path, sizeError);
+    if (sizeError || size > SctProjectContainer::MaximumContainerBytes) return Result<std::string>::failure(error("Project file exceeds its read limit."));
     std::ifstream input(path, std::ios::binary);
     if (!input) return Result<std::string>::failure(error("Authoring checkpoint cannot be opened."));
-    std::string text{std::istreambuf_iterator<char>(input), {}};
-    if (input.bad()) return Result<std::string>::failure(error("Authoring checkpoint cannot be read."));
+    std::string text(static_cast<std::size_t>(size), '\0');
+    if (!text.empty()) input.read(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!input || input.peek() != std::ifstream::traits_type::eof()) return Result<std::string>::failure(error("Authoring checkpoint changed or cannot be read completely."));
     return Result<std::string>::success(std::move(text));
 }
 std::span<const std::byte> bytes(const std::string& text) { return std::as_bytes(std::span(text.data(), text.size())); }
-// Guard deterministic reimport identity across parser upgrades. IDs are scoped
-// to this baseline/document, and must not be rebound merely because bytes match.
-Result<std::string> signature(const SctImportedProgram& program) {
-    Json entities = Json::array();
-    for (const auto& section : program.document().sections) {
-        entities.push_back({"section", std::to_string(section.id.value()), section.nameBytes, section.content.index()});
-        if (const auto* code = std::get_if<spice::sct::SctScriptSectionContent>(&section.content))
-            for (const auto& instruction : code->instructions)
-                entities.push_back({"instruction", std::to_string(instruction.id.value()), instruction.opcode});
-        if (const auto* text = std::get_if<spice::sct::SctStringSectionContent>(&section.content))
-            entities.push_back({"string", std::to_string(text->string.id.value())});
-    }
-    for (const auto& text : program.document().supplementaryText) entities.push_back({"supplementary", std::to_string(text.id.value())});
-    for (const auto& opaque : program.document().opaqueAttachments) entities.push_back({"opaque", std::to_string(opaque.id.value())});
-    auto digest = sha256(bytes(entities.dump()));
-    if (!digest) return Result<std::string>::failure(digest.diagnostics());
-    return Result<std::string>::success(digest.value().toHex());
-}
 Result<void> recover(const LocalSalsaWorkspace& workspace) {
     for (const auto& result : WorkspaceTransactionService::recoverAll(workspace.descriptor().root, workspace.descriptor().components.transactions)) {
         if (!result.succeeded()) return Result<void>::failure(result.diagnostics.empty()
@@ -45,9 +33,10 @@ Result<void> recover(const LocalSalsaWorkspace& workspace) {
 }
 }
 std::filesystem::path SctAuthoringStore::relativePath(const LocalSalsaWorkspace& workspace) {
-    return workspace.descriptor().components.authoring / L"project.json";
+    return workspace.descriptor().components.authoring / L"project.salsaproject";
 }
 Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const LocalSalsaWorkspace& workspace, std::stop_token stop) {
+    if (stop.stop_requested()) return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Authoring reopen cancelled.", DiagnosticCode::Cancelled));
     auto recovered = recover(workspace);
     if (!recovered) return Result<std::optional<SctAuthoringCheckpoint>>::failure(recovered.diagnostics());
     const auto path = workspace.componentPath(relativePath(workspace));
@@ -57,9 +46,14 @@ Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const Loca
     if (!exists) return Result<std::optional<SctAuthoringCheckpoint>>::success(std::nullopt);
     auto text = read(path);
     if (!text) return Result<std::optional<SctAuthoringCheckpoint>>::failure(text.diagnostics());
+    auto unpacked = SctProjectContainer::decode(bytes(text.value()));
+    if (!unpacked) return Result<std::optional<SctAuthoringCheckpoint>>::failure(unpacked.diagnostics());
     try {
+        const auto& manifest = unpacked.value().at("project.json");
+        const std::string manifestText(reinterpret_cast<const char*>(manifest.data()), manifest.size());
         std::vector<std::set<std::string>> objects;
-        const auto root = Json::parse(text.value(), [&](int, Json::parse_event_t event, Json& value) {
+        const auto root = Json::parse(manifestText, [&](int depth, Json::parse_event_t event, Json& value) {
+            if (depth > 128) throw std::runtime_error("Checkpoint nesting limit exceeded.");
             if (event == Json::parse_event_t::object_start) objects.emplace_back();
             else if (event == Json::parse_event_t::key && !objects.back().insert(value.get<std::string>()).second)
                 throw std::runtime_error("Duplicate checkpoint field.");
@@ -67,7 +61,7 @@ Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const Loca
             return true;
         });
         if (root.size() != 6 || root.at("format") != "jahorta.salsa.authoring-checkpoint"
-            || !root.at("schemaVersion").is_number_unsigned() || root.at("schemaVersion") != 1
+            || !root.at("schemaVersion").is_number_unsigned() || root.at("schemaVersion") != 2
             || root.at("workspaceId") != workspace.descriptor().workspaceId)
             return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Unsupported or mismatched authoring checkpoint."));
         auto project = SctAuthoringCodec::decode(root.at("semantic").dump());
@@ -77,21 +71,27 @@ Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const Loca
         const auto& bindings = root.at("bindings");
         if (!bindings.is_object() || bindings.size() != project.value().baselines.size())
             return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Checkpoint baseline identity bindings are incomplete."));
+        std::set<std::string> allowed{"project.json"};
+        for (const auto& baseline : project.value().baselines) allowed.insert("baselines/" + std::to_string(baseline.id.value) + ".sct");
+        for (const auto& [name, data] : unpacked.value()) if (!allowed.contains(name) && !name.starts_with("legacy/"))
+            return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Unexpected project record."));
         SctImportedPrograms programs;
         for (const auto& baseline : project.value().baselines) {
             if (stop.stop_requested()) return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Authoring reopen cancelled.", DiagnosticCode::Cancelled));
-            auto retained = workspace.loadBaseline(baseline.source.revision);
-            if (!retained) return Result<std::optional<SctAuthoringCheckpoint>>::failure(retained.diagnostics());
-            if (!retained.value()) return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Required immutable authoring baseline is missing."));
-            auto restored = SctAuthoringImporter::restore(project.value(), baseline.id, std::move(*retained.value()), stop);
+            const auto key = "baselines/" + std::to_string(baseline.id.value) + ".sct";
+            if (bindings.at(std::to_string(baseline.id.value)) != key)
+                return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Baseline record binding mismatch."));
+            auto restored = SctAuthoringImporter::retain(project.value(), baseline.id, unpacked.value().at(key));
             if (!restored) return Result<std::optional<SctAuthoringCheckpoint>>::failure(restored.diagnostics());
-            auto key = signature(*restored.value());
-            if (!key) return Result<std::optional<SctAuthoringCheckpoint>>::failure(key.diagnostics());
-            if (bindings.at(std::to_string(baseline.id.value)) != key.value())
-                return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Reimport changed physical identities; the checkpoint cannot be rebound automatically."));
             programs.push_back(std::move(restored).takeValue());
         }
+        for (const auto& script : project.value().scripts) {
+            if (script.contentUses.size() != 1 || !std::holds_alternative<SctContentId>(script.contentUses.front())
+                || !project.value().find(std::get<SctContentId>(script.contentUses.front()))->authoredState)
+                return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Project has no complete authored program."));
+        }
         SctAuthoringState state{std::move(project).takeValue(), std::move(programs)};
+        for (const auto& [name, data] : unpacked.value()) if (name.starts_with("legacy/")) state.retainedEvidence.emplace(name, data);
         auto valid = SctAuthoringSession::validate(state);
         if (!valid) return Result<std::optional<SctAuthoringCheckpoint>>::failure(valid.diagnostics());
         auto digest = sha256(bytes(text.value()));
@@ -106,6 +106,7 @@ Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const Loca
 Result<Sha256Digest> SctAuthoringStore::save(const LocalSalsaWorkspace& workspace, const SctAuthoringState& state,
     const SctAuthoringPresentation& presentation, std::optional<Sha256Digest> expected, std::stop_token stop,
     const WorkspaceTransactionHooks& hooks) {
+    try {
     auto valid = SctAuthoringSession::validate(state);
     if (!valid) return Result<Sha256Digest>::failure(valid.diagnostics());
     auto semantic = SctAuthoringCodec::encode(state.project);
@@ -136,7 +137,13 @@ Result<Sha256Digest> SctAuthoringStore::save(const LocalSalsaWorkspace& workspac
         const auto program = *std::ranges::find_if(state.programs, [&](const auto& p) { return p->baseline().id == baseline.id; });
         auto working = SctAuthoringMaterializer::workingState(state.project, state.programs, script.id);
         if (!working) return Result<Sha256Digest>::failure(working.diagnostics());
-        auto patch = SalsaScriptPatchService::diff({std::make_shared<const spice::sct::SctDocument>(program->document())}, working.value(), baseline.textConvention);
+        // The legacy rebase envelope cannot express source attachment removal.
+        // Carry that immutable evidence only in its derived snapshot; never
+        // put it back into the authored program or fresh executable output.
+        auto rebaseDocument = std::make_shared<spice::sct::SctDocument>(*working.value().document);
+        rebaseDocument->opaqueAttachments = program->document().opaqueAttachments;
+        auto rebaseState = working.value(); rebaseState.document = std::move(rebaseDocument);
+        auto patch = SalsaScriptPatchService::diff({std::make_shared<const spice::sct::SctDocument>(program->document())}, rebaseState, baseline.textConvention);
         if (!patch) return Result<Sha256Digest>::failure(patch.diagnostics());
         auto payload = SalsaScriptPatchCodec::serialize(patch.value());
         if (!payload) return Result<Sha256Digest>::failure(payload.diagnostics());
@@ -181,9 +188,11 @@ Result<Sha256Digest> SctAuthoringStore::save(const LocalSalsaWorkspace& workspac
         return Result<Sha256Digest>::failure(committed.diagnostics.empty()
             ? std::vector{error("Authoring save requires recovery.")} : committed.diagnostics);
     return Result<Sha256Digest>::success(digest.value());
+    } catch (const std::exception& e) { return Result<Sha256Digest>::failure(error(std::string("Project save failed: ") + e.what())); }
 }
 Result<WorkspaceArtifactMutation> SctAuthoringStore::mutation(const LocalSalsaWorkspace& workspace,
     const SctAuthoringState& state, const SctAuthoringPresentation& presentation, std::optional<Sha256Digest> expected) {
+    try {
     auto valid = SctAuthoringSession::validate(state);
     if (!valid) return Result<WorkspaceArtifactMutation>::failure(valid.diagnostics());
     auto semantic = SctAuthoringCodec::encode(state.project);
@@ -191,17 +200,49 @@ Result<WorkspaceArtifactMutation> SctAuthoringStore::mutation(const LocalSalsaWo
     if (!semantic) return Result<WorkspaceArtifactMutation>::failure(semantic.diagnostics());
     if (!view) return Result<WorkspaceArtifactMutation>::failure(view.diagnostics());
     Json bindings = Json::object();
+    SctProjectRecords records = state.retainedEvidence;
     auto programs = state.programs;
     std::ranges::sort(programs, {}, [](const auto& p) { return p->baseline().id; });
     for (const auto& program : programs) {
-        auto key = signature(*program);
-        if (!key) return Result<WorkspaceArtifactMutation>::failure(key.diagnostics());
-        bindings[std::to_string(program->baseline().id.value)] = key.value();
+        const auto key = "baselines/" + std::to_string(program->baseline().id.value) + ".sct";
+        bindings[std::to_string(program->baseline().id.value)] = key;
+        records.emplace(key, program->bytes());
     }
-    const auto text = Json{{"format", "jahorta.salsa.authoring-checkpoint"}, {"schemaVersion", 1},
+    // Capsules remain evidence. Bundle existing files without interpreting the
+    // Python object graph or making those records execution state.
+    std::set<std::string> capsules;
+    for (const auto& script : state.project.scripts) if (script.legacyOrigin) capsules.insert(script.legacyOrigin->capsuleId);
+    for (const auto& capsule : capsules) {
+        if (capsule.empty() || capsule.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos)
+            return Result<WorkspaceArtifactMutation>::failure(error("Invalid legacy capsule identity."));
+        const auto root = workspace.componentPath(workspace.descriptor().components.imports / capsule / "capsule");
+        std::error_code ec;
+        const bool exists = std::filesystem::exists(root, ec);
+        if (ec) return Result<WorkspaceArtifactMutation>::failure(error("Capsule evidence cannot be inspected."));
+        if (!exists) continue; // An origin reference may precede local capsule availability.
+        const auto noReparsePoint = [](const auto& path) {
+            const auto attributes = GetFileAttributesW(path.c_str());
+            return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+        };
+        if (!noReparsePoint(root) || !noReparsePoint(root.parent_path()))
+            return Result<WorkspaceArtifactMutation>::failure(error("Capsule links cannot enter a project container."));
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+            if (!noReparsePoint(entry.path())) return Result<WorkspaceArtifactMutation>::failure(error("Capsule links cannot enter a project container."));
+            if (!entry.is_regular_file()) continue;
+            auto data = read(entry.path());
+            if (!data) return Result<WorkspaceArtifactMutation>::failure(data.diagnostics());
+            const auto key = "legacy/" + capsule + "/" + entry.path().lexically_relative(root).generic_string();
+            const auto raw = bytes(data.value()); records.emplace(key, std::vector<std::byte>(raw.begin(), raw.end()));
+        }
+    }
+    const auto text = Json{{"format", "jahorta.salsa.authoring-checkpoint"}, {"schemaVersion", 2},
         {"workspaceId", workspace.descriptor().workspaceId}, {"semantic", Json::parse(semantic.value())},
         {"presentation", Json::parse(view.value())}, {"bindings", bindings}}.dump(2);
+    records.emplace("project.json", std::vector<std::byte>(bytes(text).begin(), bytes(text).end()));
+    auto packed = SctProjectContainer::encode(records);
+    if (!packed) return Result<WorkspaceArtifactMutation>::failure(packed.diagnostics());
     return Result<WorkspaceArtifactMutation>::success({relativePath(workspace), expected.has_value(),
-        expected ? std::optional{expected->toHex()} : std::nullopt, std::vector<std::byte>(bytes(text).begin(), bytes(text).end())});
+        expected ? std::optional{expected->toHex()} : std::nullopt, std::move(packed).takeValue()});
+    } catch (const std::exception& e) { return Result<WorkspaceArtifactMutation>::failure(error(std::string("Project save failed: ") + e.what())); }
 }
 } // namespace salsa::core

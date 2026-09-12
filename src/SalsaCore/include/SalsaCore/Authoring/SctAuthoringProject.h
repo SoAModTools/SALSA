@@ -5,6 +5,7 @@
 #include "SalsaCore/Persistence/SctScriptPatch.h"
 #include "SalsaCore/Sct/SctAuthoringCatalog.h"
 #include "SpiceSCT/SctDocument.h"
+#include "SpiceSCT/SctHeaderContract.h"
 
 #include <algorithm>
 #include <limits>
@@ -79,6 +80,11 @@ struct SctAuthoringBaseline final {
     std::vector<SctAuthoringEvidence> importEvidence;
     SctAuthoringImportRecipe recipe;
 };
+struct SctAuthoredOutputProfile final {
+    bool bigEndian = true;
+    bool compressed = false;
+    spice::sct::SctHeaderValues header;
+};
 struct SctScriptContext final {
     SctScriptId id;
     std::string name;
@@ -87,6 +93,7 @@ struct SctScriptContext final {
     std::optional<GameRegion> region;
     std::optional<SctLegacyOrigin> legacyOrigin;
     std::vector<SctAuthoringReference<SctContentId>> contentUses;
+    std::optional<SctAuthoredOutputProfile> outputProfile;
 };
 struct SctAuthoringModule final {
     SctModuleId id;
@@ -94,6 +101,9 @@ struct SctAuthoringModule final {
     std::string name;
     std::vector<SctAuthoringReference<SctContentId>> contentUses;
     std::vector<SctAuthoringEvidence> evidence;
+    // Exclusive ownership of these low-level blocks in the parent's authored
+    // program pool. The script retains assembly order across module boundaries.
+    std::vector<spice::sct::SctSectionId> sections;
 };
 struct SctAuthoringEntrypoint final {
     SctEntrypointId id;
@@ -106,6 +116,8 @@ struct SctAuthoringPort final {
     SctPortId id;
     SctPortOwner owner;
     std::string name;
+    std::optional<SctActionId> action;
+    std::optional<SctSequenceId> sequence;
 };
 struct SctAuthoringConnection final {
     SctConnectionId id;
@@ -147,6 +159,9 @@ struct SctAuthoringContent final {
     // Canonical baseline-to-working state, including existing editor metadata.
     // Physical patches and literal overrides are mutually exclusive.
     std::optional<SalsaScriptPatch> physicalPatch;
+    // Complete current content; imported bytes and physical patches are not its
+    // reconstruction recipe. Low-level entity IDs are stable within this script.
+    std::optional<SctSemanticState> authoredState;
 };
 
 // Bindings address the current program descended from this immutable import.

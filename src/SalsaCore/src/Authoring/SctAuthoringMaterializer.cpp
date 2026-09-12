@@ -19,6 +19,9 @@ Diagnostic error(std::string message, DiagnosticCode code = DiagnosticCode::Inva
     return {DiagnosticSeverity::Error, code, std::move(message)};
 }
 Diagnostic cancelled() { return error("Authoring operation cancelled.", DiagnosticCode::Cancelled); }
+std::shared_ptr<const sct::SctDocument> authoredCopy(const sct::SctDocument& source) {
+    return std::make_shared<const sct::SctDocument>(SctProgramStateCodec::authoredDocument(source));
+}
 std::optional<std::array<std::uint64_t, 3>> referenceLocation(const sct::SctDocumentIndex& index,
     const sct::SctDocumentParameterValue& value) {
     return std::visit([&](const auto& typed) -> std::optional<std::array<std::uint64_t, 3>> {
@@ -121,20 +124,20 @@ Result<const SctAuthoringContent*> wholeRegion(const SctAuthoringProject& projec
     if (!context) return Result<const SctAuthoringContent*>::failure(error("Selected script does not exist."));
     if (context->platform != program.baseline().recipe.platform)
         return Result<const SctAuthoringContent*>::failure(error("Script platform differs from its immutable import recipe."));
-    if (std::ranges::any_of(project.modules, [&](const auto& m) { return m.script == script; })
+    if (std::ranges::any_of(project.modules, [&](const auto& m) { return m.script == script && m.sections.empty(); })
         || std::ranges::any_of(project.entrypoints, [&](const auto& e) { return e.script == script; }))
-        return Result<const SctAuthoringContent*>::failure(error("Module and entrypoint lowering is not implemented in S2."));
+        return Result<const SctAuthoringContent*>::failure(error("Empty module descriptors and entrypoint lowering are not supported."));
     for (const auto& connection : project.connections) {
         for (const auto* endpoint : {&connection.source, &connection.destination}) {
             const auto* portId = std::get_if<SctPortId>(endpoint);
             if (!portId) return Result<const SctAuthoringContent*>::failure(error("Unresolved execution connection prevents output."));
             const auto* port = project.find(*portId);
             if (port && std::visit([&](auto owner) { return project.effectiveScript(SctContentOwner{owner}) == script; }, port->owner))
-                return Result<const SctAuthoringContent*>::failure(error("Connection lowering is not implemented in S2."));
+                return Result<const SctAuthoringContent*>::failure(error("Execution connection lowering is not supported."));
         }
     }
     if (context->contentUses.size() != 1 || !std::holds_alternative<SctContentId>(context->contentUses.front()))
-        return Result<const SctAuthoringContent*>::failure(error("S2 requires one resolved whole-document content use."));
+        return Result<const SctAuthoringContent*>::failure(error("A script requires one resolved program content record."));
     const auto* content = project.find(std::get<SctContentId>(context->contentUses.front()));
     if (!content || content->owner != SctContentOwner{script})
         return Result<const SctAuthoringContent*>::failure(error("Preserved content is not owned by the selected script."));
@@ -150,11 +153,12 @@ Result<const SctAuthoringContent*> wholeRegion(const SctAuthoringProject& projec
             }, entity);
             if (!found) return Result<const SctAuthoringContent*>::failure(error("Preserved selection contains an entity absent from its imported document."));
         }
-        return Result<const SctAuthoringContent*>::failure(error("Ordered-selection lowering is not implemented in S2."));
+        return Result<const SctAuthoringContent*>::failure(error("Source selection lowering is not supported."));
     }
     return Result<const SctAuthoringContent*>::success(content);
 }
 Result<sct::SctDocument> replay(const SctImportedProgram& program, const SctAuthoringContent& content) {
+    if (content.authoredState) return Result<sct::SctDocument>::success(*content.authoredState->document);
     if (content.physicalPatch) {
         auto state = SalsaScriptPatchService::apply({std::make_shared<const sct::SctDocument>(program.document())}, *content.physicalPatch);
         if (!state) return Result<sct::SctDocument>::failure(state.diagnostics());
@@ -222,6 +226,15 @@ SctRealizationMap mapping(const SctAuthoringProject& project, SctScriptId script
         for (const auto& site : predicate.uses) uses.locations.push_back(site);
         mapping.records.push_back(std::move(uses));
     }
+    for (const auto& module : project.modules) if (module.script == script) {
+        SctRealizationRecord record{module.id, {}};
+        for (const auto section : module.sections) record.locations.emplace_back(sct::SctDocumentEntityId{section});
+        mapping.records.push_back(std::move(record));
+        for (const auto& port : project.ports) if (port.owner == SctPortOwner{module.id} && port.action) {
+            const auto* action = project.find(*port.action);
+            if (action) mapping.records.push_back({port.id, {sct::SctDocumentEntityId{action->instruction}}});
+        }
+    }
     return mapping;
 }
 SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctImportedPrograms& programs,
@@ -237,20 +250,22 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     result.diagnostics = program.diagnostics();
     auto region = wholeRegion(project, scriptId, program);
     if (!region) { result.infrastructureDiagnostics = region.diagnostics(); return result; }
-    const auto& receipt = program.evidence().receipt();
-    if (!receipt.sourceMap.hasCompleteLeafCoverage()) {
-        result.infrastructureDiagnostics.push_back(error("Imported source coverage is incomplete.")); return result;
-    }
-    if (!baseline->recipe.platform || receipt.source.byteOrder == sct::SctSourceByteOrder::Unknown) {
-        result.infrastructureDiagnostics.push_back(error("Output requires a declared source platform and observed byte order.")); return result;
+    if (!baseline->recipe.platform || !script->outputProfile) {
+        result.infrastructureDiagnostics.push_back(error("Output requires a declared platform and authored output profile.")); return result;
     }
     if (stop.stop_requested()) return result;
     auto replayed = replay(program, *region.value());
     if (!replayed) { result.infrastructureDiagnostics = replayed.diagnostics(); return result; }
     auto semanticValid = SctSequenceAuthoring::validateProgram(project, scriptId, replayed.value());
     if (!semanticValid) { result.infrastructureDiagnostics = semanticValid.diagnostics(); return result; }
-    const bool reuse = mode == SctAuthoringOutputMode::ReuseUnchangedSource && region.value()->literalOverrides.empty()
-        && (!region.value()->physicalPatch || region.value()->physicalPatch->empty());
+    bool unchanged = region.value()->literalOverrides.empty() && (!region.value()->physicalPatch || region.value()->physicalPatch->empty());
+    if (mode == SctAuthoringOutputMode::ReuseUnchangedSource && region.value()->authoredState) {
+        auto original = SctProgramStateCodec::encode({authoredCopy(program.document())});
+        auto current = SctProgramStateCodec::encode(*region.value()->authoredState);
+        unchanged = original && current && original.value() == current.value();
+    }
+    const bool reuse = mode == SctAuthoringOutputMode::ReuseUnchangedSource && unchanged;
+    if (reuse) replayed = Result<sct::SctDocument>::success(program.document());
     if (!reuse) {
         auto lowered = SctAuthoringMaterializer::buildSemanticDocument(replayed.value());
         result.infrastructureDiagnostics = lowered.diagnostics();
@@ -260,12 +275,11 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     auto document = std::make_shared<const sct::SctDocument>(std::move(replayed).takeValue());
     sct::SctDocumentExportOptions options{platform(*baseline->recipe.platform),
         baseline->textConvention ? *sct::sctTextEncodingFor(*baseline->textConvention) : sct::kSctShiftJisByte7FEncoding,
-        receipt.source.byteOrder == sct::SctSourceByteOrder::BigEndian ? sct::SctDocumentOutputByteOrder::BigEndian : sct::SctDocumentOutputByteOrder::LittleEndian,
-        receipt.source.wrapper == sct::SctSourceWrapper::Aklz ? sct::SctDocumentOutputWrapper::Aklz : sct::SctDocumentOutputWrapper::Raw};
+        script->outputProfile->bigEndian ? sct::SctDocumentOutputByteOrder::BigEndian : sct::SctDocumentOutputByteOrder::LittleEndian,
+        script->outputProfile->compressed ? sct::SctDocumentOutputWrapper::Aklz : sct::SctDocumentOutputWrapper::Raw};
     // Preserve understood header values, but do not give fresh layout the old
     // document's byte-placement or opaque-preservation evidence.
-    if (!reuse && receipt.source.header.available)
-        options.header = {sct::SctHeaderExportMode::ExplicitValues, receipt.source.header.values};
+    if (!reuse) options.header = {sct::SctHeaderExportMode::ExplicitValues, script->outputProfile->header};
     const auto* exportEvidence = reuse ? &program.evidence() : nullptr;
     const auto neutral = sct::SctDocumentValidator::validateDocument(*document);
     appendDiagnostics(result, neutral.diagnostics, SctPipelineStage::Validation, baseline->source.locator);
@@ -324,7 +338,7 @@ SctAuthoringScriptOutput prepare(const SctAuthoringProject& project, const SctIm
     if (!identity) { result.infrastructureDiagnostics = identity.diagnostics(); return result; }
     result.prepared.emplace(SctPreparedAuthoringOutput{std::move(bytes), document,
         mapping(project, scriptId, region.value()->id, identity.value(), *document), digest.value(), reuse,
-        reuse ? std::optional{receipt.sourceMap} : std::nullopt, std::move(layout), std::move(preservation)});
+        reuse ? std::optional{program.evidence().receipt().sourceMap} : std::nullopt, std::move(layout), std::move(preservation)});
     result.readiness = sct::SctDocumentReadiness::ExportReady;
     return result;
 }
@@ -416,6 +430,36 @@ SctImportedProgram::SctImportedProgram(SctAuthoringProjectId project, SctAuthori
     : project_(std::move(project)), baseline_(std::move(baseline)), bytes_(std::move(bytes)), document_(std::move(document)),
       evidence_(std::move(evidence)), diagnostics_(std::move(diagnostics)), readiness_(readiness) {}
 
+SctImportedProgram::SctImportedProgram(SctAuthoringProjectId project, SctAuthoringBaseline baseline, std::vector<std::byte> bytes)
+    : project_(std::move(project)), baseline_(std::move(baseline)), bytes_(std::move(bytes)) {}
+void SctImportedProgram::ensureInspection() const {
+    std::scoped_lock lock(inspectionMutex_);
+    if (document_) return;
+    auto parsed = sct::SctParser{}.parse(bytesOf(bytes_), baseline_.source.locator.identityKey());
+    if (!parsed.parseOk) throw std::runtime_error("Retained baseline cannot be inspected by the current SCT parser.");
+    sct::SctDocumentImportOptions options;
+    if (baseline_.recipe.platform) options.declaredSourcePlatform = platform(*baseline_.recipe.platform);
+    if (baseline_.textConvention) options.sourceTextEncoding = sct::sctTextEncodingFor(*baseline_.textConvention);
+    options.footerTextPromotion = baseline_.recipe.trustSelectedTextEncoding
+        ? sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding : sct::SctFooterTextPromotionPolicy::PreserveAmbiguous;
+    auto imported = sct::SctDocumentWorkflow::importForEditing(parsed, options);
+    auto bound = imported.import.context.bind(imported.import.context.revisionProvenance());
+    if (!imported.import.document || !bound) throw std::runtime_error("Retained baseline has no usable inspection.");
+    evidence_ = *bound;
+    document_ = std::move(*imported.import.document);
+}
+const sct::SctDocument& SctImportedProgram::document() const { ensureInspection(); return *document_; }
+const sct::SctBoundImportEvidence& SctImportedProgram::evidence() const { ensureInspection(); return *evidence_; }
+Result<std::shared_ptr<const SctImportedProgram>> SctAuthoringImporter::retain(
+    const SctAuthoringProject& project, SctBaselineId id, std::vector<std::byte> bytes) {
+    const auto* baseline = project.find(id);
+    auto digest = sha256(bytes);
+    if (!baseline || !digest || digest.value() != baseline->source.revision.digest || bytes.size() != baseline->source.byteSize)
+        return Result<std::shared_ptr<const SctImportedProgram>>::failure(error("Retained baseline identity mismatch."));
+    return Result<std::shared_ptr<const SctImportedProgram>>::success(std::shared_ptr<const SctImportedProgram>(
+        new SctImportedProgram(project.id, *baseline, std::move(bytes))));
+}
+
 Result<SctAuthoringAdoption> SctAuthoringImporter::import(const SctAuthoringProject& project,
     RevisionId expectedRevision, SctAuthoringImportRequest request, std::stop_token stop) {
     auto diagnostics = project.validate();
@@ -463,7 +507,13 @@ Result<SctAuthoringAdoption> SctAuthoringImporter::import(const SctAuthoringProj
     next.baselines.push_back(baseline);
     next.scripts.push_back({scriptId.value(), std::move(request.name), baseline.id, request.recipe.platform,
         request.dataset.region, {}, {contentId.value()}});
+    const auto& sourceProfile = bound->receipt().source;
+    if (sourceProfile.byteOrder != sct::SctSourceByteOrder::Unknown && sourceProfile.header.available)
+        next.scripts.back().outputProfile = SctAuthoredOutputProfile{sourceProfile.byteOrder == sct::SctSourceByteOrder::BigEndian,
+            sourceProfile.wrapper == sct::SctSourceWrapper::Aklz, sourceProfile.header.values};
     next.contents.push_back({contentId.value(), scriptId.value(), {baseline.id, baseline.importedDocument, SctWholeDocument{}}, {}, {}});
+    next.contents.back().authoredState = SctSemanticState{authoredCopy(*imported.import.document)};
+    next.contents.back().evidence.push_back({SctEvidenceKind::SourceObservation, "Opaque source artifacts remain in the imported baseline; unresolved content is represented by repair markers without source bytes."});
     ++next.revision.value;
     diagnostics = next.validate();
     if (hasErrors(diagnostics)) return Result<SctAuthoringAdoption>::failure(std::move(diagnostics));
@@ -528,6 +578,11 @@ Result<SctSemanticState> SctAuthoringMaterializer::workingState(const SctAuthori
     if (!program) return Result<SctSemanticState>::failure(program.diagnostics());
     auto content = wholeRegion(project, script, *program.value());
     if (!content) return Result<SctSemanticState>::failure(content.diagnostics());
+    if (content.value()->authoredState) {
+        auto valid = SctSequenceAuthoring::validateProgram(project, script, *content.value()->authoredState->document);
+        if (!valid) return Result<SctSemanticState>::failure(valid.diagnostics());
+        return Result<SctSemanticState>::success(*content.value()->authoredState);
+    }
     if (content.value()->physicalPatch) {
         auto working = SalsaScriptPatchService::apply({std::make_shared<const sct::SctDocument>(program.value()->document())}, *content.value()->physicalPatch);
         if (!working) return working;
@@ -553,8 +608,12 @@ std::shared_ptr<const SctDocumentSnapshot> SctAuthoringMaterializer::snapshot(
             ? SctTextSelectionOrigin::UserSelected : SctTextSelectionOrigin::UniqueAssessment,
         program.evidence(), program.diagnostics()});
     auto analysis = std::make_shared<const sct::SctDocumentAnalysis>(sct::SctDocumentAnalysis::build(*document, &program.evidence()));
+    // Editor readiness belongs to the current program. A lazily retained source
+    // intentionally starts as Inspectable and cannot determine edit availability.
+    const auto readiness = sct::SctDocumentValidator::validateDocument(*document).validDocument
+        ? sct::SctDocumentReadiness::StructurallyValid : sct::SctDocumentReadiness::Inspectable;
     return std::make_shared<const SctDocumentSnapshot>(SctDocumentSnapshot{
-        provenance, document, analysis, program.readiness(), program.diagnostics()});
+        provenance, document, analysis, readiness, program.diagnostics()});
 }
 
 Result<SctAuthoringProject> SctAuthoringMaterializer::replaceWorkingState(const SctAuthoringProject& project,
@@ -566,12 +625,30 @@ Result<SctAuthoringProject> SctAuthoringMaterializer::replaceWorkingState(const 
     auto program = resolve(project, programs, baseline);
     if (!working.document || !sct::SctDocumentValidator::validateDocument(*working.document).validDocument)
         return Result<SctAuthoringProject>::failure(error("Working document is structurally invalid."));
-    auto patch = SalsaScriptPatchService::diff({std::make_shared<const sct::SctDocument>(program.value()->document())}, working, baseline.textConvention);
-    if (!patch) return Result<SctAuthoringProject>::failure(patch.diagnostics());
     auto next = project;
     auto& content = *std::ranges::find(next.contents, std::get<SctContentId>(context.contentUses.front()), &SctAuthoringContent::id);
     content.literalOverrides.clear();
-    content.physicalPatch = patch.value().empty() ? std::nullopt : std::optional{std::move(patch).takeValue()};
+    content.physicalPatch.reset();
+    content.authoredState = working;
+    content.authoredState->document = authoredCopy(*working.document);
+    // Repairing an authored placeholder still refers to the original
+    // source record for provenance, not to an invented empty source file.
+    for (auto& repair : content.authoredState->textRepairs) {
+        const auto& imported = program.value()->document();
+        const sct::SctTextValue* source = nullptr;
+        std::visit([&](auto id) {
+            if constexpr (std::is_same_v<decltype(id), sct::SctStringId>) {
+                for (const auto& section : imported.sections) if (const auto* text = std::get_if<sct::SctStringSectionContent>(&section.content); text && text->string.id == id) source = &text->string.value;
+            } else for (const auto& text : imported.supplementaryText) if (text.id == id) source = &text.value;
+        }, repair.target);
+        if (source) if (const auto* opaque = std::get_if<sct::SctOpaqueText>(source)) {
+            auto digest = sha256(std::as_bytes(std::span(opaque->bytes)));
+            const std::array<std::byte, 1> sentinel{std::byte{0}};
+            const auto placeholderHash = sha256(sentinel);
+            if (digest && placeholderHash && repair.provenance.sourceSha256 == placeholderHash.value().toHex())
+                repair.provenance.sourceSha256 = digest.value().toHex();
+        }
+    }
     auto reconciled = SctSequenceAuthoring::reconcileActions(next, script, *working.document);
     if (!reconciled) return Result<SctAuthoringProject>::failure(reconciled.diagnostics());
     auto replayed = workingState(next, programs, script);
@@ -625,7 +702,7 @@ Result<SctPreservedEditResult> SctPreservedEditService::replaceLiteral(const Sct
     if (currentLiteral.value() != request.expectedValue) return Result<SctPreservedEditResult>::failure(error("Literal edit current value is stale."));
     if (request.value == request.expectedValue) return Result<SctPreservedEditResult>::success({project, {}});
     if (project.revision.value == UINT64_MAX) return Result<SctPreservedEditResult>::failure(error("Project revision is exhausted."));
-    if (content->physicalPatch) {
+    if (content->authoredState || content->physicalPatch) {
         auto state = SctAuthoringMaterializer::workingState(project, programs, script);
         auto document = *state.value().document;
         auto changed = SctSemanticOperationService::applyInPlace(document, {{SctReplaceParameterValueOperation{request.site, request.value.expression()}}});
@@ -670,7 +747,8 @@ SctAuthoringMaterializationResult SctAuthoringMaterializer::materialize(
     }
     for (const auto script : scripts) {
         if (stop.stop_requested()) break;
-        result.scripts.push_back(prepare(*request.project, request.programs, script, request.mode, stop));
+        try { result.scripts.push_back(prepare(*request.project, request.programs, script, request.mode, stop)); }
+        catch (const std::exception& e) { SctAuthoringScriptOutput failed; failed.script = script; failed.infrastructureDiagnostics.push_back(error(e.what())); result.scripts.push_back(std::move(failed)); }
     }
     if (stop.stop_requested()) {
         result.cancelled = true;

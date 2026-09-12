@@ -50,6 +50,8 @@
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringSession.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctSequenceAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringStore.h" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctModuleAuthoring.h" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctProjectContainer.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringMaterializer.h" />
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h" />
     <ClInclude Include="include\SalsaCore\Application\ActivityLifecycle.h" />
@@ -106,6 +108,8 @@
     <ClCompile Include="src\Authoring\SctAuthoringSession.cpp" />
     <ClCompile Include="src\Authoring\SctSequenceAuthoring.cpp" />
     <ClCompile Include="src\Authoring\SctAuthoringStore.cpp" />
+    <ClCompile Include="src\Authoring\SctModuleAuthoring.cpp" />
+    <ClCompile Include="src\Authoring\SctProjectContainer.cpp" />
     <ClCompile Include="src\Authoring\SctAuthoringMaterializer.cpp" />
     <ClCompile Include="src\Application\ApplicationInfo.cpp" />
     <ClCompile Include="src\Application\ExclusiveOperationFlow.cpp" />

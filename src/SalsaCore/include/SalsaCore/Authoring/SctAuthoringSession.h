@@ -2,12 +2,15 @@
 #include "SalsaCore/Authoring/SctAuthoringMaterializer.h"
 #include "SalsaCore/Authoring/SctAuthoringCodec.h"
 #include <functional>
+#include <map>
 
 namespace salsa::core {
 
 struct SctAuthoringState final {
     SctAuthoringProject project;
     SctImportedPrograms programs;
+    // Retained container evidence, never consulted as executable content.
+    std::map<std::string, std::vector<std::byte>> retainedEvidence;
 };
 struct SctAuthoringChange final {
     RevisionId before;

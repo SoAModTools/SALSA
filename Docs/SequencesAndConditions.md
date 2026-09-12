@@ -32,8 +32,8 @@ If an instruction refers to undecoded text, repair that text or select its encod
 
 A structurally valid semantic edit enters project history even when the script needs further work before export. Export verifies the generated program by reimporting it, including instruction order, parameters, targets, scheduling, refresh settings, and text. A failed export does not install output.
 
-Named definitions are qualified by their imported baseline. Remove definitions before rebasing that script onto another source baseline, then promote them again. Automatic rebinding across source changes and extracting multi-section modules belong to later work.
+Named definitions are qualified by their imported baseline. Remove definitions before rebasing that script onto another source baseline, then promote them again. Automatic rebinding across source changes remains unsupported. See [Modules and authoring projects](ModulesAndProjects.md) for multi-section extraction and focused module editing.
 
 ## Implementation boundary
 
-The project still records edits against an imported baseline and uses SPICE instructions as its current action representation. Fresh semantic lowering removes source-layout constraints; it does not yet replace that bridge with a complete independent module compiler. The original document workflow retains its separate preservation behavior.
+The project persists complete current content in SALSA's compressed container and uses SPICE value types for low-level actions. Current content restores directly, independently of source inspection. Fresh semantic lowering derives the SCT document and layout. The original document workflow retains its separate preservation behavior.

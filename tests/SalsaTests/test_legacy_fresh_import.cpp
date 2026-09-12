@@ -859,6 +859,11 @@ TEST(LegacyFreshImportTest, V7AuthoringProjectPreservesPromotedMetadataAndCanReo
     ASSERT_EQ(state.project.scripts.size(), 1u);
     const auto script = state.project.scripts.front().id;
     EXPECT_EQ(state.project.scripts.front().legacyOrigin->scriptKey, "A001A");
+    const auto evidencePrefix = "legacy/" + state.project.scripts.front().legacyOrigin->capsuleId + "/";
+    EXPECT_TRUE(state.retainedEvidence.contains(evidencePrefix + "capsule.json"));
+    EXPECT_TRUE(state.retainedEvidence.contains(evidencePrefix + "scripts/000000.cbor.zlib"));
+    const auto retainedEvidence = state.retainedEvidence;
+    EXPECT_FALSE(state.programs.front()->inspectionLoaded());
     EXPECT_TRUE(state.project.modules.empty());
     ASSERT_EQ(state.project.workspaceAuthoring.projectAliases.size(), 1u);
     EXPECT_EQ(state.project.workspaceAuthoring.projectAliases.front().alias, "ProjectFlag");
@@ -873,9 +878,12 @@ TEST(LegacyFreshImportTest, V7AuthoringProjectPreservesPromotedMetadataAndCanReo
     state.project = edited.value(); ++state.project.revision.value;
     auto saved = SctAuthoringStore::save(workspace.value(), state, checkpoint.value()->presentation, checkpoint.value()->digest); ASSERT_TRUE(saved);
     auto reopened = SctAuthoringStore::load(workspace.value()); ASSERT_TRUE(reopened); ASSERT_TRUE(reopened.value());
+    EXPECT_EQ(reopened.value()->state.retainedEvidence, retainedEvidence);
+    EXPECT_FALSE(reopened.value()->state.programs.front()->inspectionLoaded());
     auto output = SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(reopened.value()->state.project),
         reopened.value()->state.programs, {script}, SctAuthoringOutputMode::Rebuild});
     ASSERT_TRUE(output.succeeded()); EXPECT_EQ(output.scripts.front().prepared->document->sections.front().nameBytes, "RENAMED");
+    EXPECT_FALSE(reopened.value()->state.programs.front()->inspectionLoaded());
     EXPECT_EQ(digestFile(temporary.path() / L"fixture.prj").value(), original);
 }
 

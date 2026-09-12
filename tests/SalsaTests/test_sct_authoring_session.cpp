@@ -1,5 +1,9 @@
+#include "SalsaCore/Authoring/SctModuleAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
+#include "SalsaCore/Authoring/SctProjectContainer.h"
 #include "SpiceSCT/SctInstructionFactory.h"
+#include "SpiceSCT/SctDocumentBuilder.h"
+#include "SpiceSCT/SctScptEncoding.h"
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <fstream>
@@ -109,7 +113,8 @@ TEST(SctAuthoringStoreTest, PhysicalEditsMetadataAndLegacyIdentitySurviveSaveReo
     working.value().document = doc;
     auto edited = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, working.value()); ASSERT_TRUE(edited);
     state.project = edited.value();
-    ASSERT_TRUE(state.project.contents[0].physicalPatch);
+    ASSERT_TRUE(state.project.contents[0].authoredState);
+    EXPECT_FALSE(state.project.contents[0].physicalPatch);
     Workspace w(state); SctAuthoringPresentation presentation{state.project.id, {{script, 100, 200, true}}, {script}};
     auto saved = SctAuthoringStore::save(w.workspace, state, presentation, {}); ASSERT_TRUE(saved) << saved.diagnostics()[0].message;
     auto loaded = SctAuthoringStore::load(w.workspace); ASSERT_TRUE(loaded); ASSERT_TRUE(loaded.value());
@@ -136,12 +141,17 @@ TEST(SctAuthoringStoreTest, DamagedPhysicalIdentityBindingFailsClosed) {
     auto state = initial(); Workspace w(state);
     ASSERT_TRUE(SctAuthoringStore::save(w.workspace, state, {state.project.id}, {}));
     const auto path = w.workspace.componentPath(SctAuthoringStore::relativePath(w.workspace));
-    nlohmann::json root; { std::ifstream input(path); input >> root; }
+    std::ifstream input(path, std::ios::binary); std::string data{std::istreambuf_iterator<char>(input), {}}; input.close();
+    auto records = SctProjectContainer::decode(std::as_bytes(std::span(data.data(), data.size()))); ASSERT_TRUE(records);
+    auto& manifest = records.value().at("project.json");
+    auto root = nlohmann::ordered_json::parse(reinterpret_cast<const char*>(manifest.data()), reinterpret_cast<const char*>(manifest.data()) + manifest.size());
     root["bindings"][std::to_string(state.project.baselines[0].id.value)] = "wrong";
-    { std::ofstream output(path); output << root.dump(); }
+    auto json = root.dump(); const auto bytes = std::as_bytes(std::span(json.data(), json.size())); manifest.assign(bytes.begin(), bytes.end());
+    auto packed = SctProjectContainer::encode(records.value()); ASSERT_TRUE(packed);
+    { std::ofstream output(path, std::ios::binary); output.write(reinterpret_cast<const char*>(packed.value().data()), packed.value().size()); }
     EXPECT_FALSE(SctAuthoringStore::load(w.workspace));
 }
-TEST(SctAuthoringStoreTest, CancelledSaveAndMissingOrCorruptBaselinesCannotAdoptAProject) {
+TEST(SctAuthoringStoreTest, CancelledSaveAndContainerBaselinesAreIndependentOfExternalCopies) {
     auto state = initial(); Workspace w(state); std::stop_source stop; stop.request_stop();
     EXPECT_FALSE(SctAuthoringStore::save(w.workspace, state, {state.project.id}, {}, stop.get_token()));
     EXPECT_FALSE(std::filesystem::exists(w.workspace.componentPath(SctAuthoringStore::relativePath(w.workspace))));
@@ -149,9 +159,10 @@ TEST(SctAuthoringStoreTest, CancelledSaveAndMissingOrCorruptBaselinesCannotAdopt
     DirectorySctBaselineStore baselines(w.workspace.componentPath(w.workspace.descriptor().components.baselines));
     const auto path = baselines.path(state.project.baselines[0].source.revision);
     { std::ofstream corrupt(path, std::ios::binary | std::ios::trunc); corrupt << "corrupt"; }
-    EXPECT_FALSE(SctAuthoringStore::load(w.workspace));
+    auto loaded = SctAuthoringStore::load(w.workspace); ASSERT_TRUE(loaded); ASSERT_TRUE(loaded.value());
+    for (const auto& program : loaded.value()->state.programs) EXPECT_FALSE(program->inspectionLoaded());
     std::filesystem::remove(path);
-    EXPECT_FALSE(SctAuthoringStore::load(w.workspace));
+    EXPECT_TRUE(SctAuthoringStore::load(w.workspace));
 }
 TEST(SctAuthoringStoreTest, RetiredScriptsRemoveOnlyTheirGeneratedPatchCheckpoint) {
     auto state = initial(); Workspace w(state);
@@ -170,4 +181,112 @@ TEST(SctAuthoringStoreTest, RetiredScriptsRemoveOnlyTheirGeneratedPatchCheckpoin
     auto reopened = SctAuthoringStore::load(w.workspace); ASSERT_TRUE(reopened); ASSERT_TRUE(reopened.value());
     EXPECT_EQ(reopened.value()->state.project.scripts.size(), 1u);
 }
+TEST(SctProjectContainerTest, DeterministicCompressedRecordsRoundTripAndRejectDamage) {
+    SctProjectRecords records{{"project.json", std::vector<std::byte>(10000, std::byte{'a'})}, {"empty.json", {}}};
+    auto packed = SctProjectContainer::encode(records); ASSERT_TRUE(packed);
+    EXPECT_LT(packed.value().size(), 1000u); EXPECT_EQ(packed.value(), SctProjectContainer::encode(records).value());
+    auto unpacked = SctProjectContainer::decode(packed.value()); ASSERT_TRUE(unpacked); EXPECT_EQ(unpacked.value(), records);
+    for (const auto length : {0u, 7u, 15u, 40u}) EXPECT_FALSE(SctProjectContainer::decode(std::span(packed.value()).first(length)));
+    auto corrupt = packed.value(); corrupt.back() ^= std::byte{1}; EXPECT_FALSE(SctProjectContainer::decode(corrupt));
+    corrupt = packed.value(); corrupt[8] = std::byte{2}; EXPECT_FALSE(SctProjectContainer::decode(corrupt));
+    corrupt = packed.value(); corrupt.push_back(std::byte{0}); EXPECT_FALSE(SctProjectContainer::decode(corrupt));
+    corrupt = packed.value(); for (unsigned i = 20; i < 28; ++i) corrupt[i] = std::byte{255}; EXPECT_FALSE(SctProjectContainer::decode(corrupt));
+    EXPECT_FALSE(SctProjectContainer::encode({{"../escape", {}}}));
+    EXPECT_FALSE(SctProjectContainer::encode({{"C:/absolute", {}}}));
+}
+TEST(SctProgramStateTest, FullPayloadRetainsNumericTextSparseIdentitiesAndRetiredAllocators) {
+    sct::SctDocument doc;
+    sct::SctMessage message; message.body.elements.push_back(sct::SctTextChunk{"123"});
+    doc.sections.push_back({sct::SctSectionId{9007199254740993ull}, "123", sct::SctStringSectionContent{
+        {sct::SctStringId{7000000000ull}, message}}});
+    auto built = sct::SctDocumentBuilder::reconstitute(doc); ASSERT_TRUE(built.document);
+    (void)built.document->allocateInstructionId(); (void)built.document->allocateInstructionId();
+    SctSemanticState state{std::make_shared<const sct::SctDocument>(*built.document)};
+    auto encoded = SctProgramStateCodec::encode(state); ASSERT_TRUE(encoded);
+    auto decoded = SctProgramStateCodec::decode(encoded.value()); ASSERT_TRUE(decoded) << decoded.diagnostics().front().message;
+    EXPECT_EQ(decoded.value().document->nextInstructionIdValue(), 3u);
+    EXPECT_EQ(decoded.value().document->sections.front().id.value(), 9007199254740993ull);
+    EXPECT_EQ(decoded.value().document->sections.front().nameBytes, "123");
+    EXPECT_EQ(SctProgramStateCodec::encode(decoded.value()).value(), encoded.value());
+    auto root = nlohmann::ordered_json::parse(encoded.value()); root["sections"].push_back(root["sections"][0]);
+    EXPECT_FALSE(SctProgramStateCodec::decode(root.dump()));
+    built.document->sections.clear(); // Retiring a sparse huge ID exceeds the bounded restoration contract.
+    EXPECT_FALSE(SctProgramStateCodec::encode({std::make_shared<const sct::SctDocument>(*built.document)}));
+}
+TEST(SctAuthoringStoreTest, ReopenRestoresContentWithoutSourceInspectionAndPreservesEvidence) {
+    auto state = initial(); Workspace w(state);
+    state.retainedEvidence["legacy/test/note.json"] = {std::byte{'1'}};
+    auto saved = SctAuthoringStore::save(w.workspace, state, {state.project.id}, {}); ASSERT_TRUE(saved);
+    auto reopened = SctAuthoringStore::load(w.workspace); ASSERT_TRUE(reopened); ASSERT_TRUE(reopened.value());
+    for (const auto& program : reopened.value()->state.programs) EXPECT_FALSE(program->inspectionLoaded());
+    auto current = SctAuthoringMaterializer::workingState(reopened.value()->state.project, reopened.value()->state.programs, state.project.scripts.front().id);
+    ASSERT_TRUE(current);
+    for (const auto& program : reopened.value()->state.programs) EXPECT_FALSE(program->inspectionLoaded());
+    EXPECT_EQ(reopened.value()->state.retainedEvidence, state.retainedEvidence);
+    auto result = SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(reopened.value()->state.project),
+        reopened.value()->state.programs, {state.project.scripts.front().id}}); ASSERT_TRUE(result.succeeded());
+    for (const auto& program : reopened.value()->state.programs) EXPECT_FALSE(program->inspectionLoaded());
+    EXPECT_EQ(SctProgramStateCodec::encode(*state.project.contents[0].authoredState).value(), SctProgramStateCodec::encode(current.value()).value());
+}
+
+TEST(SctModuleAuthoringTest, IdenticalModuleNamesAcrossScriptsHaveIndependentOwnership) {
+    auto state = initial();
+    const auto scripts = state.project.scripts;
+    for (const auto& script : scripts) {
+        auto created = SctModuleAuthoring::createEmpty(state, script.id, "Opening"); ASSERT_TRUE(created); state = created.value();
+    }
+    ASSERT_EQ(state.project.modules.size(), 2u);
+    EXPECT_NE(state.project.modules[0].id, state.project.modules[1].id);
+    EXPECT_NE(state.project.modules[0].script, state.project.modules[1].script);
+    auto session = SctAuthoringSession::open(state); ASSERT_TRUE(session);
+    auto reparent = session.value()->execute(state.project.revision, "Invalid reparent", [](const auto& current) {
+        auto next = current; next.project.modules[0].script = next.project.modules[1].script;
+        return Result<SctAuthoringState>::success(std::move(next));
+    }); EXPECT_FALSE(reparent);
+    auto restored = SctAuthoringCodec::decode(SctAuthoringCodec::encode(state.project).value()); ASSERT_TRUE(restored);
+    EXPECT_EQ(restored.value().modules[0].id, state.project.modules[0].id);
+}
+TEST(SctAuthoringStoreTest, RejectsRetainedEvidenceThatShadowsProgramRecords) {
+    auto state = initial(); state.retainedEvidence["project.json"] = {};
+    EXPECT_FALSE(SctAuthoringSession::validate(state));
+}
+TEST(SctProgramStateTest, MissingMeaningIsSavedAsMarkersAndReferencedTextBlocksOutput) {
+    auto state = initial(); const auto script = state.project.scripts[0].id;
+    auto working = SctAuthoringMaterializer::workingState(state.project, state.programs, script).value();
+    auto document = std::make_shared<sct::SctDocument>(*working.document);
+    const auto textId = document->allocateSupplementaryTextId();
+    document->supplementaryText.push_back({textId, sct::SctTextKind::SctString, sct::SctOpaqueText{{0xde, 0xad, 0xbe, 0xef, 0}}});
+    sct::SctDocumentInstruction print{document->allocateInstructionId(), 24};
+    print.fixedParameters = {{0, sct::SctSupplementaryTextReference{textId}}};
+    std::get<sct::SctScriptSectionContent>(document->sections[0].content).instructions.push_back(print);
+    working.document = document;
+    auto edited = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, working); ASSERT_TRUE(edited) << edited.diagnostics().front().message;
+    state.project = edited.value();
+    const auto encoded = SctAuthoringCodec::encode(state.project); ASSERT_TRUE(encoded);
+    EXPECT_NE(encoded.value().find("uninterpreted-text"), std::string::npos);
+    auto restored = SctAuthoringCodec::decode(encoded.value()); ASSERT_TRUE(restored);
+    EXPECT_FALSE(SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(restored.value()), state.programs, {script}}).succeeded());
+    Workspace workspace(state); auto saved = SctAuthoringStore::save(workspace.workspace, state, {state.project.id}, {}); ASSERT_TRUE(saved);
+    auto loaded = SctAuthoringStore::load(workspace.workspace); ASSERT_TRUE(loaded); ASSERT_TRUE(loaded.value());
+    EXPECT_FALSE(loaded.value()->state.programs[0]->inspectionLoaded());
+}
+
+TEST(SctProgramStateTest, UninterpretedExpressionsRemainIncompleteAcrossReopen) {
+    auto state = initial(); const auto script = state.project.scripts[0].id;
+    auto working = SctAuthoringMaterializer::workingState(state.project, state.programs, script).value();
+    auto document = std::make_shared<sct::SctDocument>(*working.document);
+    auto& instruction = std::get<sct::SctScriptSectionContent>(document->sections[0].content).instructions[0];
+    auto& expression = std::get<sct::SctCanonicalExpression>(instruction.fixedParameters[0].value);
+    expression.body = sct::SctOpaqueExpression{sct::encodeSctCanonicalExpressionWords(expression)};
+    instruction.scheduledExpression = expression;
+    working.document = document;
+    auto edited = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, working); ASSERT_TRUE(edited);
+    state.project = edited.value();
+    auto encoded = SctAuthoringCodec::encode(state.project); ASSERT_TRUE(encoded);
+    EXPECT_NE(encoded.value().find("uninterpreted-operand"), std::string::npos);
+    auto restored = SctAuthoringCodec::decode(encoded.value()); ASSERT_TRUE(restored);
+    EXPECT_EQ(SctAuthoringCodec::encode(restored.value()).value(), encoded.value());
+    EXPECT_FALSE(SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(restored.value()), state.programs, {script}}).succeeded());
+}
+
 } // namespace

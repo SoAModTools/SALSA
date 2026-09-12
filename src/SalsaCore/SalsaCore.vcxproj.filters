@@ -113,5 +113,9 @@
     <ClInclude Include="include\SalsaCore\Authoring\SctSequenceAuthoring.h"><Filter>Authoring</Filter></ClInclude>
     <ClCompile Include="src\Authoring\SctSequenceAuthoring.cpp"><Filter>Authoring</Filter></ClCompile>
   </ItemGroup>
-  <ItemGroup><ClInclude Include="include\SalsaCore\Authoring\SctAuthoringStore.h"><Filter>Authoring</Filter></ClInclude><ClCompile Include="src\Authoring\SctAuthoringStore.cpp"><Filter>Authoring</Filter></ClCompile></ItemGroup>
+  <ItemGroup><ClInclude Include="include\SalsaCore\Authoring\SctAuthoringStore.h"><Filter>Authoring</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Authoring\SctModuleAuthoring.h"><Filter>Authoring</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Authoring\SctProjectContainer.h"><Filter>Authoring</Filter></ClInclude><ClCompile Include="src\Authoring\SctAuthoringStore.cpp"><Filter>Authoring</Filter></ClCompile>
+    <ClCompile Include="src\Authoring\SctModuleAuthoring.cpp"><Filter>Authoring</Filter></ClCompile>
+    <ClCompile Include="src\Authoring\SctProjectContainer.cpp"><Filter>Authoring</Filter></ClCompile></ItemGroup>
 </Project>

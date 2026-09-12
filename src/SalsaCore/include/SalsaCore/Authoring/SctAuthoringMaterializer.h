@@ -3,6 +3,7 @@
 #include "SalsaCore/Authoring/SctAuthoringProject.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SpiceSCT/SctDocumentExporter.h"
+#include <mutex>
 
 namespace salsa::core {
 
@@ -13,8 +14,9 @@ public:
     [[nodiscard]] const SctAuthoringProjectId& projectId() const noexcept { return project_; }
     [[nodiscard]] const SctAuthoringBaseline& baseline() const noexcept { return baseline_; }
     [[nodiscard]] const std::vector<std::byte>& bytes() const noexcept { return bytes_; }
-    [[nodiscard]] const spice::sct::SctDocument& document() const noexcept { return document_; }
-    [[nodiscard]] const spice::sct::SctBoundImportEvidence& evidence() const noexcept { return evidence_; }
+    [[nodiscard]] const spice::sct::SctDocument& document() const;
+    [[nodiscard]] const spice::sct::SctBoundImportEvidence& evidence() const;
+    [[nodiscard]] bool inspectionLoaded() const { std::scoped_lock lock(inspectionMutex_); return document_.has_value(); }
     [[nodiscard]] const std::vector<SctPipelineDiagnostic>& diagnostics() const noexcept { return diagnostics_; }
     [[nodiscard]] spice::sct::SctDocumentReadiness readiness() const noexcept { return readiness_; }
 private:
@@ -26,10 +28,13 @@ private:
     SctAuthoringProjectId project_;
     SctAuthoringBaseline baseline_;
     std::vector<std::byte> bytes_;
-    spice::sct::SctDocument document_;
-    spice::sct::SctBoundImportEvidence evidence_;
+    SctImportedProgram(SctAuthoringProjectId project, SctAuthoringBaseline baseline, std::vector<std::byte> bytes);
+    void ensureInspection() const;
+    mutable std::mutex inspectionMutex_;
+    mutable std::optional<spice::sct::SctDocument> document_;
+    mutable std::optional<spice::sct::SctBoundImportEvidence> evidence_;
     std::vector<SctPipelineDiagnostic> diagnostics_;
-    spice::sct::SctDocumentReadiness readiness_;
+    spice::sct::SctDocumentReadiness readiness_ = spice::sct::SctDocumentReadiness::Inspectable;
 };
 using SctImportedPrograms = std::vector<std::shared_ptr<const SctImportedProgram>>;
 
@@ -54,8 +59,12 @@ public:
     [[nodiscard]] static Result<SctAuthoringAdoption> replaceImportedScript(
         const SctAuthoringProject& project, RevisionId expectedRevision, SctScriptId script,
         SctAuthoringImportRequest request, std::stop_token stop = {});
-    // Reconstitute an existing binding from verified immutable bytes. The store
-    // also checks the persisted physical identity signature before adoption.
+    // Retain verified source bytes without parsing them. Current authoring
+    // content is restored from the project; source inspection is lazy.
+    [[nodiscard]] static Result<std::shared_ptr<const SctImportedProgram>> retain(
+        const SctAuthoringProject& project, SctBaselineId baseline, std::vector<std::byte> bytes);
+    // Explicitly reimport a retained binding for legacy callers that require
+    // source inspection. Container reopen uses retain instead.
     [[nodiscard]] static Result<std::shared_ptr<const SctImportedProgram>> restore(
         const SctAuthoringProject& project, SctBaselineId baseline,
         std::vector<std::byte> bytes, std::stop_token stop = {});

@@ -31,6 +31,8 @@ std::map<std::uint64_t, unsigned> identities(const SctAuthoringProject& project)
 Result<void> SctAuthoringSession::validate(const SctAuthoringState& state) {
     auto encoded = SctAuthoringCodec::encode(state.project);
     if (!encoded) return Result<void>::failure(encoded.diagnostics());
+    for (const auto& [name, data] : state.retainedEvidence)
+        if (!name.starts_with("legacy/")) return Result<void>::failure(error("Retained evidence cannot replace authored records."));
     std::set<std::string> locators;
     for (const auto& script : state.project.scripts) {
         if (!locators.insert(state.project.find(script.baseline)->source.locator.identityKey()).second)
@@ -73,6 +75,10 @@ Result<SctAuthoringChange> SctAuthoringSession::execute(RevisionId expected, std
         auto next = std::move(candidate).takeValue();
         if (next.project.id != current_->project.id || next.project.nextEntityId < current_->project.nextEntityId)
             return Result<SctAuthoringChange>::failure(error("A command cannot replace project identity or rewind its allocator."));
+        for (const auto& module : current_->project.modules) {
+            const auto* after = next.project.find(module.id);
+            if (after && after->script != module.script) return Result<SctAuthoringChange>::failure(error("Module reparenting is not supported."));
+        }
         const auto priorIds = identities(current_->project);
         for (const auto& [id, kind] : identities(next.project)) {
             const auto found = priorIds.find(id);

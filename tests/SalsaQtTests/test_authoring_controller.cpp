@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctModuleAuthoring.h"
 #include "Sct/SctDocumentController.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SpiceSCT/SctDocumentExporter.h"
@@ -94,6 +95,8 @@ TEST(AuthoringControllerTest, OneHistoryAcrossTabsAndProjectSaveSurvivesClosingA
     ASSERT_TRUE(reopened.openDocument(*f.project, f.a)); ASSERT_TRUE(reopened.openDocument(*f.project, f.b));
     EXPECT_EQ(value(reopened, f.a), changedA); EXPECT_EQ(value(reopened, f.b), changedB);
     EXPECT_EQ(site(reopened, f.a), siteA);
+    ASSERT_TRUE(reopened.replaceParameterValue(f.a, siteA, sct::SctExpressionFactory::encodedDecimalLiteral(23)));
+    ASSERT_TRUE(reopened.undo(f.a)); EXPECT_EQ(value(reopened, f.a), changedA);
 }
 TEST(AuthoringControllerTest, ProjectPublicationUsesFreshSemanticLayoutAfterGrowth) {
     Fixture f(true); qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
@@ -122,6 +125,11 @@ TEST(AuthoringControllerTest, ProjectPublicationUsesFreshSemanticLayoutAfterGrow
     ASSERT_EQ(receipt->layout.sections.size(), 1u); EXPECT_EQ(receipt->layout.sections[0].dataRelativeOffset, 0u);
     EXPECT_EQ(receipt->revision, controller.authoringState()->project.revision);
     EXPECT_FALSE(controller.authoringState()->programs.front()->document().opaqueAttachments.empty());
+    ASSERT_TRUE(controller.saveDocument(f.a)); ASSERT_TRUE(waitFor([&] { return !controller.isSaving(f.a); }));
+    qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace);
+    ASSERT_TRUE(reopened.authoringState());
+    auto current = core::SctAuthoringMaterializer::workingState(reopened.authoringState()->project, reopened.authoringState()->programs, script); ASSERT_TRUE(current);
+    EXPECT_TRUE(current.value().document->opaqueAttachments.empty());
 }
 TEST(AuthoringControllerTest, FailedEditDoesNotChangeProjectAndMetadataUsesProjectUndo) {
     Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
@@ -171,6 +179,28 @@ TEST(AuthoringControllerTest, SemanticSequenceCommandsShareHistoryAndRejectStale
     EXPECT_EQ(restored->project.sequences.front().actions.front().id, sequence.actions.front().id);
     EXPECT_TRUE(core::SctSequenceAuthoring::actions(*restored, sequence.id).value().front().instruction.skipRefresh);
 }
+TEST(AuthoringControllerTest, ModuleCommandsShareEditorHistoryAndSurviveContainerReopen) {
+    Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    const auto before = controller.authoringState(); ASSERT_TRUE(before);
+    const auto script = before->project.scripts.front().id; const auto section = before->programs.front()->document().sections.front().id;
+    ASSERT_TRUE(controller.executeAuthoringCommand(before->project.revision, "Extract", [&](const auto& state) {
+        return core::SctModuleAuthoring::extract(state, script, {section}, "Opening");
+    }));
+    const auto module = controller.authoringState()->project.modules.front().id;
+    const auto sequence = controller.authoringState()->project.sequences.front().id;
+    ASSERT_TRUE(controller.executeAuthoringCommand(controller.authoringState()->project.revision, "Append", [&](const auto& state) {
+        return core::SctModuleAuthoring::appendAction(state, module, sequence, 12);
+    }));
+    EXPECT_EQ(controller.authoringState()->project.find(sequence)->actions.size(), 2u);
+    ASSERT_TRUE(controller.undo(f.a)); EXPECT_EQ(controller.authoringState()->project.find(sequence)->actions.size(), 1u);
+    ASSERT_TRUE(controller.redo(f.a)); controller.closeAll();
+    ASSERT_TRUE(controller.saveDocument(f.a)); ASSERT_TRUE(waitFor([&] { return !controller.isSaving(f.a); }));
+    qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace); ASSERT_TRUE(reopened.authoringState());
+    EXPECT_EQ(reopened.authoringState()->project.modules.front().id, module);
+    EXPECT_EQ(reopened.authoringState()->project.find(sequence)->actions.size(), 2u);
+}
+
 }
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);

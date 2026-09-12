@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctModuleAuthoring.h"
 #include "SalsaCore/Authoring/SctSequenceAuthoring.h"
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
@@ -247,4 +248,58 @@ TEST(SctSequenceAuthoringTest, ValidDraftWithUnresolvedOutputCanBeEditedAndUndon
     EXPECT_FALSE(output.succeeded()); EXPECT_FALSE(output.scripts[0].prepared);
     ASSERT_TRUE(session.value()->undo()); ASSERT_TRUE(session.value()->redo());
 }
+TEST(SctModuleAuthoringTest, MultiSectionExtractionPreservesOutputAndExposesExternalCallers) {
+    auto state = initial(); const auto before = output(state); const auto script = state.project.scripts.front().id;
+    const auto& doc = state.programs.front()->document();
+    auto extracted = SctModuleAuthoring::extract(state, script, {doc.sections[1].id, doc.sections[0].id}, "Cutscene");
+    ASSERT_TRUE(extracted) << extracted.diagnostics().front().message;
+    const auto& module = extracted.value().project.modules.back();
+    EXPECT_EQ(module.script, script); EXPECT_EQ(module.sections[0], doc.sections[0].id);
+    EXPECT_EQ(output(extracted.value()), before);
+    auto view = SctModuleAuthoring::inspect(extracted.value(), module.id); ASSERT_TRUE(view);
+    EXPECT_EQ(view.value().sequences.size(), 2u); EXPECT_FALSE(view.value().boundary.empty());
+    EXPECT_TRUE(std::ranges::any_of(view.value().boundary, [](const auto& item) { return item.description.find("Incoming") != std::string::npos; }));
+    EXPECT_FALSE(extracted.value().project.ports.empty());
+    auto encoded = SctAuthoringCodec::encode(extracted.value().project); ASSERT_TRUE(encoded);
+    auto restored = SctAuthoringCodec::decode(encoded.value()); ASSERT_TRUE(restored);
+    EXPECT_EQ(restored.value().modules[0].id, module.id);
+    EXPECT_EQ(restored.value().modules[0].sections, module.sections);
+    EXPECT_EQ(SctAuthoringCodec::encode(restored.value()).value(), encoded.value());
+}
+TEST(SctModuleAuthoringTest, EditUndoReopenRetainsIdentityAndRejectsConflictingOwnership) {
+    auto state = initial(); const auto script = state.project.scripts.front().id;
+    const auto section = state.programs.front()->document().sections.front().id;
+    auto session = SctAuthoringSession::open(state); ASSERT_TRUE(session);
+    ASSERT_TRUE(session.value()->execute(state.project.revision, "Extract cutscene", [&](const auto& current) { return SctModuleAuthoring::extract(current, script, {section}, "Cutscene"); }));
+    const auto extracted = session.value()->state(); const auto module = extracted.project.modules.front().id;
+    const auto seq = extracted.project.sequences.front(); const auto action = seq.actions.front();
+    ASSERT_TRUE(session.value()->execute(extracted.project.revision, "Timing", [&](const auto& current) {
+        return SctSequenceAuthoring::setTiming(current, seq.id, action.id, expression("3"), false);
+    }));
+    EXPECT_NE(output(session.value()->state()), output(extracted));
+    ASSERT_TRUE(session.value()->undo()); EXPECT_EQ(output(session.value()->state()), output(extracted));
+    ASSERT_TRUE(session.value()->redo()); EXPECT_EQ(session.value()->state().project.modules.front().id, module);
+    EXPECT_FALSE(SctModuleAuthoring::extract(extracted, script, {section}, "Conflict"));
+    auto invalid = extracted.project; invalid.modules[0].sections.push_back(section); EXPECT_TRUE(hasErrors(invalid.validate()));
+    invalid = extracted.project; invalid.modules[0].script = {999999}; EXPECT_TRUE(hasErrors(invalid.validate()));
+    invalid = extracted.project; invalid.ports[0].action = SctActionId{999999}; EXPECT_TRUE(hasErrors(invalid.validate()));
+    auto opened = SctAuthoringCodec::decode(SctAuthoringCodec::encode(session.value()->state().project).value()); ASSERT_TRUE(opened);
+    EXPECT_EQ(opened.value().sequences.front().actions.front().id, action.id);
+}
+TEST(SctModuleAuthoringTest, EmptyModuleIsDurableAndCanReceiveItsFirstAction) {
+    auto state = initial(); const auto script = state.project.scripts.front().id;
+    auto created = SctModuleAuthoring::createEmpty(state, script, "New interaction"); ASSERT_TRUE(created) << created.diagnostics().front().message;
+    const auto module = created.value().project.modules.back();
+    const auto sequence = created.value().project.sequences.back().id;
+    const auto port = created.value().project.ports.back().id;
+    auto appended = SctModuleAuthoring::appendAction(created.value(), module.id, sequence, 12); ASSERT_TRUE(appended);
+    EXPECT_EQ(appended.value().project.ports.back().id, port);
+    EXPECT_TRUE(appended.value().project.ports.back().action);
+    auto edited = Result<SctAuthoringProject>::success(appended.value().project);
+    auto decoded = SctAuthoringCodec::decode(SctAuthoringCodec::encode(edited.value()).value()); ASSERT_TRUE(decoded);
+    auto result = SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(decoded.value()), state.programs, {script}});
+    EXPECT_TRUE(result.succeeded());
+    EXPECT_EQ(decoded.value().modules.back().id, module.id);
+}
+
 }

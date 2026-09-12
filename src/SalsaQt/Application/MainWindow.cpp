@@ -628,6 +628,11 @@ void MainWindow::buildUi() {
     saveAction_->setShortcut(QKeySequence::Save);
     exportAction_ = documentMenu->addAction(tr("&Export SCT..."));
     exportAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
+    auto* moduleEditorAction = documentMenu->addAction(tr("Script Modules..."));
+    connect(moduleEditorAction, &QAction::triggered, this, [this] {
+        if (auto* document = activeDocumentWidget()) showSctModuleBrowser(*documentController_, document->locator(),
+            [document](core::SctNavigationTarget target) { document->selectTarget(target); }, this);
+    });
     sequenceEditorAction_ = documentMenu->addAction(tr("Sequences and Conditions..."));
     connect(sequenceEditorAction_, &QAction::triggered, this, [this] {
         if (auto* document = activeDocumentWidget()) {

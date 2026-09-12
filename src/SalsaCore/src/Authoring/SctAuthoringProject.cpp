@@ -189,6 +189,11 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     }
     for (const auto& item : contents) {
         const auto where = context("Content", item.id.value);
+        if (item.authoredState) {
+            if (item.physicalPatch || !item.literalOverrides.empty()) out.push_back(error(where + "authored content cannot have a second patch authority."));
+            auto encoded = SctProgramStateCodec::encode(*item.authoredState);
+            if (!encoded) out.insert(out.end(), encoded.diagnostics().begin(), encoded.diagnostics().end());
+        }
         if (item.physicalPatch) {
             if (!item.literalOverrides.empty()) out.push_back(error(where + "physical patches and literal overrides are mutually exclusive."));
             auto encoded = SalsaScriptPatchCodec::serialize(*item.physicalPatch);
@@ -248,6 +253,36 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
         for (const auto& use : predicate.uses) if (!use.instruction || use.parameter.repeatedGroupOrdinal
             || !uses.emplace(predicate.script, use).second)
             out.push_back(error("Invalid or multiply owned predicate use."));
+    }
+    std::set<std::pair<SctScriptId, spice::sct::SctSectionId>> moduleSections;
+    for (const auto& module : modules) for (const auto section : module.sections) {
+        if (!section || !moduleSections.emplace(module.script, section).second)
+            out.push_back(error("A module section has invalid or multiple ownership."));
+        const auto seq = std::ranges::find_if(sequences, [&](const auto& item) { return item.script == module.script && item.section == section; });
+        if (seq == sequences.end()) out.push_back(error("A module section requires an authored sequence."));
+        bool found = false;
+        for (const auto& content : contents) if (effectiveScript(content.owner) == module.script && content.authoredState && content.authoredState->document)
+            for (const auto& item : content.authoredState->document->sections)
+                if (item.id == section && std::holds_alternative<spice::sct::SctScriptSectionContent>(item.content)) found = true;
+        if (!found) out.push_back(error("Module section is absent from its parent's authored program."));
+    }
+    for (const auto& port : ports) if (port.sequence) {
+        const auto* sequence = find(*port.sequence);
+        const auto* owner = std::get_if<SctModuleId>(&port.owner);
+        const auto* module = owner ? find(*owner) : nullptr;
+        if (!sequence || !module || sequence->script != module->script
+            || std::ranges::find(module->sections, sequence->section) == module->sections.end()
+            || (port.action && std::ranges::find(sequence->actions, *port.action, &SctSequenceAction::id) == sequence->actions.end()))
+            out.push_back(error("Port sequence/action binding does not belong to its module."));
+    }
+    for (const auto& port : ports) if (port.action) {
+        const auto* ownerId = std::get_if<SctModuleId>(&port.owner);
+        const auto* module = ownerId ? find(*ownerId) : nullptr;
+        bool found = false;
+        if (module) for (const auto& seq : sequences)
+            if (seq.script == module->script && std::ranges::find(module->sections, seq.section) != module->sections.end())
+                for (const auto& action : seq.actions) if (action.id == *port.action) found = true;
+        if (!found) out.push_back(error("Port action does not belong to its module."));
     }
     return out;
 }

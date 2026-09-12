@@ -259,7 +259,7 @@ TEST(SctAuthoringMaterializerTest, EditingOneScriptLeavesOtherOutputUntouched) {
     EXPECT_EQ(result.scripts[1].prepared->digest, before.scripts[0].prepared->digest);
 }
 TEST(SctAuthoringMaterializerTest, SchemaRejectsMalformedAndDuplicateOverrides) {
-    auto a = adopted(); auto edited = SctPreservedEditService::replaceLiteral(a.project, {a.program}, editRequest(a)); ASSERT_TRUE(edited);
+    auto a = adopted(); a.project.contents[0].authoredState.reset(); auto edited = SctPreservedEditService::replaceLiteral(a.project, {a.program}, editRequest(a)); ASSERT_TRUE(edited);
     auto json = nlohmann::ordered_json::parse(SctAuthoringCodec::encode(edited.value().project).value());
     auto stale = edited.value().project; stale.contents[0].literalOverrides[0].baselineValue = literal(76);
     EXPECT_FALSE(prepare(a, stale).succeeded());

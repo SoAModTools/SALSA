@@ -1076,7 +1076,7 @@ bool SctDocumentController::adoptAuthoring(const core::SctPatchedLoadResult& loa
         programs.push_back(adopted.value().program);
         auto edited = core::SctAuthoringMaterializer::replaceWorkingState(adopted.value().project, programs, adopted.value().script, working);
         if (!edited) return core::Result<core::SctAuthoringState>::failure(edited.diagnostics());
-        return core::Result<core::SctAuthoringState>::success({std::move(edited).takeValue(), std::move(programs)});
+        return core::Result<core::SctAuthoringState>::success({std::move(edited).takeValue(), std::move(programs), state.retainedEvidence});
     });
     if (!command) { failureDiagnostics_ = command.diagnostics(); return false; }
     return true;
@@ -1243,7 +1243,7 @@ bool SctDocumentController::applyEditResult(
     auto accepted = authoring_->execute(authoring_->state().project.revision, successMessage.toStdString(), [&](const auto& current) {
         auto next = core::SctAuthoringMaterializer::replaceWorkingState(current.project, current.programs, *script, *working);
         if (!next) return core::Result<core::SctAuthoringState>::failure(next.diagnostics());
-        return core::Result<core::SctAuthoringState>::success({std::move(next).takeValue(), current.programs});
+        return core::Result<core::SctAuthoringState>::success({std::move(next).takeValue(), current.programs, current.retainedEvidence});
     });
     if (!accepted) {
         failureDiagnostics_ = accepted.diagnostics();

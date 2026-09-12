@@ -82,6 +82,18 @@ struct SctSemanticState final {
     std::vector<SctSectionFolder> folders{};
 };
 
+// SALSA's complete low-level authored payload. This codec does not import SCT
+// bytes or apply a patch. SPICE value types are serialized by SALSA's schema.
+class SctProgramStateCodec final {
+public:
+    // Opaque source data becomes an uninterpreted marker. The transient SPICE
+    // projection uses non-source sentinels solely to satisfy its value contract;
+    // semantic lowering never emits those sentinels.
+    [[nodiscard]] static spice::sct::SctDocument authoredDocument(const spice::sct::SctDocument& document);
+    [[nodiscard]] static Result<std::string> encode(const SctSemanticState& state);
+    [[nodiscard]] static Result<SctSemanticState> decode(std::string_view json);
+};
+
 // A canonical baseline-to-working delta. It is intentionally not the undo journal.
 struct SalsaScriptPatch final {
     std::optional<spice::sct::SctKnownTextConvention> sourceTextConvention{};
