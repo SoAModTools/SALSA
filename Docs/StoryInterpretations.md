@@ -22,7 +22,7 @@ Entry flags mean **entered**, not **completed**. Other writers and dynamic bit w
 
 ## Storage and boundaries
 
-Semantic schema 10 stores names, attached explanation records, and user-ordered storylines. Presentation schema 2 stores story-node positions and zoom independently; container encoding is unchanged. Derived access indexes are rebuilt; they are not a second editable program. SPICE continues to own physical SCT semantics. Python SALSA v7 import remains supported.
+Semantic schema 11 stores names, attached explanation records, and user-ordered storylines. Presentation schema 3 stores story-node positions and zoom independently; container encoding is unchanged. Derived access indexes are rebuilt; they are not a second editable program. SPICE continues to own physical SCT semantics. Python SALSA v7 import remains supported.
 
 ## Story state and whole-cutscene effects
 
@@ -37,3 +37,13 @@ The graph presents a cutscene, its affected variables, and sections or entrypoin
 Create a named storyline, add cutscenes, and move steps up or down. **Overview** presents this user-defined backbone as a graph; repeated steps and cycles are allowed. This is narrative organization and does not synthesize calls or change execution. Drag nodes and choose **Save layout** to retain positions in the project presentation state, then save the project normally. A layout edit made during an asynchronous save remains dirty until saved in a later capture.
 
 **Inspect generated instructions** materializes the selected script through the normal exporter for one immutable project revision. It lists the mapped instructions, concrete operands and payload offsets. Entrypoint mappings include generated activation wrappers as well as retained bodies. Project, revision, script and realization must match before a mapping is used. An incomplete script reports its normal export diagnostics; the inspector does not substitute or repair executable content.
+
+## Suggested paths and repeated visits
+
+**Suggest all paths** analyzes the current imported scripts; **Suggest from selected** anchors the analysis at the selected cutscene/module. The Suggested paths tab lists bounded candidate paths through a partial order. Cycles remain labeled unordered groups; choose individual steps explicitly. Branch conditions, transfers, arrival matches, possible enables/inhibits relationships, and missing targets are inspectable with each selected item. A suggestion does not certify execution or establish a flag's story meaning.
+
+Choose a storyline and select proposal steps, then use **Adopt selected steps**. This adds narrative occurrences without changing executable instructions. **Reject selected suggestion** records a user decision attached to its source items. Refreshing analysis does not change accepted storylines or names. Proposals captured before another edit must be refreshed before adoption.
+
+Each occurrence has a stable identity, optional name, and independent position, even if the same cutscene appears several times. Use **Name step**, Up/Down, Remove, and Overview to organize these visits. Names attached to occurrences do not rename their underlying modules. Save layout and then save the project as usual.
+
+Path facts are shared with the standalone survey. Resource context comes from explicitly retained project entrypoint bindings, or the survey's explicit MLD associations. Missing MLD context does not block proposals. Survey physical IDs are external evidence and never silently become authored project identities.

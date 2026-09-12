@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctStoryPaths.h"
 #include "SpiceSCT/SctTextContract.h"
 #include "Survey.h"
 #include "Worker.h"
@@ -529,13 +530,13 @@ int scan(const Options &options) {
 }
 int query(const Options &options) {
     options.check({"--survey", "--variable", "--script", "--cutscene", "--entrypoint", "--resource", "--dataset",
-                   "--offset", "--limit"},
+                   "--offset", "--limit", "--paths", "--start", "--max-paths", "--max-steps"},
                   {"--json", "--all"});
     auto directory = path(options.need("--survey"));
     auto run = readJson(directory / "survey.json");
     verifyManifest(run, "jahorta.salsa.connectivity-survey");
     std::string kind, value;
-    for (auto k : {"variable", "script", "cutscene", "entrypoint", "resource"})
+    for (auto k : {"variable", "script", "cutscene", "entrypoint", "resource", "paths"})
         if (options.values.contains(std::string("--") + k)) {
             if (!kind.empty())
                 throw std::runtime_error("Choose one query kind");
@@ -563,6 +564,44 @@ int query(const Options &options) {
     verifyManifest(index, "jahorta.salsa.connectivity-index");
     if (run.at("indexIdentity") != hash(index.dump()))
         throw std::runtime_error("Survey index does not match this run");
+    if (kind == "paths") {
+        if (!std::ranges::any_of(run.at("datasets"), [&](const auto &d) { return d.at("id") == value; }))
+            throw std::runtime_error("Unknown path dataset.");
+        std::vector<Json> scripts, resources;
+        for (const auto &f : run.at("files"))
+            if (f.at("identity").value("kind", "sct") == "sct" && f.at("identity").at("dataset") == value) {
+                if (!f.contains("facts")) {
+                    scripts.push_back(f);
+                    continue;
+                }
+                auto name = f.at("facts").get<std::string>();
+                if (name != factName(f.at("identity")))
+                    throw std::runtime_error("Invalid fact filename.");
+                auto facts = readFacts(directory / "facts" / name);
+                if (facts.at("identity") != f.at("identity"))
+                    throw std::runtime_error("Fact identity mismatch.");
+                scripts.push_back(std::move(facts));
+            }
+        for (const auto &r : index.at("resources"))
+            if (r.at("identity").at("dataset") == value)
+                for (const auto &link : r.at("links"))
+                    resources.push_back(link);
+        salsa::core::SctStoryPathOptions pathOptions;
+        if (options.values.contains("--start"))
+            pathOptions.start = options.need("--start");
+        pathOptions.maximumPaths = options.number("--max-paths", 64);
+        pathOptions.maximumSteps = options.number("--max-steps", 128);
+        auto result = salsa::core::SctStoryPaths::propose(scripts, resources, pathOptions);
+        if (!result)
+            throw std::runtime_error(result.diagnostics().front().message);
+        std::cout << Json{{"format", "jahorta.salsa.connectivity-path-query"},
+                          {"schemaVersion", 1},
+                          {"dataset", value},
+                          {"graph", result.value()}}
+                         .dump(2)
+                  << "\n";
+        return 0;
+    }
     if (kind == "resource") {
         if (!index.at("resources").contains(value))
             throw std::runtime_error("Unknown MLD resource key");
@@ -679,11 +718,11 @@ int wmain(int argc, wchar_t **argv) {
             return facts.at("status") == "analyzed" ? 0 : 1;
         }
         if (argc < 2 || std::wstring(argv[1]) == L"--help") {
-            std::cout
-                << "SalsaConnectivitySurvey scan --manifest <file> --output <directory> [--resume] [--jobs 2] "
-                   "[--timeout-seconds 300]\nSalsaConnectivitySurvey query --survey <directory> (--variable "
-                   "BitVar:N | --script dataset:path | --cutscene dataset:path#section | --entrypoint "
-                   "dataset:path#section | --resource dataset:asset.mld) [--json] [--all | --offset N --limit N]\n";
+            std::cout << "SalsaConnectivitySurvey scan --manifest <file> --output <directory> [--resume] [--jobs 2] "
+                         "[--timeout-seconds 300]\nSalsaConnectivitySurvey query --survey <directory> (--variable "
+                         "BitVar:N | --script dataset:path | --cutscene dataset:path#section | --entrypoint "
+                         "dataset:path#section | --resource dataset:asset.mld | --paths dataset) [--json] [--all | "
+                         "--offset N --limit N]\n";
             return 0;
         }
         Options options(argc, argv, 2);

@@ -1,3 +1,4 @@
+#include "SalsaCore/Authoring/SctConnectivityFacts.h"
 #include "Survey.h"
 #include "SalsaCore/Authoring/SctInterpretation.h"
 #include "SalsaCore/Sct/SctDocumentLoader.h"
@@ -15,30 +16,6 @@ namespace core = salsa::core;
 namespace sct = spice::sct;
 namespace {
 constexpr std::size_t MaximumBytes = 256ull * 1024 * 1024;
-std::string decimal(auto id) {
-    return std::to_string(id.value());
-}
-Json site(const sct::SctParameterSite &p) {
-    return {{"instruction", decimal(p.instruction)},
-            {"parameter", p.parameter.schemaIndex},
-            {"group", p.parameter.repeatedGroupOrdinal ? Json(*p.parameter.repeatedGroupOrdinal) : Json(nullptr)}};
-}
-const char *action(core::SctStateAccessKind k) {
-    switch (k) {
-    case core::SctStateAccessKind::Read:
-        return "read";
-    case core::SctStateAccessKind::Set:
-        return "set";
-    case core::SctStateAccessKind::Clear:
-        return "clear";
-    case core::SctStateAccessKind::Toggle:
-        return "toggle";
-    case core::SctStateAccessKind::Assign:
-        return "assign";
-    default:
-        return "unknown";
-    }
-}
 Json diagnostics(const core::SctLoadResult &loaded) {
     Json out = Json::array();
     for (const auto &d : loaded.infrastructureDiagnostics)
@@ -174,80 +151,16 @@ Json extract(std::vector<std::byte> bytes, const Json &identity) {
     if (!loaded.document)
         return out;
     const auto &doc = *loaded.document->document;
-    auto facts = core::SctInterpretation::extract(doc, {1}, {identity.at("sha256").get<std::string>()});
-    out["status"] = "analyzed";
+    auto shared = core::sctConnectivityFacts(doc, identity);
+    out.update(shared);
+    out["diagnostics"] = diagnostics(loaded);
     out["readiness"] = static_cast<unsigned>(loaded.document->readiness);
     out["textConvention"] = loaded.document->provenance->textConvention
-                                ? Json(core::sctTextConventionName(*loaded.document->provenance->textConvention))
-                                : Json(nullptr);
-    out["sections"] = Json::array();
-    out["instructions"] = Json::array();
-    out["accesses"] = Json::array();
-    out["unresolved"] = Json::array();
-    out["scopes"] = Json::array();
-    out["controlFlow"] = Json::array();
-    std::map<sct::SctInstructionId, sct::SctSectionId> owners;
-    std::regex handler("M[0-9]{5}");
-    for (const auto &sec : doc.sections) {
-        const auto *body = std::get_if<sct::SctScriptSectionContent>(&sec.content);
-        const bool entry =
-            sec.nameBytes == "init" || sec.nameBytes == "loop" || std::regex_match(sec.nameBytes, handler);
-        out["sections"].push_back({{"id", decimal(sec.id)},
-                                   {"name", sec.nameBytes},
-                                   {"code", body != nullptr},
-                                   {"entrypoint", entry},
-                                   {"instructionCount", body ? body->instructions.size() : 0}});
-        if (body)
-            for (std::size_t n = 0; n < body->instructions.size(); ++n) {
-                const auto &i = body->instructions[n];
-                owners[i.id] = sec.id;
-                Json row = {{"id", decimal(i.id)},
-                            {"section", decimal(sec.id)},
-                            {"ordinal", n},
-                            {"opcode", i.opcode},
-                            {"skipRefresh", i.skipRefresh},
-                            {"schedule", i.scheduledExpression
-                                             ? Json(core::SctExpressionLanguage::project(*i.scheduledExpression).text)
-                                             : Json(nullptr)},
-                            {"offset", nullptr}};
-                if (const auto *receipt = loaded.document->provenance->importReceipt())
-                    if (auto location = receipt->sourceMap.location(sct::SctDocumentEntityId{i.id}))
-                        row["offset"] = location->primarySpan.offset;
-                out["instructions"].push_back(std::move(row));
-            }
-    }
-    for (const auto &a : facts.accesses) {
-        auto row = site(*a.target.site);
-        row["section"] = decimal(owners.at(a.target.site->instruction));
-        row["variable"] = variableName(static_cast<unsigned>(a.variable.kind), a.variable.index);
-        row["operation"] = action(a.kind);
-        row["expression"] = a.expression;
-        row["condition"] = a.condition;
-        out["accesses"].push_back(std::move(row));
-    }
-    for (const auto &u : facts.unresolvedWrites) {
-        auto row = site(*u.target.site);
-        row["section"] = decimal(owners.at(u.target.site->instruction));
-        row["operation"] = action(u.kind);
-        row["expression"] = u.expression;
-        out["unresolved"].push_back(std::move(row));
-    }
-    for (const auto &scope : facts.effects) {
-        Json sections = Json::array();
-        for (const auto &sec : scope.sections)
-            sections.push_back(decimal(*sec.section));
-        out["scopes"].push_back({{"id", decimal(*scope.root.section)},
-                                 {"sections", sections},
-                                 {"writes", scope.writes},
-                                 {"unresolvedWrites", scope.unresolvedWrites}});
-    }
-    for (const auto &e : facts.controlFlow)
-        out["controlFlow"].push_back(
-            {{"source", decimal(e.sourceInstruction)},
-             {"target", e.targetInstruction ? Json(decimal(*e.targetInstruction)) : Json(nullptr)},
-             {"kind", static_cast<unsigned>(e.kind)},
-             {"site", e.origin ? site(*e.origin) : Json(nullptr)}});
-    out["resourceContext"] = scriptResourceContext(doc);
+        ? Json(core::sctTextConventionName(*loaded.document->provenance->textConvention)) : Json(nullptr);
+    for (auto& row : out["instructions"])
+        if (const auto* receipt = loaded.document->provenance->importReceipt())
+            if (auto location = receipt->sourceMap.location(sct::SctDocumentEntityId{sct::SctInstructionId{std::stoull(row.at("id").get<std::string>())}}))
+                row["offset"] = location->primarySpan.offset;
     out["extractMs"] = std::chrono::duration<double, std::milli>(Clock::now() - parsed).count();
     return out;
 }

@@ -1,4 +1,5 @@
 #include "SalsaCore/Authoring/SctInterpretation.h"
+#include "SalsaCore/Authoring/SctStoryPaths.h"
 #include "SctInterpretationDialog.h"
 #include "SpiceSCT/SctDocumentIndex.h"
 #include <QComboBox>
@@ -67,6 +68,8 @@ class StoryDialog final : public QDialog {
         bar->addWidget(roots, 1);
         button(bar, "Refresh", [this] { refresh(); });
         button(bar, "Save layout", [this] { saveLayout(); });
+        button(bar, "Suggest all paths", [this] { suggest(false); });
+        button(bar, "Suggest from selected", [this] { suggest(true); });
         auto *split = new QSplitter(this);
         layout->addWidget(split, 1);
         auto *left = new QWidget(split);
@@ -86,6 +89,33 @@ class StoryDialog final : public QDialog {
         instructions = new QTextEdit(tabs);
         instructions->setReadOnly(true);
         tabs->addTab(instructions, tr("Generated instructions"));
+        auto *proposals = new QWidget(tabs);
+        auto *pl = new QVBoxLayout(proposals);
+        pathChoices = new QComboBox(proposals);
+        pl->addWidget(pathChoices);
+        proposedSteps = new QListWidget(proposals);
+        proposedSteps->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        pl->addWidget(proposedSteps);
+        auto *pb = new QHBoxLayout;
+        pl->addLayout(pb);
+        button(pb, "Adopt selected steps", [this] { adopt(false); });
+        button(pb, "Reject selected suggestion", [this] { adopt(true); });
+        proposalTab = proposals;
+        tabs->addTab(proposals, tr("Suggested paths"));
+        connect(pathChoices, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] { showPath(); });
+        connect(proposedSteps, &QListWidget::currentRowChanged, this, [this](int n) {
+            if (!proposal || n < 0 || n >= static_cast<int>(proposalNodes.size()))
+                return;
+            auto id = proposalNodes[n];
+            QString text;
+            for (const auto &edge : proposal->graph.at("edges"))
+                if (edge.at("from") == id || edge.at("to") == id)
+                    text += q(edge.dump(2)) + "\n";
+            why->setPlainText(text);
+            if (proposal->targets.contains(id))
+                select(proposal->targets.at(id), false);
+            why->append(text);
+        });
         auto *right = new QWidget(split);
         auto *rightLayout = new QVBoxLayout(right);
         rightLayout->addWidget(new QLabel(tr("Storyline (user-defined order)")));
@@ -97,6 +127,7 @@ class StoryDialog final : public QDialog {
         rightLayout->addLayout(sb);
         button(sb, "New", [this] { newStory(); });
         button(sb, "Overview", [this] { drawStory(); });
+        button(sb, "Name step", [this] { nameStep(); });
         button(sb, "Add cutscene", [this] { editStory(0); });
         button(sb, "Remove", [this] { editStory(1); });
         button(sb, "Up", [this] { editStory(-1); });
@@ -142,7 +173,7 @@ class StoryDialog final : public QDialog {
         connect(steps, &QListWidget::currentRowChanged, this, [this](int n) {
             const auto *s = currentStory();
             if (s && n >= 0 && n < static_cast<int>(s->steps.size()))
-                select(s->steps[n]);
+                select(s->steps[n].target);
         });
         refresh();
     }
@@ -260,9 +291,10 @@ class StoryDialog final : public QDialog {
         story();
         draw();
     }
-    QGraphicsRectItem *node(SctMeaningTarget target, QPointF position, QColor color) {
+    QGraphicsRectItem *node(SctMeaningTarget target, QPointF position, QColor color,
+                            std::optional<SctStoryStepId> occurrence = {}) {
         for (const auto &p : controller.authoringPresentation().storyPlacements)
-            if (p.target == target)
+            if (p.target == target && p.occurrence == occurrence)
                 position = {p.x, p.y};
         auto *rect = new StoryNode;
         rect->setRect(0, 0, 240, 68);
@@ -275,6 +307,8 @@ class StoryDialog final : public QDialog {
                        QGraphicsItem::ItemSendsGeometryChanges);
         rect->setData(0, static_cast<int>(targets.size()));
         targets.push_back(target);
+        if (occurrence)
+            rect->setData(1, QVariant::fromValue<qulonglong>(occurrence->value));
         auto *text = new QGraphicsTextItem(label(target), rect);
         text->setTextWidth(230);
         text->setAcceptedMouseButtons(Qt::NoButton);
@@ -284,7 +318,7 @@ class StoryDialog final : public QDialog {
     void edge(QGraphicsRectItem *from, QGraphicsRectItem *to, const QString &text) {
         auto *line = graph->addLine(QLineF(), QPen(QColor("#697685"), 1.5));
         line->setZValue(-1);
-        auto *caption = graph->addText(text + " →");
+        auto *caption = graph->addText(text + " â†’");
         caption->setDefaultTextColor(QColor("#40546b"));
         caption->setZValue(-1);
         lines.push_back({from, to, line, caption});
@@ -305,16 +339,18 @@ class StoryDialog final : public QDialog {
         lines.clear();
         graph->clear();
         targets.clear();
-        std::map<SctMeaningTarget, QGraphicsRectItem *> nodes;
         QGraphicsRectItem *previous = nullptr;
         for (std::size_t n = 0; n < story->steps.size(); ++n) {
-            const auto &t = story->steps[n];
-            if (!nodes.contains(t))
-                nodes[t] =
-                    node(t, {static_cast<qreal>((n % 3) * 380), static_cast<qreal>((n / 3) * 150)}, QColor("#d7e8fb"));
+            const auto &step = story->steps[n];
+            auto *current = node(step.target, {static_cast<qreal>((n % 3) * 380), static_cast<qreal>((n / 3) * 150)},
+                                 QColor("#d7e8fb"), step.id);
+            if (!step.name.empty())
+                for (auto *child : current->childItems())
+                    if (auto *text = dynamic_cast<QGraphicsTextItem *>(child))
+                        text->setPlainText(q(step.name));
             if (previous)
-                edge(previous, nodes[t], "Story order " + QString::number(n));
-            previous = nodes[t];
+                edge(previous, current, "Story order " + QString::number(n));
+            previous = current;
         }
         graph->blockSignals(false);
     }
@@ -342,7 +378,7 @@ class StoryDialog final : public QDialog {
             const auto &w = analysis.accesses[n];
             writes->addItem(operation(w.kind) + "  " +
                             q(w.variable.kind == SctVariableKind::Bit ? "BitVar" : "Variable") + "[" +
-                            QString::number(w.variable.index) + "]  —  " + label(w.target));
+                            QString::number(w.variable.index) + "]  â€”  " + label(w.target));
             writeTargets.push_back(w.target);
             operations[w.variable].insert(operation(w.kind));
             if (!flags.contains(w.variable)) {
@@ -374,7 +410,7 @@ class StoryDialog final : public QDialog {
         drawn.clear();
         for (auto n : e->unresolvedWrites) {
             const auto &w = analysis.unresolvedWrites[n];
-            writes->addItem(operation(w.kind) + " BitVar[" + q(w.expression) + "] — destination expression");
+            writes->addItem(operation(w.kind) + " BitVar[" + q(w.expression) + "] â€” destination expression");
             writeTargets.push_back(w.target);
         }
         graph->blockSignals(false);
@@ -438,7 +474,7 @@ class StoryDialog final : public QDialog {
         }
     }
     QString instructionText(const sct::SctDocumentInstruction &i) const {
-        QString text = "Instruction " + QString::number(i.id.value()) + " — opcode " + QString::number(i.opcode);
+        QString text = "Instruction " + QString::number(i.id.value()) + " â€” opcode " + QString::number(i.opcode);
         if (i.skipRefresh)
             text += " [skip refresh]";
         if (i.scheduledExpression)
@@ -477,8 +513,13 @@ class StoryDialog final : public QDialog {
                 auto n = item->data(0).toInt();
                 if (n < 0 || n >= static_cast<int>(targets.size()))
                     continue;
-                auto it = std::ranges::find(p.storyPlacements, targets[n], &SctStoryPlacement::target);
-                SctStoryPlacement value{targets[n], item->pos().x(), item->pos().y()};
+                std::optional<SctStoryStepId> occurrence;
+                if (item->data(1).isValid())
+                    occurrence = SctStoryStepId{item->data(1).toULongLong()};
+                auto it = std::ranges::find_if(p.storyPlacements, [&](const auto &position) {
+                    return position.target == targets[n] && position.occurrence == occurrence;
+                });
+                SctStoryPlacement value{targets[n], item->pos().x(), item->pos().y(), occurrence};
                 if (it == p.storyPlacements.end())
                     p.storyPlacements.push_back(value);
                 else
@@ -503,7 +544,7 @@ class StoryDialog final : public QDialog {
         steps->clear();
         if (const auto *s = currentStory())
             for (const auto &t : s->steps)
-                steps->addItem(label(t));
+                steps->addItem(t.name.empty() ? label(t.target) : q(t.name));
     }
     void newStory() {
         bool ok = false;
@@ -529,7 +570,7 @@ class StoryDialog final : public QDialog {
         if (operation == 0) {
             if (!scope())
                 return;
-            values.push_back(scope()->root);
+            values.push_back({{}, scope()->root, {}});
         } else {
             if (row < 0 || row >= static_cast<int>(values.size()))
                 return;
@@ -545,10 +586,126 @@ class StoryDialog final : public QDialog {
         apply("Edit storyline order", [=](const auto &state) {
             auto next = state;
             for (auto &story : next.project.storylines)
-                if (story.id == id)
+                if (story.id == id) {
                     story.steps = values;
+                    for (auto &step : story.steps)
+                        if (!step.id.valid()) {
+                            auto allocated = next.project.template allocate<SctStoryStepId>();
+                            if (!allocated)
+                                return Result<SctAuthoringState>::failure(allocated.diagnostics());
+                            step.id = allocated.value();
+                        }
+                }
             return Result<SctAuthoringState>::success(std::move(next));
         });
+    }
+    void nameStep() {
+        const auto *story = currentStory();
+        auto row = steps->currentRow();
+        if (!story || row < 0 || row >= static_cast<int>(story->steps.size()))
+            return;
+        auto storyId = story->id;
+        auto stepId = story->steps[row].id;
+        bool ok = false;
+        auto name = QInputDialog::getText(this, tr("Story occurrence"), tr("Name"), QLineEdit::Normal,
+                                          q(story->steps[row].name), &ok);
+        if (!ok)
+            return;
+        apply("Name story occurrence", [=](const auto &state) {
+            auto next = state;
+            for (auto &s : next.project.storylines)
+                if (s.id == storyId)
+                    for (auto &step : s.steps)
+                        if (step.id == stepId)
+                            step.name = name.toStdString();
+            return Result<SctAuthoringState>::success(std::move(next));
+        });
+    }
+    void suggest(bool anchored) {
+        SctStoryPathOptions options;
+        auto initial = SctStoryPaths::analyze(*state);
+        if (!initial) {
+            fail(initial.diagnostics());
+            return;
+        }
+        if (anchored && scope())
+            for (const auto &[id, target] : initial.value().targets)
+                if (target == scope()->root) {
+                    options.start = id;
+                    break;
+                }
+        if (anchored && !options.start) {
+            why->setPlainText(tr("Choose an available cutscene/module anchor."));
+            return;
+        }
+        auto result = anchored ? SctStoryPaths::analyze(*state, options) : std::move(initial);
+        if (!result) {
+            fail(result.diagnostics());
+            return;
+        }
+        proposal = std::move(result.value());
+        pathChoices->blockSignals(true);
+        pathChoices->clear();
+        for (std::size_t n = 0; n < proposal->graph.at("paths").size(); ++n)
+            pathChoices->addItem(tr("Candidate path %1").arg(n + 1));
+        pathChoices->blockSignals(false);
+        showPath();
+        tabs->setCurrentWidget(proposalTab);
+        why->setPlainText(
+            tr("Suggested partial ordering. Cycles stay grouped; select individual occurrences in the desired order. "
+               "Accepting changes narrative metadata only.\n") +
+            (proposal->graph.at("truncated") == true ? tr("Enumeration reached its configured limit.\n") : QString{}) +
+            q(proposal->graph.at("gaps").dump(2)));
+    }
+    void showPath() {
+        proposedSteps->clear();
+        proposalNodes.clear();
+        if (!proposal)
+            return;
+        auto n = pathChoices->currentIndex();
+        if (n < 0 || n >= static_cast<int>(proposal->graph.at("paths").size()))
+            return;
+        std::map<std::string, SctConnectivityJson> nodes;
+        for (const auto &node : proposal->graph.at("nodes"))
+            nodes[node.at("id")] = node;
+        for (const auto &componentId : proposal->graph.at("paths")[n]) {
+            const auto &component = proposal->graph.at("components").at(std::stoull(componentId.get<std::string>()));
+            for (const auto &node : component.at("members")) {
+                auto id = node.get<std::string>();
+                auto t = proposal->targets.find(id);
+                QString text = t == proposal->targets.end() ? q(nodes.at(id).value("name", id)) : label(t->second);
+                if (component.at("cycle") == true)
+                    text = tr("Cycle / unordered: ") + text;
+                auto *item = new QListWidgetItem(text, proposedSteps);
+                if (t == proposal->targets.end())
+                    item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+                proposalNodes.push_back(id);
+            }
+        }
+    }
+    void adopt(bool reject) {
+        if (!proposal)
+            return;
+        const auto *story = currentStory();
+        if (!reject && !story) {
+            why->setPlainText(tr("Create or choose a storyline first."));
+            return;
+        }
+        std::vector<std::string> nodes;
+        for (int i = 0; i < proposedSteps->count(); ++i)
+            if (proposedSteps->item(i)->isSelected())
+                nodes.push_back(proposalNodes[i]);
+        if (nodes.empty())
+            return;
+        auto captured = *proposal;
+        auto id = story ? story->id : SctStorylineId{};
+        apply(reject ? "Reject suggested story order" : "Adopt suggested story order", [=](const auto &state) {
+            return reject ? SctStoryPaths::reject(state, captured, nodes)
+                          : SctStoryPaths::adopt(state, captured, id, nodes);
+        });
+        proposal.reset();
+        pathChoices->clear();
+        proposedSteps->clear();
     }
     void open() {
         if (!selected)
@@ -651,6 +808,11 @@ class StoryDialog final : public QDialog {
     std::function<void(AssetLocator, SctNavigationTarget)> navigate;
     std::shared_ptr<const SctAuthoringState> state;
     SctInterpretationAnalysis analysis;
+    std::optional<SctProjectStoryPaths> proposal;
+    std::vector<std::string> proposalNodes;
+    QComboBox *pathChoices;
+    QListWidget *proposedSteps;
+    QWidget *proposalTab;
     std::optional<SctMeaningTarget> selected;
     std::optional<SctPreparedAuthoringOutput> prepared;
     std::vector<SctMeaningTarget> targets, writeTargets, readerTargets;

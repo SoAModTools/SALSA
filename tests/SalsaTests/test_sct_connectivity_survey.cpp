@@ -1,6 +1,7 @@
 #include "../../src/SalsaConnectivitySurvey/Survey.h"
 #include "../../src/SalsaConnectivitySurvey/Worker.h"
 #include "SalsaCore/Authoring/SctInterpretation.h"
+#include "SalsaCore/Authoring/SctStoryPaths.h"
 #include "SpiceMLD/MldDocumentWriter.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include <Windows.h>
@@ -367,4 +368,27 @@ TEST(ConnectivitySurveyProcessTest, TimeoutCancellationAndExitStatusAreDistinct)
         salsa::survey::runIsolated(exe, {L"-NoProfile", L"-Command", L"exit 7"}, std::chrono::seconds(10), stop);
     EXPECT_TRUE(exited.interruption.empty());
     EXPECT_EQ(exited.exitCode, 7u);
+}
+
+TEST(ConnectivitySurveyPathsTest, ConditionalEffectsPreserveBothWritesAndDatasetIsolation) {
+    auto data=bytes();auto a=extract(data,identity(data));auto b=a;
+    b["identity"]["key"]="synthetic:me002b.sct";b["identity"]["path"]="me002b.sct";
+    auto graph=SctStoryPaths::propose({a,b});ASSERT_TRUE(graph);
+    bool enables=false,inhibits=false;
+    for(const auto& e:graph.value()["edges"]) {enables|=e["kind"]=="enables";inhibits|=e["kind"]=="inhibits";}
+    EXPECT_TRUE(enables);EXPECT_TRUE(inhibits);
+    b["identity"]["dataset"]="another-disc";
+    auto isolated=SctStoryPaths::propose({a,b});ASSERT_TRUE(isolated);
+    for(const auto& e:isolated.value()["edges"])EXPECT_FALSE(e["kind"]=="enables"||e["kind"]=="inhibits");
+    EXPECT_EQ(SctStoryPaths::propose({a}).value(),SctStoryPaths::propose({a}).value());
+}
+TEST(ConnectivitySurveyPathsTest, CyclesAndBoundsRemainExplicit) {
+    auto data=bytes();auto a=extract(data,identity(data));
+    auto scene=a["instructions"][2]["id"],handler=a["instructions"][5]["id"];
+    a["controlFlow"].push_back({{"source",scene},{"target",handler},{"kind",5},{"site",nullptr}});
+    auto graph=SctStoryPaths::propose({a});ASSERT_TRUE(graph);
+    EXPECT_TRUE(std::ranges::any_of(graph.value()["components"],[](const auto& c){return c.at("cycle")==true;}));
+    SctStoryPathOptions options;options.maximumEdges=1;options.maximumPaths=1;options.maximumSteps=1;
+    auto bounded=SctStoryPaths::propose({a},{},options);ASSERT_TRUE(bounded);EXPECT_TRUE(bounded.value()["truncated"]);
+    options.start="unavailable";EXPECT_FALSE(SctStoryPaths::propose({a},{},options));
 }

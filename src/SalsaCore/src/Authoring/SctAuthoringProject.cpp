@@ -127,6 +127,7 @@ std::vector<Diagnostic> SctAuthoringProject::validate() const {
     registerIds(languageGroups,"Language group"); registerIds(texts,"Text resource"); registerIds(logicalTexts,"Logical text");
     registerIds(storylines,"Storyline"); registerIds(meanings,"Meaning"); registerIds(explanations,"Explanation");
     for (const auto& sequence : sequences) registerIds(sequence.actions, "Action");
+    for (const auto& story : storylines) registerIds(story.steps, "Story occurrence");
     if (nextEntityId == 0 || (!ids.empty() && nextEntityId <= *ids.rbegin()))
         out.push_back(error("Allocator must be nonzero and above every allocated ID."));
 
@@ -398,14 +399,20 @@ std::vector<Diagnostic> SctAuthoringPresentation::validate(const SctAuthoringPro
         if (!std::isfinite(item.x) || !std::isfinite(item.y)) report("Presentation coordinates must be finite.");
     }
     if (!std::isfinite(storyZoom) || storyZoom <= 0) report("Story zoom must be finite and positive.");
-    std::set<SctMeaningTarget> storyTargets;
+    std::set<std::pair<SctMeaningTarget,std::optional<SctStoryStepId>>> storyTargets;
     auto probe = semantic;
     probe.meanings.clear(); probe.explanations.clear(); probe.storylines.clear();
     for (const auto& item : storyPlacements) {
+        if (item.occurrence) {
+            if (!item.occurrence->valid() || item.occurrence->value >= semantic.nextEntityId)
+                report("Invalid story occurrence identity.");
+            for (const auto& story : semantic.storylines) for (const auto& step : story.steps)
+                if (step.id == *item.occurrence && step.target != item.target) report("Story occurrence target mismatch.");
+        }
         // Historical placements may outlive their source item, like aliases.
         probe.meanings.clear();
         probe.meanings.push_back({{}, item.target, "placement"});
-        if (hasErrors(SctInterpretation::validate(probe)) || !storyTargets.insert(item.target).second)
+        if (hasErrors(SctInterpretation::validate(probe)) || !storyTargets.insert({item.target,item.occurrence}).second)
             report("Story placement has an invalid or duplicate target.");
         if (!std::isfinite(item.x) || !std::isfinite(item.y)) report("Story coordinates must be finite.");
     }

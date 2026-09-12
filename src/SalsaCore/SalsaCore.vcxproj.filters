@@ -122,11 +122,15 @@
     <ClCompile Include="src\Authoring\SctEntrypointAuthoring.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctTextAuthoring.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctInterpretation.cpp"><Filter>Authoring</Filter></ClCompile>
+    <ClCompile Include="src\Authoring\SctConnectivityFacts.cpp"><Filter>Authoring</Filter></ClCompile>
+    <ClCompile Include="src\Authoring\SctStoryPaths.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctEntrypointActivation.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClCompile Include="src\Authoring\SctOverworldAuthoring.cpp"><Filter>Authoring</Filter></ClCompile>
     <ClInclude Include="include\SalsaCore\Authoring\SctOverworldAuthoring.h"><Filter>Authoring</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Authoring\SctEntrypointAuthoring.h"><Filter>Authoring</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Authoring\SctTextAuthoring.h"><Filter>Authoring</Filter></ClInclude>
     <ClInclude Include="include\SalsaCore\Authoring\SctInterpretation.h"><Filter>Authoring</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Authoring\SctConnectivityFacts.h"><Filter>Authoring</Filter></ClInclude>
+    <ClInclude Include="include\SalsaCore\Authoring\SctStoryPaths.h"><Filter>Authoring</Filter></ClInclude>
   </ItemGroup>
 </Project>

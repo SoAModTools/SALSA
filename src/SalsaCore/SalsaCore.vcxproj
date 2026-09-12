@@ -54,6 +54,8 @@
     <ClInclude Include="include\SalsaCore\Authoring\SctEntrypointAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctTextAuthoring.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctInterpretation.h" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctConnectivityFacts.h" />
+    <ClInclude Include="include\SalsaCore\Authoring\SctStoryPaths.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctProjectContainer.h" />
     <ClInclude Include="include\SalsaCore\Authoring\SctAuthoringMaterializer.h" />
     <ClInclude Include="include\SalsaCore\Application\ApplicationInfo.h" />
@@ -115,6 +117,8 @@
     <ClCompile Include="src\Authoring\SctEntrypointAuthoring.cpp" />
     <ClCompile Include="src\Authoring\SctTextAuthoring.cpp" />
     <ClCompile Include="src\Authoring\SctInterpretation.cpp" />
+    <ClCompile Include="src\Authoring\SctConnectivityFacts.cpp" />
+    <ClCompile Include="src\Authoring\SctStoryPaths.cpp" />
     <ClCompile Include="src\Authoring\SctEntrypointActivation.cpp" />
     <ClCompile Include="src\Authoring\SctOverworldAuthoring.cpp" />
     <ClInclude Include="include\SalsaCore\Authoring\SctOverworldAuthoring.h" />

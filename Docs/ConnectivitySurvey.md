@@ -100,3 +100,14 @@ Resource queries return detailed associations. Variable queries add matching eve
 Synthetic tests cover the shared extraction and compact index, compressed records, queries, parallel/serial equivalence, corrupt-cache retry, partial failure, timeout, cancellation, and exit status. MLD cases cover duplicate entry identities, direct handlers, signal consumers, structured responses, qualified transition candidates, missing resources, and changed-resource cache invalidation. These tests live in SalsaTests; the survey executable itself has no test-framework dependency.
 
 Actual corpus launchers belong in the sister private testing repository. Its separate `tools/salsa-connectivity/Invoke-Survey.ps1` runs the approved full DC EU survey on both available discs under that repository's mutex, using its local corpus-location configuration. By default it adds paired base-MLD candidates for field stems below 200 from each disc's actual inventory, retaining all filename matches and reporting missing pairs. `-SctOnly` omits that optional context. It does not call the gtest harness or alter the existing `me002*.sct` connectivity regression scope. Keep input locations and all survey artifacts untracked.
+
+## Candidate path queries
+
+```text
+SalsaConnectivitySurvey query --survey survey-output --paths example_disc1 --json
+SalsaConnectivitySurvey query --survey survey-output --paths example_disc1 --start example_disc1:field/me002a.sct#12 --max-paths 32 --max-steps 64 --json
+```
+
+Path queries use the same Qt-free analysis as the story viewer, operating entirely on finalized cached facts. They return qualified nodes, typed/evidenced edges, unresolved gaps, strongly connected components, topological layers, and bounded candidate paths through those components. Cycles are unordered groups; the component member order does not claim a story sequence. Every path references component IDs. `truncated` reports edge, path, or length limits (defaults: 20,000 edges, 64 paths, 128 components per path). Path response format is `jahorta.salsa.connectivity-path-query`, version 1; existing survey formats remain version 2.
+
+Sets and clears affecting predicates that guard actual transfers can suggest enables/inhibits relationships. Compound conditions retain their other requirements, and writes remain possible effects rather than guaranteed final state. Single-observed-writer candidates receive a stronger ranking hint. Ordinary literal loads can match an explicit supported previous-location comparison or switch case. Unqualified special return producers remain ordinary source observations. Field navigation cycles and repeated use of one script are expected; no total main-story order is imposed.

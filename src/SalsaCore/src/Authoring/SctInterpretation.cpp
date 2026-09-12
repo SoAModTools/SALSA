@@ -169,8 +169,8 @@ std::vector<Diagnostic> SctInterpretation::validate(const SctAuthoringProject &p
         if (story.name.empty())
             ds.push_back(error("Storyline needs a name."));
         for (const auto &step : story.steps) {
-            target(step);
-            if (!step.section && (!step.entity || !std::holds_alternative<SctModuleId>(*step.entity)))
+            target(step.target);
+            if (!step.target.section && (!step.target.entity || !std::holds_alternative<SctModuleId>(*step.target.entity)))
                 ds.push_back(error("Storyline steps must identify modules or sections."));
         }
     }

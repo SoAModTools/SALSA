@@ -32,6 +32,7 @@ using SctLanguageGroupId = SctAuthoringId<struct AuthoringLanguageGroupTag>;
 using SctTextResourceId = SctAuthoringId<struct AuthoringTextResourceTag>;
 using SctLogicalTextId = SctAuthoringId<struct AuthoringLogicalTextTag>;
 using SctBaselineId = SctAuthoringId<struct AuthoringBaselineTag>;
+using SctStoryStepId = SctAuthoringId<struct AuthoringStoryStepTag>;
 using SctStorylineId = SctAuthoringId<struct AuthoringStorylineTag>;
 using SctMeaningId = SctAuthoringId<struct AuthoringMeaningTag>;
 using SctExplanationId = SctAuthoringId<struct AuthoringExplanationTag>;
@@ -288,14 +289,21 @@ struct SctMeaning final {
     std::optional<SctExplanationId> explanation;
 };
 
+struct SctStoryStep final {
+    SctStoryStepId id;
+    SctMeaningTarget target;
+    std::string name;
+    auto operator<=>(const SctStoryStep&) const = default;
+};
 struct SctStoryline final {
     SctStorylineId id;
     std::string name;
-    std::vector<SctMeaningTarget> steps; // authored narrative order, not execution
+    std::vector<SctStoryStep> steps; // authored narrative occurrences, not execution
 };
 struct SctStoryPlacement final {
     SctMeaningTarget target;
     double x = 0, y = 0;
+    std::optional<SctStoryStepId> occurrence;
 };
 
 // Construction/serialization value. SctAuthoringSession owns accepted live

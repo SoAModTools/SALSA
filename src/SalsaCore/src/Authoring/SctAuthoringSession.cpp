@@ -25,6 +25,8 @@ std::map<std::uint64_t, unsigned> identities(const SctAuthoringProject& project)
     add(project.ports, 4); add(project.connections, 5); add(project.contents, 6);
     add(project.sequences, 7); add(project.predicates, 8);
     add(project.languageGroups,10); add(project.texts,11); add(project.logicalTexts,12);
+    add(project.storylines,13); add(project.meanings,14); add(project.explanations,15);
+    for (const auto& story : project.storylines) add(story.steps,16);
     for (const auto& sequence : project.sequences) add(sequence.actions, 9);
     return result;
 }
@@ -109,6 +111,10 @@ Result<SctAuthoringChange> SctAuthoringSession::execute(RevisionId expected, std
                     return Result<SctAuthoringChange>::failure(error("Required init/loop section identities cannot be removed or renamed."));
             }
         }
+        for(const auto& story:current_->project.storylines) for(const auto& step:story.steps)
+            for(const auto& afterStory:next.project.storylines) for(const auto& after:afterStory.steps)
+                if(step.id==after.id && step.target!=after.target)
+                    return Result<SctAuthoringChange>::failure(error("A story occurrence cannot silently change its target."));
         const auto priorIds = identities(current_->project);
         for (const auto& [id, kind] : identities(next.project)) {
             const auto found = priorIds.find(id);

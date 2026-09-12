@@ -2,6 +2,7 @@
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include "SalsaCore/Authoring/SctModuleAuthoring.h"
 #include "SalsaCore/Authoring/SctInterpretation.h"
+#include "SalsaCore/Authoring/SctStoryPaths.h"
 #include "SalsaCore/Sct/SctSemanticOperation.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include <gtest/gtest.h>
@@ -311,7 +312,7 @@ TEST(SctInterpretationTest, StoryOrderAndPresentationPersistWithoutChangingProgr
     const auto before = output(state);
     auto effects = SctInterpretation::analyze(state).effects;
     auto id = state.project.allocate<SctStorylineId>().value();
-    state.project.storylines.push_back({id, "Main storyline", {effects[1].root, effects[0].root, effects[1].root}});
+    state.project.storylines.push_back({id, "Main storyline", {{state.project.allocate<SctStoryStepId>().value(),effects[1].root,{}}, {state.project.allocate<SctStoryStepId>().value(),effects[0].root,{}}, {state.project.allocate<SctStoryStepId>().value(),effects[1].root,{}}}});
     ASSERT_FALSE(hasErrors(state.project.validate()));
     const auto encoded = SctAuthoringCodec::encode(state.project).value();
     auto decoded = SctAuthoringCodec::decode(encoded);
@@ -380,3 +381,24 @@ TEST(SctInterpretationTest, ExplicitModuleSectionsDefineScopeWithoutNamingOrEntr
     EXPECT_EQ(analysis.accesses[effect->writes.front()].variable,(SctVariableKey{SctVariableKind::Bit,21}));
 }
 } // namespace
+
+TEST(SctStoryPathsTest, AdoptedOccurrencesPersistIndependentlyWithoutChangingExecution) {
+    auto state=fixture();auto before=output(state);
+    auto story=state.project.allocate<SctStorylineId>().value();state.project.storylines.push_back({story,"Story",{}});
+    auto proposal=SctStoryPaths::analyze(state);ASSERT_TRUE(proposal);
+    auto node=proposal.value().targets.begin()->first;
+    auto adopted=SctStoryPaths::adopt(state,proposal.value(),story,{node,node});ASSERT_TRUE(adopted);
+    ASSERT_FALSE(hasErrors(adopted.value().project.validate()));
+    const auto& steps=adopted.value().project.storylines[0].steps;ASSERT_EQ(steps.size(),2);
+    EXPECT_NE(steps[0].id,steps[1].id);EXPECT_EQ(output(adopted.value()),before);
+    auto json=SctAuthoringCodec::encode(adopted.value().project);ASSERT_TRUE(json);
+    auto decoded=SctAuthoringCodec::decode(json.value());ASSERT_TRUE(decoded);EXPECT_EQ(decoded.value().storylines[0].steps,steps);
+    SctAuthoringPresentation view;view.project=state.project.id;view.storyPlacements={{steps[0].target,10,20,steps[0].id},{steps[1].target,30,40,steps[1].id}};
+    auto encoded=SctAuthoringPresentationCodec::encode(view,adopted.value().project);ASSERT_TRUE(encoded);
+    auto positions=SctAuthoringPresentationCodec::decode(encoded.value(),adopted.value().project);ASSERT_TRUE(positions);EXPECT_NE(positions.value().storyPlacements[0].occurrence,positions.value().storyPlacements[1].occurrence);
+    auto session=SctAuthoringSession::open(state);ASSERT_TRUE(session);
+    ASSERT_TRUE(session.value()->execute(state.project.revision,"Adopt",[&](const auto& current){return SctStoryPaths::adopt(current,proposal.value(),story,{node,node});}));
+    EXPECT_FALSE(SctStoryPaths::adopt(session.value()->state(),proposal.value(),story,{node}));
+    ASSERT_TRUE(session.value()->undo());EXPECT_TRUE(session.value()->state().project.storylines[0].steps.empty());ASSERT_TRUE(session.value()->redo());
+    EXPECT_EQ(session.value()->state().project.storylines[0].steps,steps);
+}
