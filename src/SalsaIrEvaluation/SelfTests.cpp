@@ -192,7 +192,7 @@ int selfTests() {
             std::cout << "PASS normal run/report/comparison smoke\n";
         }
     } catch(const std::exception& e) { std::cerr << "FAIL smoke: " << e.what() << '\n'; return 1; }
-    std::cout << "3 smoke checks passed. No GUI or corpus loaded.\n";
+    std::cout << "3 smoke checks passed. No GUI or private game corpus loaded.\n";
     return 0;
 }
 } // namespace salsa::evaluation

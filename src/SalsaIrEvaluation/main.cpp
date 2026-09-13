@@ -1,4 +1,5 @@
 #include "Evaluation.h"
+#include "Corpus.h"
 #include <Windows.h>
 #include <iostream>
 #include <map>
@@ -45,11 +46,18 @@ Json failureReport(const RunSpec& spec,std::string disposition,std::string messa
         {"run_id",std::to_string(GetCurrentProcessId())+"-supervisor-"+std::to_string(Clock::now().time_since_epoch().count())},
         {"disposition",disposition},{"phase","supervisor"},{"diagnostics",Json::array({message})}};
 }
-int supervise(const RunSpec& spec,const std::filesystem::path& output) {
+int supervise(const RunSpec& spec,const std::filesystem::path& output,const std::filesystem::path& corpusManifest={}) {
+    const bool corpusRun=!corpusManifest.empty();
+    const auto supervisorFailure=[&](std::string disposition,std::string message){
+        auto report=failureReport(spec,std::move(disposition),std::move(message));
+        if(corpusRun){report["format"]="jahorta.salsa.ir-corpus-evaluation";report["complete"]=false;
+            report["spec"]={{"candidate",spec.candidate},{"seed",std::to_string(spec.seed)},{"requested_edits",std::to_string(spec.count)},{"memory_mb",std::to_string(spec.memoryMb)},{"timeout_ms",std::to_string(spec.timeoutMs)}};}
+        return report;
+    };
     auto validation=validateSpec(spec);
-    if (!validation) {
+    if (!validation && !corpusRun) {
         const auto status=validation.diagnostics()[0].code==salsa::core::DiagnosticCode::EvaluationUnsupported ? "unsupported-required":"invalid-spec";
-        require(writeNewReport(output,failureReport(spec,status,validation.diagnostics()[0].message))); return exitCode(status);
+        require(writeNewReport(output,supervisorFailure(status,validation.diagnostics()[0].message))); return exitCode(status);
     }
     if (std::filesystem::exists(output)) throw std::runtime_error("Output exists; choose a fresh path");
     auto childOutput=output; childOutput+=L".worker";
@@ -61,7 +69,8 @@ int supervise(const RunSpec& spec,const std::filesystem::path& output) {
     const auto length=GetModuleFileNameW(nullptr,path.data(),static_cast<DWORD>(path.size()));
     if (!length || length==path.size()) throw std::runtime_error("Cannot resolve executable");
     const std::wstring executable(path.data(),length);
-    std::wstring command=quote(executable)+L" worker "+quote(wide(encodeSpec(spec).dump()))+L" "+quote(childOutput.wstring())+L" "+quote(eventName);
+    Json config=encodeSpec(spec); if(corpusRun) config["manifest"]=utf8(corpusManifest.wstring());
+    std::wstring command=quote(executable)+(corpusRun?L" corpus-worker ":L" worker ")+quote(wide(config.dump()))+L" "+quote(childOutput.wstring())+L" "+quote(eventName);
     Handle job(CreateJobObjectW(nullptr,nullptr));
     if (!job.value) throw std::runtime_error("Cannot create process job");
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -89,13 +98,13 @@ int supervise(const RunSpec& spec,const std::filesystem::path& output) {
     if (!terminated.empty()) {
         TerminateJobObject(job.value,static_cast<UINT>(exitCode(terminated)));
         WaitForSingleObject(worker.value,5000);
-        require(writeNewReport(output,failureReport(spec,terminated,"Worker stopped; no partial sample accepted")));
+        require(writeNewReport(output,supervisorFailure(terminated,"Worker stopped; no partial sample accepted")));
         return exitCode(terminated);
     }
     DWORD code{}; if (!GetExitCodeProcess(worker.value,&code)) throw std::runtime_error("Cannot read worker exit status");
     auto report=readJson(childOutput);
-    if (!report || !validateReport(report.value()) || code!=static_cast<DWORD>(exitCode(report.value().value("disposition","crashed/incomplete")))) {
-        require(writeNewReport(output,failureReport(spec,"crashed/incomplete","Worker failed or did not produce a complete matching report")));
+    if (!report || !(corpusRun?(report.value().value("format",std::string{})=="jahorta.salsa.ir-corpus-evaluation"):validateReport(report.value()).ok()) || code!=static_cast<DWORD>(exitCode(report.value().value("disposition","crashed/incomplete")))) {
+        require(writeNewReport(output,supervisorFailure("crashed/incomplete","Worker failed or did not produce a complete matching report")));
         return 9;
     }
     require(writeNewReport(output,report.value()));
@@ -110,7 +119,9 @@ void help() {
         "  [--fixture small-story|few-long|many-short|high-use|churn|story-connectivity|lifetime|native-gc|native-dc] [--trace semantic-edits]\n"
         "SalsaIrEvaluation compare --manifest PATH --report PATH\n"
         "Manifest: {\"format\":\"jahorta.salsa.ir-evaluation-manifest\",\"version\":1,\"reports\":[\"relative/report.json\",...]}\n"
-        "Synthetic console evaluation only. Output paths must be fresh.\n";
+        "SalsaIrEvaluation corpus --manifest PATH --candidate dense|paged|section-local --report PATH\n"
+        "  [--seed 1] [--edits 1000] [--timeout-ms 600000] [--memory-mb 4096]\n"
+        "Corpus loading is opt-in. Use SALSA tools/run_ir_corpus.py; output paths must be fresh.\n";
 }
 }
 int wmain(int argc,wchar_t** argv) {
@@ -121,6 +132,15 @@ int wmain(int argc,wchar_t** argv) {
         if (argc<2 || std::wstring_view(argv[1])==L"--help") { help(); return 0; }
         const auto command=utf8(argv[1]);
         if (command=="self-test") { if(argc!=2) throw std::runtime_error("self-test takes no arguments"); return selfTests(); }
+        if(command=="corpus-worker") {
+            if(argc!=5) throw std::runtime_error("Invalid corpus worker arguments");
+            const auto config=Json::parse(utf8(argv[2])); auto manifest=readJson(std::filesystem::path(wide(config.at("manifest").get<std::string>())));
+            if(!manifest) throw std::runtime_error("Cannot read corpus manifest");
+            Handle cancelEvent(OpenEventW(SYNCHRONIZE,FALSE,argv[4])); if(!cancelEvent.value) throw std::runtime_error("Cannot open cancellation event");
+            const auto poll=[](void* event)->bool {return WaitForSingleObject(static_cast<HANDLE>(event),0)==WAIT_OBJECT_0;};
+            auto report=corpus::run(manifest.value(),config.at("candidate").get<std::string>(),std::stoull(config.at("seed").get<std::string>()),std::stoull(config.at("count").get<std::string>()),Controls{&cancelled,poll,cancelEvent.value});
+            require(writeNewReport(argv[3],report));return exitCode(report.at("disposition").get<std::string>());
+        }
         if (command=="worker") {
             if(argc!=5) throw std::runtime_error("Invalid internal worker arguments");
             auto decoded=decodeSpec(Json::parse(utf8(argv[2])));
@@ -138,6 +158,16 @@ int wmain(int argc,wchar_t** argv) {
         }
         auto take=[&](const char* key)->std::wstring { auto node=options.extract(key); if(node.empty()) return {}; return std::move(node.mapped()); };
         auto output=take("report"); if(output.empty()) throw std::runtime_error("--report is required");
+        if(command=="corpus") {
+            auto manifest=take("manifest");if(manifest.empty())throw std::runtime_error("--manifest is required");
+            RunSpec spec;spec.candidate="paged";spec.count=1000;spec.memoryMb=4096;spec.timeoutMs=600000;
+            auto candidate=take("candidate");if(!candidate.empty())spec.candidate=utf8(candidate);
+            if(spec.candidate!="dense" && spec.candidate!="paged" && spec.candidate!="section-local")throw std::runtime_error("Unknown corpus candidate");
+            auto number=[&](const char* name,uint64_t fallback,uint64_t limit){auto value=take(name);if(value.empty())return fallback;size_t used=0;auto text=utf8(value);if(text.empty() || text.find_first_not_of("0123456789")!=std::string::npos)throw std::runtime_error("Invalid numeric option");auto n=std::stoull(text,&used);if(used!=text.size() || n>limit)throw std::runtime_error("Corpus option outside range");return static_cast<uint64_t>(n);};
+            spec.count=number("edits",spec.count,100000);spec.seed=number("seed",1,UINT64_MAX);spec.memoryMb=number("memory-mb",4096,65536);spec.timeoutMs=number("timeout-ms",600000,3600000);
+            if(spec.memoryMb<32 || !spec.timeoutMs || !options.empty())throw std::runtime_error("Invalid corpus limits/options");
+            return supervise(spec,std::filesystem::absolute(output),std::filesystem::absolute(manifest));
+        }
         if(command=="run") {
             Json config=encodeSpec(RunSpec{});
             for(auto [option,field]: {std::pair{"candidate","candidate"},{"count","count"},{"seed","seed"},

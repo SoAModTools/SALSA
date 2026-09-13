@@ -1,6 +1,6 @@
 # Whole-program IR evaluation tool
 
-`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR6 adds bounded SPICE SCT import/fresh export and compressed experimental persistence to the dense, paged, section-local, and reference storage candidates behind the shared program/editing host. It does not change the editor. IR7 selects paged storage and shared policies for production integration; see [the architecture decision](WholeProgramIrArchitecture.md). Native experiments use synthetic SCT bytes; corpus loading is not enabled.
+`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR6 adds bounded SPICE SCT import/fresh export and compressed experimental persistence to the dense, paged, section-local, and reference storage candidates behind the shared program/editing host. It does not change the editor. IR7 identifies paged storage and shared policies as the leading direction, pending corpus sign-off; see [the architecture decision](WholeProgramIrArchitecture.md). Native experiments use synthetic SCT bytes; corpus loading is a separate opt-in command described in [the corpus infrastructure](WholeProgramIrCorpus.md).
 
 ## Run an experiment
 
@@ -242,3 +242,6 @@ All storage candidates show the same broad reload improvement: their 10k binary 
 There are tradeoffs. This fixed-record binary payload is larger before compression (GC native: 2,160,886 versus 1,777,876 bytes) and slightly larger after compression. Its compression/framing/checksum cost is higher (GC native medians: 122.704 versus 71.384 ms), enough to outweigh faster binary encoding in this save path. Binary row decoding also makes ordinary host construction slower than loading already-materialized JSON-decoded records (8.851 versus 4.650 ms for dense GC native). It removes the much larger JSON parse/model construction and cleanup costs; it does not eliminate all conversion or index work. Compression/layout tuning and architecture selection remain later decisions.
 
 Validation: elevated MSVC v145 Release build and the existing three console smoke groups passed. The integration group now includes deterministic binary encoding, cross-candidate identity preservation, editing/undo/redo after input release, malformed header/range/allocator handling and JSON/binary report agreement. Existing native smoke cases exercise both payloads. No additional suite, GUI test or separate verification prerequisite was introduced. No SPICE implementation changed, so unrelated or additional SPICE suites were not run.
+
+
+The subsequent user-requested GC US full-script experiment is documented in [Whole-script corpus infrastructure](WholeProgramIrCorpus.md). Its generic native-content host reuses the candidate layouts and FactIndex but has broader payload coverage than the IR6 fixtures. Do not pool their timing or memory statistics as equivalent workloads.

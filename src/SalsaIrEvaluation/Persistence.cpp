@@ -112,7 +112,7 @@ std::vector<std::byte> fileRoundTrip(std::span<const std::byte> bytes,Json& meas
 Json processMemory() {
     PROCESS_MEMORY_COUNTERS_EX memory{}; memory.cb=sizeof(memory);
     if(!GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory),sizeof(memory))) return nullptr;
-    return {{"private_bytes",number(memory.PrivateUsage)},{"peak_working_set_bytes",number(memory.PeakWorkingSetSize)},
+    return {{"private_bytes",number(memory.PrivateUsage)},{"working_set_bytes",number(memory.WorkingSetSize)},{"peak_working_set_bytes",number(memory.PeakWorkingSetSize)},
         {"peak_pagefile_bytes",number(memory.PeakPagefileUsage)},{"scope","Windows process-wide cumulative peaks, including fixture/native/JSON/transient state; not exact temporary object accounting"}};
 }
 } // namespace salsa::evaluation
