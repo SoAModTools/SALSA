@@ -76,6 +76,11 @@ enum class DiagnosticCode {
     UnresolvedSctAuthoringBinding,
     InvalidSctAuthoringPresentation,
     SctSourceArtifactOmitted,
+    EvaluationInvalidInput,
+    EvaluationUnsupported,
+    EvaluationVerificationFailed,
+    EvaluationOperationRejected,
+    EvaluationReportFailed,
 };
 
 [[nodiscard]] constexpr bool isCurrentDiagnosticSeverity(
@@ -147,6 +152,11 @@ enum class DiagnosticCode {
     case DiagnosticCode::UnresolvedSctAuthoringBinding: return "UnresolvedSctAuthoringBinding";
     case DiagnosticCode::InvalidSctAuthoringPresentation: return "InvalidSctAuthoringPresentation";
     case DiagnosticCode::SctSourceArtifactOmitted: return "SctSourceArtifactOmitted";
+    case DiagnosticCode::EvaluationInvalidInput: return "EvaluationInvalidInput";
+    case DiagnosticCode::EvaluationUnsupported: return "EvaluationUnsupported";
+    case DiagnosticCode::EvaluationVerificationFailed: return "EvaluationVerificationFailed";
+    case DiagnosticCode::EvaluationOperationRejected: return "EvaluationOperationRejected";
+    case DiagnosticCode::EvaluationReportFailed: return "EvaluationReportFailed";
     }
     return "Unknown";
 }
