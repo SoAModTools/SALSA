@@ -2,6 +2,7 @@
 #include "Reference.h"
 #include "StorageSupport.h"
 #include "Lifetime.h"
+#include "ProgramInput.h"
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -124,7 +125,7 @@ template<StorageCandidate Storage>
 class ProgramHost {
     struct SectionState {
         SectionId id; ScriptId script; std::string name; OrderList order;
-        SectionState(const Section& section,std::pmr::memory_resource* r,uint64_t& copied,bool shared):id(section.id),script(section.script),name(section.name),order(section.order,r,copied,shared){}
+        template<class SectionRow> SectionState(const SectionRow& section,std::pmr::memory_resource* r,uint64_t& copied,bool shared):id(section.id),script(section.script),name(section.name),order(section.order,r,copied,shared){}
     };
     struct OrderPatch {
         uint32_t section; OrderList before,after;
@@ -167,7 +168,7 @@ public:
         expressions_(c.resource(Domain::Values)),expressionSlots_(c.resource(Domain::Directory)),index_(c.resource(Domain::Index),work_,directory_),history_(c.resource(Domain::History)),publications_(c.resource(Domain::History)),changeRoots_(c.resource(Domain::History)),sharedOrder_(sharedOrder) {
         capture_.instance=NextProgramInstance.fetch_add(1);
     }
-    Result<void> load(const Fixture& input) {
+    template<class Input> Result<void> load(const Input& input) {
         try {
             const auto loadStart=Clock::now();
             expect(!loadAttempted_,"A load attempt requires a fresh host"); loadAttempted_=true;
@@ -186,11 +187,11 @@ public:
             for(const auto& e:input.expressions) { claim(e.id.value); validateExpression(e); expressionSlots_.ensure(e.id).slot=slotCount(expressions_.size()); expressions_.push_back(e); }
             for(const auto& r:input.records) { claim(r.id.value); auto& state=directory_.ensure(r.id); state.issued=true; }
             for(auto id:input.reserved) { claim(id.value); directory_.ensure(id).issued=true; }
-            const auto identity=[&](InstructionId id)->const RecordIdentity* {
-                if(!input.checkpoint) return nullptr;
+            const auto identity=[&](InstructionId id)->std::optional<IdentityInput> {
+                if(!input.checkpoint) return std::nullopt;
                 const auto& seeds=input.checkpoint->identities;
-                auto at=std::ranges::lower_bound(seeds,id,{},&RecordIdentity::instruction);
-                expect(at!=seeds.end() && at->instruction==id,"Missing persisted instruction identity"); return &*at;
+                auto at=std::ranges::lower_bound(seeds,id,{},[](const auto& seed){return seed.instruction;});
+                expect(at!=seeds.end() && (*at).instruction==id,"Missing persisted instruction identity"); return identityInput(*at);
             };
             if(input.checkpoint) {
                 const auto& saved=*input.checkpoint;
@@ -222,10 +223,12 @@ public:
                 if(isControl(r.op) && !r.evidence) {
                     const auto* target=directory_.find(InstructionId{r.value}); expect(target && target->rank!=NoSlot,"Dangling resolved call target");
                 }
-                rows.push_back(encode(r,nullptr,identity(r.id)));
+                const auto seed=identity(r.id); rows.push_back(encode(r,nullptr,seed?&*seed:nullptr));
             }
             const auto storageStart=Clock::now();
-            auto loaded=store_.load(rows,input.sections); if(!loaded) return loaded;
+            std::pmr::vector<SectionLayout> layouts(context_.resource(Domain::Preparation)); layouts.reserve(sections_.size());
+            for(const auto& section:sections_) layouts.push_back({section.id,section.order.size()});
+            auto loaded=store_.load(rows,layouts); if(!loaded) return loaded;
             const auto indexStart=Clock::now();
             loadPhases_[0]=std::chrono::duration_cast<std::chrono::nanoseconds>(storageStart-loadStart).count();
             loadPhases_[1]=std::chrono::duration_cast<std::chrono::nanoseconds>(indexStart-storageStart).count();
@@ -234,11 +237,11 @@ public:
             std::pmr::vector<Fact> facts(context_.resource(Domain::Preparation)); facts.reserve(8);
             for(const auto& section:sections_) for(auto id:section.order) {
                 const auto* row=store_.lookup(id); extract(*row,nextInOrder(id),facts);
-                if(const auto* seed=identity(id)) {
+                if(const auto seed=identity(id)) {
                     expect(seed->facts.size()==facts.size(),"Persisted fact roles do not match content");
                     for(auto& f:facts) {
                         auto at=std::ranges::find_if(seed->facts,[&](const FactIdentity& v){ return v.operand==f.operand && v.kind==static_cast<uint8_t>(f.kind) && v.role==f.role; });
-                        expect(at!=seed->facts.end(),"Missing persisted fact role"); f.id=at->id;
+                        expect(at!=seed->facts.end(),"Missing persisted fact role"); f.id=(*at).id;
                     }
                 } else for(auto& f:facts) f.id=FactId{allocate()};
                 index_.prepareBuckets(facts); index_.reserve(facts.size());
@@ -538,7 +541,7 @@ private:
         }
         if(isControl(r.op)) expect(r.bank==Bank::Bit && !r.expression.value && !r.variable && (r.evidence?r.value==0:r.value!=0),"Invalid call binding");
     }
-    StoredRecord encode(const Record& r,const StoredRecord* old,const RecordIdentity* seed=nullptr) {
+    StoredRecord encode(const Record& r,const StoredRecord* old,const IdentityInput* seed=nullptr) {
         if(old) {
             auto previous=decode(*old); previous.section=r.section; previous.flags=r.flags;
             if(previous==r) { auto shared=*old; shared.section=r.section; shared.flags=r.flags; return shared; }

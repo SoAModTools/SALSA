@@ -88,7 +88,7 @@ class OrderList {
     void writable() { if(!values_ || values_.use_count()!=1) values_=clone(); }
 public:
     OrderList(std::pmr::memory_resource* r,uint64_t& copied,bool shared):resource_(r),copied_(&copied),shared_(shared){}
-    OrderList(std::span<const InstructionId> values,std::pmr::memory_resource* r,uint64_t& copied,bool shared):OrderList(r,copied,shared) { writable(); values_->assign(values.begin(),values.end()); }
+    template<class Range> OrderList(const Range& values,std::pmr::memory_resource* r,uint64_t& copied,bool shared):OrderList(r,copied,shared) { writable(); values_->assign(values.begin(),values.end()); }
     OrderList(const OrderList& o):values_(o.values_),resource_(o.resource_),copied_(o.copied_),shared_(o.shared_) { if(!shared_) values_=clone(); }
     OrderList(OrderList&&)=default;
     OrderList& operator=(const OrderList& o) { if(this!=&o) { OrderList copy(o); swap(copy); } return *this; }

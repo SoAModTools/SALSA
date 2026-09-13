@@ -88,6 +88,7 @@ using Action = std::variant<Query, Edit, Undo, Redo, EditBatch>;
 struct Step { uint64_t id; Action action; };
 // Persist identity roles, not derived values/postings or private pool locations.
 struct FactIdentity { FactId id; OperandId operand; uint8_t kind{}; uint64_t role{}; };
+struct SectionLayout { SectionId id; size_t count{}; };
 struct RecordIdentity { InstructionId instruction; std::array<OperandId,3> operands; std::vector<FactIdentity> facts; };
 struct Checkpoint { uint64_t revision{}, highWater{}; std::vector<RecordIdentity> identities; };
 struct Fixture {
@@ -139,7 +140,7 @@ struct StorageMetrics {
 // are borrowed until the next prepare/apply/load; stable IDs survive all slot movement.
 struct RecordVisitor { void operator()(const StoredRecord&) const noexcept {} };
 template<class T> concept StorageCandidate = requires(T store, const T view,
-    std::span<const StoredRecord> records, std::span<const Section> sections, InstructionId id, std::span<const StorageChange> mutations, typename T::Prepared&& prepared) {
+    std::span<const StoredRecord> records, std::span<const SectionLayout> sections, InstructionId id, std::span<const StorageChange> mutations, typename T::Prepared&& prepared) {
     { store.load(records,sections) } -> std::same_as<Result<void>>;
     { view.lookup(id) } -> std::same_as<const StoredRecord*>;
     view.forEachPhysical(RecordVisitor{});

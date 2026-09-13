@@ -26,7 +26,7 @@ public:
     };
     explicit PagedStorage(Context& c):context_(c),pages_(c.resource(Domain::Records)),
         nonFull_(c.resource(Domain::Directory)),directory_(c.resource(Domain::Directory)){}
-    Result<void> load(std::span<const StoredRecord> input,std::span<const Section>) {
+    Result<void> load(std::span<const StoredRecord> input,std::span<const SectionLayout>) {
         try {
             expect(!loaded_,"Store already loaded"); loaded_=true;
             const auto count=(input.size()+PageSize-1)/PageSize;

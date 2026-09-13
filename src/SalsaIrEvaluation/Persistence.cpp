@@ -22,6 +22,10 @@ std::string text(const Json& j) { auto s=j.get<std::string>(); expect(s.size()<=
 template<class T> T take(core::Result<T> result) { if(!result) throw std::runtime_error(result.diagnostics().front().message); return std::move(result).takeValue(); }
 uint64_t elapsed(Clock::time_point t) { return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-t).count(); }
 }
+void validateNativeSource(const NativeSource& n) {
+    const auto hex=[](const std::string& v){ return v.size()==64 && std::ranges::all_of(v,[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');}); };
+    expect(!n.dataset.empty() && !n.asset.empty() && n.asset.front()!='/' && n.asset.find_first_of("\\:")==std::string::npos && n.asset.find("..") == std::string::npos && hex(n.sha256) && hex(n.lineage),"Invalid native source qualification");
+}
 Json encodeProgram(const Fixture& f) {
     expect(f.checkpoint.has_value(),"Save requires a captured program checkpoint");
     Json j={{"format","jahorta.salsa.ir-program"},{"version",1},{"project",{number(f.project.high),number(f.project.low)}},
@@ -54,8 +58,7 @@ Fixture decodeProgram(const Json& j) {
         row(a,4); Script s{ScriptId{integer(a[0])},text(a[1]),text(a[2])};
         if(!a[3].is_null()) {
             const auto& n=a[3]; row(n,5); s.native=NativeSource{text(n[0]),text(n[1]),text(n[2]),text(n[3]),n[4].get<bool>()};
-            const auto hex=[](const std::string& v){ return v.size()==64 && std::ranges::all_of(v,[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');}); };
-            expect(!s.native->dataset.empty() && !s.native->asset.empty() && s.native->asset.front()!='/' && s.native->asset.find_first_of("\\:")==std::string::npos && s.native->asset.find("..") == std::string::npos && hex(s.native->sha256) && hex(s.native->lineage),"Invalid native source qualification");
+            validateNativeSource(*s.native);
         }
         f.scripts.push_back(std::move(s));
     }
@@ -83,6 +86,14 @@ std::string unpackProgram(std::span<const std::byte> container) {
     auto records=take(core::SctProjectContainer::decode(container));
     expect(records.size()==1 && records.contains("ir/program.json"),"Not an experimental IR container"); const auto& bytes=records.at("ir/program.json");
     return {reinterpret_cast<const char*>(bytes.data()),bytes.size()};
+}
+std::vector<std::byte> packBinaryProgram(std::vector<std::byte> bytes) {
+    core::SctProjectRecords records; records["ir/program.bin"]=std::move(bytes); return take(core::SctProjectContainer::encode(records));
+}
+std::vector<std::byte> unpackBinaryProgram(std::span<const std::byte> container) {
+    auto records=take(core::SctProjectContainer::decode(container));
+    expect(records.size()==1 && records.contains("ir/program.bin"),"Not an experimental binary IR container");
+    return std::move(records.at("ir/program.bin"));
 }
 std::vector<std::byte> fileRoundTrip(std::span<const std::byte> bytes,Json& measurements) {
     const auto folder=std::filesystem::temp_directory_path()/("salsa-ir-io-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(Clock::now().time_since_epoch().count()));

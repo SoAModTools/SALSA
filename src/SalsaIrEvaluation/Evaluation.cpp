@@ -47,8 +47,9 @@ Json compatibility(const RunSpec& spec, const Fixture& fixture) {
     for (auto key : {"repetition","order_policy","reader_policy"}) config.erase(key);
     // Candidate is deliberately separate, so future storage variants can be compared.
     config.erase("candidate");
+    if(spec.persistence!="none") config["persistence"]="enabled";
     return {{"spec", config}, {"fixture_checksum", fixture.checksum}, {"trace_checksum", fixture.traceChecksum},
-        {"build", buildIdentity()}, {"interface_version", 3}, {"common_variants", "program-host-v6/order-policy-v1/payload-pages-v1/detached-read-v1/direct-facts-v3/history-v4/story-v1/native-v1/container-v1"},
+        {"build", buildIdentity()}, {"interface_version", 4}, {"common_variants", "program-host-v7/order-policy-v1/payload-pages-v1/detached-read-v1/direct-facts-v3/history-v4/story-v1/native-v1/container-v2"},
         {"semantic_coverage", "synthetic-expression-batch-order-guard-transition-v3"}, {"workers", 1},
         {"instrumentation", "pmr-domain-counters-v1"}, {"cache_policy", "fresh-process-no-warmup-os-cache-uncontrolled"}};
 }
@@ -251,7 +252,7 @@ Result<void> validateSpec(const RunSpec& s) {
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported, "Unknown storage candidate, synthetic fixture, or trace"));
     if((s.orderPolicy!="copy" && s.orderPolicy!="shared") || (s.readerPolicy!="selected" && s.readerPolicy!="whole"))
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported,"Unknown order/reader policy"));
-    if(s.persistence!="none" && s.persistence!="compressed") return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported,"Unknown persistence policy"));
+    if(s.persistence!="none" && s.persistence!="compressed" && s.persistence!="binary") return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported,"Unknown persistence policy"));
     if (((s.fixture=="native-gc" || s.fixture=="native-dc") && s.count<32) || (s.fixture=="story-connectivity" && s.count<16) || s.count < 8 || s.count > 1000000 || s.timeoutMs < 1 || s.timeoutMs > 3600000 || s.memoryMb < 32 || s.memoryMb > 65536)
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput, "Counts/limits outside supported range"));
     return Result<void>::success();
@@ -492,8 +493,8 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
             start=Clock::now(); heldRead.reset(); samples.push_back({operation++,elapsed(start),0,0,"reader-release"});
             recordLifetime("reader-released");
         }
-        if(report["disposition"]=="passed" && (native || spec.persistence=="compressed"))
-            runIntegration(host,report,controls,spec.persistence=="compressed",spec.orderPolicy=="shared");
+        if(report["disposition"]=="passed" && (native || spec.persistence!="none"))
+            runIntegration(host,report,controls,spec.persistence,spec.orderPolicy=="shared");
         // Freeze measured state before formatting summaries. Smoke checks are separate from normal execution.
         const auto metrics=host.metrics();
         const auto storyMetrics=story.metrics();
@@ -615,6 +616,7 @@ Result<void> validateReport(const Json& r) {
             }
             auto config=encodeSpec(spec.value());
             for (auto key:{"mode","repetition","candidate","order_policy","reader_policy"}) config.erase(key);
+            if(spec.value().persistence!="none") config["persistence"]="enabled";
             if (r.at("compatibility").at("spec")!=config) throw std::invalid_argument("Report compatibility contradicts run spec");
         }
         return Result<void>::success();
@@ -636,7 +638,7 @@ Result<Json> compareReports(const std::vector<Json>& reports) {
         const auto runId=r.at("run_id").get<std::string>();
         if (std::ranges::find(runIds,runId)!=runIds.end()) return Result<Json>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput,"Duplicate run ID"));
         runIds.push_back(runId); comparison["runs"].push_back(runId);
-        const auto variant=r.at("spec").at("candidate").get<std::string>()+"/order="+r.at("spec").at("order_policy").get<std::string>()+"/reader="+r.at("spec").at("reader_policy").get<std::string>();
+        const auto variant=r.at("spec").at("candidate").get<std::string>()+"/order="+r.at("spec").at("order_policy").get<std::string>()+"/reader="+r.at("spec").at("reader_policy").get<std::string>()+"/persistence="+r.at("spec").at("persistence").get<std::string>();
         comparison["measurements"].push_back({{"run_id",runId},{"variant",variant},{"candidate",r.at("spec").at("candidate")},
             {"load",r.at("load")},{"native_input",r.at("native_input")},{"integration",r.at("integration")},{"lifetime",r.at("lifetime")},{"connectivity",r.at("connectivity")},{"storage",r.at("storage")},{"memory",r.at("memory")},{"work",r.at("work")}});
         for(auto group:{"native_input","integration"}) for(const auto& [key,value]:r.at(group).items())

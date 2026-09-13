@@ -106,7 +106,7 @@ void help() {
         "SalsaIrEvaluation run --candidate reference|dense|paged|section-local --report PATH\n"
         "  [--count 64] [--seed 1] [--repetition 0] [--timeout-ms 30000] [--memory-mb 512]\n"
         "  [--order-policy shared|copy] [--reader-policy selected|whole]\n"
-        "  [--persistence none|compressed]\n"
+        "  [--persistence none|compressed|binary]\n"
         "  [--fixture small-story|few-long|many-short|high-use|churn|story-connectivity|lifetime|native-gc|native-dc] [--trace semantic-edits]\n"
         "SalsaIrEvaluation compare --manifest PATH --report PATH\n"
         "Manifest: {\"format\":\"jahorta.salsa.ir-evaluation-manifest\",\"version\":1,\"reports\":[\"relative/report.json\",...]}\n"

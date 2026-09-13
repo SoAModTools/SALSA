@@ -22,7 +22,7 @@ public:
     };
     explicit PackedStorage(Context& c):context_(c),groups_(c.resource(Domain::Records)),
         sections_(c.resource(Domain::Directory)),directory_(c.resource(Domain::Directory)){}
-    Result<void> load(std::span<const StoredRecord> rows,std::span<const Section> sections) {
+    Result<void> load(std::span<const StoredRecord> rows,std::span<const SectionLayout> sections) {
         try {
             expect(!loaded_,"Store already loaded"); loaded_=true;
             groups_.reserve(SectionLocal?sections.size():1);
@@ -30,7 +30,7 @@ public:
                 for(const auto& section:sections) {
                     expect(sections_.emplace(section.id,slotCount(groups_.size())).second,"Duplicate storage section");
                     groups_.emplace_back(section.id,context_.resource(Domain::Records));
-                    groups_.back().rows.reserve(section.order.size());
+                    groups_.back().rows.reserve(section.count);
                     capacity_+=groups_.back().rows.capacity();
                 }
             } else { groups_.emplace_back(SectionId{},context_.resource(Domain::Records)); groups_[0].rows.reserve(rows.size()); capacity_=groups_[0].rows.capacity(); }

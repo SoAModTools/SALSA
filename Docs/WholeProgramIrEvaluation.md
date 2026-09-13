@@ -94,7 +94,7 @@ Remaining starter costs are explicit: the reference map allocates per record, wh
 
 ## Storage measurements and current limits
 
-The interface is version 3: `load(records, sections)`, typed lookup, physical enumeration, preparation, allocation-free publication, maintained metrics, and optional developer inspection. The host checks batch identities and ownership and rejects stale preparations. Storage lookup pointers are borrowed until the next load/preparation/publication; consumers retain IDs rather than pointers.
+The interface is version 4: `load(records, sectionLayouts)` (section IDs and row counts), typed lookup, physical enumeration, preparation, allocation-free publication, maintained metrics, and optional developer inspection. The host checks batch identities and ownership and rejects stale preparations. Storage lookup pointers are borrowed until the next load/preparation/publication; consumers retain IDs rather than pointers.
 
 All allocations needed for publication happen during preparation. Packed-table preparation can retain enlarged capacity even when abandoned; paged preparation owns unpublished new pages and releases them when discarded. Shared host generation checks prevent stale plans from installing. The record-storage candidates retain spare capacity and empty pages. IR5 reclaims shared operand payload pages, not candidate record-storage capacity.
 
@@ -167,7 +167,7 @@ Remaining retention is explicit: partially occupied operand pages stay allocated
 .\bin\x64\Release\SalsaIrEvaluation.exe run --candidate dense --fixture story-connectivity --count 10000 --persistence compressed --report "planning/Whole program IR/results/story-container.json"
 ```
 
-Run specifications now use version 3. `--persistence none|compressed` defaults to `none` and can be used with any fixture. The native fixtures always exercise fresh SCT output; adding `compressed` also measures saving/reloading the edited model. The common implementation variant changes to reflect native control kinds, persisted identity roles, and the container adapter. Report and comparison-manifest versions remain 1. Development-format compatibility with earlier experiment builds is not provided.
+Run specifications now use version 3. `--persistence none|compressed|binary` defaults to `none` and can be used with any fixture. The native fixtures always exercise fresh SCT output; adding `compressed` also measures saving/reloading the edited model. The common implementation variant changes to reflect native control kinds, persisted identity roles, and the container adapter. Report and comparison-manifest versions remain 1. Development-format compatibility with earlier experiment builds is not provided.
 
 ### Native coverage
 
@@ -206,4 +206,39 @@ Windows process-wide peak working set/pagefile counters and current private byte
 
 The focused IR6 comparison uses 1,000 and 10,000 initial instructions, all four candidates, three repetitions, and native-gc/native-dc/story-connectivity with compressed persistence. It is a bounded integration experiment; larger scaling and consolidated architecture selection belong to IR7. The retained suite remains three console smoke groups, plus six filtered existing SPICE SCT checks covering relocation, AKLZ, expression construction and scheduling. No GUI or corpus is loaded.
 
-IR6 does not migrate the live semantic editor, its existing compressed projects, or Python SALSA v7 import. Those production paths remain unchanged and supported; completing their operation coverage and metadata promotion is a later integration requirement. The next slice is IR7: consolidate the evidence and choose the representation to carry into production.
+IR6 does not migrate the live semantic editor, its existing compressed projects, or Python SALSA v7 import. Those production paths remain unchanged and supported; completing their operation coverage and metadata promotion is a later integration requirement. The binary-table follow-up below is complete. The next slice remains IR7: consolidate the evidence and choose the representation to carry into production.
+
+
+## Binary-table persistence follow-up (before IR7)
+
+```powershell
+.\bin\x64\Release\SalsaIrEvaluation.exe run --candidate dense --fixture native-gc --count 10000 --persistence binary --report "planning/Whole program IR/results/binary-container.json"
+```
+
+`compressed` retains the compressed JSON experiment; `binary` selects explicit binary tables in the **same** SALSAPRJ v1 zlib/SHA-256 container. Both use identical checkpoints and the same host/storage/index construction. Persistence is now a comparison variant: JSON and binary runs with matching workloads can be compared, while persistence-disabled runs remain a different workload. Spec version 3 and report/manifest version 1 are unchanged; the storage interface is now 4 and the common implementation variant is updated. Compare fresh runs from the same build.
+
+The `ir/program.bin` payload starts with `SALSAIRB`, binary version 1, an endian marker, total size, project identity, revision, allocator high-water state and a table directory. Integers are explicitly little-endian regardless of native SCT platform. Twelve ordered tables hold scripts, sections, modules, expressions, instructions, instruction identity roles, fact identity roles, authored instruction order, module membership, evidence text references, reserved IDs and a string byte pool. References use IDs or table-relative ranges. Text preserves its bytes, including embedded NULs. The version implies rebuilt derived state and unsaved history, matching JSON's explicit policy fields.
+
+Each table has a fixed encoded stride: scripts 112 bytes, sections 48, modules 64, expressions 40, instructions 56, instruction identity rows 48, fact identity rows 32, order/membership/reserved IDs 8, text references 16, and string bytes 1. The 64-byte header is followed by twelve 24-byte directory entries containing offset/count/stride. These are explicit encodings, independent of compiler padding, addresses, allocator state and candidate-specific slot layouts. Numeric instruction values retain their full 64 bits. This first layout favors simple fixed records; it is not the smallest possible binary encoding.
+
+`viewBinaryProgram()` checks the header and bounded, contiguous, nonoverlapping table directory, then prepares cold script/module/text metadata. Instructions, expressions, section orders, reserved IDs and identity/fact roles remain borrowed table views. `ProgramHost::load()` consumes either these views or the existing fixture input through one implementation. It decodes small rows directly into owned pools and order lists, stages one contiguous candidate-record array, and constructs the usual directories/indexes. Candidates receive section IDs/counts rather than temporary section order vectors. There is no JSON tree, full temporary `Fixture`, or per-instruction heap object in the binary reader. The reference candidate still allocates its map nodes by design.
+
+This is direct table loading, not a C++ object dump or memory-mapped editable state. Header/range/tag errors fail during view construction or row consumption; ownership, references and identities are checked during normal host construction. Failed new hosts are discarded. No borrowed input remains in the live host, and the input buffer is released before derived queries or editing. Explicit save capture still constructs the existing checkpoint, and the writer stages output tables before assembling the payload. Those save-side costs remain in scope and visible.
+
+Reports add `binary_table_encode_ns`, `binary_table_view_ns`, the payload format/input policy, and `reload_to_ready_ns`. The latter includes decompression/checksum, input decoding, ordinary host construction, temporary-input cleanup and derived rebuilding; it excludes disk reading. Individual phase timers do not include every intervening destructor, so their medians need not sum to total readiness. Final canonical JSON comparison happens **after** measured loading and the `after_reload_memory` snapshot for both formats. This prevents the binary readiness memory measurement from including the comparison's JSON tree. Process peaks still include initial fixture/native construction, the original host, save capture and compression; PMR totals only count instrumented domains.
+
+The bounded follow-up ran 144 supervised synthetic cases: 1k/10k initial instructions, native-gc/native-dc/story-connectivity, all four candidates, both compressed payloads, and three repetitions. Candidate/format order rotates. All six workload/size comparisons agree on edited content, stable identities, connections and native output. No corpus, GUI, native parser parallelization or production persistence changes are included.
+
+Dense-candidate medians at 10,000 initial instructions (milliseconds; three observations each):
+
+| Workload | JSON reload to ready | Binary reload to ready | JSON compressed bytes | Binary compressed bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Synthetic GC native | 68.826 | 14.120 | 278,919 | 284,917 |
+| Synthetic DC native | 71.214 | 14.288 | 278,901 | 284,915 |
+| Synthetic story connectivity | 56.700 | 14.745 | 234,648 | 242,317 |
+
+All storage candidates show the same broad reload improvement: their 10k binary medians range from 14.1 to 16.3 ms. The lower memory observation is also material: dense GC native peak working set through reload was 42.20 MiB for JSON versus 26.57 MiB for binary; story was 33.80 versus 18.74 MiB. These are cumulative process observations, not exact allocation savings attributable solely to parsing.
+
+There are tradeoffs. This fixed-record binary payload is larger before compression (GC native: 2,160,886 versus 1,777,876 bytes) and slightly larger after compression. Its compression/framing/checksum cost is higher (GC native medians: 122.704 versus 71.384 ms), enough to outweigh faster binary encoding in this save path. Binary row decoding also makes ordinary host construction slower than loading already-materialized JSON-decoded records (8.851 versus 4.650 ms for dense GC native). It removes the much larger JSON parse/model construction and cleanup costs; it does not eliminate all conversion or index work. Compression/layout tuning and architecture selection remain later decisions.
+
+Validation: elevated MSVC v145 Release build and the existing three console smoke groups passed. The integration group now includes deterministic binary encoding, cross-candidate identity preservation, editing/undo/redo after input release, malformed header/range/allocator handling and JSON/binary report agreement. Existing native smoke cases exercise both payloads. No additional suite, GUI test or separate verification prerequisite was introduced. No SPICE implementation changed, so unrelated or additional SPICE suites were not run.

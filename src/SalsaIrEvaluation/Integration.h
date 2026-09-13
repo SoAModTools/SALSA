@@ -1,5 +1,6 @@
 #pragma once
 #include "Evaluation.h"
+#include "ProgramInput.h"
 #include <stdexcept>
 
 namespace salsa::evaluation {
@@ -19,6 +20,11 @@ NativeOutput exportNative(const Fixture& checkpoint);
 std::string nativeMeaning(const Fixture& fixture);
 
 // Backend-independent semantic schema inside the existing SALSAPRJ compressed framing.
+void validateNativeSource(const NativeSource& source);
+std::vector<std::byte> encodeBinaryProgram(const Fixture& checkpoint);
+BinaryProgramInput viewBinaryProgram(std::span<const std::byte> bytes);
+std::vector<std::byte> packBinaryProgram(std::vector<std::byte> bytes);
+std::vector<std::byte> unpackBinaryProgram(std::span<const std::byte> container);
 Json encodeProgram(const Fixture& checkpoint);
 Fixture decodeProgram(const Json& json);
 std::vector<std::byte> packProgram(std::string_view json);
