@@ -1,5 +1,6 @@
 #include "IntegrationRun.h"
 #include "Corpus.h"
+#include "Compression.h"
 #include "PackedStorage.h"
 #include <SpiceSCT/SctDocumentExporter.h>
 #include <SpiceSCT/SctDocumentImporter.h>
@@ -12,6 +13,7 @@ template<class Action> void rejected(Action action,const char* message) { bool c
 }
 void integrationSmoke() {
     corpus::smoke();
+    compression::smoke();
     // Two small synthetic native files per platform; the normal runner also covers fresh output and persistence.
     for(const auto* fixture:{"native-gc","native-dc"}) for(const auto* format:{"compressed","binary"}) {
         RunSpec spec; spec.candidate="dense"; spec.fixture=fixture; spec.count=32; spec.persistence=format;

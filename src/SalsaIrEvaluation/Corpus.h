@@ -27,6 +27,6 @@ struct Model {
 struct Counts { uint64_t instructions{},parameters{},expressions{},texts{},sourceOpaqueBytes{},sourceOpaqueItems{},executionGaps{},unresolved{}; };
 Counts appendDocument(Model& model,const spice::sct::SctDocument& document,Script script);
 // Reports contain only logical asset keys, counts, digests and numeric edit sites.
-Json run(const Json& manifest,std::string_view candidate,uint64_t seed,uint64_t edits,Controls controls);
+Json run(const Json& manifest,std::string_view candidate,uint64_t seed,uint64_t edits,Controls controls,const std::filesystem::path& captureDirectory={});
 void smoke();
 } // namespace salsa::evaluation::corpus

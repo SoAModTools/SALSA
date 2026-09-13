@@ -1,4 +1,5 @@
 #include "Corpus.h"
+#include "Compression.h"
 #include "Integration.h"
 #include "PackedStorage.h"
 #include "PagedStorage.h"
@@ -215,7 +216,7 @@ void restore(CheckpointTables& tables,Model& m) {
     for(const auto& t:m.texts)expect(t.root<m.pool.nodes.size(),"Invalid text payload");
 }
 
-template<class Storage> Json experiment(Model& m,Context& c,Json& report,uint64_t seed,uint64_t editCount,Controls controls,Clock::time_point loadStart) {
+template<class Storage> Json experiment(Model& m,Context& c,Json& report,uint64_t seed,uint64_t editCount,Controls controls,Clock::time_point loadStart,const std::filesystem::path& captureDirectory={}) {
     const auto stop=[&](){if(controls.stopRequested())throw std::runtime_error("Corpus operation cancelled");};
     Host<Storage> h(m,c);auto start=Clock::now();h.load();report["index_and_storage_ns"]=std::to_string(ns(start));report["load_to_ready_ns"]=std::to_string(ns(loadStart));report["ready_memory"]=processMemory();
     report["flat_storage"]={{"nodes",m.pool.nodes.size()},{"node_capacity",m.pool.nodes.capacity()},{"node_bytes",sizeof(Node)},{"child_indices",m.pool.children.size()},{"child_capacity",m.pool.children.capacity()},{"text_bytes",m.pool.text.size()},{"text_capacity",m.pool.text.capacity()}};
@@ -277,6 +278,11 @@ template<class Storage> Json experiment(Model& m,Context& c,Json& report,uint64_
     start=Clock::now();std::vector<Change>().swap(h.history);report["history_release_ns"]=std::to_string(ns(start));report["history_released_memory"]=processMemory();
     report["retention_policy"]="history/order handles released; immutable payload pool retains dead nodes until host destruction; save compacts reachable payloads";
     stop();start=Clock::now();auto binary=save(h);report["checkpoint_capture_encode_ns"]=std::to_string(ns(start));report["semantic_bytes"]=std::to_string(checkpointSize(binary));const auto expected=checkpointHash(binary);report["content_sha256"]=expected;
+    if(!captureDirectory.empty()) {
+        expect(skipped==0,"Incomplete edit coverage cannot be captured");compression::Tables tables;for(const auto& [name,b]:binary)tables.emplace(name,std::span<const std::byte>(b.bytes));
+        report["capture"]=compression::capture(captureDirectory,tables,{{"inventory_sha256",report["inventory_sha256"]},{"content_sha256",expected},{"trace_sha256",report["trace_sha256"]},{"seed",std::to_string(seed)},{"edits",std::to_string(editCount)},{"build",report["build"]}});
+        report["disposition"]="passed";report["complete"]=true;report["capture_only"]=true;return report;
+    }
     start=Clock::now();auto packed=packCheckpoint(std::move(binary));report["compress_ns"]=std::to_string(ns(start));report["container_bytes"]=std::to_string(packed.size());
     auto read=fileRoundTrip(packed,report);std::vector<std::byte>().swap(packed);stop();start=Clock::now();auto decoded=unpackCheckpoint(read);std::vector<std::byte>().swap(read);
     Context reloadContext;Model restored(reloadContext);restore(decoded,restored);decoded.clear();Host<Storage> reopened(restored,reloadContext);reopened.load();report["reload_to_ready_ns"]=std::to_string(ns(start));report["reloaded_memory"]=processMemory();
@@ -286,7 +292,7 @@ template<class Storage> Json experiment(Model& m,Context& c,Json& report,uint64_
     report["edit_coverage_complete"]=skipped==0;report["disposition"]=skipped?"unsupported-required":"passed";report["complete"]=skipped==0;return report;
 }
 } // namespace
-Json run(const Json& manifest,std::string_view candidate,uint64_t seed,uint64_t edits,Controls controls) {
+Json run(const Json& manifest,std::string_view candidate,uint64_t seed,uint64_t edits,Controls controls,const std::filesystem::path& captureDirectory) {
     Json report={{"format","jahorta.salsa.ir-corpus-evaluation"},{"version",1},{"complete",false},{"disposition","operation-failed"},{"build",buildIdentity()},{"candidate",candidate},{"seed",std::to_string(seed)},{"requested_edits",std::to_string(edits)},{"files",Json::array()}};
     try {
         expect(report["build"]["configuration"]=="Release","Corpus evaluation requires Release");
@@ -312,9 +318,9 @@ Json run(const Json& manifest,std::string_view candidate,uint64_t seed,uint64_t 
         report["host"]="generic-native-tables-v2; shared storage candidates and FactIndex; not the narrow IR6 ProgramHost semantic adapter";
         report["coverage"]="All parsed opcode/parameter/SCPT/text structures stored; opaque source bytes excluded. Direct typed variable reads, fixed bit writes and explicit instruction references indexed. No inferred module guards, physical fallthrough, complete side-effect model or runtime path claims.";
         if(failures || totals.executionGaps){report["disposition"]="unsupported-required";return report;}
-        if(candidate=="dense")return experiment<DenseStorage>(model,context,report,seed,edits,controls,loadStart);
-        if(candidate=="paged")return experiment<PagedStorage>(model,context,report,seed,edits,controls,loadStart);
-        if(candidate=="section-local")return experiment<SectionStorage>(model,context,report,seed,edits,controls,loadStart);
+        if(candidate=="dense")return experiment<DenseStorage>(model,context,report,seed,edits,controls,loadStart,captureDirectory);
+        if(candidate=="paged")return experiment<PagedStorage>(model,context,report,seed,edits,controls,loadStart,captureDirectory);
+        if(candidate=="section-local")return experiment<SectionStorage>(model,context,report,seed,edits,controls,loadStart,captureDirectory);
         throw std::runtime_error("Unsupported corpus storage candidate");
     }catch(const std::bad_alloc&){report["disposition"]="resource-limited";report["error"]="Corpus worker allocation failed";return report;}catch(const std::exception& e){report["disposition"]=controls.stopRequested()?"cancelled":"operation-failed";report["error"]=e.what();return report;}
 }
