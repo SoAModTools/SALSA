@@ -11,6 +11,9 @@
 #include <iostream>
 #include <unordered_map>
 #include <set>
+#include <bit>
+#include <cmath>
+#include <iomanip>
 
 namespace salsa::evaluation::corpus {
 namespace {
@@ -20,6 +23,24 @@ uint64_t ns(Clock::time_point start) { return std::chrono::duration_cast<std::ch
 std::string hash(std::span<const std::byte> bytes) { auto h=core::sha256(bytes); expect(h.ok(),"Cannot hash corpus input"); return h.value().toHex(); }
 std::string hash(std::string_view text) { return hash(std::as_bytes(std::span(text.data(),text.size()))); }
 struct Random { uint64_t state; uint64_t next(){ state+=0x9e3779b97f4a7c15ULL; auto v=state; v=(v^(v>>30))*0xbf58476d1ce4e5b9ULL; v=(v^(v>>27))*0x94d049bb133111ebULL; return v^(v>>31); } };
+// Interpret only a single fixed literal, preserving its original representation.
+std::optional<uint32_t> fixedBitIndex(const Pool& pool,uint32_t expression) {
+    if(pool.nodes.at(expression).kind!=Kind::Expression) return {};
+    const auto values=pool.child(expression); if(values.size()!=1) return {};
+    const auto& v=pool.nodes[values.front()]; if(v.kind!=Kind::Value) return {};
+    if(v.aux==static_cast<uint32_t>(sct::SctScptValueKind::DecimalLiteral)) {
+        if(!pool.child(values.front()).empty() || (v.value&0x8000ff)!=0) return {};
+        return static_cast<uint32_t>((v.value>>8)&0x7fff);
+    }
+    if(v.aux==static_cast<uint32_t>(sct::SctScptValueKind::FloatLiteral)) {
+        const auto words=pool.child(values.front());
+        if(words.size()!=1 || pool.nodes[words.front()].kind!=Kind::Word) return {};
+        const double value=std::bit_cast<float>(static_cast<uint32_t>(pool.nodes[words.front()].value));
+        if(std::isfinite(value) && value>=0 && value<=UINT32_MAX && std::floor(value)==value)
+            return static_cast<uint32_t>(value);
+    }
+    return {}; // Computed indices and special inline sentinels are not fixed targets.
+}
 struct Site { InstructionId instruction; std::vector<uint32_t> path; };
 struct Command {
     std::string kind; InstructionId instruction,target; std::vector<uint32_t> path; uint64_t value{};
@@ -77,10 +98,9 @@ public:
             // Exact, bounded effect recognition. Other opcodes remain fully stored.
             if(root.value==17 || root.value==18) {
                 for(auto p:m.pool.child(row->firstOperand)) if(m.pool.nodes[p].kind==Kind::Parameter && m.pool.nodes[p].value==0) {
-                    auto expression=m.pool.child(p); if(expression.size()!=1) continue; auto values=m.pool.child(expression[0]);
-                    if(values.size()!=1) continue; const auto& v=m.pool.nodes[values[0]];
-                    if(v.kind==Kind::Value && v.aux==static_cast<uint32_t>(sct::SctScptValueKind::DecimalLiteral) && (v.value&0x8000ff)==0) {
-                        Fact f{{},id,OperandId{id.value},FactKind::Write,0,Bank::Bit,(v.value>>8)&0x7fff,root.value==17};
+                    auto expression=m.pool.child(p); if(expression.size()!=1) continue;
+                    if(auto key=fixedBitIndex(m.pool,expression[0])) {
+                        Fact f{{},id,OperandId{id.value},FactKind::Write,0,Bank::Bit,*key,root.value==17};
                         index.source(state.head,[&](const Fact& old){if(sameRole(old,f)) f.id=old.id;}); if(!f.id.value) f.id=FactId{++factHighWater}; facts.push_back(f);
                     }
                 }
@@ -137,42 +157,71 @@ public:
 // in the reload path. Save compacts immutable payload roots, independently of history.
 struct Binary {
     std::vector<std::byte> bytes; size_t cursor{};
-    void put(uint64_t n){for(unsigned i=0;i<8;++i) bytes.push_back(std::byte((n>>(i*8))&255));}
-    uint64_t get(){expect(cursor<=bytes.size() && bytes.size()-cursor>=8,"Truncated corpus checkpoint"); uint64_t n=0;for(unsigned i=0;i<8;++i)n|=uint64_t(std::to_integer<uint8_t>(bytes[cursor++]))<<(i*8);return n;}
+    void put(uint64_t n,unsigned width=8){expect(width==8 || n<(uint64_t{1}<<(width*8)),"Checkpoint integer overflow");for(unsigned i=0;i<width;++i) bytes.push_back(std::byte((n>>(i*8))&255));}
+    uint64_t get(unsigned width=8){expect(cursor<=bytes.size() && bytes.size()-cursor>=width,"Truncated corpus checkpoint"); uint64_t n=0;for(unsigned i=0;i<width;++i)n|=uint64_t(std::to_integer<uint8_t>(bytes[cursor++]))<<(i*8);return n;}
     void text(std::string_view s){put(s.size());auto b=std::as_bytes(std::span(s.data(),s.size()));bytes.insert(bytes.end(),b.begin(),b.end());}
     std::string text(){auto n=get();expect(n<=bytes.size()-cursor,"Invalid checkpoint string");std::string s(reinterpret_cast<const char*>(bytes.data()+cursor),static_cast<size_t>(n));cursor+=static_cast<size_t>(n);return s;}
     size_t count(){auto n=get();expect(n<=bytes.size()/8,"Invalid checkpoint count");return static_cast<size_t>(n);}
 };
-template<class Storage> Binary save(const Host<Storage>& h) {
-    Context context; Model compact(context); auto& m=h.m; Binary b; b.put(0x31524943534c4153ULL); b.put(m.highWater); b.put(m.revision);
+using CheckpointTables=std::map<std::string,Binary>;
+constexpr std::string_view TableNames[]={"metadata","nodes","children","text"};
+uint64_t checkpointSize(const CheckpointTables& tables){uint64_t size=0;for(const auto& [name,b]:tables)size+=b.bytes.size();return size;}
+std::string checkpointHash(const CheckpointTables& tables){std::string identity;for(const auto& [name,b]:tables)identity+=name+":"+std::to_string(b.bytes.size())+":"+hash(b.bytes)+"\n";return hash(identity);}
+std::string chunkName(std::string_view table,size_t index){std::ostringstream out;out<<"corpus-v2/"<<table<<"/"<<std::setw(6)<<std::setfill('0')<<index;return out.str();}
+// Bound each uncompressed record independently; production container limits stay unchanged.
+std::vector<std::byte> packCheckpoint(CheckpointTables tables,size_t chunkBytes=64u<<20) {
+    expect(chunkBytes>0 && chunkBytes<=core::SctProjectContainer::MaximumRecordBytes,"Invalid checkpoint chunk size");
+    core::SctProjectRecords records;
+    for(auto& [name,b]:tables){size_t part=0;for(size_t offset=0;offset<b.bytes.size();offset+=chunkBytes){const auto length=std::min(chunkBytes,b.bytes.size()-offset);records[chunkName(name,part++)]={b.bytes.begin()+offset,b.bytes.begin()+offset+length};}
+        if(!part)records[chunkName(name,0)]={};std::vector<std::byte>().swap(b.bytes);}
+    auto result=core::SctProjectContainer::encode(records);if(!result)throw std::runtime_error(result.diagnostics().front().message);return std::move(result).takeValue();
+}
+CheckpointTables unpackCheckpoint(std::span<const std::byte> bytes) {
+    auto decoded=core::SctProjectContainer::decode(bytes);if(!decoded)throw std::runtime_error(decoded.diagnostics().front().message);
+    auto records=std::move(decoded).takeValue();CheckpointTables tables;
+    for(auto name:TableNames){auto& b=tables[std::string(name)];size_t part=0;for(;;++part){auto it=records.find(chunkName(name,part));if(it==records.end())break;b.bytes.insert(b.bytes.end(),it->second.begin(),it->second.end());records.erase(it);}expect(part!=0,"Missing corpus checkpoint table");}
+    expect(records.empty(),"Unknown or noncontiguous corpus checkpoint records");return tables;
+}
+template<class Storage> CheckpointTables save(const Host<Storage>& h) {
+    Context context; Model compact(context); auto& m=h.m; CheckpointTables tables;
+    auto& b=tables["metadata"];b.put(0x32524943534c4153ULL); b.put(m.highWater); b.put(m.revision);
     b.put(m.scripts.size()); for(const auto& s:m.scripts) {b.put(s.id.value);b.text(s.name);b.text(s.source);}
     b.put(m.sections.size());
     for(size_t i=0;i<m.sections.size();++i) {
         const auto& s=m.sections[i];b.put(s.id.value);b.put(s.script.value);b.text(s.name);
-        b.put(s.content==NoSlot?NoSlot:m.pool.clone(s.content,compact.pool)); b.put(h.orders[i]->size());
-        for(auto id:*h.orders[i]) {const auto& r=*h.store.lookup(id);b.put(id.value);b.put(m.pool.clone(r.firstOperand,compact.pool));}
+        b.put(s.content==NoSlot?NoSlot:m.pool.clone(s.content,compact.pool),4); b.put(h.orders[i]->size());
+        for(auto id:*h.orders[i]) {const auto& r=*h.store.lookup(id);b.put(id.value);b.put(m.pool.clone(r.firstOperand,compact.pool),4);}
     }
-    b.put(m.texts.size());for(const auto& t:m.texts){b.put(t.id);b.put(t.script.value);b.put(m.pool.clone(t.root,compact.pool));b.put(t.kind);}
-    b.put(compact.pool.nodes.size());for(const auto& n:compact.pool.nodes){b.put(static_cast<uint64_t>(n.kind));b.put(n.value);b.put(n.aux);b.put(n.count);for(auto child:compact.pool.child(static_cast<uint32_t>(&n-compact.pool.nodes.data())))b.put(child);}
-    b.text(std::string_view(compact.pool.text.data(),compact.pool.text.size()));return b;
+    b.put(m.texts.size());for(const auto& t:m.texts){b.put(t.id);b.put(t.script.value);b.put(m.pool.clone(t.root,compact.pool),4);b.put(t.kind,1);}
+    auto& nodes=tables["nodes"];nodes.bytes.reserve(compact.pool.nodes.size()*21);
+    for(const auto& n:compact.pool.nodes){nodes.put(static_cast<uint64_t>(n.kind),1);nodes.put(n.value);nodes.put(n.aux,4);nodes.put(n.first,4);nodes.put(n.count,4);}
+    auto& children=tables["children"];children.bytes.reserve(compact.pool.children.size()*4);for(auto child:compact.pool.children)children.put(child,4);
+    auto text=std::as_bytes(std::span(compact.pool.text));tables["text"].bytes.assign(text.begin(),text.end());return tables;
 }
-void restore(Binary& b,Model& m) {
-    expect(b.get()==0x31524943534c4153ULL,"Unsupported corpus checkpoint");m.highWater=b.get();m.revision=b.get();
+void restore(CheckpointTables& tables,Model& m) {
+    auto& b=tables.at("metadata");expect(b.get()==0x32524943534c4153ULL,"Unsupported corpus checkpoint");m.highWater=b.get();m.revision=b.get();
     for(size_t n=b.count();n;--n){Script s;s.id=ScriptId{b.get()};s.name=b.text();s.source=b.text();m.scripts.push_back(std::move(s));}
-    for(size_t n=b.count();n;--n){SectionInfo s;s.id=SectionId{b.get()};s.script=ScriptId{b.get()};s.name=b.text();const auto content=b.get();expect(content<=NoSlot,"Invalid section payload");s.content=static_cast<uint32_t>(content);
-        for(size_t k=b.count();k;--k){InstructionId id{b.get()};const auto root=b.get();expect(root<NoSlot,"Invalid instruction payload");s.order.push_back(id);m.records.push_back({id,s.id,Op::Unknown,static_cast<uint32_t>(root),0});}m.sections.push_back(std::move(s));}
-    for(size_t n=b.count();n;--n){TextInfo t;t.id=b.get();t.script=ScriptId{b.get()};const auto root=b.get(),kind=b.get();expect(root<NoSlot && kind<=1,"Invalid text record");t.root=static_cast<uint32_t>(root);t.kind=static_cast<uint32_t>(kind);m.texts.push_back(t);}
-    for(size_t n=b.count();n;--n){auto kind=b.get(),value=b.get(),aux=b.get();expect(kind<=static_cast<uint64_t>(Kind::Marker) && aux<NoSlot,"Invalid checkpoint node");std::vector<uint32_t> child;
-        for(size_t k=b.count();k;--k){auto i=b.get();expect(i<m.pool.nodes.size(),"Cyclic/dangling checkpoint node");child.push_back(static_cast<uint32_t>(i));}m.pool.add(static_cast<Kind>(kind),value,static_cast<uint32_t>(aux),child);}
-    auto text=b.text();m.pool.text.assign(text.begin(),text.end());expect(b.cursor==b.bytes.size(),"Trailing checkpoint data");
+    for(size_t n=b.count();n;--n){SectionInfo s;s.id=SectionId{b.get()};s.script=ScriptId{b.get()};s.name=b.text();s.content=static_cast<uint32_t>(b.get(4));
+        for(size_t k=b.count();k;--k){InstructionId id{b.get()};const auto root=static_cast<uint32_t>(b.get(4));s.order.push_back(id);m.records.push_back({id,s.id,Op::Unknown,root,0});}m.sections.push_back(std::move(s));}
+    for(size_t n=b.count();n;--n){TextInfo t;t.id=b.get();t.script=ScriptId{b.get()};t.root=static_cast<uint32_t>(b.get(4));t.kind=static_cast<uint32_t>(b.get(1));expect(t.kind<=1,"Invalid text record");m.texts.push_back(t);}
+    expect(b.cursor==b.bytes.size(),"Trailing checkpoint metadata");
+    auto& nodes=tables.at("nodes");auto& children=tables.at("children");expect(nodes.bytes.size()%21==0 && children.bytes.size()%4==0,"Truncated checkpoint table");
+    slotCount(nodes.bytes.size()/21);slotCount(children.bytes.size()/4);m.pool.nodes.reserve(nodes.bytes.size()/21);m.pool.children.reserve(children.bytes.size()/4);
+    while(children.cursor<children.bytes.size())m.pool.children.push_back(static_cast<uint32_t>(children.get(4)));
+    while(nodes.cursor<nodes.bytes.size()){Node n;const auto kind=nodes.get(1);expect(kind<=static_cast<uint64_t>(Kind::Marker),"Invalid checkpoint node kind");n.kind=static_cast<Kind>(kind);n.value=nodes.get();n.aux=static_cast<uint32_t>(nodes.get(4));n.first=static_cast<uint32_t>(nodes.get(4));n.count=static_cast<uint32_t>(nodes.get(4));m.pool.nodes.push_back(n);const auto index=static_cast<uint32_t>(m.pool.nodes.size()-1);for(auto child:m.pool.child(index))expect(child<index,"Cyclic/dangling checkpoint node");}
+    const auto& text=tables.at("text").bytes;m.pool.text.assign(reinterpret_cast<const char*>(text.data()),reinterpret_cast<const char*>(text.data())+text.size());
+    for(const auto& s:m.sections)expect(s.content==NoSlot || s.content<m.pool.nodes.size(),"Invalid section payload");
+    for(const auto& r:m.records)expect(r.firstOperand<m.pool.nodes.size(),"Invalid instruction payload");
+    for(const auto& t:m.texts)expect(t.root<m.pool.nodes.size(),"Invalid text payload");
 }
+
 template<class Storage> Json experiment(Model& m,Context& c,Json& report,uint64_t seed,uint64_t editCount,Controls controls,Clock::time_point loadStart) {
     const auto stop=[&](){if(controls.stopRequested())throw std::runtime_error("Corpus operation cancelled");};
     Host<Storage> h(m,c);auto start=Clock::now();h.load();report["index_and_storage_ns"]=std::to_string(ns(start));report["load_to_ready_ns"]=std::to_string(ns(loadStart));report["ready_memory"]=processMemory();
     report["flat_storage"]={{"nodes",m.pool.nodes.size()},{"node_capacity",m.pool.nodes.capacity()},{"node_bytes",sizeof(Node)},{"child_indices",m.pool.children.size()},{"child_capacity",m.pool.children.capacity()},{"text_bytes",m.pool.text.size()},{"text_capacity",m.pool.text.capacity()}};
     std::map<std::string,uint64_t> opcodes;uint64_t readFacts=0,writeFacts=0,references=0,unknownFacts=0;
     h.store.forEachPhysical([&](const StoredRecord& r){++opcodes[std::to_string(m.pool.nodes[r.firstOperand].value)];h.index.source(h.directory.find(r.id)->head,[&](const Fact& f){readFacts+=f.kind==FactKind::Read;writeFacts+=f.kind==FactKind::Write;references+=f.kind==FactKind::Call;unknownFacts+=f.kind==FactKind::Unknown;});});
-    report["opcodes"]=opcodes;report["direct_index"]={{"reads",readFacts},{"fixed_bit_writes",writeFacts},{"instruction_references",references},{"unknown",unknownFacts}};
+    report["unrecognized_bit_write_targets"]=opcodes["17"]+opcodes["18"]-writeFacts;report["opcodes"]=opcodes;report["direct_index"]={{"reads",readFacts},{"fixed_bit_writes",writeFacts},{"instruction_references",references},{"unknown",unknownFacts}};
     std::vector<InstructionId> writes,renameable;std::vector<Site> reads,targets;std::map<ScriptId,std::vector<InstructionId>> entries;
     for(size_t s=0;s<m.sections.size();++s){const auto& section=m.sections[s];if(h.orders[s]->empty())continue;entries[section.script].push_back(h.orders[s]->front());if(!section.name.empty() && section.name!="init" && section.name!="loop")renameable.push_back(h.orders[s]->front());
         for(auto id:*h.orders[s]){const auto& r=*h.store.lookup(id);const auto root=m.pool.nodes[r.firstOperand];
@@ -227,11 +276,11 @@ template<class Storage> Json experiment(Model& m,Context& c,Json& report,uint64_
     report["after_edit_catalog_release_memory"]=processMemory();
     start=Clock::now();std::vector<Change>().swap(h.history);report["history_release_ns"]=std::to_string(ns(start));report["history_released_memory"]=processMemory();
     report["retention_policy"]="history/order handles released; immutable payload pool retains dead nodes until host destruction; save compacts reachable payloads";
-    stop();start=Clock::now();auto binary=save(h);report["checkpoint_capture_encode_ns"]=std::to_string(ns(start));report["semantic_bytes"]=std::to_string(binary.bytes.size());const auto expected=hash(binary.bytes);report["content_sha256"]=expected;
-    start=Clock::now();auto packed=packBinaryProgram(std::move(binary.bytes));report["compress_ns"]=std::to_string(ns(start));report["container_bytes"]=std::to_string(packed.size());
-    auto read=fileRoundTrip(packed,report);std::vector<std::byte>().swap(packed);stop();start=Clock::now();Binary decoded;decoded.bytes=unpackBinaryProgram(read);std::vector<std::byte>().swap(read);
-    Context reloadContext;Model restored(reloadContext);restore(decoded,restored);std::vector<std::byte>().swap(decoded.bytes);Host<Storage> reopened(restored,reloadContext);reopened.load();report["reload_to_ready_ns"]=std::to_string(ns(start));report["reloaded_memory"]=processMemory();
-    expect(hash(save(reopened).bytes)==expected,"Corpus binary reload changed program content");
+    stop();start=Clock::now();auto binary=save(h);report["checkpoint_capture_encode_ns"]=std::to_string(ns(start));report["semantic_bytes"]=std::to_string(checkpointSize(binary));const auto expected=checkpointHash(binary);report["content_sha256"]=expected;
+    start=Clock::now();auto packed=packCheckpoint(std::move(binary));report["compress_ns"]=std::to_string(ns(start));report["container_bytes"]=std::to_string(packed.size());
+    auto read=fileRoundTrip(packed,report);std::vector<std::byte>().swap(packed);stop();start=Clock::now();auto decoded=unpackCheckpoint(read);std::vector<std::byte>().swap(read);
+    Context reloadContext;Model restored(reloadContext);restore(decoded,restored);decoded.clear();Host<Storage> reopened(restored,reloadContext);reopened.load();report["reload_to_ready_ns"]=std::to_string(ns(start));report["reloaded_memory"]=processMemory();
+    expect(checkpointHash(save(reopened))==expected,"Corpus binary reload changed program content");
     report["storage"]={{"rows",h.store.metrics().live},{"capacity",h.store.metrics().capacity},{"growth_rows_moved",h.store.metrics().growthRowsMoved},{"erase_rows_moved",h.store.metrics().eraseRowsMoved}};
     for(size_t i=0;i<c.memory.size();++i){const auto& t=c.memory[i].totals;report["pmr"][DomainNames[i]]={{"current_bytes",t.current},{"peak_bytes",t.peak},{"allocations",t.allocations}};}
     report["edit_coverage_complete"]=skipped==0;report["disposition"]=skipped?"unsupported-required":"passed";report["complete"]=skipped==0;return report;
@@ -260,7 +309,7 @@ Json run(const Json& manifest,std::string_view candidate,uint64_t seed,uint64_t 
             report["files"].push_back(std::move(file));std::cerr<<"Corpus scripts "<<report["files"].size()<<"/"<<files.size()<<"\n";
         }
         report.update({{"dataset","gc_us"},{"text_convention",convention},{"inventory_sha256",hash(inventory)},{"expected_scripts",files.size()},{"loaded_scripts",files.size()-failures},{"failed_scripts",failures},{"instructions",totals.instructions},{"parameters",totals.parameters},{"expressions",totals.expressions},{"texts",totals.texts},{"execution_gaps",totals.executionGaps},{"unresolved",totals.unresolved},{"source_opaque_bytes_excluded",totals.sourceOpaqueBytes},{"source_opaque_items_excluded",totals.sourceOpaqueItems},{"source_hash_ns",std::to_string(hashNs)},{"native_file_read_ns",std::to_string(readNs)},{"native_parse_ns",std::to_string(parseNs)},{"native_import_ns",std::to_string(importNs)},{"normalization_ns",std::to_string(normalizeNs)},{"after_import_memory",processMemory()}});
-        report["host"]="generic-native-tables-v1; shared storage candidates and FactIndex; not the narrow IR6 ProgramHost semantic adapter";
+        report["host"]="generic-native-tables-v2; shared storage candidates and FactIndex; not the narrow IR6 ProgramHost semantic adapter";
         report["coverage"]="All parsed opcode/parameter/SCPT/text structures stored; opaque source bytes excluded. Direct typed variable reads, fixed bit writes and explicit instruction references indexed. No inferred module guards, physical fallthrough, complete side-effect model or runtime path claims.";
         if(failures || totals.executionGaps){report["disposition"]="unsupported-required";return report;}
         if(candidate=="dense")return experiment<DenseStorage>(model,context,report,seed,edits,controls,loadStart);
@@ -280,7 +329,7 @@ void smoke() {
     broad.fixedParameters={{0,sct::SctStringReference{stringId}},{1,sct::SctSupplementaryTextReference{footerId}},{2,sct::SctEncodedWordValue{0xfedcba98}},{3,sct::SctTerminatedWordSequenceValue{{12,34}}}};
     auto highBit=sct::SctExpressionFactory::bitVariable(0x10000011);expect(highBit.expression.has_value(),"Cannot create high bit index");broad.fixedParameters.push_back({7,*highBit.expression});
     broad.repeatedParameterGroups={{{{4,*bit.expression},{5,sct::SctInstructionReference{a}}}},{{{4,sct::SctEncodedWordValue{42}}}}};
-    auto second=first;second.id=document.allocateInstructionId();second.opcode=18;
+    auto second=first;second.id=document.allocateInstructionId();second.opcode=18;second.fixedParameters={{0,sct::SctExpressionFactory::floatLiteral(17.0f)}};
     document.sections.push_back({document.allocateSectionId(),"init",sct::SctScriptSectionContent{{first,second}}});
     document.sections.push_back({document.allocateSectionId(),"loop",sct::SctScriptSectionContent{{branch}}});
     document.sections.push_back({document.allocateSectionId(),"helper",sct::SctScriptSectionContent{{broad}}});
@@ -288,7 +337,9 @@ void smoke() {
     document.sections.push_back({document.allocateSectionId(),"strings",sct::SctStringSectionContent{{stringId,message,sct::SctTextKind::SctString}}});
     document.sections.push_back({document.allocateSectionId(),"group",sct::SctStringGroupMarkerSectionContent{}});
     document.supplementaryText.push_back({footerId,sct::SctTextKind::PlainString,sct::SctPlainText{std::string("a\0b",3)}});
-    {Context context;Model model(context);appendDocument(model,document,Script{{},"wide-index.sct","synthetic-source"});Host<PagedStorage> host(model,context);host.load();expect(host.query(Bank::Bit,0x10000011)!=0,"Bit index lost its 29th bit");}
+    {Context context;Model model(context);appendDocument(model,document,Script{{},"wide-index.sct","synthetic-source"});Host<PagedStorage> host(model,context);host.load();expect(host.query(Bank::Bit,0x10000011)!=0,"Bit index lost its 29th bit");
+        size_t writes=0;host.index.query({FactKind::Write,Bank::Bit,17},[&](const Fact&){++writes;});expect(writes==2,"Float/decimal fixed writes were not both indexed");
+        auto checkpoint=save(host);const auto expectedHash=checkpointHash(checkpoint);auto packed=packCheckpoint(std::move(checkpoint),64);auto restored=unpackCheckpoint(packed);Context restoredContext;Model restoredModel(restoredContext);restore(restored,restoredModel);Host<PagedStorage> reopened(restoredModel,restoredContext);reopened.load();expect(checkpointHash(save(reopened))==expectedHash,"Chunked checkpoint changed content");}
     Json expected;
     const auto exercise=[&]<class Storage>(std::string_view candidate){Context context;Model model(context);auto counts=appendDocument(model,document,Script{{},"synthetic.sct","synthetic-source"});expect(counts.instructions==4 && counts.texts==2 && !counts.executionGaps,"Broad corpus normalization lost content");
         Json initial;auto report=experiment<Storage>(model,context,initial,19,30,{},Clock::now());expect(report["disposition"]=="passed" && report["skipped_edits"]==0,"Corpus editing smoke failed");
