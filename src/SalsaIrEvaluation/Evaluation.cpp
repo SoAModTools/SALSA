@@ -1,4 +1,4 @@
-#include "Reference.h"
+#include "Program.h"
 #include <algorithm>
 #include <charconv>
 #include <fstream>
@@ -14,6 +14,11 @@ namespace {
 constexpr uint64_t FnvBasis = 14695981039346656037ull;
 uint64_t word(uint64_t h, uint64_t value) {
     for (unsigned i = 0; i < 8; ++i) { h ^= value & 255; h *= 1099511628211ull; value >>= 8; }
+    return h;
+}
+uint64_t textHash(uint64_t h,std::string_view text) { h=word(h,text.size()); for(unsigned char c:text) h=word(h,c); return h; }
+uint64_t expressionHash(uint64_t h,const Expression& e) {
+    for(auto value:{e.id.value,static_cast<uint64_t>(e.op),static_cast<uint64_t>(e.bank),static_cast<uint64_t>(e.variable),e.literal,e.left.value,e.right.value}) h=word(h,value);
     return h;
 }
 std::string hex(uint64_t value) { std::ostringstream s; s << std::hex << std::setfill('0') << std::setw(16) << value; return s.str(); }
@@ -40,8 +45,8 @@ Json compatibility(const RunSpec& spec, const Fixture& fixture) {
     // Candidate is deliberately separate, so future storage variants can be compared.
     config.erase("candidate");
     return {{"spec", config}, {"fixture_checksum", fixture.checksum}, {"trace_checksum", fixture.traceChecksum},
-        {"build", buildIdentity()}, {"interface_version", 1}, {"common_variants", "reference-host-v1/order-v1/history-v1"},
-        {"semantic_coverage", "synthetic-read-write-call-replace-undo-v1"}, {"workers", 1},
+        {"build", buildIdentity()}, {"interface_version", 2}, {"common_variants", "program-host-v2/order-v2/direct-facts-v1/history-v2"},
+        {"semantic_coverage", "synthetic-expression-batch-order-unknown-v2"}, {"workers", 1},
         {"instrumentation", "pmr-domain-counters-v1"}, {"cache_policy", "fresh-process-no-warmup-os-cache-uncontrolled"}};
 }
 void fail(Json& report, std::string disposition, std::string message) {
@@ -69,13 +74,12 @@ void CountingResource::do_deallocate(void* p, size_t bytes, size_t alignment) {
     ++totals.deallocations; assert(bytes <= totals.current); totals.current -= bytes;
     std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
 }
-bool matches(const Record& r, Query q) {
-    return (q.kind == QueryKind::Reads && r.op == Op::Read && r.variable == q.key) ||
-        (q.kind == QueryKind::Writes && r.op == Op::Write && r.variable == q.key) ||
-        (q.kind == QueryKind::Incoming && r.op == Op::Call && r.value == q.key);
-}
 uint64_t hashRecord(uint64_t h, const Record& r) {
-    for (auto v : {r.id.value, r.section.value, static_cast<uint64_t>(r.op), static_cast<uint64_t>(r.variable), r.value}) h = word(h, v);
+    for (auto v : {r.id.value, r.section.value, static_cast<uint64_t>(r.op), static_cast<uint64_t>(r.variable), r.value, static_cast<uint64_t>(r.bank), r.expression.value, r.schedule.value, static_cast<uint64_t>(r.evidence), static_cast<uint64_t>(r.flags)}) h = word(h, v);
+    return h;
+}
+uint64_t hashFact(uint64_t h,const Fact& f) {
+    for(auto v:{f.id.value,f.source.value,f.operand.value,static_cast<uint64_t>(f.kind),f.role,static_cast<uint64_t>(f.bank),f.key,f.value,f.expression.value,static_cast<uint64_t>(f.evidence)}) h=word(h,v);
     return h;
 }
 std::string canonicalDigest(std::span<const Record> records) {
@@ -86,11 +90,18 @@ std::string canonicalDigest(std::span<const Record> records) {
 Fixture makeFixture(uint64_t count, uint64_t seed) {
     if (count < 8 || count > 1000000) throw std::invalid_argument("Fixture count outside supported range");
     Fixture f;
+    f.project={seed,1};
+    f.scripts={{ScriptId{1},"Script A","synthetic-baseline-a"},{ScriptId{2},"Script B","synthetic-baseline-b"}};
+    f.sections={{SectionId{10},ScriptId{1},"cutscene",{}},{SectionId{11},ScriptId{1},"helper",{}},{SectionId{20},ScriptId{2},"interaction",{}}};
+    f.expressions={{ExprId{50},ExprOp::Variable,Bank::Byte,6},{ExprId{51},ExprOp::Literal,Bank::Bit,0,2},
+        {ExprId{52},ExprOp::Add,Bank::Bit,0,0,ExprId{50},ExprId{51}}};
+    f.evidence={"Target is explicitly unresolved in this synthetic draft"};
+    f.reserved={InstructionId{100+count},InstructionId{101+count}};
     f.records.reserve(static_cast<size_t>(count));
     uint64_t state = seed;
     for (uint64_t i = 0; i < count; ++i) {
         state = state * 6364136223846793005ull + 1442695040888963407ull;
-        f.records.push_back({InstructionId{100 + i}, SectionId{i < count / 2 ? 1ull : 2ull},
+        f.records.push_back({InstructionId{100 + i}, SectionId{i < count / 2 ? 10ull : 20ull},
             i % 2 ? Op::Read : Op::Write, static_cast<uint32_t>(100 + (state >> 32) % 256), state & 1});
     }
     f.records[0].op = Op::Write; f.records[0].variable = 17; f.records[0].value = 1;
@@ -98,26 +109,61 @@ Fixture makeFixture(uint64_t count, uint64_t seed) {
     f.records[2].op = Op::Call; f.records[2].variable = 0; f.records[2].value = 104;
     f.records[3].op = Op::Write; f.records[3].variable = 18; f.records[3].value = 0;
     f.records[4].op = Op::Read; f.records[4].variable = 18; f.records[4].value = 0;
+    f.records[6].op=Op::Write; f.records[6].variable=19; f.records[6].value=0; f.records[6].expression=ExprId{52};
+    f.records[6].schedule=ExprId{50};
+    for(const auto& r:f.records) for(auto& section:f.sections) if(section.id==r.section) section.order.push_back(r.id);
     auto bit = f.records[0]; bit.variable = 18;
     auto target = f.records[2]; target.value = 105;
-    const std::vector<Action> actions{
+    std::vector<Action> actions{
         Query{QueryKind::Writes,17}, Query{QueryKind::Reads,17}, Edit{{f.records[0],bit}},
         Query{QueryKind::Writes,17}, Query{QueryKind::Writes,18}, Edit{{f.records[2],target}},
         Query{QueryKind::Incoming,104}, Query{QueryKind::Incoming,105}, Undo{},
         Query{QueryKind::Incoming,104}, Undo{}, Query{QueryKind::Writes,17}, Redo{}, Redo{}, Query{QueryKind::Writes,18}};
+    Record inserted{f.reserved[0],SectionId{11},Op::Write,19,1};
+    actions.push_back(EditBatch{{{{},inserted}},{{inserted.id,inserted.section,{}}},{}});
+    actions.push_back(Query{QueryKind::Writes,19});
+    auto moved=f.records[1]; moved.section=SectionId{11};
+    actions.push_back(EditBatch{{{f.records[1],moved}},{{moved.id,moved.section,inserted.id}}, {}});
+    actions.push_back(EditBatch{{},{{bit.id,bit.section,f.records[3].id}}, {}});
+    actions.push_back(EditBatch{{},{},{{SectionId{11},"helper","shared helper"}}});
+    auto repaired=target; repaired.value=inserted.id.value;
+    actions.push_back(EditBatch{{{target,repaired},{f.records[5],{}}},{},{}});
+    actions.push_back(Query{QueryKind::Incoming,105});
+    actions.push_back(Undo{}); actions.push_back(Redo{});
+    auto flagged=bit; flagged.flags=4;
+    actions.push_back(Edit{{bit,flagged}});
+    Record unresolved{f.reserved[1],SectionId{20},Op::Call}; unresolved.evidence=1;
+    actions.push_back(EditBatch{{{{},unresolved}}, {}, {}});
+    actions.push_back(Query{QueryKind::Unknown,0});
+    actions.push_back(Query{QueryKind::Reads,6,Bank::Byte});
     uint64_t traceHash = FnvBasis;
     for (const auto& action : actions) {
         f.trace.push_back({f.trace.size() + 1, action});
         traceHash = word(traceHash, action.index());
-        if (auto q = std::get_if<Query>(&action)) { traceHash = word(traceHash, static_cast<uint64_t>(q->kind)); traceHash = word(traceHash, q->key); }
+        if (auto q = std::get_if<Query>(&action)) { traceHash = word(traceHash, static_cast<uint64_t>(q->kind)); traceHash = word(traceHash, q->key); traceHash=word(traceHash,static_cast<uint64_t>(q->bank)); }
         if (auto e = std::get_if<Edit>(&action)) { traceHash = hashRecord(traceHash, e->change.before); traceHash = hashRecord(traceHash, e->change.after); }
+        if (auto batch=std::get_if<EditBatch>(&action)) {
+            for(const auto& m:batch->mutations) { traceHash=hashRecord(traceHash,m.before); traceHash=hashRecord(traceHash,m.after); }
+            for(const auto& p:batch->placements) { traceHash=word(traceHash,p.instruction.value); traceHash=word(traceHash,p.section.value); traceHash=word(traceHash,p.before.value); }
+            for(const auto& n:batch->names) { traceHash=word(traceHash,n.section.value); for(auto c:n.before) traceHash=word(traceHash,static_cast<unsigned char>(c)); traceHash=word(traceHash,0); for(auto c:n.after) traceHash=word(traceHash,static_cast<unsigned char>(c)); }
+        }
     }
-    f.checksum = canonicalDigest(f.records); f.traceChecksum = hex(traceHash);
+    uint64_t inputHash=word(word(FnvBasis,f.project.high),f.project.low);
+    for(const auto& script:f.scripts) inputHash=textHash(textHash(word(inputHash,script.id.value),script.name),script.source);
+    for(const auto& section:f.sections) {
+        inputHash=textHash(word(word(inputHash,section.id.value),section.script.value),section.name);
+        inputHash=word(inputHash,section.order.size()); for(auto id:section.order) inputHash=word(inputHash,id.value);
+    }
+    for(const auto& e:f.expressions) inputHash=expressionHash(inputHash,e);
+    for(const auto& evidence:f.evidence) inputHash=textHash(inputHash,evidence);
+    for(auto id:f.reserved) inputHash=word(inputHash,id.value);
+    for(const auto& r:f.records) inputHash=hashRecord(inputHash,r);
+    f.checksum=hex(inputHash); f.traceChecksum=hex(traceHash);
     return f;
 }
 Result<void> validateSpec(const RunSpec& s) {
     if (s.candidate != "reference" || s.fixture != "small-story" || s.trace != "semantic-edits")
-        return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported, "IR1 supports reference / small-story / semantic-edits only"));
+        return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported, "IR2 supports reference / small-story / semantic-edits only"));
     if (s.count < 8 || s.count > 1000000 || s.timeoutMs < 1 || s.timeoutMs > 3600000 || s.memoryMb < 32 || s.memoryMb > 65536)
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput, "Counts/limits outside supported range"));
     return Result<void>::success();
@@ -216,24 +262,32 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
         auto fixture=makeFixture(spec.count,spec.seed);
         const auto fixtureNs=elapsed(readinessStart);
         report["compatibility"]=compatibility(spec,fixture);
-        report["capabilities"]={{"supported",{"load","lookup","enumerate","replace","query","undo","redo"}},
-            {"unsupported",{"insert","erase","owner-move","guard-summary","snapshot","native-sct","persistence"}}};
+        report["capabilities"]={{"supported",{"load","lookup","enumerate","replace","query","undo","redo","insert","erase","same-script-owner-move","reorder","rename","expressions","unresolved-drafts"}},
+            {"unsupported",{"guard-summary","snapshot","native-sct","persistence","cross-script-owner-move"}}};
         std::vector<Sample> samples; samples.reserve(fixture.trace.size()*3);
         const auto modelReadyStart=Clock::now();
         Context context;
-        ReferenceHost<Storage> host(context);
+        ProgramHost<Storage> host(context);
         report["phase"]="load";
         auto start=Clock::now();
-        auto loaded=host.load(fixture.records);
+        auto loaded=host.load(fixture);
         if (!loaded) throw std::runtime_error(loaded.diagnostics()[0].message);
         const auto loadNs=elapsed(start);
         std::vector<Record>().swap(fixture.records);
+        std::vector<Section>().swap(fixture.sections); std::vector<Script>().swap(fixture.scripts);
+        std::vector<Expression>().swap(fixture.expressions); std::vector<std::string>().swap(fixture.evidence);
+        std::vector<InstructionId>().swap(fixture.reserved);
         const auto modelReadyNs=elapsed(modelReadyStart);
         // Model construction and input release are included; report formatting is excluded.
-        report["load"]={{"fixture_ns",std::to_string(fixtureNs)},{"store_ns",std::to_string(loadNs)},{"model_ready_ns",std::to_string(modelReadyNs)},
+        report["load"]={{"fixture_ns",std::to_string(fixtureNs)},{"program_load_ns",std::to_string(loadNs)},{"model_ready_ns",std::to_string(modelReadyNs)},
             {"load_to_ready_ns",std::to_string(fixtureNs+modelReadyNs)},
-            {"scope","synthetic normalization + reference store; no SCT decode"}};
+            {"shared_input_values_order_ns",std::to_string(host.loadPhases()[0])},
+            {"candidate_storage_ns",std::to_string(host.loadPhases()[1])},{"direct_indexes_ns",std::to_string(host.loadPhases()[2])},
+            {"scope","synthetic normalization + shared program and indexes; no SCT decode"}};
+        struct OperationWork { uint64_t operation; ProgramWork work; };
+        std::vector<OperationWork> operationWork; operationWork.reserve(fixture.trace.size());
         for (const auto& step : fixture.trace) {
+            const auto workBefore=host.work();
             if (controls.stopRequested()) { fail(report,"cancelled","Stopped at operation boundary"); break; }
             report["operation"]=std::to_string(step.id);
             Result<void> result=Result<void>::success();
@@ -242,19 +296,19 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
                 report["phase"]="query";
                 uint64_t count=0,digest=0;
                 start=Clock::now();
-                host.query(*query,[&](const Record& r) { ++count; digest ^= hashRecord(FnvBasis,r); });
+                host.query(*query,[&](const Fact& r) { ++count; digest ^= hashFact(FnvBasis,r); });
                 samples.push_back({step.id,elapsed(start),count,digest,"query-visit"});
                 // Separate cold materialization workload, same for each adapter.
-                std::pmr::vector<Record> rows(context.resource(Domain::Results));
+                std::pmr::vector<Fact> rows(context.resource(Domain::Results));
                 start=Clock::now();
-                host.query(*query,[&](const Record& r){ rows.push_back(r); });
+                host.query(*query,[&](const Fact& r){ rows.push_back(r); });
                 const auto materializeNs=elapsed(start);
-                uint64_t retainedDigest=0; for (const auto& r:rows) retainedDigest ^= hashRecord(FnvBasis,r);
+                uint64_t retainedDigest=0; for (const auto& r:rows) retainedDigest ^= hashFact(FnvBasis,r);
                 samples.push_back({step.id,materializeNs,rows.size(),retainedDigest,"query-materialize-cold"});
                 if (rows.size()!=count || retainedDigest!=digest) throw std::runtime_error("Materialized query diverged");
-            } else if (const auto* edit=std::get_if<Edit>(&step.action)) {
+            } else if (std::holds_alternative<Edit>(step.action) || std::holds_alternative<EditBatch>(step.action)) {
                 report["phase"]="prepare"; start=Clock::now();
-                auto prepared=host.prepare(edit->change,host.capture());
+                auto prepared=std::holds_alternative<Edit>(step.action)?host.prepare(std::get<Edit>(step.action).change,host.capture()):host.prepare(std::get<EditBatch>(step.action),host.capture());
                 samples.push_back({step.id,elapsed(start),0,0,"prepare"});
                 if (!prepared) result=Result<void>::failure(prepared.diagnostics());
                 else if (controls.stopRequested()) {
@@ -271,6 +325,9 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
                 samples.push_back({step.id,elapsed(start),0,0,std::holds_alternative<Undo>(step.action)?"undo":"redo"});
             }
             if (!result) { fail(report,"operation-failed",result.diagnostics()[0].message); break; }
+            const auto after=host.work();
+            operationWork.push_back({step.id,{after.instructionsExamined-workBefore.instructionsExamined,after.factsExtracted-workBefore.factsExtracted,
+                after.factsChanged-workBefore.factsChanged,after.postingsChanged-workBefore.postingsChanged,after.orderIdsCopied-workBefore.orderIdsCopied,after.ranksRepaired-workBefore.ranksRepaired}});
 
         }
         // Freeze measured state before formatting summaries. Smoke checks are separate from normal execution.
@@ -285,18 +342,46 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
         finalRecords.reserve(static_cast<size_t>(metrics.live));
         host.enumerate([&](const Record& record){ finalRecords.push_back(record); });
         std::ranges::sort(finalRecords,{},&Record::id);
-        report["final_checksum"]=canonicalDigest(finalRecords);
+        uint64_t programHash=word(word(FnvBasis,host.capture().project.high),host.capture().project.low);
+        for(const auto& script:host.scripts()) programHash=textHash(textHash(word(programHash,script.id.value),script.name),script.source);
+        host.enumerateSections([&](SectionId id,ScriptId script,std::string_view name,std::span<const InstructionId> order){
+            programHash=textHash(word(word(programHash,id.value),script.value),name); programHash=word(programHash,order.size());
+            for(auto instruction:order) programHash=word(programHash,instruction.value);
+        });
+        std::set<ExprId> reachable;
+        const auto visitExpression=[&](auto&& self,ExprId id)->void {
+            if(!id.value || !reachable.insert(id).second) return;
+            const auto& e=host.expressionNode(id); if(e.left.value) self(self,e.left); if(e.right.value) self(self,e.right);
+        };
+        for(const auto& r:finalRecords) {
+            programHash=hashRecord(programHash,r); visitExpression(visitExpression,r.expression); visitExpression(visitExpression,r.schedule);
+            if(r.evidence) programHash=textHash(programHash,host.evidence()[r.evidence-1]);
+        }
+        for(auto id:reachable) programHash=expressionHash(programHash,host.expressionNode(id));
+        report["final_checksum"]=hex(programHash);
         report["samples"]=Json::array();
         for (const auto& sample:samples) report["samples"].push_back({{"operation",std::to_string(sample.operation)},
             {"kind",sample.kind},{"ns",std::to_string(sample.ns)},{"rows",std::to_string(sample.emitted)},{"digest",hex(sample.digest)}});
         report["memory"]=Json::object();
-        const std::array names{"records","preparation","history","query_results"};
-        for (size_t i=0;i<totals.size();++i) report["memory"][names[i]]=allocation(totals[i]);
-        report["memory"]["coverage"]="PMR reference storage/preparation/history/results only; input, harness, JSON and allocator overhead uninstrumented";
+        for (size_t i=0;i<totals.size();++i) report["memory"][DomainNames[i]]=allocation(totals[i]);
+        report["memory"]["coverage"]="PMR storage, value/order/index/directory pools, history and result buffers; cold metadata strings, input, temporary associative work lists, harness, JSON and allocator overhead uninstrumented";
         report["memory"]["private_bytes"]=memoryAvailable?Json(std::to_string(process.PrivateUsage)):Json(nullptr);
         report["memory"]["sample_scope"]="process at workload end before summary formatting; not exact live object bytes";
-        report["work"]={{"records_replaced",std::to_string(metrics.work.replaced)},{"query_records_examined",std::to_string(examined)},
+        report["work"]={{"records_replaced",std::to_string(metrics.work.replaced)},{"query_facts_visited",std::to_string(examined)},
             {"live_records",std::to_string(metrics.live)},{"record_payload_bytes",std::to_string(metrics.recordBytes)}};
+        report["work"]["records_inserted"]=std::to_string(metrics.work.inserted);
+        report["work"]["records_erased"]=std::to_string(metrics.work.erased);
+        report["work"]["live_facts"]=std::to_string(host.factCount());
+        report["work"]["retained_operand_bytes"]=std::to_string(host.retainedOperandBytes());
+        report["work"]["live_operand_bytes"]=std::to_string(metrics.live*3*sizeof(Operand));
+        report["work"]["retired_operand_bytes"]=std::to_string(host.retainedOperandBytes()-metrics.live*3*sizeof(Operand));
+        report["work"]["allocator_high_water"]=std::to_string(host.highWater());
+        report["operation_work"]=Json::array();
+        for(const auto& entry:operationWork) report["operation_work"].push_back({{"operation",std::to_string(entry.operation)},
+            {"instructions_examined",std::to_string(entry.work.instructionsExamined)},{"facts_extracted",std::to_string(entry.work.factsExtracted)},
+            {"facts_changed",std::to_string(entry.work.factsChanged)},{"postings_changed",std::to_string(entry.work.postingsChanged)},
+            {"order_ids_copied",std::to_string(entry.work.orderIdsCopied)},{"ranks_repaired",std::to_string(entry.work.ranksRepaired)}});
+        report["query_scope"]="Known direct facts; unknown effects and unresolved targets are available through the Unknown bucket. No guard or runtime reachability inference.";
         report["phase"]="finished";
     } catch (const std::bad_alloc&) { fail(report,"resource-limited","Allocation failed"); }
     catch (const std::exception& e) { fail(report,"operation-failed",e.what()); }

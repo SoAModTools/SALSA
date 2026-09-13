@@ -52,7 +52,7 @@
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
     </ClCompile>
   </ItemDefinitionGroup>
-  <ItemGroup><ClInclude Include="Evaluation.h" /><ClInclude Include="Reference.h" /></ItemGroup>
+  <ItemGroup><ClInclude Include="Evaluation.h" /><ClInclude Include="Reference.h" /><ClInclude Include="Program.h" /></ItemGroup>
   <ItemGroup><ClCompile Include="Evaluation.cpp" /><ClCompile Include="SelfTests.cpp" /><ClCompile Include="main.cpp" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

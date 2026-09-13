@@ -1,4 +1,4 @@
-#include "Reference.h"
+#include "Program.h"
 #include <iostream>
 #include <stdexcept>
 #include <Windows.h>
@@ -13,20 +13,25 @@ int selfTests() {
     try {
         {
             Context context; auto fixture=makeFixture(8,1);
-            ReferenceHost<ReferenceStorage> host(context);
-            require(host.load(fixture.records).ok(),"Load failed");
+            ProgramHost<ReferenceStorage> host(context);
+            require(host.load(fixture).ok(),"Load failed");
             const auto original=fixture.records.front();
+            FactId factBefore; host.query({QueryKind::Writes,original.variable},[&](const Fact& fact){ if(fact.source==original.id) factBefore=fact.id; });
             auto replacement=original; ++replacement.variable;
             auto prepared=host.prepare({original,replacement},host.capture());
             require(prepared.ok() && host.commit(std::move(prepared).takeValue()).ok(),"Edit failed");
             require(*host.lookup(original.id)==replacement,"Edit not applied");
+            FactId factAfter; host.query({QueryKind::Writes,replacement.variable},[&](const Fact& fact){ if(fact.source==original.id) factAfter=fact.id; });
+            require(factBefore.value && factBefore==factAfter,"Write identity was not retained across retargeting");
+            size_t oldUses=0; host.query({QueryKind::Writes,original.variable},[&](const Fact&){ ++oldUses; });
+            require(oldUses==0,"Old write bucket was not updated");
             require(host.undo().ok() && *host.lookup(original.id)==original,"Undo failed");
             require(host.redo().ok() && *host.lookup(original.id)==replacement,"Redo failed");
-            std::cout << "PASS reference load/edit/undo smoke\n";
+            std::cout << "PASS indexed load/edit/undo smoke\n";
         }
         {
             Context context; const auto fixture=makeFixture(8,1);
-            ReferenceHost<ReferenceStorage> host(context); require(host.load(fixture.records).ok(),"Load failed");
+            ProgramHost<ReferenceStorage> host(context); require(host.load(fixture).ok(),"Load failed");
             auto original=fixture.records.front(); auto wrong=original; ++wrong.value;
             require(!host.prepare({wrong,original},host.capture()),"Invalid precondition accepted");
             require(host.capture().revision==0 && host.historySize()==0 && *host.lookup(original.id)==original,"Rejected edit changed state");
