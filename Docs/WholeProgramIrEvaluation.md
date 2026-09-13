@@ -1,6 +1,6 @@
 # Whole-program IR evaluation tool
 
-`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR6 adds bounded SPICE SCT import/fresh export and compressed experimental persistence to the dense, paged, section-local, and reference storage candidates behind the shared program/editing host. It does not change the editor or select a production representation. Native experiments use synthetic SCT bytes; corpus loading is not enabled.
+`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR6 adds bounded SPICE SCT import/fresh export and compressed experimental persistence to the dense, paged, section-local, and reference storage candidates behind the shared program/editing host. It does not change the editor. IR7 selects paged storage and shared policies for production integration; see [the architecture decision](WholeProgramIrArchitecture.md). Native experiments use synthetic SCT bytes; corpus loading is not enabled.
 
 ## Run an experiment
 
@@ -206,7 +206,7 @@ Windows process-wide peak working set/pagefile counters and current private byte
 
 The focused IR6 comparison uses 1,000 and 10,000 initial instructions, all four candidates, three repetitions, and native-gc/native-dc/story-connectivity with compressed persistence. It is a bounded integration experiment; larger scaling and consolidated architecture selection belong to IR7. The retained suite remains three console smoke groups, plus six filtered existing SPICE SCT checks covering relocation, AKLZ, expression construction and scheduling. No GUI or corpus is loaded.
 
-IR6 does not migrate the live semantic editor, its existing compressed projects, or Python SALSA v7 import. Those production paths remain unchanged and supported; completing their operation coverage and metadata promotion is a later integration requirement. The binary-table follow-up below is complete. The next slice remains IR7: consolidate the evidence and choose the representation to carry into production.
+IR6 does not migrate the live semantic editor, its existing compressed projects, or Python SALSA v7 import. Those production paths remain unchanged and supported; completing their operation coverage and metadata promotion is a later integration requirement. The binary-table follow-up below is complete. IR7 has consolidated the evidence and selected the production integration direction; see [the architecture decision](WholeProgramIrArchitecture.md).
 
 
 ## Binary-table persistence follow-up (before IR7)
