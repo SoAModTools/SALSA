@@ -24,6 +24,19 @@ namespace salsa::qt {
 namespace {
 using namespace core;
 namespace sct = spice::sct;
+// Graphics items do not inherit widget palette roles. Keep their fills and text
+// together so the graph remains readable regardless of the system palette.
+namespace storyColors {
+const QColor background("#20252b");
+const QColor cutscene("#243b53");
+const QColor variable("#493d26");
+const QColor reader("#263f35");
+const QColor border("#6b8299");
+const QColor selected("#60a5fa");
+const QColor text("#f1f5f9");
+const QColor connection("#8b9bad");
+const QColor caption("#cbd5e1");
+} // namespace storyColors
 QString q(const std::string &s) {
     return QString::fromStdString(s);
 }
@@ -48,6 +61,8 @@ class StoryNode final : public QGraphicsRectItem {
   protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant &value) override {
         auto result = QGraphicsRectItem::itemChange(change, value);
+        if (change == ItemSelectedHasChanged)
+            setPen(QPen(value.toBool() ? storyColors::selected : storyColors::border, 2.0));
         if (change == ItemPositionHasChanged && moved)
             moved();
         return result;
@@ -78,6 +93,7 @@ class StoryDialog final : public QDialog {
         leftLayout->addWidget(new QLabel(tr("Whole bodies and referenced helpers. Arrows describe state writes and "
                                             "reads; they do not create execution routes.")));
         graph = new QGraphicsScene(this);
+        graph->setBackgroundBrush(storyColors::background);
         view = new QGraphicsView(graph, left);
         view->setDragMode(QGraphicsView::ScrollHandDrag);
         leftLayout->addWidget(view, 3);
@@ -299,7 +315,7 @@ class StoryDialog final : public QDialog {
                 position = {p.x, p.y};
         auto *rect = new StoryNode;
         rect->setRect(0, 0, 240, 68);
-        rect->setPen(QPen(Qt::darkGray));
+        rect->setPen(QPen(storyColors::border, 2.0));
         rect->setBrush(QBrush(color));
         graph->addItem(rect);
         rect->setPos(position);
@@ -311,16 +327,17 @@ class StoryDialog final : public QDialog {
         if (occurrence)
             rect->setData(1, QVariant::fromValue<qulonglong>(occurrence->value));
         auto *text = new QGraphicsTextItem(label(target), rect);
+        text->setDefaultTextColor(storyColors::text);
         text->setTextWidth(230);
         text->setAcceptedMouseButtons(Qt::NoButton);
         rect->setToolTip(q(SctInterpretation::describe(*state, target)));
         return rect;
     }
     void edge(QGraphicsRectItem *from, QGraphicsRectItem *to, const QString &text) {
-        auto *line = graph->addLine(QLineF(), QPen(QColor("#697685"), 1.5));
+        auto *line = graph->addLine(QLineF(), QPen(storyColors::connection, 1.5));
         line->setZValue(-1);
-        auto *caption = graph->addText(text + " â†’");
-        caption->setDefaultTextColor(QColor("#40546b"));
+        auto *caption = graph->addText(text + QStringLiteral(" \u2192"));
+        caption->setDefaultTextColor(storyColors::caption);
         caption->setZValue(-1);
         lines.push_back({from, to, line, caption});
         updateEdges();
@@ -344,7 +361,7 @@ class StoryDialog final : public QDialog {
         for (std::size_t n = 0; n < story->steps.size(); ++n) {
             const auto &step = story->steps[n];
             auto *current = node(step.target, {static_cast<qreal>((n % 3) * 380), static_cast<qreal>((n / 3) * 150)},
-                                 QColor("#d7e8fb"), step.id);
+                                 storyColors::cutscene, step.id);
             if (!step.name.empty())
                 for (auto *child : current->childItems())
                     if (auto *text = dynamic_cast<QGraphicsTextItem *>(child))
@@ -371,7 +388,7 @@ class StoryDialog final : public QDialog {
             graph->blockSignals(false);
             return;
         }
-        auto *root = node(e->root, {0, 0}, QColor("#d7e8fb"));
+        auto *root = node(e->root, {0, 0}, storyColors::cutscene);
         std::map<SctVariableKey, QGraphicsRectItem *> flags;
         std::map<SctVariableKey, std::set<QString>> operations;
         std::map<SctMeaningTarget, QGraphicsRectItem *> consumers;
@@ -379,14 +396,14 @@ class StoryDialog final : public QDialog {
             const auto &w = analysis.accesses[n];
             writes->addItem(operation(w.kind) + "  " +
                             q(w.variable.kind == SctVariableKind::Bit ? "BitVar" : "Variable") + "[" +
-                            QString::number(w.variable.index) + "]  â€”  " + label(w.target));
+                            QString::number(w.variable.index) + QStringLiteral("]  \u2014  ") + label(w.target));
             writeTargets.push_back(w.target);
             operations[w.variable].insert(operation(w.kind));
             if (!flags.contains(w.variable)) {
                 SctMeaningTarget t;
                 t.script = e->root.script;
                 t.variable = w.variable;
-                flags[w.variable] = node(t, {380, static_cast<qreal>(flags.size() * 110)}, QColor("#fff0c8"));
+                flags[w.variable] = node(t, {380, static_cast<qreal>(flags.size() * 110)}, storyColors::variable);
             }
         }
         for (const auto &[v, item] : flags) {
@@ -402,7 +419,7 @@ class StoryDialog final : public QDialog {
                     auto target = sectionTarget(access.target.script, loc->second);
                     if (!consumers.contains(target))
                         consumers[target] =
-                            node(target, {800, static_cast<qreal>(consumers.size() * 100)}, QColor("#e1efdb"));
+                            node(target, {800, static_cast<qreal>(consumers.size() * 100)}, storyColors::reader);
                     const auto pair = std::pair{v, target};
                     if (drawn.insert(pair).second)
                         edge(item, consumers[target], "Read");
@@ -411,7 +428,7 @@ class StoryDialog final : public QDialog {
         drawn.clear();
         for (auto n : e->unresolvedWrites) {
             const auto &w = analysis.unresolvedWrites[n];
-            writes->addItem(operation(w.kind) + " BitVar[" + q(w.expression) + "] â€” destination expression");
+            writes->addItem(operation(w.kind) + " BitVar[" + q(w.expression) + QStringLiteral("] \u2014 destination expression"));
             writeTargets.push_back(w.target);
         }
         graph->blockSignals(false);
@@ -475,7 +492,7 @@ class StoryDialog final : public QDialog {
         }
     }
     QString instructionText(const sct::SctDocumentInstruction &i) const {
-        QString text = "Instruction " + QString::number(i.id.value()) + " â€” opcode " + QString::number(i.opcode);
+        QString text = "Instruction " + QString::number(i.id.value()) + QStringLiteral(" \u2014 opcode ") + QString::number(i.opcode);
         if (i.skipRefresh)
             text += " [skip refresh]";
         if (i.scheduledExpression)
