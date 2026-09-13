@@ -39,4 +39,4 @@ Three repetitions provide observed medians and ranges, not a tail guarantee. OS 
 
 The existing console smoke group covers every compiled codec with a small repetitive buffer and an empty buffer. There is no GUI or new gtest suite. Production save behavior and the earlier corpus comparison remain separate from this experiment.
 
-The approved full checkpoint experiment completed all 18 codec/repetition runs, and every codec reproduced the same captured bytes. Exact local timing/size/memory observations and dependency receipts remain ignored with the reports. This supplies a codec recommendation; adopting a new production container codec remains a separate change.
+The approved full checkpoint experiment completed all 18 codec/repetition runs, and every codec reproduced the same captured bytes. Exact local timing/size/memory observations and dependency receipts remain ignored with the reports. The user selected zstd level 1 after this comparison. Production adoption, notices and codec-aware container framing are planned in [the production persistence slice](WholeProgramIrProductionPlan.md).

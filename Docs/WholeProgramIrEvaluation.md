@@ -1,6 +1,6 @@
 # Whole-program IR evaluation tool
 
-`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR6 adds bounded SPICE SCT import/fresh export and compressed experimental persistence to the dense, paged, section-local, and reference storage candidates behind the shared program/editing host. It does not change the editor. IR7 identifies paged storage and shared policies as the leading direction, pending corpus sign-off; see [the architecture decision](WholeProgramIrArchitecture.md). Native experiments use synthetic SCT bytes; corpus loading is a separate opt-in command described in [the corpus infrastructure](WholeProgramIrCorpus.md).
+`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR6 adds bounded SPICE SCT import/fresh export and compressed experimental persistence to the dense, paged, section-local, and reference storage candidates behind the shared program/editing host. It does not change the editor. The user selected paged storage and zstd level 1 after the completed corpus and codec experiments; see [the architecture decision](WholeProgramIrArchitecture.md). Native experiments use synthetic SCT bytes; corpus loading is a separate opt-in command described in [the corpus infrastructure](WholeProgramIrCorpus.md).
 
 ## Run an experiment
 

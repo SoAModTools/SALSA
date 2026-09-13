@@ -2,7 +2,7 @@
 
 This opt-in, Release-only console experiment lives in SALSA. It prepares an inventory of every `.sct` under the configured GameCube US root, loads the captured inventory into one resident project, applies reproducible eligible edits, and measures memory/timing across the three compact storage candidates. It is not a gtest corpus suite and never launches the editor.
 
-The architecture recommendation is provisional until the real corpus experiment has been run and assessed. Infrastructure completion does not claim a successful full-corpus load.
+The corrected full-corpus comparison and subsequent codec experiment are complete. The user selected paged storage and zstd level 1; see the [production implementation plan](WholeProgramIrProductionPlan.md). This selects the design without migrating the editor.
 
 ## Running
 
@@ -59,6 +59,6 @@ The corpus load is sequential and read-only. No native SCT export, executable pa
 
 Validation used an elevated v145 Release build, the existing three console smoke groups extended with small synthetic native-content cases, a supervised missing-input rejection, the launcher's help path, and six filtered existing SPICE SCT contract checks. Constructed fixtures cover text, repeated references, high bit indices, decimal and float bit targets, edits/batches, undo/redo, small chunk-boundary reopening, and binary reopening across all three candidates. Two tiny generated SCT files exercise actual parsing, without any private game input. No tests or changes were made in the private repository or SPICE submodule.
 
-The corrected harness completed the approved GC US comparison: all three candidates passed three repetitions of the full captured inventory and seeded workload, including checkpoint reopening. Float and decimal bit targets were recognized without omissions in that inventory, and traces, content and query digests agreed. Machine-specific metrics and corpus evidence remain in ignored local reports. This completes the experiment, not production editor integration or architecture sign-off.
+The corrected harness completed the approved GC US comparison: all three candidates passed three repetitions of the full captured inventory and seeded workload, including checkpoint reopening. Float and decimal bit targets were recognized without omissions in that inventory, and traces, content and query digests agreed. Machine-specific metrics and corpus evidence remain in ignored local reports. The user has accepted paged storage and zstd level 1 following these experiments; production editor integration remains planned.
 
 For a codec-only comparison using one captured checkpoint, see [the compression experiment](WholeProgramIrCompression.md). It avoids repeating native imports or the storage-candidate matrix for each codec.
