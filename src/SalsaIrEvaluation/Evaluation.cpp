@@ -43,11 +43,11 @@ Json allocation(const AllocationTotals& a) {
 }
 Json compatibility(const RunSpec& spec, const Fixture& fixture) {
     auto config = encodeSpec(spec);
-    for (auto key : {"repetition"}) config.erase(key);
+    for (auto key : {"repetition","order_policy","reader_policy"}) config.erase(key);
     // Candidate is deliberately separate, so future storage variants can be compared.
     config.erase("candidate");
     return {{"spec", config}, {"fixture_checksum", fixture.checksum}, {"trace_checksum", fixture.traceChecksum},
-        {"build", buildIdentity()}, {"interface_version", 3}, {"common_variants", "program-host-v4/order-v2/direct-facts-v2/history-v3/story-v1"},
+        {"build", buildIdentity()}, {"interface_version", 3}, {"common_variants", "program-host-v5/order-policy-v1/payload-pages-v1/detached-read-v1/direct-facts-v2/history-v4/story-v1"},
         {"semantic_coverage", "synthetic-expression-batch-order-guard-transition-v3"}, {"workers", 1},
         {"instrumentation", "pmr-domain-counters-v1"}, {"cache_policy", "fresh-process-no-warmup-os-cache-uncontrolled"}};
 }
@@ -151,7 +151,7 @@ Fixture makeFixture(uint64_t count, uint64_t seed, std::string_view shape) {
     actions.push_back(EditBatch{{{{},unresolved}}, {}, {}});
     actions.push_back(Query{QueryKind::Unknown,0});
     actions.push_back(Query{QueryKind::Reads,6,Bank::Byte});
-    if(shape=="churn") {
+    if(shape=="churn" || shape=="lifetime") {
         EditBatch insert,erase,move;
         for(uint64_t i=0;i<300;++i) {
             Record row{InstructionId{102+count+i},SectionId{11},Op::Write,17,i%2};
@@ -163,6 +163,14 @@ Fixture makeFixture(uint64_t count, uint64_t seed, std::string_view shape) {
         for(size_t cycle=0;cycle<8;++cycle) { actions.push_back(erase); actions.push_back(Undo{}); }
         actions.push_back(move); actions.push_back(Undo{}); actions.push_back(Redo{});
         actions.push_back(Query{QueryKind::Writes,17});
+    }
+    if(shape=="lifetime") {
+        auto current=flagged;
+        for(size_t i=0;i<512;++i) {
+            auto after=current; after.value=i%2; actions.push_back(Edit{{current,after}}); current=after;
+            if(i%8==0) { actions.push_back(Undo{}); actions.push_back(Redo{}); }
+        }
+        actions.push_back(Query{QueryKind::Writes,18});
     }
     if(shape=="story-connectivity") {
         if(count<16) throw std::invalid_argument("Story fixture requires at least 16 instructions");
@@ -235,23 +243,26 @@ Fixture makeFixture(uint64_t count, uint64_t seed, std::string_view shape) {
 }
 Result<void> validateSpec(const RunSpec& s) {
     if ((s.candidate != "reference" && s.candidate != "dense" && s.candidate != "paged" && s.candidate != "section-local") ||
-        (s.fixture != "small-story" && s.fixture != "few-long" && s.fixture != "many-short" && s.fixture != "high-use" && s.fixture != "churn" && s.fixture != "story-connectivity") || s.trace != "semantic-edits")
+        (s.fixture != "small-story" && s.fixture != "few-long" && s.fixture != "many-short" && s.fixture != "high-use" && s.fixture != "churn" && s.fixture != "story-connectivity" && s.fixture != "lifetime") || s.trace != "semantic-edits")
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported, "Unknown storage candidate, synthetic fixture, or trace"));
+    if((s.orderPolicy!="copy" && s.orderPolicy!="shared") || (s.readerPolicy!="selected" && s.readerPolicy!="whole"))
+        return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported,"Unknown order/reader policy"));
     if ((s.fixture=="story-connectivity" && s.count<16) || s.count < 8 || s.count > 1000000 || s.timeoutMs < 1 || s.timeoutMs > 3600000 || s.memoryMb < 32 || s.memoryMb > 65536)
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput, "Counts/limits outside supported range"));
     return Result<void>::success();
 }
 Json encodeSpec(const RunSpec& s) {
-    return {{"format","jahorta.salsa.ir-evaluation-spec"},{"version",1},{"candidate",s.candidate},{"fixture",s.fixture},{"trace",s.trace},
+    return {{"format","jahorta.salsa.ir-evaluation-spec"},{"version",2},{"candidate",s.candidate},{"order_policy",s.orderPolicy},{"reader_policy",s.readerPolicy},{"fixture",s.fixture},{"trace",s.trace},
         {"seed",std::to_string(s.seed)},{"count",std::to_string(s.count)},
         {"timeout_ms",std::to_string(s.timeoutMs)},{"memory_mb",std::to_string(s.memoryMb)},
         {"repetition",std::to_string(s.repetition)}};
 }
 Result<RunSpec> decodeSpec(const Json& j) {
     try {
-        keys(j,{"format","version","candidate","fixture","trace","seed","count","timeout_ms","memory_mb","repetition"});
-        if (j.at("format") != "jahorta.salsa.ir-evaluation-spec" || j.at("version") != 1) throw std::invalid_argument("Unsupported spec schema");
+        keys(j,{"format","version","candidate","order_policy","reader_policy","fixture","trace","seed","count","timeout_ms","memory_mb","repetition"});
+        if (j.at("format") != "jahorta.salsa.ir-evaluation-spec" || j.at("version") != 2) throw std::invalid_argument("Unsupported spec schema");
         RunSpec s;
+        s.orderPolicy=j.at("order_policy").get<std::string>(); s.readerPolicy=j.at("reader_policy").get<std::string>();
         s.candidate=j.at("candidate").get<std::string>(); s.fixture=j.at("fixture").get<std::string>(); s.trace=j.at("trace").get<std::string>();
         s.seed=decimal(j.at("seed")); s.count=decimal(j.at("count")); s.timeoutMs=decimal(j.at("timeout_ms")); s.memoryMb=decimal(j.at("memory_mb"));
         const auto repetition=decimal(j.at("repetition")); if (repetition > UINT32_MAX) throw std::invalid_argument("Repetition overflow");
@@ -335,12 +346,12 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
         auto fixture=makeFixture(spec.count,spec.seed,spec.fixture);
         const auto fixtureNs=elapsed(readinessStart);
         report["compatibility"]=compatibility(spec,fixture);
-        report["capabilities"]={{"supported",{"load","lookup","enumerate","replace","query","undo","redo","insert","erase","same-script-owner-move","reorder","rename","expressions","unresolved-drafts","declared-modules","literal-guards","story-connections","bounded-helper-summary"}},
-            {"unsupported",{"general-control-flow","snapshot","native-sct","persistence","cross-script-owner-move"}}};
-        std::vector<Sample> samples; samples.reserve(fixture.trace.size()*6);
+        report["capabilities"]={{"supported",{"load","lookup","enumerate","replace","query","undo","redo","insert","erase","same-script-owner-move","reorder","rename","expressions","unresolved-drafts","declared-modules","literal-guards","story-connections","bounded-helper-summary","detached-execution-readers","payload-reclamation","history-release"}},
+            {"unsupported",{"general-control-flow","concurrent-live-host-access","native-sct","persistence","cross-script-owner-move"}}};
+        std::vector<Sample> samples; samples.reserve(fixture.trace.size()*6+12);
         const auto modelReadyStart=Clock::now();
         Context context;
-        ProgramHost<Storage> host(context);
+        ProgramHost<Storage> host(context,spec.orderPolicy=="shared");
         report["phase"]="load";
         auto start=Clock::now();
         auto loaded=host.load(fixture);
@@ -361,6 +372,23 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
             {"shared_input_values_order_ns",std::to_string(host.loadPhases()[0])},
             {"candidate_storage_ns",std::to_string(host.loadPhases()[1])},{"direct_indexes_ns",std::to_string(host.loadPhases()[2])},
             {"scope","synthetic normalization + shared program and indexes; no SCT decode"}};
+        std::shared_ptr<const ReadSnapshot<Fact>> heldRead;
+        report["lifetime"]=Json::array();
+        const auto recordLifetime=[&](const char* phase) {
+            const auto payload=host.payloadMetrics(); const auto& readers=host.readerMetrics();
+            report["lifetime"].push_back({{"phase",phase},{"operand_bundles",std::to_string(payload.bundles)},
+                {"operand_page_bytes",std::to_string(payload.bytes)},{"history_entries",std::to_string(host.historySize())},
+                {"reader_bytes",std::to_string(readers.currentBytes.load())},{"reader_peak_bytes",std::to_string(readers.peakBytes.load())},
+                {"readers",std::to_string(readers.readers.load())},{"order_bytes",std::to_string(context.resource(Domain::Order)->totals.current)},
+                {"history_bytes",std::to_string(context.resource(Domain::History)->totals.current)}});
+        };
+        if(spec.fixture=="lifetime") {
+            report["phase"]="reader-capture"; start=Clock::now();
+            const std::array selected{SectionId{10}}; heldRead=host.captureRead(selected,spec.readerPolicy=="whole");
+            samples.push_back({0,elapsed(start),0,0,"reader-capture"});
+            recordLifetime("reader-held");
+            report["reader_scope_records"]=std::to_string(heldRead->records().size());
+        }
         struct OperationWork { uint64_t operation; ProgramWork work; StorageMetrics storage; ConnectivityWork connectivity; };
         std::vector<OperationWork> operationWork; operationWork.reserve(fixture.trace.size());
         for (const auto& step : fixture.trace) {
@@ -432,6 +460,26 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
                 after.factsChanged-workBefore.factsChanged,after.postingsChanged-workBefore.postingsChanged,after.orderIdsCopied-workBefore.orderIdsCopied,after.ranksRepaired-workBefore.ranksRepaired},storageDelta,storyDelta});
 
         }
+        if(spec.fixture=="lifetime" && report["disposition"]=="passed") {
+            uint64_t operation=fixture.trace.size()+1;
+            const auto maintain=[&](bool retireExpressions,const char* phase) {
+                report["phase"]=phase; start=Clock::now(); const auto m=host.reclaim(retireExpressions);
+                samples.push_back({operation++,elapsed(start),0,0,retireExpressions?"reclaim-released-history":"reclaim-held-history"});
+                recordLifetime(phase);
+                report["lifetime"].back()["reclamation"]={{"bundles_before",std::to_string(m.bundlesBefore)},
+                    {"rooted_bundles",std::to_string(m.rootedBundles)},{"bundles_freed",std::to_string(m.bundlesFreed)},
+                    {"pages_freed",std::to_string(m.pagesFreed)},{"bytes_freed",std::to_string(m.bytesFreed)},
+                    {"expressions_retired",std::to_string(m.expressionsRetired)},{"receipts_retired",std::to_string(m.receiptsRetired)}};
+            };
+            recordLifetime("after-churn"); maintain(false,"held-history-maintenance");
+            start=Clock::now(); host.clearHistory(); samples.push_back({operation++,elapsed(start),0,0,"history-release"});
+            maintain(true,"released-history-maintenance");
+            start=Clock::now(); const auto* oldRecord=heldRead->lookup(InstructionId{100});
+            if(!oldRecord || host.accepts(heldRead->capture())) throw std::runtime_error("Held reader result was missing or incorrectly accepted as current");
+            samples.push_back({operation++,elapsed(start),1,hashRecord(FnvBasis,*oldRecord),"held-reader-read"});
+            start=Clock::now(); heldRead.reset(); samples.push_back({operation++,elapsed(start),0,0,"reader-release"});
+            recordLifetime("reader-released");
+        }
         // Freeze measured state before formatting summaries. Smoke checks are separate from normal execution.
         const auto metrics=host.metrics();
         const auto storyMetrics=story.metrics();
@@ -480,7 +528,7 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
             {"kind",sample.kind},{"ns",std::to_string(sample.ns)},{"rows",std::to_string(sample.emitted)},{"digest",hex(sample.digest)}});
         report["memory"]=Json::object();
         for (size_t i=0;i<totals.size();++i) report["memory"][DomainNames[i]]=allocation(totals[i]);
-        report["memory"]["coverage"]="PMR storage, value/order/index/directory/connectivity pools, history and result buffers; cold metadata strings, input, temporary associative work lists, harness, JSON and allocator overhead uninstrumented";
+        report["memory"]["coverage"]="PMR storage, value/order/index/directory/connectivity pools, history and result buffers; detached reader capacity estimates reported separately in lifetime; cold metadata strings, input, temporary associative work lists, harness, JSON and allocator overhead uninstrumented";
         report["memory"]["private_bytes"]=memoryAvailable?Json(std::to_string(process.PrivateUsage)):Json(nullptr);
         report["memory"]["sample_scope"]="process at workload end before summary formatting; not exact live object bytes";
         report["work"]={{"records_replaced",std::to_string(metrics.work.replaced)},{"query_facts_visited",std::to_string(examined)},
@@ -550,7 +598,7 @@ Result<void> validateReport(const Json& r) {
                 if (!sample.at("kind").is_string() || !sample.at("digest").is_string()) throw std::invalid_argument("Malformed operation sample");
             }
             auto config=encodeSpec(spec.value());
-            for (auto key:{"mode","repetition","candidate"}) config.erase(key);
+            for (auto key:{"mode","repetition","candidate","order_policy","reader_policy"}) config.erase(key);
             if (r.at("compatibility").at("spec")!=config) throw std::invalid_argument("Report compatibility contradicts run spec");
         }
         return Result<void>::success();
@@ -572,14 +620,15 @@ Result<Json> compareReports(const std::vector<Json>& reports) {
         const auto runId=r.at("run_id").get<std::string>();
         if (std::ranges::find(runIds,runId)!=runIds.end()) return Result<Json>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput,"Duplicate run ID"));
         runIds.push_back(runId); comparison["runs"].push_back(runId);
-        comparison["measurements"].push_back({{"run_id",runId},{"candidate",r.at("spec").at("candidate")},
-            {"load",r.at("load")},{"connectivity",r.at("connectivity")},{"storage",r.at("storage")},{"memory",r.at("memory")},{"work",r.at("work")}});
+        const auto variant=r.at("spec").at("candidate").get<std::string>()+"/order="+r.at("spec").at("order_policy").get<std::string>()+"/reader="+r.at("spec").at("reader_policy").get<std::string>();
+        comparison["measurements"].push_back({{"run_id",runId},{"variant",variant},{"candidate",r.at("spec").at("candidate")},
+            {"load",r.at("load")},{"lifetime",r.at("lifetime")},{"connectivity",r.at("connectivity")},{"storage",r.at("storage")},{"memory",r.at("memory")},{"work",r.at("work")}});
         for(auto key:{"load_to_ready_ns","candidate_storage_ns","direct_indexes_ns","shared_input_values_order_ns","connectivity_ns"})
-            times[r.at("spec").at("candidate").get<std::string>()+"/load/"+key].push_back(decimal(r.at("load").at(key)));
+            times[variant+"/load/"+key].push_back(decimal(r.at("load").at(key)));
         std::vector<std::array<std::string,4>> schedule;
         for (const auto& s:r.at("samples")) {
             schedule.push_back({s.at("operation").get<std::string>(),s.at("kind").get<std::string>(),s.at("rows").get<std::string>(),s.at("digest").get<std::string>()});
-            const auto key=r.at("spec").at("candidate").get<std::string>()+"/"+s.at("kind").get<std::string>()+"/"+s.at("operation").get<std::string>();
+            const auto key=variant+"/"+s.at("kind").get<std::string>()+"/"+s.at("operation").get<std::string>();
             times[key].push_back(decimal(s.at("ns")));
         }
         if (runIds.size()==1) expectedSchedule=std::move(schedule);

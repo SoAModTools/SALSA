@@ -2,12 +2,55 @@
 #include "PagedStorage.h"
 #include "Connectivity.h"
 #include <iostream>
+#include <future>
 #include <stdexcept>
 #include <Windows.h>
 
 namespace salsa::evaluation {
 namespace {
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+void lifetimeSmoke() {
+    Context context; auto fixture=makeFixture(64,1); ProgramHost<DenseStorage> host(context);
+    require(host.load(fixture).ok(),"Lifetime load failed");
+    auto reader=host.captureRead(); const auto original=*reader->lookup({100});
+    auto pendingRecord=original; pendingRecord.variable=777;
+    auto pendingResult=host.prepare({original,pendingRecord},host.capture()); require(pendingResult.ok(),"Pending preparation failed");
+    auto pending=std::move(pendingResult).takeValue();
+    std::promise<void> release; auto gate=release.get_future();
+    auto worker=std::async(std::launch::async,[read=reader,gate=std::move(gate)]() mutable { gate.wait(); return *read->lookup({100}); });
+    struct Unblock { std::promise<void>& promise; ~Unblock(){ try { promise.set_value(); } catch(...) {} } } unblock{release};
+    for(uint64_t i=0;i<512;++i) {
+        Expression expression; expression.op=ExprOp::Literal; expression.literal=i;
+        auto id=host.appendExpression(expression); require(id.ok(),"Expression allocation failed");
+        auto before=*host.lookup({100}); auto after=before; after.expression=id.value(); after.value=0;
+        auto prepared=host.prepare({before,after},host.capture()); require(prepared.ok() && host.commit(std::move(prepared).takeValue()).ok(),"Lifetime edit failed");
+        if(i%8==0) require(host.undo().ok() && host.redo().ok(),"Lifetime undo/redo failed");
+    }
+    auto retained=host.reclaim(); require(retained.rootedBundles>host.metrics().live,"History/preparation payloads were not retained");
+    host.clearHistory(); auto released=host.reclaim(true);
+    require(released.rootedBundles==host.metrics().live+2,"Pending preparation roots were not preserved");
+    require(released.bytesFreed>0 && released.expressionsRetired>=511,"Released history did not reclaim payloads/expressions");
+    require(!host.accepts(reader->capture()) && *reader->lookup({100})==original,"Reader revision/content changed");
+    release.set_value(); require(worker.get()==original,"Detached worker read changed after reclamation");
+    host.cancel(pending); auto cancelled=host.reclaim(true);
+    require(cancelled.rootedBundles==host.metrics().live && cancelled.bundlesFreed==2,"Cancelled preparation retained operands");
+    auto before=*host.lookup({100}); auto after=before; after.expression={}; after.value=1;
+    auto plan=host.prepare({before,after},host.capture()); require(plan.ok(),"Post-reclamation preparation failed");
+    host.reclaim(); require(host.commit(std::move(plan).takeValue()).ok(),"Maintenance invalidated protected preparation");
+    require(host.undo().ok() && *host.lookup({100})==before,"Undo after reclamation lost values");
+    require(host.redo().ok() && *host.lookup({100})==after,"Redo after reclamation lost values");
+    reader.reset(); require(host.readerMetrics().currentBytes==0,"Released reader retained bytes");
+    // A change subscriber protects unread receipts without pinning operand history.
+    auto cursor=host.subscribeChanges(); auto observed=host.capture();
+    before=*host.lookup({100}); after=before; after.value=0;
+    auto edit=host.prepare({before,after},host.capture()); require(edit.ok() && host.commit(std::move(edit).takeValue()).ok(),"Cursor edit failed");
+    host.clearHistory(); host.reclaim(); size_t changed=0;
+    host.changedSourcesSince(observed.revision,[&](InstructionId id,bool){ if(id.value==100) ++changed; }); require(changed==1,"Unread receipt retired");
+    host.acknowledge(cursor,host.capture()); require(host.reclaim().receiptsRetired==1,"Acknowledged receipt retained");
+    std::shared_ptr<const ReadSnapshot<Fact>> detached;
+    { Context temporary; ProgramHost<DenseStorage> owner(temporary); require(owner.load(fixture).ok(),"Reader lifetime load failed"); detached=owner.captureRead(); }
+    require(detached->lookup({100}) && *detached->lookup({100})==original,"Reader depended on destroyed host/allocator");
+}
 void storySmoke() {
     Context context; auto fixture=makeFixture(16,1,"story-connectivity");
     ProgramHost<DenseStorage> host(context); require(host.load(fixture).ok(),"Story load failed");
@@ -78,9 +121,9 @@ void storySmoke() {
 int selfTests() {
     try {
         {
-            const auto exercise=[]<class Storage>() {
+            const auto exercise=[]<class Storage>(bool shared) {
             Context context; auto fixture=makeFixture(8,1);
-            ProgramHost<Storage> host(context);
+            ProgramHost<Storage> host(context,shared);
             require(host.load(fixture).ok(),"Load failed");
             const auto original=fixture.records.front();
             FactId factBefore; host.query({QueryKind::Writes,original.variable},[&](const Fact& fact){ if(fact.source==original.id) factBefore=fact.id; });
@@ -96,7 +139,7 @@ int selfTests() {
             require(host.redo().ok() && *host.lookup(original.id)==replacement,"Redo failed");
             require(host.inspectStorage().ok(),"Storage inspection failed");
             // One structural churn example also crosses page boundaries and moves owners.
-            Context churnContext; auto churn=makeFixture(512,1,"churn"); ProgramHost<Storage> churnHost(churnContext);
+            Context churnContext; auto churn=makeFixture(512,1,"churn"); ProgramHost<Storage> churnHost(churnContext,shared);
             require(churnHost.load(churn).ok(),"Churn load failed");
             for(const auto& step:churn.trace) {
                 Result<void> result=Result<void>::success();
@@ -112,8 +155,10 @@ int selfTests() {
                 require(churnHost.inspectStorage().ok(),"Churn storage inspection failed");
             }
             };
-            exercise.operator()<ReferenceStorage>(); exercise.operator()<DenseStorage>();
-            exercise.operator()<PagedStorage>(); exercise.operator()<SectionStorage>();
+            for(bool shared:{false,true}) {
+                exercise.operator()<ReferenceStorage>(shared); exercise.operator()<DenseStorage>(shared);
+                exercise.operator()<PagedStorage>(shared); exercise.operator()<SectionStorage>(shared);
+            }
             std::cout << "PASS four-adapter indexed edit/undo/storage smoke\n";
         }
         {
@@ -125,8 +170,8 @@ int selfTests() {
             std::atomic_bool cancelled=true;
             auto stopped=execute(RunSpec{},Controls{&cancelled});
             require(stopped.at("disposition")=="cancelled","Cancellation not reported");
-            storySmoke();
-            std::cout << "PASS story dependencies/staleness and rejected edit/cancellation smoke\n";
+            storySmoke(); lifetimeSmoke();
+            std::cout << "PASS lifetime/readers, story dependencies, and failure smoke\n";
         }
         {
             RunSpec spec; spec.fixture="story-connectivity"; auto first=execute(spec); ++spec.repetition; auto second=execute(spec);

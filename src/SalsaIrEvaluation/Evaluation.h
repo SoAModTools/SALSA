@@ -144,6 +144,7 @@ inline constexpr CandidateDescriptor ReferenceDescriptor{"reference", 3, 3};
 
 struct RunSpec {
     std::string candidate = "reference";
+    std::string orderPolicy="shared",readerPolicy="selected";
     std::string fixture = "small-story";
     std::string trace = "semantic-edits";
     uint64_t seed = 1, count = 64;

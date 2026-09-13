@@ -105,7 +105,8 @@ void help() {
     std::cout << "SalsaIrEvaluation self-test\n"
         "SalsaIrEvaluation run --candidate reference|dense|paged|section-local --report PATH\n"
         "  [--count 64] [--seed 1] [--repetition 0] [--timeout-ms 30000] [--memory-mb 512]\n"
-        "  [--fixture small-story|few-long|many-short|high-use|churn|story-connectivity] [--trace semantic-edits]\n"
+        "  [--order-policy shared|copy] [--reader-policy selected|whole]\n"
+        "  [--fixture small-story|few-long|many-short|high-use|churn|story-connectivity|lifetime] [--trace semantic-edits]\n"
         "SalsaIrEvaluation compare --manifest PATH --report PATH\n"
         "Manifest: {\"format\":\"jahorta.salsa.ir-evaluation-manifest\",\"version\":1,\"reports\":[\"relative/report.json\",...]}\n"
         "Synthetic console evaluation only. Output paths must be fresh.\n";
@@ -139,7 +140,7 @@ int wmain(int argc,wchar_t** argv) {
         if(command=="run") {
             Json config=encodeSpec(RunSpec{});
             for(auto [option,field]: {std::pair{"candidate","candidate"},{"count","count"},{"seed","seed"},
-                {"repetition","repetition"},{"timeout-ms","timeout_ms"},{"memory-mb","memory_mb"},{"fixture","fixture"},{"trace","trace"}}) {
+                {"order-policy","order_policy"},{"reader-policy","reader_policy"},{"repetition","repetition"},{"timeout-ms","timeout_ms"},{"memory-mb","memory_mb"},{"fixture","fixture"},{"trace","trace"}}) {
                 auto value=take(option); if(!value.empty()) config[field]=utf8(value);
             }
             if(!options.empty()) throw std::runtime_error("Unknown option: "+options.begin()->first);

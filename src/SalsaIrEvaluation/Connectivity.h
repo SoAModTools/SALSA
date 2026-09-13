@@ -68,6 +68,7 @@ public:
             const auto entry=host.lookup(module.entry); states_.back().entryPresent=entry && moduleFor(entry->section)==slot;
         }
         if(states_.empty()) { healthy_=true; return; }
+        subscription_=host.subscribeChanges();
         nodes_.reserve(host.metrics().live);
         host.enumerate([&](const Record& r){ if(moduleFor(r.section)!=NoSlot) refreshSource(host,r.id); });
         for(uint32_t i=0;i<states_.size();++i) invalidate(i);
@@ -94,7 +95,7 @@ public:
         // Traverse only reverse helper dependencies of invalidated modules. Cycles coalesce.
         for(size_t at=0;at<pendingSlots_.size();++at) for(auto n=states_[pendingSlots_[at]].callers;n!=NoSlot;n=nodes_[n].reverseNext)
             invalidate(nodes_[n].module);
-        capture_=host.capture(); ++generation_; healthy_=true;
+        capture_=host.capture(); host.acknowledge(subscription_,capture_); ++generation_; healthy_=true;
     }
     template<class Host> Prepared prepare(const Host& host) {
         expect(healthy_ && host.capture()==capture_,"Synchronize before preparing connectivity");
@@ -230,6 +231,7 @@ private:
     std::pmr::vector<State> states_; std::pmr::map<ModuleId,uint32_t> moduleSlots_; std::pmr::map<SectionId,uint32_t> sectionModules_;
     std::pmr::map<InstructionId,uint32_t> entryModules_; std::pmr::vector<uint32_t> pendingSlots_;
     PagedDirectory<Source> sources_; std::pmr::vector<Node> nodes_; std::pmr::map<std::pair<Bank,uint64_t>,uint64_t> guardBindings_;
+    ChangeCursor subscription_;
     Capture capture_; ConnectivityWork work_; uint32_t free_=NoSlot; uint64_t generation_{},live_{}; bool loaded_{},healthy_{};
 };
 } // namespace salsa::evaluation
