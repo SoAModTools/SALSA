@@ -1,6 +1,6 @@
 # Whole-program IR evaluation tool
 
-`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR2 provides the shared program/editing foundation behind the runner and reference storage adapter. It does not change the editor, load game files, or select a production representation.
+`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR3 provides dense, paged, and section-local storage behind the same shared program/editing foundation and runner. It does not change the editor, load game files, or select a production representation.
 
 ## Run an experiment
 
@@ -13,15 +13,33 @@ Build `src/SalsaIrEvaluation/SalsaIrEvaluation.vcxproj` with MSVC v145 Release. 
 
 Each command runs once and writes measurements or a failure report. There is no preliminary verification run, receipt, or mode to enable. Output paths must be fresh so an earlier observation is not overwritten.
 
-The available fixture is `small-story`, and its trace is `semantic-edits`. They use a declared synthetic instruction language across two source-qualified scripts and three sections. The trace exercises reads, literal/expression writes, direct calls, batch replacement/insertion/deletion, same-script section moves, reordering, renaming, unresolved targets, and undo/redo. These are not SCT opcode definitions. Guard summaries, cross-script owner moves, native SCT conversion, snapshots, and persistence remain later work and are reported as unsupported.
+The trace is `semantic-edits`, using a declared synthetic instruction language across two source-qualified scripts. Select a fixture with `--fixture`:
 
-The `reference` adapter uses a standard map. Its allocation behavior is intentionally simple, not a proposed compact production representation. Dense, paged, and section-local candidates arrive in IR3 through the same compile-time storage interface and shared workload driver.
+| Fixture | Distribution or workload |
+| --- | --- |
+| `small-story` / `few-long` | Two populated long sections and an initially empty helper section. These names select the same baseline shape. |
+| `many-short` | The first eight records retain the seed story; remaining records occupy sections of up to 16 instructions. |
+| `high-use` | The long-section distribution, with remaining reads/writes concentrated on BitVar[17]. |
+| `churn` | The long-section distribution, followed by a 300-instruction insertion, repeated batch deletion/undo, and section moves/undo/redo. |
+
+The requested count is the initial instruction count; churn adds 300 records beyond the baseline edits. All candidates receive identical section catalogs, including empty sections, and identical inputs/traces. The trace exercises reads, literal/expression writes, direct calls, batch replacement/insertion/deletion, same-script section moves, reordering, renaming, unresolved targets, and undo/redo. These are not SCT opcode definitions. Guard summaries, cross-script owner moves, native SCT conversion, snapshots, and persistence remain later work and are reported as unsupported.
+
+Choose `--candidate reference`, `dense`, `paged`, or `section-local`:
+
+| Candidate | Private record layout and edit behavior |
+| --- | --- |
+| `reference` | A PMR map with individual nodes, retained as a simple comparison baseline. |
+| `dense` | One contiguous table; checked 1.5x capacity growth and swap removal with ID-directory repair. |
+| `paged` | Fixed 256-record pages, occupancy bitmaps, and a non-full-page list. Deletion reuses holes without moving live rows. |
+| `section-local` | Independently growing contiguous tables for each imported section; growth and swap removal affect that section. |
+
+Dense and section-local share the packed-table implementation with different grouping policies. All three compact candidates use paged ID-to-location directories. Physical slots never determine authored order or public identity. Fixed section catalogs are supplied at load; adding/removing sections is not yet part of this experiment.
 
 ## Results and comparison
 
 Reports contain the fixture/trace fingerprints, complete executable SHA-256, compiler/build identity, configuration, declared coverage, phase/operation timings, allocation counters, record work, final content checksum, and completion/failure status. IDs, nanoseconds, and 64-bit counters are decimal strings. Fingerprints describe reproducibility, not runtime validity of a game script.
 
-Query visiting and cold-buffer materialization are separate measurements. Allocation counters cover the reference storage and shared value, order, index, directory, preparation, history, and result-buffer PMR resources. Input generation, cold metadata strings, temporary associative work lists, harness/JSON objects, and allocator overhead are outside those counters. The process-memory sample is a coarse supplemental observation. Sample formatting and final content summarization happen after measured work.
+Query visiting and cold-buffer materialization are separate measurements. Allocation counters cover candidate storage and shared value, order, index, directory, preparation, history, and result-buffer PMR resources. Input generation, cold metadata strings, temporary associative work lists, harness/JSON objects, and allocator overhead are outside those counters. The process-memory sample is a coarse supplemental observation. Sample formatting and final content summarization happen after measured work.
 
 Create a local comparison manifest, for example beside the reports:
 
@@ -37,7 +55,7 @@ Create a local comparison manifest, for example beside the reports:
 .\bin\x64\Release\SalsaIrEvaluation.exe compare --manifest "planning/Whole program IR/results/runs.json" --report "planning/Whole program IR/results/comparison.json"
 ```
 
-Comparison accepts completed runs of the same build, fixture, trace, common policy, and operation schedule. Different candidates may eventually be compared under those same shared conditions. Failed or mismatched inputs produce a diagnostic instead of a misleading combined table. Individual observations and descriptive median/p95/maximum values remain visible; small samples do not establish latency guarantees. The tool does not automatically pick a winner.
+Comparison accepts completed runs of the same build, fixture, trace, common policy, and operation schedule. Different candidates can be compared under those same shared conditions. Intermediate query counts/digests and final content must agree. Failed or mismatched inputs produce a diagnostic instead of a misleading combined table. Comparison reports retain each run's load, storage, memory, and work measurements, and aggregate load phases alongside operation timings. Individual observations and descriptive median/p95/maximum values remain visible; small samples do not establish latency guarantees. The tool does not automatically pick a winner.
 
 ## Failures and process lifetime
 
@@ -49,7 +67,7 @@ Exit codes: 0 completed, 2 invalid request/report I/O error, 3 unsupported opera
 
 ## Development scope
 
-Three small console smoke checks are available through `SalsaIrEvaluation self-test`: indexed load/edit/undo with stable fact identity, rejection/cancellation, and run/report/comparison. They are development checks, not a prerequisite to running experiments or a frozen specification for the future IR. Keep validation lightweight while these designs evolve.
+Three small console smoke checks are available through `SalsaIrEvaluation self-test`: indexed load/edit/undo and bounded storage churn across all adapters, rejection/cancellation, and run/report/cross-candidate comparison. Private storage inspection runs only in these smoke checks, not as a prerequisite or extra pass in normal experiments. They are development checks, not a prerequisite to running experiments or a frozen specification for the future IR. Keep validation lightweight while these designs evolve.
 
 The public target and fixtures contain no corpus data. Keep routine reports local and ignored. Future game-input launchers and evidence belong in the private testing repository under SALSA's approved coverage policy and mutex. This target has no Qt or SPICE runtime dependency and requires no submodule changes.
 
@@ -69,3 +87,16 @@ Preparation retains changed records, affected order lists, names, and fact delta
 The report breaks initial load into common input/value/order preparation, candidate record storage, and direct index construction. `operation_work` reports instructions examined, facts extracted/changed, postings changed, order IDs copied, and ranks repaired. These are measured work counts, not estimates based solely on command size.
 
 Remaining starter costs are explicit: the reference map allocates per record; affected section order lists are copied for preparation/history; retired operand ranges remain retained. `retired_operand_bytes` includes both history-referenced ranges and discarded preparation ranges. Reclamation and retained-reader policies belong to IR5. These changes operate inside the experiment, not the live editor or existing project format.
+
+
+## Storage measurements and current limits
+
+The interface is version 3: `load(records, sections)`, typed lookup, physical enumeration, preparation, allocation-free publication, maintained metrics, and optional developer inspection. The host checks batch identities and ownership and rejects stale preparations. Storage lookup pointers are borrowed until the next load/preparation/publication; consumers retain IDs rather than pointers.
+
+All allocations needed for publication happen during preparation. Packed-table preparation can retain enlarged capacity even when abandoned; paged preparation owns unpublished new pages and releases them when discarded. Shared host generation checks prevent stale plans from installing. The candidates retain spare capacity and empty pages; reclamation is later work.
+
+`storage` records live/capacity slack, group and empty-group counts, ID-directory bytes, growth events, relocated rows, swap-removal moves, and directory writes. Groups mean pages or tables; they are not story modules. Growth and directory-work counters exclude initial loading. Directory bytes cover the candidate's ID-location directory only; section maps, page ownership, and free-list overhead remain visible in the PMR domain totals. Reference-map capacity equals live records; node/allocator overhead is not represented as spare record slots. Row size is reported so relocation bytes can be computed without assuming a compiler layout.
+
+`operation_work` also reports storage growth/movement/directory deltas and retained capacity after each action. Authored order copies and rank repairs remain separate shared-host costs. Dense growth relocates rows without rewriting numeric slot locations. Paged page additions move owner handles when necessary, not instruction records. The allocation resource captures those container allocations.
+
+Initial synthetic comparisons cover 10,000 and 100,000 initial instructions, four workload shapes, all four adapters, and five repetitions each, in separate workers with alternating candidate order. Local observations show the expected tradeoffs: dense uses few allocations but incurs global growth; paged avoids live-row relocation with bounded page slack; section-local narrows growth but allocates more when there are many sections. Shared direct indexes and long-section order/history work are substantial costs independent of storage choice. These observations do not select a production winner or measure editor startup. Million-record scaling, derived story connectivity, reclamation, native SCT, and persistence remain later evaluation work.

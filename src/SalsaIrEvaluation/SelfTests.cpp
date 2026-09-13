@@ -1,4 +1,5 @@
 #include "Program.h"
+#include "PagedStorage.h"
 #include <iostream>
 #include <stdexcept>
 #include <Windows.h>
@@ -12,8 +13,9 @@ void require(bool condition, const char* message) { if (!condition) throw std::r
 int selfTests() {
     try {
         {
+            const auto exercise=[]<class Storage>() {
             Context context; auto fixture=makeFixture(8,1);
-            ProgramHost<ReferenceStorage> host(context);
+            ProgramHost<Storage> host(context);
             require(host.load(fixture).ok(),"Load failed");
             const auto original=fixture.records.front();
             FactId factBefore; host.query({QueryKind::Writes,original.variable},[&](const Fact& fact){ if(fact.source==original.id) factBefore=fact.id; });
@@ -27,7 +29,27 @@ int selfTests() {
             require(oldUses==0,"Old write bucket was not updated");
             require(host.undo().ok() && *host.lookup(original.id)==original,"Undo failed");
             require(host.redo().ok() && *host.lookup(original.id)==replacement,"Redo failed");
-            std::cout << "PASS indexed load/edit/undo smoke\n";
+            require(host.inspectStorage().ok(),"Storage inspection failed");
+            // One structural churn example also crosses page boundaries and moves owners.
+            Context churnContext; auto churn=makeFixture(512,1,"churn"); ProgramHost<Storage> churnHost(churnContext);
+            require(churnHost.load(churn).ok(),"Churn load failed");
+            for(const auto& step:churn.trace) {
+                Result<void> result=Result<void>::success();
+                if(const auto* edit=std::get_if<Edit>(&step.action)) {
+                    auto p=churnHost.prepare(edit->change,churnHost.capture()); require(p.ok(),"Churn prepare failed");
+                    result=churnHost.commit(std::move(p).takeValue());
+                } else if(const auto* batch=std::get_if<EditBatch>(&step.action)) {
+                    auto p=churnHost.prepare(*batch,churnHost.capture()); require(p.ok(),"Churn batch failed");
+                    result=churnHost.commit(std::move(p).takeValue());
+                } else if(std::holds_alternative<Undo>(step.action)) result=churnHost.undo();
+                else if(std::holds_alternative<Redo>(step.action)) result=churnHost.redo();
+                require(result.ok(),"Churn publication failed");
+                require(churnHost.inspectStorage().ok(),"Churn storage inspection failed");
+            }
+            };
+            exercise.operator()<ReferenceStorage>(); exercise.operator()<DenseStorage>();
+            exercise.operator()<PagedStorage>(); exercise.operator()<SectionStorage>();
+            std::cout << "PASS four-adapter indexed edit/undo/storage smoke\n";
         }
         {
             Context context; const auto fixture=makeFixture(8,1);
@@ -44,7 +66,9 @@ int selfTests() {
             RunSpec spec; auto first=execute(spec); ++spec.repetition; auto second=execute(spec);
             require(first.at("disposition")=="passed" && second.at("disposition")=="passed","Normal run failed");
             require(first.at("final_checksum")==second.at("final_checksum"),"Repeated workload changed result");
-            require(compareReports({first,second}).ok(),"Comparison failed");
+            std::vector<Json> reports{first,second};
+            for(const auto* candidate:{"dense","paged","section-local"}) { spec.candidate=candidate; reports.push_back(execute(spec)); }
+            require(compareReports(reports).ok(),"Cross-candidate comparison failed");
             const auto folder=std::filesystem::temp_directory_path()/std::filesystem::path("salsa-ir-smoke-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(Clock::now().time_since_epoch().count()));
             const auto path=folder/"run.json";
             struct Cleanup {

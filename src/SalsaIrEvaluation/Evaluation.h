@@ -113,13 +113,19 @@ struct Context {
     CountingResource* resource(Domain d) { return &memory[static_cast<size_t>(d)]; }
 };
 struct Work { uint64_t examined{}, replaced{}, directoryWrites{}, inserted{}, erased{}; };
-struct StorageMetrics { uint64_t live{}, recordBytes{}; Work work; };
+struct StorageMetrics {
+    uint64_t live{}, recordBytes{}; Work work;
+    uint64_t capacity{}, groups{}, emptyGroups{}, directoryBytes{}, growths{}, growthRowsMoved{}, eraseRowsMoved{};
+};
 
 // Candidates implement this compile-time boundary, not the semantic workload.
+// The host supplies unique-ID batches with checked owners, and rejects stale preparations.
+// Preparation may retain spare capacity but never publishes record changes. Lookup pointers
+// are borrowed until the next prepare/apply/load; stable IDs survive all slot movement.
 struct RecordVisitor { void operator()(const StoredRecord&) const noexcept {} };
 template<class T> concept StorageCandidate = requires(T store, const T view,
-    std::span<const StoredRecord> records, InstructionId id, std::span<const StorageChange> mutations, typename T::Prepared&& prepared) {
-    { store.load(records) } -> std::same_as<Result<void>>;
+    std::span<const StoredRecord> records, std::span<const Section> sections, InstructionId id, std::span<const StorageChange> mutations, typename T::Prepared&& prepared) {
+    { store.load(records,sections) } -> std::same_as<Result<void>>;
     { view.lookup(id) } -> std::same_as<const StoredRecord*>;
     view.forEachPhysical(RecordVisitor{});
     { store.prepare(mutations) } -> std::same_as<Result<typename T::Prepared>>;
@@ -128,7 +134,7 @@ template<class T> concept StorageCandidate = requires(T store, const T view,
     { view.validate() } -> std::same_as<Result<void>>;
 };
 struct CandidateDescriptor { std::string_view name; uint32_t interfaceVersion, implementationVersion; };
-inline constexpr CandidateDescriptor ReferenceDescriptor{"reference", 2, 2};
+inline constexpr CandidateDescriptor ReferenceDescriptor{"reference", 3, 3};
 
 struct RunSpec {
     std::string candidate = "reference";
@@ -150,7 +156,7 @@ struct Sample { uint64_t operation{}, ns{}, emitted{}, digest{}; std::string_vie
 
 core::Diagnostic diagnostic(core::DiagnosticCode code, std::string message);
 Result<void> validateSpec(const RunSpec& spec);
-Fixture makeFixture(uint64_t count, uint64_t seed);
+Fixture makeFixture(uint64_t count, uint64_t seed, std::string_view shape="small-story");
 uint64_t hashRecord(uint64_t hash, const Record& record);
 std::string canonicalDigest(std::span<const Record> records);
 Json encodeSpec(const RunSpec& spec);

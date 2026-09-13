@@ -15,7 +15,7 @@ public:
         Prepared(const Prepared&)=delete;
     };
     explicit ReferenceStorage(Context& c):context_(c),records_(c.resource(Domain::Records)) {}
-    Result<void> load(std::span<const StoredRecord> input) {
+    Result<void> load(std::span<const StoredRecord> input, std::span<const Section>) {
         if (!records_.empty()) return error("Store already loaded");
         for (const auto& record:input) if (!record.id.value || !records_.emplace(record.id,record).second) return error("Duplicate/zero instruction ID");
         return Result<void>::success();
@@ -50,7 +50,7 @@ public:
         for(const auto& [id,r]:records_) if(id!=r.id) return error("Storage identity mismatch");
         return Result<void>::success();
     }
-    StorageMetrics metrics() const noexcept { return {records_.size(),records_.size()*sizeof(StoredRecord),work_}; }
+    StorageMetrics metrics() const noexcept { return {records_.size(),records_.size()*sizeof(StoredRecord),work_,records_.size()}; }
 private:
     static Result<void> error(std::string message) { return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationOperationRejected,std::move(message))); }
     Context& context_;

@@ -1,4 +1,5 @@
 #include "Program.h"
+#include "PagedStorage.h"
 #include <algorithm>
 #include <charconv>
 #include <fstream>
@@ -45,7 +46,7 @@ Json compatibility(const RunSpec& spec, const Fixture& fixture) {
     // Candidate is deliberately separate, so future storage variants can be compared.
     config.erase("candidate");
     return {{"spec", config}, {"fixture_checksum", fixture.checksum}, {"trace_checksum", fixture.traceChecksum},
-        {"build", buildIdentity()}, {"interface_version", 2}, {"common_variants", "program-host-v2/order-v2/direct-facts-v1/history-v2"},
+        {"build", buildIdentity()}, {"interface_version", 3}, {"common_variants", "program-host-v3/order-v2/direct-facts-v1/history-v2"},
         {"semantic_coverage", "synthetic-expression-batch-order-unknown-v2"}, {"workers", 1},
         {"instrumentation", "pmr-domain-counters-v1"}, {"cache_policy", "fresh-process-no-warmup-os-cache-uncontrolled"}};
 }
@@ -87,7 +88,7 @@ std::string canonicalDigest(std::span<const Record> records) {
     for (const auto& r : records) h = hashRecord(h, r);
     return hex(h);
 }
-Fixture makeFixture(uint64_t count, uint64_t seed) {
+Fixture makeFixture(uint64_t count, uint64_t seed, std::string_view shape) {
     if (count < 8 || count > 1000000) throw std::invalid_argument("Fixture count outside supported range");
     Fixture f;
     f.project={seed,1};
@@ -111,7 +112,15 @@ Fixture makeFixture(uint64_t count, uint64_t seed) {
     f.records[4].op = Op::Read; f.records[4].variable = 18; f.records[4].value = 0;
     f.records[6].op=Op::Write; f.records[6].variable=19; f.records[6].value=0; f.records[6].expression=ExprId{52};
     f.records[6].schedule=ExprId{50};
-    for(const auto& r:f.records) for(auto& section:f.sections) if(section.id==r.section) section.order.push_back(r.id);
+    // Keep the seed story intact, then vary only the surrounding storage workload.
+    std::vector<size_t> ownerSlots(count);
+    for(size_t i=0;i<count;++i) ownerSlots[i]=i<count/2?0:2;
+    if(shape=="many-short") for(size_t i=8;i<count;++i) {
+        if((i-8)%16==0) f.sections.push_back({SectionId{1000+count+f.sections.size()},ScriptId{1},"short-"+std::to_string(f.sections.size()),{}});
+        ownerSlots[i]=f.sections.size()-1; f.records[i].section=f.sections.back().id;
+    }
+    if(shape=="high-use") for(size_t i=8;i<count;++i) f.records[i].variable=17;
+    for(size_t i=0;i<count;++i) f.sections[ownerSlots[i]].order.push_back(f.records[i].id);
     auto bit = f.records[0]; bit.variable = 18;
     auto target = f.records[2]; target.value = 105;
     std::vector<Action> actions{
@@ -136,6 +145,19 @@ Fixture makeFixture(uint64_t count, uint64_t seed) {
     actions.push_back(EditBatch{{{{},unresolved}}, {}, {}});
     actions.push_back(Query{QueryKind::Unknown,0});
     actions.push_back(Query{QueryKind::Reads,6,Bank::Byte});
+    if(shape=="churn") {
+        EditBatch insert,erase,move;
+        for(uint64_t i=0;i<300;++i) {
+            Record row{InstructionId{102+count+i},SectionId{11},Op::Write,17,i%2};
+            f.reserved.push_back(row.id); insert.mutations.push_back({{},row});
+            auto movedRow=row; movedRow.section=SectionId{10}; move.mutations.push_back({row,movedRow});
+            if(i%3==0) erase.mutations.push_back({row,{}});
+        }
+        actions.push_back(insert);
+        for(size_t cycle=0;cycle<8;++cycle) { actions.push_back(erase); actions.push_back(Undo{}); }
+        actions.push_back(move); actions.push_back(Undo{}); actions.push_back(Redo{});
+        actions.push_back(Query{QueryKind::Writes,17});
+    }
     uint64_t traceHash = FnvBasis;
     for (const auto& action : actions) {
         f.trace.push_back({f.trace.size() + 1, action});
@@ -162,8 +184,9 @@ Fixture makeFixture(uint64_t count, uint64_t seed) {
     return f;
 }
 Result<void> validateSpec(const RunSpec& s) {
-    if (s.candidate != "reference" || s.fixture != "small-story" || s.trace != "semantic-edits")
-        return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported, "IR2 supports reference / small-story / semantic-edits only"));
+    if ((s.candidate != "reference" && s.candidate != "dense" && s.candidate != "paged" && s.candidate != "section-local") ||
+        (s.fixture != "small-story" && s.fixture != "few-long" && s.fixture != "many-short" && s.fixture != "high-use" && s.fixture != "churn") || s.trace != "semantic-edits")
+        return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported, "Unknown storage candidate, synthetic fixture, or trace"));
     if (s.count < 8 || s.count > 1000000 || s.timeoutMs < 1 || s.timeoutMs > 3600000 || s.memoryMb < 32 || s.memoryMb > 65536)
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput, "Counts/limits outside supported range"));
     return Result<void>::success();
@@ -259,7 +282,7 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
         if (!valid) { fail(report,valid.diagnostics()[0].code==core::DiagnosticCode::EvaluationUnsupported ? "unsupported-required":"invalid-spec",valid.diagnostics()[0].message); report["complete"]=true; return report; }
         const auto readinessStart=Clock::now();
         report["phase"]="fixture";
-        auto fixture=makeFixture(spec.count,spec.seed);
+        auto fixture=makeFixture(spec.count,spec.seed,spec.fixture);
         const auto fixtureNs=elapsed(readinessStart);
         report["compatibility"]=compatibility(spec,fixture);
         report["capabilities"]={{"supported",{"load","lookup","enumerate","replace","query","undo","redo","insert","erase","same-script-owner-move","reorder","rename","expressions","unresolved-drafts"}},
@@ -284,10 +307,11 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
             {"shared_input_values_order_ns",std::to_string(host.loadPhases()[0])},
             {"candidate_storage_ns",std::to_string(host.loadPhases()[1])},{"direct_indexes_ns",std::to_string(host.loadPhases()[2])},
             {"scope","synthetic normalization + shared program and indexes; no SCT decode"}};
-        struct OperationWork { uint64_t operation; ProgramWork work; };
+        struct OperationWork { uint64_t operation; ProgramWork work; StorageMetrics storage; };
         std::vector<OperationWork> operationWork; operationWork.reserve(fixture.trace.size());
         for (const auto& step : fixture.trace) {
             const auto workBefore=host.work();
+            const auto storageBefore=host.metrics();
             if (controls.stopRequested()) { fail(report,"cancelled","Stopped at operation boundary"); break; }
             report["operation"]=std::to_string(step.id);
             Result<void> result=Result<void>::success();
@@ -326,8 +350,11 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
             }
             if (!result) { fail(report,"operation-failed",result.diagnostics()[0].message); break; }
             const auto after=host.work();
+            auto storageDelta=host.metrics();
+            storageDelta.growths-=storageBefore.growths; storageDelta.growthRowsMoved-=storageBefore.growthRowsMoved;
+            storageDelta.eraseRowsMoved-=storageBefore.eraseRowsMoved; storageDelta.work.directoryWrites-=storageBefore.work.directoryWrites;
             operationWork.push_back({step.id,{after.instructionsExamined-workBefore.instructionsExamined,after.factsExtracted-workBefore.factsExtracted,
-                after.factsChanged-workBefore.factsChanged,after.postingsChanged-workBefore.postingsChanged,after.orderIdsCopied-workBefore.orderIdsCopied,after.ranksRepaired-workBefore.ranksRepaired}});
+                after.factsChanged-workBefore.factsChanged,after.postingsChanged-workBefore.postingsChanged,after.orderIdsCopied-workBefore.orderIdsCopied,after.ranksRepaired-workBefore.ranksRepaired},storageDelta});
 
         }
         // Freeze measured state before formatting summaries. Smoke checks are separate from normal execution.
@@ -371,6 +398,13 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
             {"live_records",std::to_string(metrics.live)},{"record_payload_bytes",std::to_string(metrics.recordBytes)}};
         report["work"]["records_inserted"]=std::to_string(metrics.work.inserted);
         report["work"]["records_erased"]=std::to_string(metrics.work.erased);
+        report["storage"]={{"capacity_records",std::to_string(metrics.capacity)},
+            {"slack_records",std::to_string(metrics.capacity-metrics.live)},{"groups",std::to_string(metrics.groups)},
+            {"empty_groups",std::to_string(metrics.emptyGroups)},{"id_directory_bytes",std::to_string(metrics.directoryBytes)},
+            {"growth_events",std::to_string(metrics.growths)},{"growth_rows_moved",std::to_string(metrics.growthRowsMoved)},
+            {"erase_rows_moved",std::to_string(metrics.eraseRowsMoved)},{"directory_writes",std::to_string(metrics.work.directoryWrites)},
+            {"row_size_bytes",std::to_string(sizeof(StoredRecord))},
+            {"counter_scope","final retained capacity; growth excludes bulk load; directory writes exclude bulk load and count ID-location writes only"}};
         report["work"]["live_facts"]=std::to_string(host.factCount());
         report["work"]["retained_operand_bytes"]=std::to_string(host.retainedOperandBytes());
         report["work"]["live_operand_bytes"]=std::to_string(metrics.live*3*sizeof(Operand));
@@ -380,7 +414,12 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
         for(const auto& entry:operationWork) report["operation_work"].push_back({{"operation",std::to_string(entry.operation)},
             {"instructions_examined",std::to_string(entry.work.instructionsExamined)},{"facts_extracted",std::to_string(entry.work.factsExtracted)},
             {"facts_changed",std::to_string(entry.work.factsChanged)},{"postings_changed",std::to_string(entry.work.postingsChanged)},
-            {"order_ids_copied",std::to_string(entry.work.orderIdsCopied)},{"ranks_repaired",std::to_string(entry.work.ranksRepaired)}});
+            {"order_ids_copied",std::to_string(entry.work.orderIdsCopied)},{"ranks_repaired",std::to_string(entry.work.ranksRepaired)},
+            {"storage_growth_events",std::to_string(entry.storage.growths)},
+            {"storage_growth_rows_moved",std::to_string(entry.storage.growthRowsMoved)},
+            {"storage_erase_rows_moved",std::to_string(entry.storage.eraseRowsMoved)},
+            {"storage_directory_writes",std::to_string(entry.storage.work.directoryWrites)},
+            {"storage_capacity_records",std::to_string(entry.storage.capacity)}});
         report["query_scope"]="Known direct facts; unknown effects and unresolved targets are available through the Unknown bucket. No guard or runtime reachability inference.";
         report["phase"]="finished";
     } catch (const std::bad_alloc&) { fail(report,"resource-limited","Allocation failed"); }
@@ -389,6 +428,9 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
     return report;
 }
 Json execute(const RunSpec& spec, Controls controls) {
+    if(spec.candidate=="dense") return executeCandidate<DenseStorage>(spec,controls);
+    if(spec.candidate=="paged") return executeCandidate<PagedStorage>(spec,controls);
+    if(spec.candidate=="section-local") return executeCandidate<SectionStorage>(spec,controls);
     return executeCandidate<ReferenceStorage>(spec,controls);
 }
 Result<void> validateReport(const Json& r) {
@@ -419,7 +461,7 @@ Result<Json> compareReports(const std::vector<Json>& reports) {
     Json comparison={{"format","jahorta.salsa.ir-evaluation-comparison"},{"version",1},{"complete",true},{"runs",Json::array()},{"groups",Json::array()}};
     std::map<std::string,std::vector<uint64_t>> times;
     std::vector<std::string> runIds;
-    std::vector<std::pair<std::string,std::string>> expectedSchedule;
+    std::vector<std::array<std::string,4>> expectedSchedule;
     for (const auto& r:reports) {
         auto valid=validateReport(r); if (!valid) return Result<Json>::failure(valid.diagnostics());
         if (r.at("disposition")!="passed" || r.at("compatibility")!=reports.front().at("compatibility"))
@@ -429,14 +471,18 @@ Result<Json> compareReports(const std::vector<Json>& reports) {
         const auto runId=r.at("run_id").get<std::string>();
         if (std::ranges::find(runIds,runId)!=runIds.end()) return Result<Json>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput,"Duplicate run ID"));
         runIds.push_back(runId); comparison["runs"].push_back(runId);
-        std::vector<std::pair<std::string,std::string>> schedule;
+        comparison["measurements"].push_back({{"run_id",runId},{"candidate",r.at("spec").at("candidate")},
+            {"load",r.at("load")},{"storage",r.at("storage")},{"memory",r.at("memory")},{"work",r.at("work")}});
+        for(auto key:{"load_to_ready_ns","candidate_storage_ns","direct_indexes_ns","shared_input_values_order_ns"})
+            times[r.at("spec").at("candidate").get<std::string>()+"/load/"+key].push_back(decimal(r.at("load").at(key)));
+        std::vector<std::array<std::string,4>> schedule;
         for (const auto& s:r.at("samples")) {
-            schedule.emplace_back(s.at("operation").get<std::string>(),s.at("kind").get<std::string>());
+            schedule.push_back({s.at("operation").get<std::string>(),s.at("kind").get<std::string>(),s.at("rows").get<std::string>(),s.at("digest").get<std::string>()});
             const auto key=r.at("spec").at("candidate").get<std::string>()+"/"+s.at("kind").get<std::string>()+"/"+s.at("operation").get<std::string>();
             times[key].push_back(decimal(s.at("ns")));
         }
         if (runIds.size()==1) expectedSchedule=std::move(schedule);
-        else if (schedule!=expectedSchedule) return Result<Json>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput,"Runs executed different operation schedules"));
+        else if (schedule!=expectedSchedule) return Result<Json>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput,"Runs have different operation schedules or query results"));
     }
     for (auto& [key,values]:times) {
         const auto observations=values;
