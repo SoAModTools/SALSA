@@ -291,3 +291,29 @@ TEST(SctProgramStateTest, UninterpretedExpressionsRemainIncompleteAcrossReopen) 
 }
 
 } // namespace
+
+TEST(SctAuthoringSessionTest, PreparedChangesAreRevisionBoundAndInstallOneHistoryEntry) {
+    auto session = SctAuthoringSession::open(initial()).takeValue();
+    const auto captured = session->capture();
+    auto prepared = SctAuthoringSession::prepare(captured, "Prepared rename", [](const SctAuthoringState& state) { return rename(state); });
+    ASSERT_TRUE(prepared); EXPECT_EQ(session->capture(), captured); EXPECT_FALSE(session->canUndo());
+    const auto firstId = captured->project.scripts.front().id;
+    ASSERT_TRUE(session->install(prepared.value()));
+    EXPECT_EQ(session->state().project.scripts.front().id, firstId);
+    EXPECT_EQ(session->undoDescription(), "Prepared rename"); EXPECT_TRUE(session->isDirty());
+    EXPECT_FALSE(session->install(prepared.value()));
+    ASSERT_TRUE(session->undo()); EXPECT_FALSE(session->isDirty());
+    EXPECT_FALSE(session->install(prepared.value()));
+    ASSERT_TRUE(session->redo()); EXPECT_TRUE(session->isDirty());
+    auto foreign = SctAuthoringSession::open(*captured).takeValue();
+    EXPECT_FALSE(foreign->install(prepared.value()));
+}
+TEST(SctAuthoringSessionTest, BaselineInspectionIsSharedByDerivedSnapshots) {
+    auto state = initial(); const auto& program = *state.programs.front();
+    auto document = std::make_shared<const sct::SctDocument>(program.document());
+    auto a = SctAuthoringMaterializer::snapshot(program, document);
+    auto b = SctAuthoringMaterializer::snapshot(program, document);
+    EXPECT_EQ(a->provenance->inspection, b->provenance->inspection);
+    EXPECT_EQ(a->provenance->inspection->parsed, b->provenance->inspection->parsed);
+    EXPECT_EQ(a->provenance->inspection->parsed, program.parsed());
+}

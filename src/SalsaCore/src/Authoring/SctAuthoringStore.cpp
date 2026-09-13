@@ -35,17 +35,22 @@ Result<void> recover(const LocalSalsaWorkspace& workspace) {
 std::filesystem::path SctAuthoringStore::relativePath(const LocalSalsaWorkspace& workspace) {
     return workspace.descriptor().components.authoring / L"project.salsaproject";
 }
-Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const LocalSalsaWorkspace& workspace, std::stop_token stop) {
+Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const LocalSalsaWorkspace& workspace, std::stop_token stop, SctLoadingObserver observer) {
     if (stop.stop_requested()) return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Authoring reopen cancelled.", DiagnosticCode::Cancelled));
+    if (observer) observer({"Recovering project", 0, 0, {}, false});
     auto recovered = recover(workspace);
     if (!recovered) return Result<std::optional<SctAuthoringCheckpoint>>::failure(recovered.diagnostics());
+    if (observer) observer({"Reading project", 0, 0, {}});
+    if (stop.stop_requested()) return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Authoring reopen cancelled.", DiagnosticCode::Cancelled));
     const auto path = workspace.componentPath(relativePath(workspace));
     std::error_code ec;
     const bool exists = std::filesystem::exists(path, ec);
     if (ec) return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Authoring checkpoint status is unavailable."));
     if (!exists) return Result<std::optional<SctAuthoringCheckpoint>>::success(std::nullopt);
+    if (observer) observer({"Reading project", 0, 0, {}});
     auto text = read(path);
     if (!text) return Result<std::optional<SctAuthoringCheckpoint>>::failure(text.diagnostics());
+    if (observer) observer({"Decompressing project", 0, 0, {}});
     auto unpacked = SctProjectContainer::decode(bytes(text.value()));
     if (!unpacked) return Result<std::optional<SctAuthoringCheckpoint>>::failure(unpacked.diagnostics());
     try {
@@ -64,6 +69,7 @@ Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const Loca
             || !root.at("schemaVersion").is_number_unsigned() || root.at("schemaVersion") != 2
             || root.at("workspaceId") != workspace.descriptor().workspaceId)
             return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Unsupported or mismatched authoring checkpoint."));
+        if (observer) observer({"Decoding authoring state", 0, 0, {}});
         auto project = SctAuthoringCodec::decode(root.at("semantic").dump());
         if (!project) return Result<std::optional<SctAuthoringCheckpoint>>::failure(project.diagnostics());
         auto presentation = SctAuthoringPresentationCodec::decode(root.at("presentation").dump(), project.value());
@@ -81,6 +87,7 @@ Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const Loca
             const auto key = "baselines/" + std::to_string(baseline.id.value) + ".sct";
             if (bindings.at(std::to_string(baseline.id.value)) != key)
                 return Result<std::optional<SctAuthoringCheckpoint>>::failure(error("Baseline record binding mismatch."));
+            if (observer) observer({"Verifying baseline", programs.size(), project.value().baselines.size(), baseline.source.locator.identityKey()});
             auto restored = SctAuthoringImporter::retain(project.value(), baseline.id, unpacked.value().at(key));
             if (!restored) return Result<std::optional<SctAuthoringCheckpoint>>::failure(restored.diagnostics());
             programs.push_back(std::move(restored).takeValue());
@@ -92,6 +99,7 @@ Result<std::optional<SctAuthoringCheckpoint>> SctAuthoringStore::load(const Loca
         }
         SctAuthoringState state{std::move(project).takeValue(), std::move(programs)};
         for (const auto& [name, data] : unpacked.value()) if (name.starts_with("legacy/")) state.retainedEvidence.emplace(name, data);
+        if (observer) observer({"Validating authoring state", 0, 0, {}});
         auto valid = SctAuthoringSession::validate(state);
         if (!valid) return Result<std::optional<SctAuthoringCheckpoint>>::failure(valid.diagnostics());
         auto digest = sha256(bytes(text.value()));

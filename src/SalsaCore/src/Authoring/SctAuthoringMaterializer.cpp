@@ -487,6 +487,21 @@ void SctImportedProgram::ensureInspection() const {
     if (!imported.import.document || !bound) throw std::runtime_error("Retained baseline has no usable inspection.");
     evidence_ = *bound;
     document_ = std::move(*imported.import.document);
+    parsed_ = std::make_shared<const sct::SctParseResult>(std::move(parsed));
+}
+std::shared_ptr<const sct::SctParseResult> SctImportedProgram::parsed() const {
+    ensureInspection();
+    std::scoped_lock lock(inspectionMutex_);
+    if (!parsed_) parsed_ = std::make_shared<const sct::SctParseResult>(sct::SctParser{}.parse(bytesOf(bytes_)));
+    return parsed_;
+}
+std::shared_ptr<const SctSourceInspection> SctImportedProgram::sourceInspection() const {
+    auto sourceParse = parsed();
+    std::scoped_lock lock(inspectionMutex_);
+    if (!sourceInspection_) sourceInspection_ = std::make_shared<const SctSourceInspection>(SctSourceInspection{
+        {baseline_.source, bytes_}, baseline_.datasetFingerprint, sourceParse,
+        sct::SctSourceTextDetector::assess(*sourceParse), diagnostics_, baseline_.recipe.platform});
+    return sourceInspection_;
 }
 const sct::SctDocument& SctImportedProgram::document() const { ensureInspection(); return *document_; }
 const sct::SctBoundImportEvidence& SctImportedProgram::evidence() const { ensureInspection(); return *evidence_; }
@@ -515,7 +530,12 @@ Result<SctAuthoringAdoption> SctAuthoringImporter::import(const SctAuthoringProj
     if (!hash) return Result<SctAuthoringAdoption>::failure(hash.diagnostics());
     if (request.source.descriptor.byteSize != request.source.bytes.size() || hash.value() != request.source.descriptor.revision.digest)
         return Result<SctAuthoringAdoption>::failure(error("Source snapshot does not match its size/SHA-256 identity.", DiagnosticCode::SourceChanged));
-    auto parsed = sct::SctParser{}.parse(bytesOf(request.source.bytes), request.source.descriptor.locator.identityKey());
+    auto retainedParse = request.inspection && request.inspection->source.descriptor.locator == request.source.descriptor.locator
+        && request.inspection->source.descriptor.revision == request.source.descriptor.revision
+        && request.inspection->source.bytes == request.source.bytes ? request.inspection->parsed : nullptr;
+    if (!retainedParse) retainedParse = std::make_shared<const sct::SctParseResult>(
+        sct::SctParser{}.parse(bytesOf(request.source.bytes), request.source.descriptor.locator.identityKey()));
+    const auto& parsed = *retainedParse;
     if (!parsed.parseOk) return Result<SctAuthoringAdoption>::failure(error("Source SCT could not be parsed.", DiagnosticCode::SctParseFailed));
     if (stop.stop_requested()) return Result<SctAuthoringAdoption>::failure(cancelled());
     sct::SctDocumentImportOptions options;
@@ -560,6 +580,10 @@ Result<SctAuthoringAdoption> SctAuthoringImporter::import(const SctAuthoringProj
     if (stop.stop_requested()) return Result<SctAuthoringAdoption>::failure(cancelled());
     auto program = std::shared_ptr<const SctImportedProgram>(new SctImportedProgram(project.id, std::move(baseline),
         std::move(request.source.bytes), std::move(*imported.import.document), *bound, std::move(pipeline), imported.readiness));
+    program->parsed_ = std::move(retainedParse);
+    if (request.inspection && request.inspection->parsed == program->parsed_
+        && request.inspection->sourceDatasetFingerprint == program->baseline().datasetFingerprint)
+        program->sourceInspection_ = request.inspection;
     return Result<SctAuthoringAdoption>::success({std::move(next), std::move(program), scriptId.value(), contentId.value()}, std::move(diagnostics));
 }
 
@@ -641,10 +665,7 @@ Result<SctSemanticState> SctAuthoringMaterializer::workingState(const SctAuthori
 
 std::shared_ptr<const SctDocumentSnapshot> SctAuthoringMaterializer::snapshot(
     const SctImportedProgram& program, std::shared_ptr<const sct::SctDocument> document) {
-    auto parsed = std::make_shared<const sct::SctParseResult>(sct::SctParser{}.parse(bytesOf(program.bytes())));
-    auto inspection = std::make_shared<const SctSourceInspection>(SctSourceInspection{
-        {program.baseline().source, program.bytes()}, program.baseline().datasetFingerprint,
-        parsed, sct::SctSourceTextDetector::assess(*parsed), program.diagnostics()});
+    auto inspection = program.sourceInspection();
     auto provenance = std::make_shared<const SctDocumentProvenance>(SctDocumentProvenance{inspection,
         program.baseline().textConvention, program.baseline().recipe.trustSelectedTextEncoding
             ? SctTextSelectionOrigin::UserSelected : SctTextSelectionOrigin::UniqueAssessment,

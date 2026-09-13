@@ -113,7 +113,7 @@ private:
     [[nodiscard]] bool saveWorkspaceAuthoring();
     void loadWorkspaceAuthoring();
     [[nodiscard]] bool openPatchWorkspace(
-        const QString& workspaceRoot, bool allowConfirmation);
+        const QString& workspaceRoot);
     void disconnectPatchWorkspace();
     void detachPatchWorkspace(bool saveSession);
     void restorePatchWorkspaceAssociation();
@@ -194,7 +194,6 @@ private:
     void closeDataset();
     void rebuildRecentMenu();
     void recordRecentDataset(const QString& canonicalRoot);
-    void attemptRestoreDataset();
     void restoreApplicationSettings();
     void saveApplicationSettings() const;
     void scheduleWorkspaceSessionSave();
@@ -202,6 +201,14 @@ private:
     [[nodiscard]] std::optional<core::WorkspaceSessionState>
         captureWorkspaceSession() const;
     void restoreWorkspaceSession();
+    void loadOpenedWorkspace(std::shared_ptr<const core::LocalSalsaWorkspace> workspace);
+    void finishWorkspaceLoading(const QString& message = {}, bool failed = false);
+    void cancelWorkspaceRestoration();
+    void reportLoading(const QString&, quint64, quint64, const QString&);
+    bool workspaceRestorationCancelled_ = false;
+    bool preserveWorkspaceSession_ = false;
+    bool associationOpening_ = false;
+    QFutureWatcher<core::Result<core::LocalSalsaWorkspace>> associationWatcher_;
     void restoreNextWorkspaceDocument();
     void continueWorkspaceSessionRestore(
         const QString& identityKey, bool success, bool cancelled,
@@ -316,7 +323,6 @@ private:
     std::optional<core::WorkspaceSessionState> restoringWorkspaceSessionState_{};
     std::size_t restoringWorkspaceDocumentIndex_ = 0;
     QStringList workspaceRestoreMessages_{};
-    bool restoringDataset_ = false;
     bool restoringWorkspaceSession_ = false;
     bool diagnosticsSyncPending_ = false;
     bool editTimingsEnabled_ = false;

@@ -17,6 +17,7 @@ namespace salsa::qt {
 
 class SctStructuredOutlineModel final : public QAbstractItemModel {
     Q_OBJECT
+    struct Node;
 
 public:
     struct EditContext final {
@@ -47,6 +48,15 @@ public:
     Qt::DropActions supportedDropActions() const override;
 
     void setLabelRenderer(std::function<QString(core::SctNavigationTarget, QString)> renderer) { labelRenderer_ = std::move(renderer); }
+    struct Prepared {
+        std::shared_ptr<const core::SctDocumentSnapshot> snapshot;
+        std::shared_ptr<const core::SctSemanticEditorProjection> projection;
+        std::vector<std::unique_ptr<Node>> roots;
+        std::unordered_map<std::string, Node*> targets;
+    };
+    static std::shared_ptr<Prepared> prepare(std::shared_ptr<const core::SctDocumentSnapshot>,
+        std::shared_ptr<const core::SctSemanticEditorProjection>, bool showRejected = false, bool showControl = false);
+    void install(Prepared&);
     void resetFrom(std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
         std::shared_ptr<const core::SctSemanticEditorProjection> projection);
     void setDeveloperOptions(bool showBasicBlocks, bool showRejectedEvidence,
@@ -86,8 +96,6 @@ private:
     };
 
     void rebuild();
-    void appendProjectionNode(Node* parent,
-        const core::SctSemanticProjectionNode& source);
     void appendInstruction(Node& parent, spice::sct::SctInstructionId instruction,
         std::optional<EditContext> context = std::nullopt);
     void appendRegion(Node& parent, const spice::sct::SctSectionStructure& section,

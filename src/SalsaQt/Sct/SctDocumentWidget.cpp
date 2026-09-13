@@ -803,6 +803,10 @@ void SctDocumentWidget::setParameterCommitHandler(
     parameterCommitHandler_ = std::move(handler);
 }
 
+void SctDocumentWidget::usePreparedOutlines(std::shared_ptr<SctOutlineModel::Prepared> physical,
+    std::shared_ptr<SctStructuredOutlineModel::Prepared> semantic) {
+    preparedPhysical_ = std::move(physical); preparedSemantic_ = std::move(semantic); preparedMetadata_ = true;
+}
 void SctDocumentWidget::setSnapshot(
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
     const int sourceStatus) {
@@ -842,7 +846,7 @@ void SctDocumentWidget::setSnapshot(
         }
     }
     rebuildOutline();
-    rebuildStructuredOutline(true);
+    if (!preparedSemantic_) rebuildStructuredOutline(true);
 }
 
 void SctDocumentWidget::installVerifiedSnapshot(
@@ -1030,7 +1034,10 @@ void SctDocumentWidget::setAuthoringMetadata(
     annotations_ = std::move(annotations);
     folders_ = std::move(folders);
     opcodeColors_ = std::move(opcodeColors);
-    rebuildOutline();
+    if (preparedMetadata_) {
+        preparedMetadata_ = false;
+        outlineModel_->setPresentationMetadata(annotations_, folders_, opcodeColors_);
+    } else rebuildOutline();
 }
 
 void SctDocumentWidget::setSemanticProjection(
@@ -1326,8 +1333,8 @@ bool SctDocumentWidget::canMoveSelected(const core::SctInstructionMoveDirection 
 void SctDocumentWidget::rebuildOutline() {
     const auto retained = currentTarget_;
     if (!snapshot_ || !snapshot_->document) return;
-    outlineModel_->resetFrom(core::SctPresentationService::outline(*snapshot_, folders_),
-        *snapshot_->document);
+    if (preparedPhysical_) { outlineModel_->install(*preparedPhysical_); preparedPhysical_.reset(); }
+    else outlineModel_->resetFrom(core::SctPresentationService::outline(*snapshot_, folders_), *snapshot_->document);
     outlineModel_->setPresentationMetadata(annotations_, folders_, opcodeColors_);
     outline_->collapseAll();
     auto selected = retained.has_value()
@@ -1361,7 +1368,8 @@ void SctDocumentWidget::rebuildStructuredOutline(const bool initialLoad) {
         showStructuredBasicBlocks_, showRejectedStructureEvidence_,
         showSemanticControlFlowInstructions_);
     restoringSemanticSelection_ = true;
-    structuredOutlineModel_->resetFrom(snapshot_, semanticProjection_);
+    if (preparedSemantic_) { structuredOutlineModel_->install(*preparedSemantic_); preparedSemantic_.reset(); }
+    else structuredOutlineModel_->resetFrom(snapshot_, semanticProjection_);
     restoringSemanticSelection_ = false;
     if (initialLoad) structuredOutline_->collapseAll();
     if (!semanticSelectionTargets_.empty()) {

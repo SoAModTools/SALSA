@@ -10,5 +10,15 @@
     <ClCompile Include="..\..\src\SalsaQt\Sct\SctDocumentController.cpp"><Filter>Editor</Filter></ClCompile>
     <ClCompile Include="..\..\src\SalsaQt\Application\SalsaLogging.cpp"><Filter>Editor</Filter></ClCompile>
     <QtMoc Include="..\..\src\SalsaQt\Sct\SctDocumentController.h"><Filter>Editor</Filter></QtMoc>
+    <ClCompile Include="..\..\src\SalsaQt\Sct\SctOutlineModel.cpp"><Filter>Editor</Filter></ClCompile>
+    <QtMoc Include="..\..\src\SalsaQt\Sct\SctOutlineModel.h"><Filter>Editor</Filter></QtMoc>
+    <ClCompile Include="..\..\src\SalsaQt\Sct\SctStructuredOutlineModel.cpp"><Filter>Editor</Filter></ClCompile>
+    <QtMoc Include="..\..\src\SalsaQt\Sct\SctStructuredOutlineModel.h"><Filter>Editor</Filter></QtMoc>
+    <ClCompile Include="..\..\src\SalsaQt\Workspace\WorkspaceController.cpp"><Filter>Editor</Filter></ClCompile>
+    <QtMoc Include="..\..\src\SalsaQt\Workspace\WorkspaceController.h"><Filter>Editor</Filter></QtMoc>
+    <ClCompile Include="..\..\src\SalsaQt\Workspace\WorkspaceOperationController.cpp"><Filter>Editor</Filter></ClCompile>
+    <QtMoc Include="..\..\src\SalsaQt\Workspace\WorkspaceOperationController.h"><Filter>Editor</Filter></QtMoc>
+    <ClCompile Include="..\..\src\SalsaQt\Application\ExclusiveOperationController.cpp"><Filter>Editor</Filter></ClCompile>
+    <QtMoc Include="..\..\src\SalsaQt\Application\ExclusiveOperationController.h"><Filter>Editor</Filter></QtMoc>
   </ItemGroup>
 </Project>

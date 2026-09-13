@@ -27,7 +27,16 @@ public:
     void handleEvent(std::string_view event) override;
     void pageEntered(std::string_view pageId) override;
     void requestCancel() override;
-    void completeRestoration(const QString& detail = {});
+    std::function<void()> cancelRestoration;
+    bool loadingSafe = true;
+    void loadingSafety(bool safe) {
+        loadingSafe = safe; setFinishing(!safe); setCancellable(safe && static_cast<bool>(cancelRestoration));
+    }
+    void loadingProgress(const QString& phase, quint64 completed, quint64 total, const QString& item) {
+        setCancellable(loadingSafe && static_cast<bool>(cancelRestoration));
+        reportProgress(phase, completed, total, ExclusiveOperationProgressUnit::Scripts, item);
+    }
+    void completeRestoration(const QString& detail = {}, bool cancelled = false, bool failed = false);
     void reportRestorationProgress(std::size_t completed, std::size_t total,
         const QString& currentItem = {});
 private:

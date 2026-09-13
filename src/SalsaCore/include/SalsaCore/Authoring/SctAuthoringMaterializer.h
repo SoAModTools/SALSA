@@ -16,6 +16,8 @@ public:
     [[nodiscard]] const SctAuthoringBaseline& baseline() const noexcept { return baseline_; }
     [[nodiscard]] const std::vector<std::byte>& bytes() const noexcept { return bytes_; }
     [[nodiscard]] const spice::sct::SctDocument& document() const;
+    [[nodiscard]] std::shared_ptr<const spice::sct::SctParseResult> parsed() const;
+    [[nodiscard]] std::shared_ptr<const SctSourceInspection> sourceInspection() const;
     [[nodiscard]] const spice::sct::SctBoundImportEvidence& evidence() const;
     [[nodiscard]] bool inspectionLoaded() const { std::scoped_lock lock(inspectionMutex_); return document_.has_value(); }
     [[nodiscard]] const std::vector<SctPipelineDiagnostic>& diagnostics() const noexcept { return diagnostics_; }
@@ -32,6 +34,8 @@ private:
     SctImportedProgram(SctAuthoringProjectId project, SctAuthoringBaseline baseline, std::vector<std::byte> bytes);
     void ensureInspection() const;
     mutable std::mutex inspectionMutex_;
+    mutable std::shared_ptr<const spice::sct::SctParseResult> parsed_;
+    mutable std::shared_ptr<const SctSourceInspection> sourceInspection_;
     mutable std::optional<spice::sct::SctDocument> document_;
     mutable std::optional<spice::sct::SctBoundImportEvidence> evidence_;
     std::vector<SctPipelineDiagnostic> diagnostics_;
@@ -45,6 +49,7 @@ struct SctAuthoringImportRequest final {
     SctAuthoringImportRecipe recipe;
     std::optional<spice::sct::SctKnownTextConvention> textConvention;
     std::string name;
+    std::shared_ptr<const SctSourceInspection> inspection;
 };
 struct SctAuthoringAdoption final {
     SctAuthoringProject project;

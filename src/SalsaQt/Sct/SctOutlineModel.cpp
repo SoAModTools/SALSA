@@ -158,26 +158,26 @@ Qt::DropActions SctOutlineModel::supportedDropActions() const {
     return Qt::MoveAction;
 }
 
-void SctOutlineModel::resetFrom(
-    const std::vector<core::SctOutlineItem>& outline,
-    const spice::sct::SctDocument& document) {
-    beginResetModel();
-    roots_.clear();
-    nodes_.clear();
-    instructionValues_.clear();
-    roots_.reserve(outline.size());
+std::shared_ptr<SctOutlineModel::Prepared> SctOutlineModel::prepare(
+    const std::vector<core::SctOutlineItem>& outline, const spice::sct::SctDocument& document) {
+    auto data = std::make_shared<Prepared>();
+    const auto index = [&](auto&& self, Node& node) -> void {
+        data->nodes[key(node.target).toStdString()] = &node;
+        for (auto& child : node.children) self(self, *child);
+    };
     for (const auto& item : outline) {
-        roots_.push_back(makeNode(item, nullptr));
-        indexNode(*roots_.back());
+        data->roots.push_back(makeNode(item, nullptr)); index(index, *data->roots.back());
     }
-    for (const auto& section : document.sections) {
-        if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(
-                &section.content)) {
-            for (const auto& instruction : script->instructions)
-                instructionValues_.emplace(instruction.id.value(), instruction);
-        }
-    }
-    endResetModel();
+    for (const auto& section : document.sections)
+        if (const auto* script = std::get_if<spice::sct::SctScriptSectionContent>(&section.content))
+            for (const auto& instruction : script->instructions) data->instructions.emplace(instruction.id.value(), instruction);
+    return data;
+}
+void SctOutlineModel::install(Prepared& data) {
+    beginResetModel(); roots_.swap(data.roots); nodes_.swap(data.nodes); instructionValues_.swap(data.instructions); endResetModel();
+}
+void SctOutlineModel::resetFrom(const std::vector<core::SctOutlineItem>& outline, const spice::sct::SctDocument& document) {
+    auto data = prepare(outline, document); install(*data);
 }
 
 void SctOutlineModel::setPresentationMetadata(

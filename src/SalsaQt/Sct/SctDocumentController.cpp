@@ -28,9 +28,9 @@ namespace {
         : QString::fromStdString(found->message);
 }
 
-[[nodiscard]] spice::sct::SctParseTraceObserver parserTraceObserver() {
-    if (!salsaSctParserLog().isInfoEnabled()) return {};
-    return [](const spice::sct::SctParseTraceEvent& event) {
+[[nodiscard]] spice::sct::SctParseTraceObserver parserTraceObserver(std::function<void(QString)> progress = {}) {
+    if (!salsaSctParserLog().isInfoEnabled() && !progress) return {};
+    return [progress](const spice::sct::SctParseTraceEvent& event) {
         using enum spice::sct::SctParseTracePhase;
         const auto message = [phase = event.phase] {
             switch (phase) {
@@ -42,6 +42,7 @@ namespace {
             }
             return SctDocumentController::tr("SCT parser phase changed.");
         }();
+        if (progress) progress(message);
         qCInfo(salsaSctParserLog).noquote() << message;
     };
 }
@@ -72,12 +73,15 @@ SctDocumentController::SctDocumentController(QObject* parent) : QObject(parent) 
         if (locator) emit checkpointCompleted(identity(*locator), static_cast<bool>(saved), false,
             saved ? tr("Authoring project saved.") : QString::fromStdString(saved.diagnostics().front().message));
     });
+    connect(&preparedWatcher_, &QFutureWatcherBase::finished, this, &SctDocumentController::finishPreparedDocument);
     connect(&watcher_, &QFutureWatcherBase::finished, this, &SctDocumentController::onFinished);
     connect(&publicationWatcher_, &QFutureWatcherBase::finished,
         this, &SctDocumentController::finishPublication);
 }
 
 SctDocumentController::~SctDocumentController() {
+    workspaceLoadStop_.request_stop(); stopSource_.request_stop();
+    workspaceWatcher_.waitForFinished(); preparedWatcher_.waitForFinished();
     if (authoringSaveWatcher_.isRunning()) authoringSaveWatcher_.waitForFinished();
     if (watcher_.isRunning()) {
         stopSource_.request_stop();
@@ -111,20 +115,20 @@ bool SctDocumentController::openDocument(
         return true;
     }
     if (authoringScript(locator)) {
-        restoreAuthoringProjection(locator.identityKey());
-        synchronizeCatalog(project.assets().snapshot());
-        emit focusRequested(identity(locator));
-        emit operationCompleted(identity(locator), true, false, tr("Authoring script loaded."));
+        begin(Operation::Opening, locator);
+        captureSourceStatus(project, locator);
+        prepareDocument({});
         return true;
     }
     begin(Operation::Opening, locator);
     const auto token = stopSource_.get_token();
     auto workspace = workspace_;
+    auto report = progressReporter();
     watcher_.setFuture(QtConcurrent::run(
-        [project = std::move(project), locator, token, workspace = std::move(workspace)]() {
+        [project = std::move(project), locator, token, report, workspace = std::move(workspace)]() {
             return core::SctPatchCheckpointService::load(
                 project, workspace.get(), workspace.get(), locator, token,
-                parserTraceObserver());
+                parserTraceObserver([report, locator](QString phase) { report(phase, 0, 0, identity(locator)); }));
         }));
     return true;
 }
@@ -133,19 +137,20 @@ bool SctDocumentController::reloadDocument(
     core::LocalGameProject project, const core::AssetLocator& locator) {
     if (busy() || !contains(locator)) return false;
     if (authoringScript(locator)) {
-        restoreAuthoringProjection(locator.identityKey());
-        synchronizeCatalog(project.assets().snapshot());
-        emit operationCompleted(identity(locator), true, false, tr("Authoring projection refreshed."));
+        begin(Operation::Reloading, locator);
+        captureSourceStatus(project, locator);
+        prepareDocument({});
         return true;
     }
     begin(Operation::Reloading, locator);
     const auto token = stopSource_.get_token();
     auto workspace = workspace_;
+    auto report = progressReporter();
     watcher_.setFuture(QtConcurrent::run(
-        [project = std::move(project), locator, token, workspace = std::move(workspace)]() {
+        [project = std::move(project), locator, token, report, workspace = std::move(workspace)]() {
             return core::SctPatchCheckpointService::load(
                 project, workspace.get(), workspace.get(), locator, token,
-                parserTraceObserver());
+                parserTraceObserver([report, locator](QString phase) { report(phase, 0, 0, identity(locator)); }));
         }));
     return true;
 }
@@ -293,12 +298,13 @@ void SctDocumentController::closeAll() {
 void SctDocumentController::cancel() {
     if (savingAuthoring_) authoringSaveStop_.request_stop();
     if (busy()) stopSource_.request_stop();
+    if (workspaceLoading_) workspaceLoadStop_.request_stop();
     if (publicationWatcher_.isRunning()) publicationStop_.request_stop();
     for (auto& [key, state] : documents_)
         if (state.checkpointWatcher) state.checkpointStop.request_stop();
 }
 
-bool SctDocumentController::busy() const noexcept { return operation_ != Operation::None; }
+bool SctDocumentController::busy() const noexcept { return operation_ != Operation::None || workspaceLoading_; }
 
 bool SctDocumentController::contains(const core::AssetLocator& locator) const {
     return documents_.contains(locator.identityKey());
@@ -1038,8 +1044,72 @@ bool SctDocumentController::exportDocument(
     return true;
 }
 
+bool SctDocumentController::loadWorkspace(std::shared_ptr<const core::LocalSalsaWorkspace> workspace) {
+    if (busy() || savingAuthoring_ || !workspace) return false;
+    workspaceLoading_ = true; workspaceLoadStop_ = {}; const auto token = workspaceLoadStop_.get_token();
+    const auto generation = ++generation_; workspaceLoadGeneration_ = generation;
+    auto report = progressReporter(); emit busyChanged();
+    disconnect(&workspaceWatcher_, nullptr, this, nullptr);
+    connect(&workspaceWatcher_, &QFutureWatcherBase::finished, this, [this, workspace, generation] {
+        auto prepared = workspaceWatcher_.result();
+        const bool cancelled = workspaceLoadStop_.stop_requested() || generation != generation_;
+        const bool success = !cancelled && prepared->session != nullptr;
+        workspaceLoading_ = false;
+        failureDiagnostics_ = prepared->diagnostics;
+        if (success) {
+            closeAll(); workspace_ = workspace; authoring_ = std::move(prepared->session);
+            authoringPresentation_ = std::move(prepared->presentation); authoringCheckpoint_ = prepared->checkpoint;
+            loadedWorkspaceSession_ = std::move(prepared->tabs); authoringLoadFailed_ = false;
+            presentationGeneration_ = savedPresentationGeneration_ = 0;
+        }
+        emit busyChanged();
+        emit workspaceLoaded(success, cancelled, cancelled ? tr("Workspace loading cancelled.") : success && prepared->diagnostics.empty() ? QString{} :
+            prepared->diagnostics.empty() ? tr("Workspace loading failed.") : QString::fromStdString(prepared->diagnostics.front().message));
+    });
+    workspaceWatcher_.setFuture(QtConcurrent::run([this, workspace, token, report, generation] {
+        auto result = std::make_shared<PreparedWorkspace>();
+        try {
+            auto loaded = core::SctAuthoringStore::load(*workspace, token, [this, generation, report](const core::SctLoadingProgress& p) {
+                QMetaObject::invokeMethod(this, [this, generation, safe = p.cancellable] {
+                    if (generation == generation_) emit loadingSafetyChanged(safe);
+                }, Qt::QueuedConnection);
+                report(QString::fromStdString(p.phase), p.completed, p.total, QString::fromStdString(p.item));
+            });
+            if (!loaded) { result->diagnostics = loaded.diagnostics(); return result; }
+            if (token.stop_requested()) return result;
+            core::SctAuthoringState state;
+            if (loaded.value()) {
+                state = std::move(loaded.value()->state); result->presentation = std::move(loaded.value()->presentation);
+                result->checkpoint = loaded.value()->digest;
+            } else {
+                auto project = core::SctAuthoringProject::create();
+                if (!project) { result->diagnostics = project.diagnostics(); return result; }
+                auto metadata = core::SctWorkspaceAuthoringStore(workspace->componentPath(
+                    workspace->descriptor().components.authoring / L"workspace.json")).load();
+                if (!metadata) { result->diagnostics = metadata.diagnostics(); return result; }
+                project.value().workspaceAuthoring = metadata.value(); state.project = std::move(project).takeValue();
+                result->presentation.project = state.project.id;
+            }
+            report(tr("Validating authoring state"), 0, 0, {});
+            auto opened = core::SctAuthoringSession::open(std::move(state));
+            if (!opened) { result->diagnostics = opened.diagnostics(); return result; }
+            if (token.stop_requested()) return result;
+            report(tr("Reading saved session"), 0, 0, {});
+            auto tabs = core::WorkspaceSessionStore{}.load(workspace->sessionPath(), workspace->descriptor().workspaceId);
+            if (tabs) result->tabs = std::move(tabs).takeValue();
+            else result->diagnostics = tabs.diagnostics(); // Optional session failure does not discard the project.
+            result->session = std::move(opened).takeValue();
+        } catch (const std::exception& e) {
+            result->diagnostics.push_back({core::DiagnosticSeverity::Error, core::DiagnosticCode::InvalidSctAuthoringProject, e.what()});
+        }
+        return result;
+    }));
+    return true;
+}
+
 void SctDocumentController::setWorkspace(
     std::shared_ptr<const core::LocalSalsaWorkspace> workspace) {
+    ++generation_; loadedWorkspaceSession_.reset();
     if (savingAuthoring_) {
         authoringSaveWatcher_.waitForFinished();
         const auto saved = authoringSaveWatcher_.result();
@@ -1085,33 +1155,144 @@ std::optional<core::SctScriptId> SctDocumentController::authoringScript(const co
     return {};
 }
 
-bool SctDocumentController::adoptAuthoring(const core::SctPatchedLoadResult& load) {
-    if (!authoring_ || !load.load.document || load.patchConflict) return false;
+core::Result<core::SctAuthoringState> SctDocumentController::adoption(
+    const core::SctAuthoringState& state, const core::SctPatchedLoadResult& load,
+    const std::shared_ptr<const core::LocalSalsaWorkspace>& workspace) {
     const auto baseline = load.baseline ? load.baseline : load.load.document;
     const auto& provenance = *baseline->provenance;
     const auto& locator = provenance.source().descriptor.locator;
-    const auto existing = authoringScript(locator);
+    std::optional<core::SctScriptId> existing;
+    for (const auto& script : state.project.scripts)
+        if (state.project.find(script.baseline)->source.locator == locator) existing = script.id;
     core::SctSemanticState working{load.load.document->document, load.authoredArms, load.textRepairs,
         load.unboundReferences, load.aliases, load.annotations, load.folders};
-    core::DatasetIdentity dataset = workspace_ ? workspace_->descriptor().dataset.identity
+    core::DatasetIdentity dataset = workspace ? workspace->descriptor().dataset.identity
         : core::DatasetIdentity{{}, {}, provenance.inspection->sourceDatasetFingerprint};
-    auto command = authoring_->execute(authoring_->state().project.revision, "Import script", [&](const auto& state) {
-        core::SctAuthoringImportRequest request{provenance.source(), dataset,
-            {dataset.platform, provenance.textSelectionOrigin == core::SctTextSelectionOrigin::UserSelected},
-            provenance.textConvention, locator.path().stem().string()};
-        auto adopted = existing
-            ? core::SctAuthoringImporter::replaceImportedScript(state.project, state.project.revision, *existing, std::move(request))
-            : core::SctAuthoringImporter::import(state.project, state.project.revision, std::move(request));
-        if (!adopted) return core::Result<core::SctAuthoringState>::failure(adopted.diagnostics());
-        auto programs = state.programs;
-        if (existing) std::erase_if(programs, [&](const auto& p) { return p->baseline().id == state.project.find(*existing)->baseline; });
-        programs.push_back(adopted.value().program);
-        auto edited = core::SctAuthoringMaterializer::replaceWorkingState(adopted.value().project, programs, adopted.value().script, working);
-        if (!edited) return core::Result<core::SctAuthoringState>::failure(edited.diagnostics());
-        return core::Result<core::SctAuthoringState>::success({std::move(edited).takeValue(), std::move(programs), state.retainedEvidence});
-    });
-    if (!command) { failureDiagnostics_ = command.diagnostics(); return false; }
-    return true;
+    core::SctAuthoringImportRequest request{provenance.source(), dataset,
+        {dataset.platform, provenance.textSelectionOrigin == core::SctTextSelectionOrigin::UserSelected},
+        provenance.textConvention, locator.path().stem().string(), provenance.inspection};
+    auto adopted = existing
+        ? core::SctAuthoringImporter::replaceImportedScript(state.project, state.project.revision, *existing, std::move(request))
+        : core::SctAuthoringImporter::import(state.project, state.project.revision, std::move(request));
+    if (!adopted) return core::Result<core::SctAuthoringState>::failure(adopted.diagnostics());
+    auto programs = state.programs;
+    if (existing) std::erase_if(programs, [&](const auto& p) { return p->baseline().id == state.project.find(*existing)->baseline; });
+    programs.push_back(adopted.value().program);
+    auto edited = core::SctAuthoringMaterializer::replaceWorkingState(adopted.value().project, programs, adopted.value().script, working);
+    if (!edited) return core::Result<core::SctAuthoringState>::failure(edited.diagnostics());
+    return core::Result<core::SctAuthoringState>::success({std::move(edited).takeValue(), std::move(programs), state.retainedEvidence});
+}
+bool SctDocumentController::adoptAuthoring(const core::SctPatchedLoadResult& load) {
+    if (!authoring_ || !load.load.document || load.patchConflict) return false;
+    auto command = authoring_->execute(authoring_->state().project.revision, "Import script",
+        [&](const auto& state) { return adoption(state, load, workspace_); });
+    if (!command) failureDiagnostics_ = command.diagnostics();
+    return static_cast<bool>(command);
+}
+std::unique_ptr<core::SctEditSession> SctDocumentController::projection(
+    const core::SctAuthoringState& state, const std::string& key) {
+    const auto& project = state.project;
+    const auto script = std::ranges::find_if(project.scripts, [&](const auto& s) { return project.find(s.baseline)->source.locator.identityKey() == key; });
+    if (script == project.scripts.end()) return {};
+    auto working = core::SctAuthoringMaterializer::workingState(project, state.programs, script->id);
+    if (!working) throw std::runtime_error(working.diagnostics().front().message);
+    const auto program = *std::ranges::find_if(state.programs, [&](const auto& p) { return p->baseline().id == script->baseline; });
+    auto baseline = core::SctAuthoringMaterializer::snapshot(*program, std::make_shared<const spice::sct::SctDocument>(program->document()));
+    auto snapshot = core::SctAuthoringMaterializer::snapshot(*program, working.value().document);
+    return std::make_unique<core::SctEditSession>(baseline, snapshot, working.value().authoredArms,
+        working.value().textRepairs, working.value().unboundReferences, working.value().aliases, working.value().annotations, working.value().folders);
+}
+std::function<void(QString, quint64, quint64, QString)> SctDocumentController::progressReporter() {
+    const auto generation = generation_; auto observer = loadingObserver_;
+    struct Throttle { QString phase; std::chrono::steady_clock::time_point last{}; };
+    auto throttle = std::make_shared<Throttle>();
+    return [this, generation, observer, throttle](QString phase, quint64 completed, quint64 total, QString item) {
+        if (observer) observer({phase.toStdString(), completed, total, item.toStdString()});
+        const auto now = std::chrono::steady_clock::now();
+        if (phase == throttle->phase && (!total || completed != total) && now - throttle->last < std::chrono::milliseconds(50)) return;
+        throttle->phase = phase; throttle->last = now;
+        QMetaObject::invokeMethod(this, [this, generation, phase, completed, total, item] {
+            if (generation == generation_) emit loadingProgress(phase, completed, total, item);
+        }, Qt::QueuedConnection);
+    };
+}
+void SctDocumentController::captureSourceStatus(const core::LocalGameProject& project, const core::AssetLocator& locator) {
+    const auto script = authoringScript(locator);
+    if (!script) { loadingSourceStatus_ = SourceStatus::Current; return; }
+    const auto& baseline = *authoring_->state().project.find(authoring_->state().project.find(*script)->baseline);
+    const auto& assets = project.assets().snapshot().assets;
+    const auto found = std::ranges::find(assets, locator, &core::AssetDescriptor::locator);
+    loadingSourceStatus_ = found == assets.end() ? SourceStatus::Missing :
+        found->revision == baseline.source.revision ? SourceStatus::Current : SourceStatus::Changed;
+}
+void SctDocumentController::prepareDocument(core::SctPatchedLoadResult loaded) {
+    const auto captured = authoring_->capture(); const auto workspace = workspace_;
+    const auto key = runningLocator_->identityKey(); const auto token = stopSource_.get_token();
+    auto report = progressReporter(); const bool rejected = loadingRejected_, control = loadingControl_;
+    preparedWatcher_.setFuture(QtConcurrent::run([captured, workspace, key, token, report, rejected, control, loaded = std::move(loaded)]() mutable {
+        auto result = std::make_shared<PreparedDocument>(); result->loaded = std::move(loaded); result->captured = captured;
+        try {
+            if (token.stop_requested()) return result;
+            auto state = captured;
+            if (result->loaded.load.document && !result->loaded.patchConflict) {
+                report(tr("Preparing authoring state"), 0, 0, QString::fromStdString(key));
+                auto change = core::SctAuthoringSession::prepare(captured, "Import script",
+                    [&](const auto& prior) { return adoption(prior, result->loaded, workspace); });
+                if (!change) { result->diagnostics = change.diagnostics(); return result; }
+                result->change = std::move(change).takeValue();
+            }
+            if (token.stop_requested()) return result;
+            report(tr("Building editor views"), 0, 0, QString::fromStdString(key));
+            if (result->loaded.patchConflict) {
+                result->session = std::make_unique<core::SctEditSession>(result->loaded.load.document);
+            } else result->session = projection(result->change ? result->change->state() : *state, key);
+            if (result->session && !token.stop_requested()) {
+                auto snapshot = result->session->currentSnapshot();
+                result->outline = SctOutlineModel::prepare(core::SctPresentationService::outline(*snapshot,
+                    result->session->folders()), *snapshot->document);
+                result->structured = SctStructuredOutlineModel::prepare(snapshot, result->session->semanticProjection(), rejected, control);
+                auto metadata = std::make_shared<core::SctSemanticState>(); metadata->document = snapshot->document;
+                const auto& session = *result->session;
+                metadata->aliases = {session.aliases().begin(), session.aliases().end()};
+                metadata->annotations = {session.annotations().begin(), session.annotations().end()};
+                metadata->folders = {session.folders().begin(), session.folders().end()};
+                result->metadata = std::move(metadata);
+            }
+        } catch (const std::exception& e) {
+            result->diagnostics.push_back({core::DiagnosticSeverity::Error, core::DiagnosticCode::SctImportFailed, e.what()});
+        }
+        return result;
+    }));
+}
+void SctDocumentController::finishPreparedDocument() {
+    auto result = preparedWatcher_.result(); const auto locator = runningLocator_;
+    const bool cancelled = stopSource_.stop_requested() || runningGeneration_ != generation_;
+    operation_ = Operation::None; runningLocator_.reset();
+    if (!locator) { emit busyChanged(); return; }
+    const auto key = locator->identityKey();
+    bool success = !cancelled && result->session && authoring_ && authoring_->capture() == result->captured;
+    if (success && result->change) {
+        auto installed = authoring_->install(*result->change);
+        success = static_cast<bool>(installed); if (!installed) result->diagnostics = installed.diagnostics();
+    }
+    failureDiagnostics_ = result->diagnostics;
+    if (success) {
+        emit loadingProgress(tr("Finishing"), 0, 0, identity(*locator));
+        auto found = documents_.find(key);
+        if (found == documents_.end()) found = documents_.emplace(key, DocumentState{*locator, std::move(result->session)}).first;
+        else { retireMaterialization(found->second); retireCheckpoint(found->second); found->second.session = std::move(result->session); }
+        found->second.patchConflict = result->loaded.patchConflict; found->second.editBlocked = result->loaded.patchConflict;
+        found->second.status = result->loaded.load.document ? SourceStatus::Current : loadingSourceStatus_;
+        found->second.blockingDiagnostics.clear(); found->second.publicationDiagnostics.clear(); found->second.lastPublication.reset();
+        emit documentChanged(identity(*locator), {SctDocumentUpdateKind::Replacement,
+            found->second.session->currentSnapshot(), {}, found->second.session->semanticProjection(), result->outline, result->structured, result->metadata});
+        emit focusRequested(identity(*locator));
+    }
+    emit busyChanged();
+    emit operationCompleted(identity(*locator), success, cancelled,
+        cancelled ? tr("Loading cancelled; partial results discarded.") : success ? (result->loaded.patchConflict
+            ? tr("SCT baseline opened read-only because its saved patch could not be applied.") : tr("SCT document ready.")) :
+        result->diagnostics.empty() ? tr("Prepared document is unavailable or stale.") : QString::fromStdString(result->diagnostics.front().message));
 }
 
 void SctDocumentController::restoreAuthoringProjection(const std::string& key) {
@@ -1550,71 +1731,17 @@ void SctDocumentController::setStructureTimingsEnabled(const bool enabled) noexc
 
 void SctDocumentController::onFinished() {
     auto result = watcher_.result();
-    const auto operation = operation_;
-    const auto locator = runningLocator_;
-    const auto generation = runningGeneration_;
-    operation_ = Operation::None;
-    runningLocator_.reset();
-    emit busyChanged();
-    if (!locator.has_value() || generation != generation_) return;
-
-    const auto key = locator->identityKey();
-    if (result.load.cancelled) {
-        emit operationCompleted(QString::fromStdString(key), false, true, tr("SCT operation cancelled."));
-        return;
+    if (!runningLocator_) return;
+    if (result.load.succeeded() && !result.load.cancelled && !stopSource_.stop_requested() && runningGeneration_ == generation_) {
+        prepareDocument(std::move(result)); return;
     }
-    if (!result.load.succeeded()) {
-        failureDiagnostics_ = result.load.infrastructureDiagnostics;
-        if (result.load.inspection)
-            failurePipelineDiagnostics_ = result.load.inspection->diagnostics;
-        emit operationCompleted(QString::fromStdString(key), false, false, firstError(result.load));
-        return;
-    }
+    const auto locator = *runningLocator_; runningLocator_.reset(); operation_ = Operation::None;
+    const bool cancelled = result.load.cancelled || stopSource_.stop_requested() || runningGeneration_ != generation_;
     failureDiagnostics_ = result.load.infrastructureDiagnostics;
-    if (!result.patchConflict && !adoptAuthoring(result)) {
-        emit operationCompleted(QString::fromStdString(key), false, false,
-            failureDiagnostics_.empty() ? tr("The script could not be adopted by the authoring project.")
-                : QString::fromStdString(failureDiagnostics_.front().message));
-        return;
-    }
-    auto found = documents_.find(key);
-    auto makeSession = [&]() {
-        if (result.patchApplied) {
-            return std::make_unique<core::SctEditSession>(result.baseline,
-                result.load.document, result.authoredArms, result.textRepairs,
-                result.unboundReferences, result.aliases, result.annotations,
-                result.folders);
-        }
-        return std::make_unique<core::SctEditSession>(result.load.document);
-    };
-    if (found == documents_.end()) {
-        DocumentState state{*locator, makeSession()};
-        state.status = SourceStatus::Current;
-        state.patchConflict = result.patchConflict;
-        state.editBlocked = result.patchConflict;
-        documents_.emplace(key, std::move(state));
-    } else {
-        retireMaterialization(found->second);
-        retireCheckpoint(found->second);
-        found->second.session = makeSession();
-        found->second.status = SourceStatus::Current;
-        found->second.patchConflict = result.patchConflict;
-        found->second.editBlocked = result.patchConflict;
-    }
-    if (authoringScript(*locator)) restoreAuthoringProjection(key);
-    else emit documentChanged(QString::fromStdString(key),
-        SctDocumentUpdate{SctDocumentUpdateKind::Replacement,
-            documents_.at(key).session->currentSnapshot(), std::nullopt,
-            documents_.at(key).session->semanticProjection()});
-    emit focusRequested(QString::fromStdString(key));
-    const auto message = result.patchConflict
-        ? tr("The source baseline was opened read-only because its saved patch could not be applied.")
-        : result.patchApplied
-            ? tr("SCT document and saved patch loaded.")
-        : operation == Operation::Reimporting
-        ? tr("Text convention applied without rereading the source asset.")
-        : tr("SCT document loaded.");
-    emit operationCompleted(QString::fromStdString(key), true, false, message);
+    failurePipelineDiagnostics_ = result.load.document ? result.load.document->diagnostics :
+        result.load.inspection ? result.load.inspection->diagnostics : std::vector<core::SctPipelineDiagnostic>{};
+    emit busyChanged();
+    emit operationCompleted(identity(locator), false, cancelled, cancelled ? tr("SCT loading cancelled.") : firstError(result.load));
 }
 
 }  // namespace salsa::qt

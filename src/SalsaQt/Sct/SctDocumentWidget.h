@@ -1,4 +1,6 @@
 #pragma once
+#include "Sct/SctOutlineModel.h"
+#include "Sct/SctStructuredOutlineModel.h"
 
 #include "SalsaCore/Sct/SctDocumentLoader.h"
 #include "SalsaCore/Sct/SctEditSession.h"
@@ -56,6 +58,8 @@ public:
     void setParameterCommitHandler(ParameterCommitHandler handler);
 
     [[nodiscard]] const core::AssetLocator& locator() const noexcept;
+    void usePreparedOutlines(std::shared_ptr<SctOutlineModel::Prepared> physical,
+        std::shared_ptr<SctStructuredOutlineModel::Prepared> semantic);
     void setSnapshot(
         std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
         int sourceStatus);
@@ -166,6 +170,9 @@ signals:
     void removeSectionFolderRequested(const QString& identityKey, qulonglong folder);
 
 private:
+    std::shared_ptr<SctOutlineModel::Prepared> preparedPhysical_;
+    std::shared_ptr<SctStructuredOutlineModel::Prepared> preparedSemantic_;
+    bool preparedMetadata_ = false;
     void rebuildOutline();
     void rebuildStructuredOutline(bool initialLoad);
     void restoreSemanticSelection(bool reveal = false);

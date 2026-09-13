@@ -7,10 +7,15 @@
 #include "SpiceSCT/SctDocumentExporter.h"
 #include "SpiceSCT/SctInstructionFactory.h"
 #include <QCoreApplication>
+#include "Workspace/WorkspaceOperationController.h"
 #include <QElapsedTimer>
 #include <QThread>
 #include <gtest/gtest.h>
 #include <fstream>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <QTimer>
 
 namespace {
 using namespace salsa;
@@ -95,7 +100,8 @@ TEST(AuthoringControllerTest, OneHistoryAcrossTabsAndProjectSaveSurvivesClosingA
     ASSERT_TRUE(controller.saveDocument(f.a)); ASSERT_TRUE(waitFor([&] { return !controller.isSaving(f.a); }));
     EXPECT_FALSE(controller.projectDirty());
     qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace);
-    ASSERT_TRUE(reopened.openDocument(*f.project, f.a)); ASSERT_TRUE(reopened.openDocument(*f.project, f.b));
+    ASSERT_TRUE(reopened.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !reopened.busy(); }));
+    ASSERT_TRUE(reopened.openDocument(*f.project, f.b)); ASSERT_TRUE(waitFor([&] { return !reopened.busy(); }));
     EXPECT_EQ(value(reopened, f.a), changedA); EXPECT_EQ(value(reopened, f.b), changedB);
     EXPECT_EQ(site(reopened, f.a), siteA);
     ASSERT_TRUE(reopened.replaceParameterValue(f.a, siteA, sct::SctExpressionFactory::encodedDecimalLiteral(23)));
@@ -155,7 +161,7 @@ TEST(AuthoringControllerTest, DiscardRestoresSavedProjectAndAdvancesRevision) {
     EXPECT_FALSE(controller.projectDirty()); EXPECT_EQ(value(controller, f.a), savedValue);
     EXPECT_GT(controller.workingRevision(f.a).value, editedRevision.value);
     qt::SctDocumentController reopened; reopened.setWorkspace(f.workspace);
-    ASSERT_TRUE(reopened.openDocument(*f.project, f.a)); EXPECT_EQ(value(reopened, f.a), savedValue);
+    ASSERT_TRUE(reopened.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !reopened.busy(); })); EXPECT_EQ(value(reopened, f.a), savedValue);
 }
 TEST(AuthoringControllerTest, SemanticSequenceCommandsShareHistoryAndRejectStaleDialogCapture) {
     Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
@@ -459,4 +465,144 @@ TEST(AuthoringControllerTest, RoutePairUndoReopenAndCoordinatedCapture) {
     ASSERT_TRUE(waitFor([&] { return finished; }));
     EXPECT_FALSE(success);
     EXPECT_FALSE(std::filesystem::exists(temp.root / "half.sct"));
+}
+
+namespace {
+struct LoadingBarrier {
+    std::mutex mutex; std::condition_variable changed; bool released = false;
+    std::atomic<bool> entered = false;
+    void wait() { entered = true; std::unique_lock lock(mutex); changed.wait(lock, [&] { return released; }); }
+    void release() { { std::lock_guard lock(mutex); released = true; } changed.notify_all(); }
+};
+struct ReleaseLoadingBarrier { LoadingBarrier& b; ~ReleaseLoadingBarrier() { b.release(); } };
+}
+TEST(AsyncLoadingTest, PreparationAndProjectionKeepEventLoopResponsiveAndCancelWithoutInstallation) {
+    Fixture f;
+    for (const std::string phase : {"Preparing authoring state", "Building editor views"}) {
+        qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+        const auto before = controller.authoringState();
+        LoadingBarrier barrier; ReleaseLoadingBarrier release{barrier};
+        controller.setLoadingObserver([&](const core::SctLoadingProgress& event) {
+            EXPECT_NE(QThread::currentThread(), QCoreApplication::instance()->thread());
+            if (event.phase == phase) barrier.wait();
+        });
+        int ticks = 0; QTimer timer; QObject::connect(&timer, &QTimer::timeout, [&] { ++ticks; }); timer.start(1);
+        ASSERT_TRUE(controller.openDocument(*f.project, f.a));
+        ASSERT_TRUE(waitFor([&] { return barrier.entered.load(); }));
+        const auto observed = ticks; ASSERT_TRUE(waitFor([&] { return ticks >= observed + 3; }));
+        controller.cancel(); EXPECT_TRUE(controller.busy()); EXPECT_FALSE(controller.contains(f.a));
+        barrier.release(); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+        EXPECT_EQ(controller.authoringState(), before); EXPECT_FALSE(controller.contains(f.a));
+        controller.setLoadingObserver({});
+        ASSERT_TRUE(controller.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+        ASSERT_TRUE(controller.contains(f.a));
+        const auto snapshot = controller.snapshot(f.a);
+        const auto parsed = snapshot->provenance->inspection->parsed;
+        EXPECT_EQ(parsed, controller.authoringState()->programs.front()->parsed());
+        ASSERT_TRUE(controller.reloadDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+        EXPECT_EQ(controller.snapshot(f.a)->provenance->inspection->parsed, parsed);
+    }
+}
+TEST(AsyncLoadingTest, WorkspaceDecodeCancellationAndStaleResultsPreserveAuthority) {
+    Fixture f; qt::SctDocumentController writer; writer.setWorkspace(f.workspace);
+    ASSERT_TRUE(writer.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !writer.busy(); }));
+    ASSERT_TRUE(writer.saveDocument(f.a)); ASSERT_TRUE(waitFor([&] { return !writer.isSaving(f.a); }));
+    for (bool stale : {false, true}) {
+        qt::SctDocumentController reader; const auto before = reader.authoringState();
+        LoadingBarrier barrier; ReleaseLoadingBarrier release{barrier};
+        reader.setLoadingObserver([&](const core::SctLoadingProgress& p) { if (p.phase == "Decompressing project") barrier.wait(); });
+        bool completed = false, cancelled = false;
+        QObject::connect(&reader, &qt::SctDocumentController::workspaceLoaded,
+            [&](bool, bool wasCancelled, const QString&) { completed = true; cancelled = wasCancelled; });
+        ASSERT_TRUE(reader.loadWorkspace(f.workspace)); ASSERT_TRUE(waitFor([&] { return barrier.entered.load(); }));
+        int ticks = 0; QTimer timer; QObject::connect(&timer, &QTimer::timeout, [&] { ++ticks; }); timer.start(1);
+        ASSERT_TRUE(waitFor([&] { return ticks > 3; }));
+        if (stale) reader.setWorkspace(nullptr); else reader.cancel();
+        const auto retained = reader.authoringState(); barrier.release();
+        ASSERT_TRUE(waitFor([&] { return completed; })); EXPECT_TRUE(cancelled); EXPECT_EQ(reader.authoringState(), retained);
+        if (!stale) EXPECT_EQ(retained, before);
+    }
+}
+TEST(AsyncLoadingTest, WorkspaceAndAuthoredDocumentReopenAreAsynchronous) {
+    Fixture f; qt::SctDocumentController writer; writer.setWorkspace(f.workspace);
+    ASSERT_TRUE(writer.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !writer.busy(); }));
+    ASSERT_TRUE(writer.saveDocument(f.a)); ASSERT_TRUE(waitFor([&] { return !writer.isSaving(f.a); }));
+    qt::SctDocumentController reader; std::vector<QString> progress;
+    QObject::connect(&reader, &qt::SctDocumentController::loadingProgress,
+        [&](const QString& phase, quint64, quint64, const QString&) {
+            EXPECT_EQ(QThread::currentThread(), QCoreApplication::instance()->thread()); progress.push_back(phase);
+        });
+    ASSERT_TRUE(reader.loadWorkspace(f.workspace)); EXPECT_TRUE(reader.busy());
+    ASSERT_TRUE(waitFor([&] { return !reader.busy(); })); ASSERT_EQ(reader.authoringState()->project.scripts.size(), 1u);
+    EXPECT_FALSE(progress.empty());
+    LoadingBarrier barrier; ReleaseLoadingBarrier release{barrier};
+    reader.setLoadingObserver([&](const core::SctLoadingProgress& p) { if (p.phase == "Building editor views") barrier.wait(); });
+    ASSERT_TRUE(reader.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return barrier.entered.load(); }));
+    EXPECT_FALSE(reader.contains(f.a)); barrier.release(); ASSERT_TRUE(waitFor([&] { return !reader.busy(); }));
+    EXPECT_TRUE(reader.contains(f.a)); EXPECT_FALSE(reader.projectDirty());
+}
+
+
+TEST(AsyncLoadingTest, ExclusiveAdapterReportsProgressAndKeepsCancellationPendingWithoutWidgets) {
+    Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+    LoadingBarrier barrier; ReleaseLoadingBarrier release{barrier};
+    controller.setLoadingObserver([&](const core::SctLoadingProgress& p) { if (p.phase == "Building editor views") barrier.wait(); });
+    qt::SctLoadingOperationController operation(&controller, [&] { return controller.openDocument(*f.project, f.a); });
+    std::vector<QString> phases, terminal;
+    QObject::connect(&operation, &qt::ExclusiveOperationController::progressChanged,
+        [&](const QString& phase, quint64, quint64, int, const QString&) { phases.push_back(phase); });
+    QObject::connect(&operation, &qt::ExclusiveOperationController::eventRaised, [&](const QString& event) { terminal.push_back(event); });
+    operation.pageEntered("processing"); ASSERT_TRUE(waitFor([&] { return barrier.entered.load(); }));
+    EXPECT_TRUE(terminal.empty()); EXPECT_FALSE(phases.empty());
+    operation.requestCancel(); EXPECT_TRUE(controller.busy()); EXPECT_FALSE(operation.cancellable());
+    EXPECT_TRUE(terminal.empty()); barrier.release(); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    ASSERT_EQ(terminal.size(), 1u); EXPECT_EQ(terminal.front(), "cancelled"); EXPECT_FALSE(controller.contains(f.a));
+}
+TEST(AsyncLoadingTest, InvalidProjectLeavesPreviousAuthorityAndFileUntouched) {
+    Fixture f; qt::SctDocumentController controller; const auto before = controller.authoringState();
+    auto path = f.workspace->componentPath(core::SctAuthoringStore::relativePath(*f.workspace));
+    std::filesystem::create_directories(path.parent_path());
+    { std::ofstream out(path, std::ios::binary); out << "unsupported old or truncated authoring project"; }
+    const auto size = std::filesystem::file_size(path);
+    bool finished = false, success = true;
+    QObject::connect(&controller, &qt::SctDocumentController::workspaceLoaded,
+        [&](bool ok, bool, const QString& message) { success = ok; finished = true; EXPECT_FALSE(message.isEmpty()); });
+    ASSERT_TRUE(controller.loadWorkspace(f.workspace)); ASSERT_TRUE(waitFor([&] { return finished; }));
+    EXPECT_FALSE(success); EXPECT_EQ(controller.authoringState(), before); EXPECT_FALSE(controller.hasWorkspace());
+    EXPECT_EQ(std::filesystem::file_size(path), size);
+}
+
+TEST(AsyncLoadingTest, ReloadCancellationAndGenerationChangeDiscardPreparedViews) {
+    Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    const auto before = controller.snapshot(f.a); const auto authored = controller.authoringState();
+    LoadingBarrier barrier; ReleaseLoadingBarrier release{barrier};
+    controller.setLoadingObserver([&](const core::SctLoadingProgress& p) { if (p.phase == "Building editor views") barrier.wait(); });
+    ASSERT_TRUE(controller.reloadDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return barrier.entered.load(); }));
+    controller.cancel(); barrier.release(); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    EXPECT_EQ(controller.snapshot(f.a), before); EXPECT_EQ(controller.authoringState(), authored);
+    controller.setLoadingObserver({});
+    controller.closeAll();
+    LoadingBarrier stale; ReleaseLoadingBarrier releaseStale{stale};
+    controller.setLoadingObserver([&](const core::SctLoadingProgress& p) { if (p.phase == "Building editor views") stale.wait(); });
+    ASSERT_TRUE(controller.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return stale.entered.load(); }));
+    controller.setWorkspace(nullptr); const auto replacement = controller.authoringState();
+    stale.release(); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    EXPECT_FALSE(controller.contains(f.a)); EXPECT_EQ(controller.authoringState(), replacement);
+}
+
+TEST(AsyncLoadingTest, ReopenedAuthoredScriptRetainsChangedAndMissingSourceEvidence) {
+    Fixture f; qt::SctDocumentController controller; controller.setWorkspace(f.workspace);
+    ASSERT_TRUE(controller.openDocument(*f.project, f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    const auto original = controller.authoringState()->project.baselines.front().source.revision;
+    controller.closeAll();
+    { std::ofstream changed(f.root / "source" / f.a.path(), std::ios::binary | std::ios::app); changed << "changed"; }
+    auto changed = f.project->rescan(); ASSERT_TRUE(changed);
+    ASSERT_TRUE(controller.openDocument(changed.value(), f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    EXPECT_EQ(controller.sourceStatus(f.a), qt::SctDocumentController::SourceStatus::Changed);
+    EXPECT_EQ(controller.authoringState()->project.baselines.front().source.revision, original);
+    controller.closeAll(); std::filesystem::remove(f.root / "source" / f.a.path());
+    auto missing = changed.value().rescan(); ASSERT_TRUE(missing);
+    ASSERT_TRUE(controller.openDocument(missing.value(), f.a)); ASSERT_TRUE(waitFor([&] { return !controller.busy(); }));
+    EXPECT_EQ(controller.sourceStatus(f.a), qt::SctDocumentController::SourceStatus::Missing);
 }

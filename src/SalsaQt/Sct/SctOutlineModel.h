@@ -16,6 +16,7 @@ namespace salsa::qt {
 
 class SctOutlineModel final : public QAbstractItemModel {
     Q_OBJECT
+    struct Node;
 
 public:
     explicit SctOutlineModel(QObject* parent = nullptr);
@@ -35,6 +36,13 @@ public:
         int row, int column, const QModelIndex& parent) override;
     Qt::DropActions supportedDropActions() const override;
 
+    struct Prepared {
+        std::vector<std::unique_ptr<Node>> roots;
+        std::unordered_map<std::string, Node*> nodes;
+        std::unordered_map<std::uint64_t, spice::sct::SctDocumentInstruction> instructions;
+    };
+    static std::shared_ptr<Prepared> prepare(const std::vector<core::SctOutlineItem>&, const spice::sct::SctDocument&);
+    void install(Prepared&);
     void resetFrom(const std::vector<core::SctOutlineItem>& outline,
         const spice::sct::SctDocument& document);
     void setPresentationMetadata(

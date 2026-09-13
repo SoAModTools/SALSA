@@ -1,3 +1,4 @@
+#include <QtConcurrent/QtConcurrentRun>
 #include "Sct/SctInterpretationDialog.h"
 #include "Sct/SctEntrypointEditorDialog.h"
 #include "Sct/SctLanguageEditorDialog.h"
@@ -251,6 +252,11 @@ MainWindow::MainWindow(const Mode mode, QWidget* parent)
         std::make_shared<const core::SctPersonalCatalog>(personalCatalog_));
     buildUi();
     connectWorkspace();
+    connect(documentController_, &SctDocumentController::loadingProgress, this, &MainWindow::reportLoading);
+    connect(documentController_, &SctDocumentController::loadingSafetyChanged, this, [this](bool safe) {
+        if (activeDatasetOperation_) activeDatasetOperation_->loadingSafety(safe);
+        if (activeWorkspaceMaintenance_) activeWorkspaceMaintenance_->loadingSafety(safe);
+    });
     if (mode_ == Mode::Application) restoreApplicationSettings();
     syncWorkspace();
     syncDiagnostics();
@@ -269,7 +275,7 @@ MainWindow::MainWindow(const Mode mode, QWidget* parent)
         if (blocked != 0) statusBar()->showMessage(tr(
             "%1 interrupted legacy import transaction(s) require attention.").arg(blocked),
             15000);
-        QTimer::singleShot(0, this, &MainWindow::attemptRestoreDataset);
+        // Opening a dataset/workspace is always an explicit user action.
     }
 }
 
@@ -784,6 +790,7 @@ void MainWindow::buildUi() {
     connect(showRejectedStructureEvidenceAction_, &QAction::toggled, this,
         [this](const bool enabled) {
             showRejectedStructureEvidence_ = enabled;
+            documentController_->setLoadingViewOptions(enabled, showSemanticControlFlowInstructions_);
             for (int index = 1; index < tabs_->count(); ++index) {
                 if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index))) {
                     widget->setStructuredDeveloperOptions(
@@ -800,6 +807,7 @@ void MainWindow::buildUi() {
     connect(showSemanticControlFlowInstructionsAction_, &QAction::toggled, this,
         [this](const bool enabled) {
             showSemanticControlFlowInstructions_ = enabled;
+            documentController_->setLoadingViewOptions(showRejectedStructureEvidence_, enabled);
             for (int index = 1; index < tabs_->count(); ++index) {
                 if (auto* widget = qobject_cast<SctDocumentWidget*>(tabs_->widget(index))) {
                     widget->setStructuredDeveloperOptions(showStructuredBasicBlocks_,
@@ -1133,7 +1141,7 @@ void MainWindow::connectWorkspace() {
         controller_,
         &WorkspaceController::operationCompleted,
         this,
-        &MainWindow::handleOperationCompleted);
+        &MainWindow::handleOperationCompleted, Qt::QueuedConnection);
     connect(
         controller_,
         &WorkspaceController::datasetOpened,
@@ -1327,22 +1335,7 @@ void MainWindow::associatePatchWorkspace() {
     const auto datasetCopy = *dataset;
     auto operation = WorkspaceMaintenanceController::openWorkspace(
         path, datasetCopy, [this, selected](core::LocalSalsaWorkspace opened) {
-            saveWorkspaceSession();
-            detachPatchWorkspace(false);
-            patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
-                std::move(opened));
-            documentController_->setWorkspace(patchWorkspace_);
-            loadWorkspaceAuthoring();
-            reloadSnippets();
-            const auto* current = controller_->dataset();
-            if (current) rememberPatchWorkspaceAssociation(
-                QString::fromStdWString(current->root.wstring()), selected);
-            syncActions();
-            restoreWorkspaceSession();
-            QTimer::singleShot(0, this, [this] {
-                if (activeWorkspaceMaintenance_ && !restoringWorkspaceSession_)
-                    activeWorkspaceMaintenance_->completeRestoration();
-            });
+            loadOpenedWorkspace(std::make_shared<const core::LocalSalsaWorkspace>(std::move(opened)));
             return tr("SALSA workspace opened: %1")
                 .arg(QDir::toNativeSeparators(selected));
         });
@@ -1905,68 +1898,71 @@ void MainWindow::reloadAuthoringDocks() {
     }
 }
 
-bool MainWindow::openPatchWorkspace(
-    const QString& workspaceRoot, const bool allowConfirmation) {
-    const auto* dataset = controller_->dataset();
-    if (dataset == nullptr || !documentController_->openLocators().empty()) return false;
-    const auto path = std::filesystem::path(workspaceRoot.toStdWString());
-    auto assessment = core::LocalSalsaWorkspace::assess(path, *dataset);
-    if (!assessment) {
-        const auto message = assessment.diagnostics().empty()
-            ? tr("The SALSA workspace could not be assessed.")
-            : QString::fromStdString(assessment.diagnostics().front().message);
-        if (allowConfirmation)
-            QMessageBox::warning(this, tr("Workspace could not be opened"), message);
-        else statusBar()->showMessage(message, 10000);
-        return false;
-    }
-    auto acceptance = core::WorkspaceDatasetAcceptance::ExactOnly;
-    if (assessment.value().requiresReassociation()) {
-        if (!allowConfirmation) {
-            statusBar()->showMessage(tr(
-                "The associated workspace needs explicit dataset reassociation; the dataset remains open."),
-                12000);
-            return false;
+bool MainWindow::openPatchWorkspace(const QString& root) {
+    if (!controller_->dataset() || associationOpening_) return false;
+    associationOpening_ = true; workspaceRestorationCancelled_ = false;
+    reportLoading(tr("Assessing/recovering associated workspace"), 0, 0, root);
+    if (activeDatasetOperation_) activeDatasetOperation_->cancelRestoration = {}; // Recovery must finish safely.
+    const auto dataset = *controller_->dataset();
+    disconnect(&associationWatcher_, nullptr, this, nullptr);
+    connect(&associationWatcher_, &QFutureWatcherBase::finished, this, [this] {
+        associationOpening_ = false;
+        auto opened = associationWatcher_.result();
+        if (!opened) {
+            finishWorkspaceLoading(opened.diagnostics().empty() ? tr("Associated workspace could not open.")
+                : QString::fromStdString(opened.diagnostics().front().message), true);
+            return;
         }
-        const auto previous = assessment.value().storedDatasetRoot
-            ? QString::fromStdWString(assessment.value().storedDatasetRoot->wstring())
-            : tr("Unknown");
-        const auto current = QString::fromStdWString(dataset->root.wstring());
-        const auto answer = QMessageBox::warning(this, tr("Reassociate workspace?"),
-            tr("%1\n\nPrevious dataset:\n%2\n\nSelected dataset:\n%3\n\n"
-               "Reassociation updates the workspace binding. Individual SCT patches still "
-               "require their recorded source revision to match.")
-                .arg(QString::fromStdString(assessment.value().message),
-                    QDir::toNativeSeparators(previous),
-                    QDir::toNativeSeparators(current)),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer != QMessageBox::Yes) return false;
-        acceptance = core::WorkspaceDatasetAcceptance::UserConfirmedReassociation;
-    }
-    saveWorkspaceSession();
-    auto opened = core::LocalSalsaWorkspace::openOrCreate(path, *dataset, acceptance);
-    if (!opened) {
-        const auto message = opened.diagnostics().empty()
-            ? tr("The SALSA workspace could not be opened.")
-            : QString::fromStdString(opened.diagnostics().front().message);
-        if (allowConfirmation)
-            QMessageBox::warning(this, tr("Workspace could not be opened"), message);
-        else statusBar()->showMessage(message, 10000);
-        return false;
-    }
-    detachPatchWorkspace(false);
-    patchWorkspace_ = std::make_shared<const core::LocalSalsaWorkspace>(
-        std::move(opened).takeValue());
-    documentController_->setWorkspace(patchWorkspace_);
-    loadWorkspaceAuthoring();
-    reloadSnippets();
-    rememberPatchWorkspaceAssociation(
-        QString::fromStdWString(dataset->root.wstring()), workspaceRoot);
-    statusBar()->showMessage(tr("SALSA workspace opened: %1")
-        .arg(QDir::toNativeSeparators(workspaceRoot)), 8000);
-    syncActions();
-    restoreWorkspaceSession();
+        loadOpenedWorkspace(std::make_shared<const core::LocalSalsaWorkspace>(std::move(opened).takeValue()));
+    });
+    associationWatcher_.setFuture(QtConcurrent::run([root, dataset] {
+        return core::LocalSalsaWorkspace::openOrCreate(std::filesystem::path(root.toStdWString()), dataset,
+            core::WorkspaceDatasetAcceptance::ExactOnly);
+    }));
     return true;
+}
+void MainWindow::reportLoading(const QString& phase, quint64 done, quint64 total, const QString& item) {
+    if (workspaceRestorationCancelled_) return;
+    if (activeDatasetOperation_) activeDatasetOperation_->loadingProgress(phase, done, total, item);
+    if (activeWorkspaceMaintenance_) activeWorkspaceMaintenance_->loadingProgress(phase, done, total, item);
+}
+void MainWindow::finishWorkspaceLoading(const QString& message, bool failed) {
+    restoringWorkspaceSession_ = false;
+    if (activeDatasetOperation_) activeDatasetOperation_->completeRestoration(message, workspaceRestorationCancelled_, failed);
+    if (activeWorkspaceMaintenance_) activeWorkspaceMaintenance_->completeRestoration(message, workspaceRestorationCancelled_, failed);
+    if (!message.isEmpty()) statusBar()->showMessage(message, 12000);
+}
+void MainWindow::cancelWorkspaceRestoration() {
+    workspaceRestorationCancelled_ = true; preserveWorkspaceSession_ = true;
+    documentController_->cancel();
+    if (!documentController_->busy() && !associationOpening_) {
+        if (restoringWorkspaceSessionState_) finishWorkspaceSessionRestore();
+        else finishWorkspaceLoading(tr("Restoration cancelled; saved session retained."));
+    }
+}
+void MainWindow::loadOpenedWorkspace(std::shared_ptr<const core::LocalSalsaWorkspace> workspace) {
+    saveWorkspaceSession();
+    if (workspaceSessionSaveTimer_) workspaceSessionSaveTimer_->stop();
+    workspaceRestorationCancelled_ = false;
+    if (activeDatasetOperation_) activeDatasetOperation_->cancelRestoration = [this] { cancelWorkspaceRestoration(); };
+    if (activeWorkspaceMaintenance_) activeWorkspaceMaintenance_->cancelRestoration = [this] { cancelWorkspaceRestoration(); };
+    if (activeDatasetOperation_) activeDatasetOperation_->loadingSafety(false);
+    if (activeWorkspaceMaintenance_) activeWorkspaceMaintenance_->loadingSafety(false);
+    const auto connection = connect(documentController_, &SctDocumentController::workspaceLoaded, this,
+        [this, workspace](bool success, bool cancelled, const QString& message) {
+            if (!success) { workspaceRestorationCancelled_ = cancelled; finishWorkspaceLoading(message, !cancelled); return; }
+            patchWorkspace_ = workspace; preserveWorkspaceSession_ = false;
+            loadWorkspaceAuthoring(); reloadSnippets();
+            if (const auto* dataset = controller_->dataset()) rememberPatchWorkspaceAssociation(
+                QString::fromStdWString(dataset->root.wstring()), QString::fromStdWString(workspace->descriptor().root.wstring()));
+            syncActions();
+            if (!message.isEmpty() && !documentController_->loadedWorkspaceSession()) {
+                preserveWorkspaceSession_ = true; finishWorkspaceLoading(message);
+            } else restoreWorkspaceSession();
+        }, Qt::SingleShotConnection);
+    if (!documentController_->loadWorkspace(workspace)) {
+        disconnect(connection); finishWorkspaceLoading(tr("Workspace loading could not start."));
+    }
 }
 
 void MainWindow::disconnectPatchWorkspace() {
@@ -2010,12 +2006,10 @@ void MainWindow::restorePatchWorkspaceAssociation() {
             QStringLiteral("project.json.schema1.rollback"))).isFile();
         if (!workspaceDirectory.exists()
             || (!hasManifest && !hasRollback)) {
-            statusBar()->showMessage(tr(
-                "The last associated SALSA workspace is missing; the dataset remains open."),
-                10000);
+            finishWorkspaceLoading(tr("The last associated SALSA workspace is missing; the dataset remains open."));
             return;
         }
-        (void)openPatchWorkspace(workspaceRoot, false);
+        (void)openPatchWorkspace(workspaceRoot);
         return;
     }
 }
@@ -3656,9 +3650,9 @@ void MainWindow::activateSelectedAsset() {
     const auto project = controller_->projectSnapshot();
     if (!locator.has_value() || !project.has_value()
         || controller_->busy() || documentController_->busy()) return;
-    if (documentController_->openDocument(*project, *locator))
-        statusBar()->showMessage(tr("Decoding %1...")
-            .arg(QString::fromStdWString(locator->path().filename().wstring())));
+    if (documentController_->contains(*locator)) { (void)documentController_->openDocument(*project, *locator); return; }
+    (void)exclusiveOperations_->open(std::make_unique<SctLoadingOperationController>(documentController_,
+        [this, project = *project, locator = *locator] { return documentController_->openDocument(project, locator); }), this);
 }
 
 void MainWindow::syncDocument(
@@ -3709,7 +3703,8 @@ void MainWindow::syncDocument(
                 scptEditor_->clear();
                 messageEditor_->clear();
                 if (const auto project = controller_->projectSnapshot(); project.has_value())
-                    (void)documentController_->reloadDocument(*project, widget->locator());
+                    (void)exclusiveOperations_->open(std::make_unique<SctLoadingOperationController>(documentController_,
+                        [this, project = *project, locator = widget->locator()] { return documentController_->reloadDocument(project, locator); }), this);
             });
         connect(widget, &SctDocumentWidget::becameActive, this,
             [this](const QString&) { syncDiagnostics(); syncEditActions(); });
@@ -4042,6 +4037,7 @@ void MainWindow::syncDocument(
                     spice::sct::SctInstructionId(instruction));
             });
     }
+    if (update.outline && update.structured) widget->usePreparedOutlines(update.outline, update.structured);
     const auto snapshot = update.snapshot != nullptr
         ? update.snapshot : documentController_->snapshot(*found);
     const auto sourceStatus = static_cast<int>(documentController_->sourceStatus(*found));
@@ -4071,7 +4067,7 @@ void MainWindow::syncDocument(
     }
     widget->setSemanticProjection(update.semanticProjection != nullptr
         ? update.semanticProjection : documentController_->semanticProjection(*found));
-    if (const auto state = documentController_->semanticState(*found))
+    if (const auto state = update.metadata ? std::optional<core::SctSemanticState>(*update.metadata) : documentController_->semanticState(*found))
         widget->setAuthoringMetadata(state->aliases, state->annotations,
             state->folders, workspaceAuthoring_.opcodeColors);
     reloadAuthoringDocks();
@@ -4219,6 +4215,7 @@ std::optional<core::WorkspaceSessionState> MainWindow::captureWorkspaceSession()
 }
 
 void MainWindow::saveWorkspaceSession() {
+    if (preserveWorkspaceSession_) return;
     if (restoringWorkspaceSession_ || patchWorkspace_ == nullptr) return;
     if (workspaceSessionSaveTimer_) workspaceSessionSaveTimer_->stop();
     const auto state = captureWorkspaceSession();
@@ -4236,28 +4233,12 @@ void MainWindow::saveWorkspaceSession() {
 void MainWindow::restoreWorkspaceSession() {
     if (patchWorkspace_ == nullptr) return;
     if (workspaceSessionSaveTimer_) workspaceSessionSaveTimer_->stop();
-    core::WorkspaceSessionStore store;
-    auto loaded = store.load(patchWorkspace_->sessionPath(),
-        patchWorkspace_->descriptor().workspaceId);
-    navigationHistory_.clear();
-    navigationHistoryIndex_ = 0;
-    if (!loaded) {
-        const auto message = loaded.diagnostics().empty()
-            ? tr("The optional workspace session was ignored.")
-            : QString::fromStdString(loaded.diagnostics().front().message);
-        statusBar()->showMessage(tr("%1 Durable workspace content remains available.")
-            .arg(message), 12000);
-        scheduleWorkspaceSessionSave();
-        return;
-    }
-    if (!loaded.value()) {
-        recordActiveNavigation();
-        scheduleWorkspaceSessionSave();
-        return;
-    }
+    const auto& loaded = documentController_->loadedWorkspaceSession();
+    navigationHistory_.clear(); navigationHistoryIndex_ = 0;
+    if (!loaded) { finishWorkspaceLoading(); return; }
     restoringWorkspaceSession_ = true;
     replayingNavigation_ = true;
-    restoringWorkspaceSessionState_ = std::move(*loaded.value());
+    restoringWorkspaceSessionState_ = *loaded;
     restoringWorkspaceDocumentIndex_ = 0;
     workspaceRestoreMessages_.clear();
     restoreNextWorkspaceDocument();
@@ -4265,6 +4246,7 @@ void MainWindow::restoreWorkspaceSession() {
 
 void MainWindow::restoreNextWorkspaceDocument() {
     if (!restoringWorkspaceSession_ || !restoringWorkspaceSessionState_) return;
+    if (workspaceRestorationCancelled_) { finishWorkspaceSessionRestore(); return; }
     const auto& documents = restoringWorkspaceSessionState_->documents;
     if (activeDatasetOperation_)
         activeDatasetOperation_->reportRestorationProgress(
@@ -4335,7 +4317,7 @@ void MainWindow::continueWorkspaceSessionRestore(
         workspaceRestoreMessages_.push_back(message);
     }
     ++restoringWorkspaceDocumentIndex_;
-    if (cancelled) restoringWorkspaceDocumentIndex_ = documents.size();
+    if (cancelled) { workspaceRestorationCancelled_ = true; preserveWorkspaceSession_ = true; restoringWorkspaceDocumentIndex_ = documents.size(); }
     QTimer::singleShot(0, this, &MainWindow::restoreNextWorkspaceDocument);
 }
 
@@ -4393,15 +4375,15 @@ void MainWindow::finishWorkspaceSessionRestore() {
     else
         statusBar()->showMessage(tr("Workspace restored with %1 stale or unavailable item(s).")
             .arg(workspaceRestoreMessages_.size()), 12000);
-    const auto restorationSummary = workspaceRestoreMessages_.isEmpty()
+    const auto restorationSummary = workspaceRestorationCancelled_ ? tr("Restoration cancelled; saved session retained.") : workspaceRestoreMessages_.isEmpty()
         ? tr("Workspace session restored.")
         : tr("Workspace restored with %1 stale or unavailable item(s).")
             .arg(workspaceRestoreMessages_.size());
     if (activeDatasetOperation_)
         activeDatasetOperation_->completeRestoration(
-            workspaceRestoreMessages_.isEmpty() ? QString{} : restorationSummary);
+            workspaceRestoreMessages_.isEmpty() && !workspaceRestorationCancelled_ ? QString{} : restorationSummary, workspaceRestorationCancelled_);
     if (activeWorkspaceMaintenance_)
-        activeWorkspaceMaintenance_->completeRestoration(restorationSummary);
+        activeWorkspaceMaintenance_->completeRestoration(restorationSummary, workspaceRestorationCancelled_);
     workspaceRestoreMessages_.clear();
     scheduleWorkspaceSessionSave();
 }
@@ -4444,18 +4426,6 @@ void MainWindow::recordRecentDataset(const QString& canonicalRoot) {
     settings.setValue(QStringLiteral("workspace/recentDatasets"), recentDatasets_);
     settings.setValue(QStringLiteral("workspace/lastDataset"), lastDataset_);
     rebuildRecentMenu();
-}
-
-void MainWindow::attemptRestoreDataset() {
-    if (lastDataset_.isEmpty() || controller_->busy() || controller_->hasDataset()) return;
-    restoringDataset_ = true;
-    auto operation = std::make_unique<WorkspaceOperationController>(
-        controller_, WorkspaceController::Operation::Opening, lastDataset_);
-    activeDatasetOperation_ = operation.get();
-    if (!exclusiveOperations_->open(std::move(operation), this)) {
-        activeDatasetOperation_.clear();
-        restoringDataset_ = false;
-    }
 }
 
 void MainWindow::restoreApplicationSettings() {
@@ -4526,10 +4496,6 @@ void MainWindow::handleOperationCompleted(
     const bool success,
     const bool cancelled,
     const QString& message) {
-    const bool wasRestoreAttempt = restoringDataset_
-        && operation == WorkspaceController::Operation::Opening;
-    if (operation == WorkspaceController::Operation::Opening)
-        restoringDataset_ = false;
     progressBar_->hide();
     cancelButton_->hide();
     statusBar()->showMessage(message, 8000);
@@ -4540,7 +4506,7 @@ void MainWindow::handleOperationCompleted(
     syncActions();
 
     if (!success && !cancelled) {
-        if (operation == WorkspaceController::Operation::Opening && !wasRestoreAttempt
+        if (operation == WorkspaceController::Operation::Opening
             && !(exclusiveOperations_ && exclusiveOperations_->active())) {
             QMessageBox::warning(this, tr("Dataset could not be opened"), message);
         }
@@ -4550,7 +4516,7 @@ void MainWindow::handleOperationCompleted(
         detachPatchWorkspace(false);
         restorePatchWorkspaceAssociation();
         QTimer::singleShot(0, this, [this]() {
-            if (!restoringWorkspaceSession_ && activeDatasetOperation_)
+            if (!associationOpening_ && !documentController_->busy() && !restoringWorkspaceSession_ && activeDatasetOperation_)
                 activeDatasetOperation_->completeRestoration();
         });
     }

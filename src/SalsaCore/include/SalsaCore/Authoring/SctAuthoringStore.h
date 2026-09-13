@@ -4,6 +4,13 @@
 #include "SalsaCore/Persistence/WorkspaceTransaction.h"
 
 namespace salsa::core {
+struct SctLoadingProgress final {
+    std::string phase;
+    std::uint64_t completed = 0, total = 0;
+    std::string item;
+    bool cancellable = true;
+};
+using SctLoadingObserver = std::function<void(const SctLoadingProgress&)>;
 struct SctAuthoringCheckpoint final {
     SctAuthoringState state;
     SctAuthoringPresentation presentation;
@@ -14,7 +21,7 @@ public:
     [[nodiscard]] static std::filesystem::path relativePath(const LocalSalsaWorkspace& workspace);
     // Recovery runs before any checkpoint is accepted. No partial project escapes.
     [[nodiscard]] static Result<std::optional<SctAuthoringCheckpoint>> load(
-        const LocalSalsaWorkspace& workspace, std::stop_token stop = {});
+        const LocalSalsaWorkspace& workspace, std::stop_token stop = {}, SctLoadingObserver observer = {});
     // Compose the project checkpoint into an existing workspace transaction.
     // Caller must already have retained all immutable backing bytes.
     [[nodiscard]] static Result<WorkspaceArtifactMutation> mutation(const LocalSalsaWorkspace& workspace,

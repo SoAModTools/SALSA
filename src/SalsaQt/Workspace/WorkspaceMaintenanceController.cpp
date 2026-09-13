@@ -52,7 +52,8 @@ core::ExclusiveOperationFlowDefinition WorkspaceMaintenanceController::flowDefin
          {"confirm", "review", "confirm", "commit"},
          {"cancel_review", "review", "cancelled", "summary"},
          {"complete", "commit", "complete", "summary"},
-         {"failed_commit", "commit", "failed", "summary"}}};
+         {"failed_commit", "commit", "failed", "summary"},
+         {"cancel_restore", "commit", "cancelled", "summary"}}};
 }
 QWidget* WorkspaceMaintenanceController::simplePage(QWidget* parent, QLabel** label) {
     auto* page = new QWidget(parent); auto* layout = new QVBoxLayout(page);
@@ -102,6 +103,10 @@ void WorkspaceMaintenanceController::pageEntered(const std::string_view page) {
     if (page == "processing" && !started_) { started_ = true; startAssessment(); }
 }
 void WorkspaceMaintenanceController::requestCancel() {
+    if (awaitingRestoration_ && cancelRestoration) {
+        setCancellable(false); reportProgress(tr("Cancelling; waiting for the current stage"), 0, 0, ExclusiveOperationProgressUnit::None);
+        cancelRestoration(); return;
+    }
     summaryText_ = tr("The operation was cancelled before durable changes began.");
     if (summary_) summary_->setText(summaryText_);
     raiseEvent("cancelled");
@@ -192,11 +197,16 @@ void WorkspaceMaintenanceController::finishCleanupCommit() {
     summaryText_ = tr("Verified workspace recovery evidence was removed.");
     if (summary_) summary_->setText(summaryText_); raiseEvent("complete");
 }
-void WorkspaceMaintenanceController::completeRestoration(const QString& detail) {
+void WorkspaceMaintenanceController::completeRestoration(const QString& detail, bool cancelled, bool failed) {
+    setFinishing(false); setCancellable(false);
     if (!awaitingRestoration_) return;
     awaitingRestoration_ = false;
     if (!detail.isEmpty()) summaryText_ += QStringLiteral("\n\n") + detail;
     if (summary_) summary_->setText(summaryText_);
+    if (cancelled || failed) {
+        raiseEvent(cancelled ? "cancelled" : "failed");
+        reportTerminalActivity(QStringLiteral("WorkspaceRestoration"), detail); return;
+    }
     raiseEvent("complete");
 }
 void WorkspaceMaintenanceController::reportRestorationProgress(

@@ -1,4 +1,7 @@
 #pragma once
+#include "Sct/SctOutlineModel.h"
+#include "Sct/SctStructuredOutlineModel.h"
+#include "SalsaCore/Persistence/WorkspaceSession.h"
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
 
 #include "SalsaCore/Project/LocalGameProject.h"
@@ -39,6 +42,9 @@ struct SctDocumentUpdate final {
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot{};
     std::optional<core::SctRevisionTransition> transition{};
     std::shared_ptr<const core::SctSemanticEditorProjection> semanticProjection{};
+    std::shared_ptr<SctOutlineModel::Prepared> outline;
+    std::shared_ptr<SctStructuredOutlineModel::Prepared> structured;
+    std::shared_ptr<const core::SctSemanticState> metadata;
 };
 
 class SctDocumentController final : public QObject {
@@ -209,10 +215,15 @@ public:
         bool allowSourceReplacement,
         core::SctPublicationObserver observer = {});
     void setWorkspace(std::shared_ptr<const core::LocalSalsaWorkspace> workspace);
+    bool loadWorkspace(std::shared_ptr<const core::LocalSalsaWorkspace> workspace);
+    [[nodiscard]] const std::optional<core::WorkspaceSessionState>& loadedWorkspaceSession() const { return loadedWorkspaceSession_; }
     void synchronizeCatalog(const core::AssetCatalogSnapshot& catalog);
     void closeDocument(const core::AssetLocator& locator);
     void closeAll();
     void cancel();
+    // Observer runs on the worker; it must not access QObjects.
+    void setLoadingViewOptions(bool rejected, bool control) { loadingRejected_ = rejected; loadingControl_ = control; }
+    void setLoadingObserver(core::SctLoadingObserver observer) { loadingObserver_ = std::move(observer); }
     void setEditTimingsEnabled(bool enabled) noexcept;
     void setStructureTimingsEnabled(bool enabled) noexcept;
 
@@ -268,6 +279,9 @@ public:
 
 signals:
     void busyChanged();
+    void loadingProgress(const QString& phase, quint64 completed, quint64 total, const QString& item);
+    void workspaceLoaded(bool success, bool cancelled, const QString& message);
+    void loadingSafetyChanged(bool cancellable);
     void documentChanged(const QString& identityKey, const SctDocumentUpdate& update);
     void documentClosed(const QString& identityKey);
     void focusRequested(const QString& identityKey);
@@ -330,7 +344,38 @@ private:
     };
 
     void begin(Operation operation, const core::AssetLocator& locator);
+    SourceStatus loadingSourceStatus_ = SourceStatus::Current;
+    void captureSourceStatus(const core::LocalGameProject&, const core::AssetLocator&);
     void onFinished();
+    struct PreparedDocument {
+        core::SctPatchedLoadResult loaded;
+        std::shared_ptr<const core::SctAuthoringState> captured;
+        std::optional<core::SctPreparedAuthoringChange> change;
+        std::unique_ptr<core::SctEditSession> session;
+        std::shared_ptr<SctOutlineModel::Prepared> outline;
+        std::shared_ptr<SctStructuredOutlineModel::Prepared> structured;
+        std::shared_ptr<const core::SctSemanticState> metadata;
+        std::vector<core::Diagnostic> diagnostics;
+    };
+    struct PreparedWorkspace {
+        std::unique_ptr<core::SctAuthoringSession> session;
+        core::SctAuthoringPresentation presentation;
+        std::optional<core::Sha256Digest> checkpoint;
+        std::optional<core::WorkspaceSessionState> tabs;
+        std::vector<core::Diagnostic> diagnostics;
+    };
+    void prepareDocument(core::SctPatchedLoadResult loaded);
+    void finishPreparedDocument();
+    static core::Result<core::SctAuthoringState> adoption(const core::SctAuthoringState&,
+        const core::SctPatchedLoadResult&, const std::shared_ptr<const core::LocalSalsaWorkspace>&);
+    static std::unique_ptr<core::SctEditSession> projection(const core::SctAuthoringState&, const std::string&);
+    QFutureWatcher<std::shared_ptr<PreparedDocument>> preparedWatcher_;
+    QFutureWatcher<std::shared_ptr<PreparedWorkspace>> workspaceWatcher_;
+    std::stop_source workspaceLoadStop_;
+    bool workspaceLoading_ = false;
+    std::uint64_t workspaceLoadGeneration_ = 0;
+    std::optional<core::WorkspaceSessionState> loadedWorkspaceSession_;
+    std::function<void(QString, quint64, quint64, QString)> progressReporter();
     [[nodiscard]] DocumentState* findState(const core::AssetLocator& locator);
     [[nodiscard]] const DocumentState* findState(const core::AssetLocator& locator) const;
     [[nodiscard]] bool applyEditResult(
@@ -346,6 +391,8 @@ private:
     void retireCheckpoint(DocumentState& state);
     void finishPublication();
 
+    core::SctLoadingObserver loadingObserver_;
+    bool loadingRejected_ = false, loadingControl_ = false;
     QFutureWatcher<core::SctPatchedLoadResult> watcher_{};
     std::unordered_map<std::string, DocumentState> documents_{};
     std::shared_ptr<const core::LocalSalsaWorkspace> workspace_{};

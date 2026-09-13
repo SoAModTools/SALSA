@@ -58,6 +58,16 @@
   </ClCompile></ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="test_authoring_controller.cpp" />
+    <ClCompile Include="..\..\src\SalsaQt\Sct\SctOutlineModel.cpp" />
+    <QtMoc Include="..\..\src\SalsaQt\Sct\SctOutlineModel.h" />
+    <ClCompile Include="..\..\src\SalsaQt\Sct\SctStructuredOutlineModel.cpp" />
+    <QtMoc Include="..\..\src\SalsaQt\Sct\SctStructuredOutlineModel.h" />
+    <ClCompile Include="..\..\src\SalsaQt\Workspace\WorkspaceController.cpp" />
+    <QtMoc Include="..\..\src\SalsaQt\Workspace\WorkspaceController.h" />
+    <ClCompile Include="..\..\src\SalsaQt\Workspace\WorkspaceOperationController.cpp" />
+    <QtMoc Include="..\..\src\SalsaQt\Workspace\WorkspaceOperationController.h" />
+    <ClCompile Include="..\..\src\SalsaQt\Application\ExclusiveOperationController.cpp" />
+    <QtMoc Include="..\..\src\SalsaQt\Application\ExclusiveOperationController.h" />
     <ClCompile Include="..\..\third-party\googletest\googletest\src\gtest-all.cc" />
     <ClCompile Include="..\..\src\SalsaQt\Sct\SctDocumentController.cpp" />
     <ClCompile Include="..\..\src\SalsaQt\Application\SalsaLogging.cpp" />

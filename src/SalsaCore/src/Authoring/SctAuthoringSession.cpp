@@ -61,7 +61,7 @@ Result<void> SctAuthoringSession::validate(const SctAuthoringState& state) {
 }
 SctAuthoringSession::SctAuthoringSession(SctAuthoringState state)
     : current_(std::make_shared<const SctAuthoringState>(std::move(state))),
-      history_{{current_, {}}}, saved_(semanticKey(current_->project)) {}
+      history_{{current_, {}}}, saved_(semanticKey(current_->project)), currentKey_(saved_) {}
 Result<std::unique_ptr<SctAuthoringSession>> SctAuthoringSession::open(SctAuthoringState state) {
     auto checked = validate(state);
     if (!checked) return Result<std::unique_ptr<SctAuthoringSession>>::failure(checked.diagnostics());
@@ -133,7 +133,8 @@ Result<SctAuthoringChange> SctAuthoringSession::execute(RevisionId expected, std
         next.project.revision = {revision + 1};
         auto checked = validate(next);
         if (!checked) return Result<SctAuthoringChange>::failure(checked.diagnostics());
-        if (semanticKey(next.project) == semanticKey(current_->project))
+        auto nextKey = semanticKey(next.project);
+        if (nextKey == currentKey_)
             return Result<SctAuthoringChange>::success({before, before, {}, false});
         auto affected = scripts(current_->project, next.project);
         auto accepted = std::make_shared<const SctAuthoringState>(std::move(next));
@@ -141,11 +142,33 @@ Result<SctAuthoringChange> SctAuthoringSession::execute(RevisionId expected, std
         auto history = history_;
         history.resize(cursor_ + 1);
         history.push_back({accepted, std::move(description)});
-        history_.swap(history); ++cursor_; current_ = std::move(accepted);
+        history_.swap(history); ++cursor_; current_ = std::move(accepted); currentKey_ = std::move(nextKey);
         return Result<SctAuthoringChange>::success({before, current_->project.revision, std::move(affected), true}, checked.diagnostics());
     } catch (const std::exception& exception) {
         return Result<SctAuthoringChange>::failure(error(std::string("Project command failed: ") + exception.what()));
     }
+}
+Result<SctPreparedAuthoringChange> SctAuthoringSession::prepare(
+    std::shared_ptr<const SctAuthoringState> captured, std::string description, const Command& command) {
+    if (!captured) return Result<SctPreparedAuthoringChange>::failure(error("No captured authoring state."));
+    SctAuthoringSession isolated(*captured);
+    auto changed = isolated.execute(captured->project.revision, description, command);
+    if (!changed) return Result<SctPreparedAuthoringChange>::failure(changed.diagnostics());
+    SctPreparedAuthoringChange prepared;
+    prepared.before_ = std::move(captured); prepared.after_ = isolated.capture();
+    prepared.semanticKey_ = isolated.currentKey_;
+    prepared.change_ = changed.value(); prepared.description_ = std::move(description);
+    return Result<SctPreparedAuthoringChange>::success(std::move(prepared), changed.diagnostics());
+}
+Result<SctAuthoringChange> SctAuthoringSession::install(const SctPreparedAuthoringChange& prepared) {
+    // Exact immutable capture also rejects ABA revisions and foreign sessions.
+    if (prepared.before_ != current_ || !prepared.after_)
+        return Result<SctAuthoringChange>::failure(error("Prepared authoring change is stale."));
+    if (!prepared.change_.committed) return Result<SctAuthoringChange>::success(prepared.change_);
+    auto history = history_; history.resize(cursor_ + 1);
+    history.push_back({prepared.after_, prepared.description_});
+    history_.swap(history); ++cursor_; current_ = prepared.after_; currentKey_ = prepared.semanticKey_;
+    return Result<SctAuthoringChange>::success(prepared.change_);
 }
 Result<SctAuthoringChange> SctAuthoringSession::navigate(std::size_t cursor) {
     const auto before = current_->project.revision;
@@ -154,7 +177,7 @@ Result<SctAuthoringChange> SctAuthoringSession::navigate(std::size_t cursor) {
     next.project.revision = {before.value + 1};
     next.project.nextEntityId = std::max(next.project.nextEntityId, current_->project.nextEntityId);
     auto affected = scripts(current_->project, next.project);
-    current_ = std::make_shared<const SctAuthoringState>(std::move(next)); cursor_ = cursor;
+    current_ = std::make_shared<const SctAuthoringState>(std::move(next)); cursor_ = cursor; currentKey_ = semanticKey(current_->project);
     return Result<SctAuthoringChange>::success({before, current_->project.revision, std::move(affected), true});
 }
 Result<SctAuthoringChange> SctAuthoringSession::undo() {
@@ -167,7 +190,7 @@ Result<SctAuthoringChange> SctAuthoringSession::redo() {
 }
 std::string SctAuthoringSession::undoDescription() const { return canUndo() ? history_[cursor_].description : std::string{}; }
 std::string SctAuthoringSession::redoDescription() const { return canRedo() ? history_[cursor_ + 1].description : std::string{}; }
-bool SctAuthoringSession::isDirty() const { return semanticKey(current_->project) != saved_; }
+bool SctAuthoringSession::isDirty() const { return currentKey_ != saved_; }
 void SctAuthoringSession::markSaved(const SctAuthoringState& captured) {
     if (captured.project.id == current_->project.id) saved_ = semanticKey(captured.project);
 }
