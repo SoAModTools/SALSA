@@ -1,5 +1,6 @@
 #include "Program.h"
 #include "PagedStorage.h"
+#include "Connectivity.h"
 #include <iostream>
 #include <stdexcept>
 #include <Windows.h>
@@ -7,6 +8,70 @@
 namespace salsa::evaluation {
 namespace {
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+void storySmoke() {
+    Context context; auto fixture=makeFixture(16,1,"story-connectivity");
+    ProgramHost<DenseStorage> host(context); require(host.load(fixture).ok(),"Story load failed");
+    StoryConnectivity story(context); story.load(host);
+    const auto finish=[&] { story.synchronize(host); auto p=story.prepare(host); require(story.install(host,std::move(p)),"Story install failed"); };
+    auto initial=story.prepare(host); require(story.install(host,std::move(initial)),"Initial story install failed");
+    const auto collect=[&](StoryConnectivity& index,ModuleId id) {
+        std::vector<Relationship> rows; auto ticket=index.visit(host,id,[&](const Relationship& r){ rows.push_back(r); });
+        require(!ticket.truncated,"Small story truncated"); std::ranges::sort(rows); return rows;
+    };
+    auto rows=collect(story,{40});
+    require(rows.size()==6,"Expected three state edges, helper call, transition, and scheduled call");
+    require(std::ranges::any_of(rows,[](const Relationship& r){ return r.instruction.value==104 && r.condition.value==108 && r.source.value==40 && r.kind==RelationshipKind::SupportsGuard; }),"Shared helper effect missing");
+    require(std::ranges::none_of(rows,[](const Relationship& r){ return r.instruction.value==109 || r.instruction.value==111; }),"Transition/scheduled effects were treated as immediate");
+    const auto apply=[&](Record before,Record after){ auto p=host.prepare({before,after},host.capture()); require(p.ok() && host.commit(std::move(p).takeValue()).ok(),"Story edit failed"); };
+    // Remove the only guard for BitVar[17], observe the empty bucket, then introduce a new guard there.
+    auto door=*host.lookup({106}); auto displaced=door; displaced.variable=78; apply(door,displaced); finish();
+    auto watched=story.visit(host,{40},[](const Relationship&){}); const auto aVersion=story.version({40});
+    auto stale=story.prepare(host); auto guard=*host.lookup({110}); auto newGuard=guard; newGuard.variable=17;
+    apply(guard,newGuard); require(!story.install(host,std::move(stale)),"Stale derived completion installed");
+    finish(); require(!story.fresh(host,watched),"Empty query dependency missed new guard");
+    require(story.version({40})==aVersion,"Unrelated source summary rebuilt for target guard change");
+    rows=collect(story,{40}); require(std::ranges::any_of(rows,[](const Relationship& r){ return r.instruction.value==100 && r.condition.value==110; }),"New guard edge missing");
+    auto reusable=story.visit(host,{40},[](const Relationship&){});
+    auto write=*host.lookup({100}); auto flagged=write; flagged.flags=4; apply(write,flagged); finish();
+    require(story.fresh(host,reusable),"Flag-only edit invalidated unchanged connectivity");
+    // Multiple edits between synchronizations coalesce the helper and its two callers once.
+    const auto beforeWork=story.work(); auto helper=*host.lookup({104}); auto cleared=helper; cleared.value=0; apply(helper,cleared);
+    auto helperRead=*host.lookup({105}); auto helperWrite=helperRead; helperWrite.op=Op::Write; helperWrite.value=1; apply(helperRead,helperWrite);
+    story.synchronize(host); require(story.pending({40}) && story.pending({41}) && story.pending({42}),"Helper callers were not pending");
+    auto coalesced=story.prepare(host); require(story.install(host,std::move(coalesced)),"Coalesced install failed");
+    require(story.work().modulesPrepared-beforeWork.modulesPrepared==3,"Helper invalidation was not coalesced/bounded");
+
+    auto movedHelper=cleared; movedHelper.section={10}; apply(cleared,movedHelper); finish();
+    rows=collect(story,{40});
+    require(std::ranges::any_of(rows,[](const Relationship& r){ return r.instruction.value==101 && r.target.value==40; }),"Unchanged caller missed moved target ownership");
+    require((story.issues({40})&uint32_t(SummaryIssue::Unresolved))!=0,"Interior call target needs an explicit boundary qualification");
+
+    // Small fixture-only rebuild comparisons catch stale incremental state through the common trace.
+    Context traceContext; ProgramHost<DenseStorage> traceHost(traceContext); require(traceHost.load(fixture).ok(),"Trace load failed");
+    StoryConnectivity incremental(traceContext); incremental.load(traceHost); auto loaded=incremental.prepare(traceHost); require(incremental.install(traceHost,std::move(loaded)),"Trace initial install failed");
+    bool sawCycle=false,sawUnknown=false,sawExpression=false;
+    for(const auto& step:fixture.trace) {
+        if(const auto* e=std::get_if<Edit>(&step.action)) { auto p=traceHost.prepare(e->change,traceHost.capture()); require(p.ok() && traceHost.commit(std::move(p).takeValue()).ok(),"Story trace edit failed"); }
+        else if(const auto* b=std::get_if<EditBatch>(&step.action)) { auto p=traceHost.prepare(*b,traceHost.capture()); require(p.ok() && traceHost.commit(std::move(p).takeValue()).ok(),"Story trace batch failed"); }
+        else if(std::holds_alternative<Undo>(step.action)) require(traceHost.undo().ok(),"Story undo failed");
+        else if(std::holds_alternative<Redo>(step.action)) require(traceHost.redo().ok(),"Story redo failed");
+        else continue;
+        incremental.synchronize(traceHost); auto p=incremental.prepare(traceHost); require(incremental.install(traceHost,std::move(p)),"Trace derived install failed");
+        Context rebuiltContext; StoryConnectivity rebuilt(rebuiltContext); rebuilt.load(traceHost); auto fresh=rebuilt.prepare(traceHost); require(rebuilt.install(traceHost,std::move(fresh)),"Rebuild failed");
+        for(const auto& m:fixture.modules) {
+            std::vector<Relationship> actual,expected;
+            incremental.visit(traceHost,m.id,[&](const Relationship& r){ actual.push_back(r); });
+            rebuilt.visit(traceHost,m.id,[&](const Relationship& r){ expected.push_back(r); });
+            std::ranges::sort(actual); std::ranges::sort(expected);
+            require(actual==expected && incremental.issues(m.id)==rebuilt.issues(m.id),"Incremental connectivity differs from fresh derived index");
+        }
+        sawCycle|=(incremental.issues({40})&uint32_t(SummaryIssue::Cycle))!=0;
+        sawUnknown|=(incremental.issues({40})&uint32_t(SummaryIssue::Unresolved))!=0;
+        sawExpression|=(incremental.issues({40})&uint32_t(SummaryIssue::UnknownValue))!=0;
+    }
+    require(sawCycle && sawUnknown && sawExpression,"Expected cycle/unknown qualifications absent");
+}
+
 }
 // Deliberately small smoke coverage while the representation is exploratory.
 // These exercise the runner, not a permanent semantic or performance specification.
@@ -60,10 +125,11 @@ int selfTests() {
             std::atomic_bool cancelled=true;
             auto stopped=execute(RunSpec{},Controls{&cancelled});
             require(stopped.at("disposition")=="cancelled","Cancellation not reported");
-            std::cout << "PASS rejected edit/cancellation smoke\n";
+            storySmoke();
+            std::cout << "PASS story dependencies/staleness and rejected edit/cancellation smoke\n";
         }
         {
-            RunSpec spec; auto first=execute(spec); ++spec.repetition; auto second=execute(spec);
+            RunSpec spec; spec.fixture="story-connectivity"; auto first=execute(spec); ++spec.repetition; auto second=execute(spec);
             require(first.at("disposition")=="passed" && second.at("disposition")=="passed","Normal run failed");
             require(first.at("final_checksum")==second.at("final_checksum"),"Repeated workload changed result");
             std::vector<Json> reports{first,second};

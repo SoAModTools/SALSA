@@ -12,7 +12,7 @@ struct InstructionState { bool live{}, issued{}, published{}; uint32_t section=N
 using InstructionDirectory=PagedDirectory<InstructionState>;
 struct ExpressionLocation { uint32_t slot=NoSlot; };
 
-enum class FactKind : uint8_t { Read, Write, Call, Fallthrough, Unknown };
+enum class FactKind : uint8_t { Read, Write, Call, Fallthrough, Unknown, Guard };
 struct Fact {
     FactId id; InstructionId source; OperandId operand;
     FactKind kind{}; uint64_t role{}; Bank bank{}; uint64_t key{}, value{};
@@ -116,6 +116,8 @@ private:
     uint64_t live_{};
 };
 
+inline std::atomic_uint64_t NextProgramInstance{1};
+
 // All candidates use these values, ordering, facts and transaction rules.
 template<StorageCandidate Storage>
 class ProgramHost {
@@ -158,8 +160,8 @@ public:
     };
     explicit ProgramHost(Context& c):context_(c),store_(c),directory_(c.resource(Domain::Directory)),
         sections_(c.resource(Domain::Order)),sectionSlots_(c.resource(Domain::Directory)),operands_(c.resource(Domain::Values)),
-        expressions_(c.resource(Domain::Values)),expressionSlots_(c.resource(Domain::Directory)),index_(c.resource(Domain::Index),work_,directory_),history_(c.resource(Domain::History)) {
-        capture_.instance=nextInstance_.fetch_add(1);
+        expressions_(c.resource(Domain::Values)),expressionSlots_(c.resource(Domain::Directory)),index_(c.resource(Domain::Index),work_,directory_),history_(c.resource(Domain::History)),publications_(c.resource(Domain::History)) {
+        capture_.instance=NextProgramInstance.fetch_add(1);
     }
     Result<void> load(const Fixture& input) {
         try {
@@ -170,7 +172,8 @@ public:
             ids.reserve(input.scripts.size()+input.sections.size()+input.expressions.size()+input.records.size()+input.reserved.size());
             auto claim=[&](uint64_t id){ expect(id!=0,"Zero project-local ID"); ids.push_back(id); highWater_=std::max(highWater_,id); };
             for(const auto& script:input.scripts) { claim(script.id.value); expect(!script.source.empty(),"Script source qualification missing"); }
-            scripts_=input.scripts; evidence_=input.evidence;
+            scripts_=input.scripts; evidence_=input.evidence; modules_=input.modules;
+            for(const auto& module:modules_) claim(module.id.value);
             for(const auto& s:input.sections) {
                 claim(s.id.value);
                 expect(std::ranges::any_of(scripts_,[&](const Script& script){ return script.id==s.script; }),"Dangling section owner");
@@ -194,7 +197,7 @@ public:
                 validateRecord(r);
                 auto* state=directory_.find(r.id);
                 expect(state->section!=NoSlot && sections_[state->section].id==r.section,"Instruction/order owner mismatch");
-                if(r.op==Op::Call && !r.evidence) {
+                if(isControl(r.op) && !r.evidence) {
                     const auto* target=directory_.find(InstructionId{r.value}); expect(target && target->rank!=NoSlot,"Dangling resolved call target");
                 }
                 rows.push_back(encode(r,nullptr));
@@ -221,11 +224,11 @@ public:
     std::optional<Record> lookup(InstructionId id) const { const auto* row=store_.lookup(id); return row?std::optional<Record>(decode(*row)):std::nullopt; }
     template<class Sink> void enumerate(Sink&& sink) const { for(const auto& section:sections_) for(auto id:section.order) sink(decode(*store_.lookup(id))); }
     template<class Sink> void query(Query q,Sink&& sink) const {
-        const auto kind=q.kind==QueryKind::Reads?FactKind::Read:q.kind==QueryKind::Writes?FactKind::Write:q.kind==QueryKind::Incoming?FactKind::Call:q.kind==QueryKind::Fallthrough?FactKind::Fallthrough:FactKind::Unknown;
+        const auto kind=q.kind==QueryKind::Reads?FactKind::Read:q.kind==QueryKind::Writes?FactKind::Write:q.kind==QueryKind::Incoming?FactKind::Call:q.kind==QueryKind::Fallthrough?FactKind::Fallthrough:q.kind==QueryKind::Guards?FactKind::Guard:FactKind::Unknown;
         index_.query({kind,q.bank,q.key},[&](const Fact& f){ ++examined_; sink(f); });
     }
     uint64_t bucketVersion(Query q) const {
-        const auto kind=q.kind==QueryKind::Reads?FactKind::Read:q.kind==QueryKind::Writes?FactKind::Write:q.kind==QueryKind::Incoming?FactKind::Call:q.kind==QueryKind::Fallthrough?FactKind::Fallthrough:FactKind::Unknown;
+        const auto kind=q.kind==QueryKind::Reads?FactKind::Read:q.kind==QueryKind::Writes?FactKind::Write:q.kind==QueryKind::Incoming?FactKind::Call:q.kind==QueryKind::Fallthrough?FactKind::Fallthrough:q.kind==QueryKind::Guards?FactKind::Guard:FactKind::Unknown;
         return index_.version({kind,q.bank,q.key});
     }
     InstructionId allocateInstructionId() { expect(loaded_,"Host is not loaded"); ++capture_.generation; InstructionId id{allocate()}; directory_.ensure(id).issued=true; return id; }
@@ -236,6 +239,18 @@ public:
     std::span<const InstructionId> order(SectionId id) const { return sections_.at(sectionSlot(id)).order; }
     std::string_view name(SectionId id) const { return sections_.at(sectionSlot(id)).name; }
     const auto& expressions() const noexcept { return expressions_; }
+    const auto& modules() const noexcept { return modules_; }
+    template<class Sink> void sourceFacts(InstructionId id,Sink&& sink) const {
+        const auto* state=directory_.find(id); if(state && state->live) index_.source(state->head,std::forward<Sink>(sink));
+    }
+    // Revision-indexed delta receipts; immutable operand/fact payloads are shared with history.
+    // IR5 owns retirement of receipts and history. No whole-document diff is required.
+    template<class Sink> void changedSourcesSince(uint64_t revision,Sink&& sink) const {
+        expect(revision<=publications_.size(),"Unknown publication revision");
+        for(size_t i=static_cast<size_t>(revision);i<publications_.size();++i)
+            for(const auto& change:publications_[i]->storage) sink(change.before?change.before->id:change.after->id,
+                !change.before || !change.after || change.before->section!=change.after->section);
+    }
     const auto& scripts() const noexcept { return scripts_; }
     const auto& evidence() const noexcept { return evidence_; }
     const Expression& expressionNode(ExprId id) const { return expression(id); }
@@ -275,11 +290,11 @@ public:
             for(const auto& change:changes->storage) {
                 if(change.after) {
                     const auto record=decode(*change.after);
-                    if(record.op==Op::Call && !record.evidence) expect(future(InstructionId{record.value}),"Dangling resolved call target");
+                    if(isControl(record.op) && !record.evidence) expect(future(InstructionId{record.value}),"Dangling resolved call target");
                 }
                 if(change.before && !change.after) index_.query({FactKind::Call,Bank::Bit,change.before->id.value},[&](const Fact& f){
                     const auto* caller=future(f.source); if(!caller) return;
-                    const auto r=decode(*caller); expect(r.op!=Op::Call || r.evidence || r.value!=change.before->id.value,"Delete requires explicit incoming-call repair");
+                    const auto r=decode(*caller); expect(!isControl(r.op) || r.evidence || r.value!=change.before->id.value,"Delete requires explicit incoming-call repair");
                 });
             }
             auto patchFor=[&](SectionId id)->OrderPatch& {
@@ -354,6 +369,7 @@ public:
         for(auto& [slot,name]:plan.names) sections_[slot].name.swap(name);
         if(plan.historyMode==0) { history_.resize(cursor_); history_.push_back(plan.changes); ++cursor_; }
         else if(reverse) --cursor_; else ++cursor_;
+        publications_.push_back(plan.changes);
         ++capture_.revision; ++capture_.generation; plan.owner=nullptr;
         return Result<void>::success();
     }
@@ -374,9 +390,10 @@ private:
         sectionSlot(r.section); expect(r.op<=Op::Unknown && r.bank<=Bank::Float,"Unsupported opcode/bank");
         if(r.expression.value) { expression(r.expression); expect(r.op==Op::Write && r.value==0,"Expression value requires a write without a second literal"); }
         if(r.schedule.value) expression(r.schedule);
-        if(r.evidence) expect(r.evidence<=evidence_.size() && (r.op==Op::Call || r.op==Op::Unknown),"Invalid unresolved evidence");
+        if(r.evidence) expect(r.evidence<=evidence_.size() && (isControl(r.op) || r.op==Op::Unknown),"Invalid unresolved evidence");
+        if(r.op==Op::Guard) expect((r.bank==Bank::Bit || r.bank==Bank::Byte) && r.value<=(r.bank==Bank::Bit?1:255) && !r.expression.value && !r.schedule.value,"Unsupported guard; use literal bit/byte equality");
         if(r.op==Op::Unknown) expect(r.evidence!=0 && !r.variable,"Unknown instruction needs evidence and no inferred variable");
-        if(r.op==Op::Call) expect(r.bank==Bank::Bit && !r.expression.value && !r.variable && (r.evidence?r.value==0:r.value!=0),"Invalid call binding");
+        if(isControl(r.op)) expect(r.bank==Bank::Bit && !r.expression.value && !r.variable && (r.evidence?r.value==0:r.value!=0),"Invalid call binding");
     }
     StoredRecord encode(const Record& r,const StoredRecord* old) {
         if(old) {
@@ -387,7 +404,7 @@ private:
         StoredRecord stored{r.id,r.section,r.op,slotCount(operands_.size()),r.flags};
         const auto id=[&](uint32_t position){ return old?operands_[old->firstOperand+position].id:OperandId{allocate()}; };
         const auto primaryId=id(0), valueId=id(1), scheduleId=id(2);
-        operands_.push_back({primaryId,r.evidence?ValueKind::Unresolved:r.op==Op::Call?ValueKind::Target:ValueKind::Address,r.bank,r.evidence?r.evidence:r.op==Op::Call?r.value:r.variable});
+        operands_.push_back({primaryId,r.evidence?ValueKind::Unresolved:isControl(r.op)?ValueKind::Target:ValueKind::Address,r.bank,r.evidence?r.evidence:isControl(r.op)?r.value:r.variable});
         operands_.push_back({valueId,r.expression.value?ValueKind::Expression:ValueKind::Literal,Bank::Bit,r.expression.value?r.expression.value:r.value});
         operands_.push_back({scheduleId,r.schedule.value?ValueKind::Expression:ValueKind::Empty,Bank::Bit,r.schedule.value});
         return stored;
@@ -396,8 +413,8 @@ private:
         const auto& address=operands_[row.firstOperand]; const auto& value=operands_[row.firstOperand+1]; const auto& schedule=operands_[row.firstOperand+2];
         Record r{row.id,row.section,row.op}; r.flags=row.flags; r.bank=address.bank;
         if(address.kind==ValueKind::Unresolved) r.evidence=static_cast<uint32_t>(address.value);
-        else if(row.op==Op::Call) r.value=address.value; else r.variable=static_cast<uint32_t>(address.value);
-        if(value.kind==ValueKind::Expression) r.expression=ExprId{value.value}; else if(row.op!=Op::Call) r.value=value.value;
+        else if(isControl(row.op)) r.value=address.value; else r.variable=static_cast<uint32_t>(address.value);
+        if(value.kind==ValueKind::Expression) r.expression=ExprId{value.value}; else if(!isControl(row.op)) r.value=value.value;
         r.schedule=ExprId{schedule.value}; return r;
     }
     InstructionId nextInOrder(InstructionId id) const {
@@ -408,8 +425,8 @@ private:
         ++work_.instructionsExamined; facts.clear();
         const auto r=decode(row); const auto address=operands_[row.firstOperand];
         if(r.op==Op::Unknown) facts.push_back({{},r.id,address.id,FactKind::Unknown,0,Bank::Bit,0,0,{},r.evidence});
-        else if(r.op==Op::Call) facts.push_back({{},r.id,address.id,FactKind::Call,0,Bank::Bit,r.value,0,{},r.evidence});
-        else facts.push_back({{},r.id,address.id,r.op==Op::Read?FactKind::Read:FactKind::Write,0,r.bank,r.variable,r.value,r.expression});
+        else if(isControl(r.op)) facts.push_back({{},r.id,address.id,FactKind::Call,0,Bank::Bit,r.value,0,{},r.evidence});
+        else facts.push_back({{},r.id,address.id,r.op==Op::Read?FactKind::Read:r.op==Op::Guard?FactKind::Guard:FactKind::Write,0,r.bank,r.variable,r.value,r.expression});
         auto visit=[&](auto&& self,ExprId id,OperandId operand,uint64_t path,unsigned depth)->void {
             expect(depth<24,"Expression nesting exceeds the supported bound"); const auto& e=expression(id);
             if(e.op==ExprOp::Variable) facts.push_back({{},r.id,operand,FactKind::Read,path,e.bank,e.variable});
@@ -438,6 +455,7 @@ private:
         expect(additional<NoSlot,"Fact batch too large"); index_.reserve(additional);
         for(const auto& rename:plan.changes->names) plan.names.emplace_back(sectionSlot(rename.section),reverse?rename.before:rename.after);
         if(!historyMode) history_.reserve(cursor_+1>history_.capacity()?std::max(cursor_+1,history_.capacity()+history_.capacity()/2+1):history_.capacity());
+        if(publications_.size()==publications_.capacity()) publications_.reserve(publications_.size()+publications_.size()/2+1);
         return Result<Prepared>::success(std::move(plan));
     }
     Result<void> restore(bool undo) {
@@ -449,15 +467,15 @@ private:
         } catch(const std::exception& e) { return failure<void>(e.what()); }
     }
     Context& context_; Storage store_; InstructionDirectory directory_;
-    std::vector<Script> scripts_; std::vector<std::string> evidence_;
+    std::vector<Module> modules_; std::vector<Script> scripts_; std::vector<std::string> evidence_;
     std::pmr::vector<SectionState> sections_; std::pmr::map<SectionId,uint32_t> sectionSlots_;
     std::pmr::vector<Operand> operands_; std::pmr::vector<Expression> expressions_; PagedDirectory<ExpressionLocation> expressionSlots_;
     ProgramWork work_; FactIndex index_;
     std::pmr::vector<std::shared_ptr<const ChangeSet>> history_;
+    std::pmr::vector<std::shared_ptr<const ChangeSet>> publications_;
     size_t cursor_{}; uint64_t highWater_{}; mutable uint64_t examined_{};
     std::array<uint64_t,3> loadPhases_{};
     Capture capture_; bool loaded_{},loadAttempted_{};
-    inline static std::atomic_uint64_t nextInstance_{1};
 };
 uint64_t hashFact(uint64_t hash,const Fact& fact);
 } // namespace salsa::evaluation

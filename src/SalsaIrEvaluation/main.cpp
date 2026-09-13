@@ -105,7 +105,7 @@ void help() {
     std::cout << "SalsaIrEvaluation self-test\n"
         "SalsaIrEvaluation run --candidate reference|dense|paged|section-local --report PATH\n"
         "  [--count 64] [--seed 1] [--repetition 0] [--timeout-ms 30000] [--memory-mb 512]\n"
-        "  [--fixture small-story|few-long|many-short|high-use|churn] [--trace semantic-edits]\n"
+        "  [--fixture small-story|few-long|many-short|high-use|churn|story-connectivity] [--trace semantic-edits]\n"
         "SalsaIrEvaluation compare --manifest PATH --report PATH\n"
         "Manifest: {\"format\":\"jahorta.salsa.ir-evaluation-manifest\",\"version\":1,\"reports\":[\"relative/report.json\",...]}\n"
         "Synthetic console evaluation only. Output paths must be fresh.\n";

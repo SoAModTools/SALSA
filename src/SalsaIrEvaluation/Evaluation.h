@@ -29,6 +29,7 @@ using SectionId = Id<struct SectionTag>;
 using ScriptId = Id<struct ScriptTag>;
 using OperandId = Id<struct OperandTag>;
 using ExprId = Id<struct ExprTag>;
+using ModuleId = Id<struct ModuleTag>;
 using FactId = Id<struct FactTag>;
 struct ProjectId { uint64_t high{}, low{}; auto operator<=>(const ProjectId&) const = default; };
 enum class Bank : uint8_t { Bit, Byte, Int, Float };
@@ -41,8 +42,12 @@ struct Expression {
 struct Script { ScriptId id; std::string name, source; };
 struct Section { SectionId id; ScriptId script; std::string name; std::vector<InstructionId> order; };
 
+enum class ModuleRole : uint8_t { Cutscene, Interaction, Helper, FieldEntry };
+struct Module { ModuleId id; ScriptId script; std::string name; std::vector<SectionId> sections; InstructionId entry; ModuleRole role{}; };
+
 // A declared synthetic instruction language, not SPICE opcodes or the production IR.
-enum class Op : uint8_t { Read, Write, Call, Unknown };
+enum class Op : uint8_t { Read, Write, Call, Transition, Guard, Unknown };
+inline bool isControl(Op op) { return op==Op::Call || op==Op::Transition; }
 struct Record {
     InstructionId id;
     SectionId section;
@@ -70,7 +75,7 @@ struct StoredRecord {
     auto operator<=>(const StoredRecord&) const = default;
 };
 struct StorageChange { std::optional<StoredRecord> before, after; };
-enum class QueryKind { Reads, Writes, Incoming, Fallthrough, Unknown };
+enum class QueryKind { Reads, Writes, Incoming, Fallthrough, Unknown, Guards, Connections };
 struct Query { QueryKind kind; uint64_t key; Bank bank=Bank::Bit; };
 struct Edit { Mutation change; };
 struct Undo {};
@@ -81,6 +86,7 @@ struct Fixture {
     ProjectId project{1,1};
     std::vector<Script> scripts;
     std::vector<Section> sections;
+    std::vector<Module> modules;
     std::vector<Expression> expressions;
     std::vector<std::string> evidence;
     std::vector<InstructionId> reserved;
@@ -94,8 +100,8 @@ struct Capture {
     auto operator<=>(const Capture&) const = default;
 };
 
-enum class Domain : size_t { Records, Preparation, History, Results, Values, Order, Index, Directory, Count };
-inline constexpr std::array DomainNames{"records","preparation","history","query_results","values","order","indexes","directory"};
+enum class Domain : size_t { Records, Preparation, History, Results, Values, Order, Index, Directory, Connectivity, Count };
+inline constexpr std::array DomainNames{"records","preparation","history","query_results","values","order","indexes","directory","connectivity"};
 struct AllocationTotals {
     uint64_t allocations{}, deallocations{}, requested{}, current{}, peak{};
 };
