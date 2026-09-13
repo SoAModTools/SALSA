@@ -34,6 +34,10 @@ public:
         return page<pages_.size() && pages_[page]? &(*pages_[page])[id.value%PageSize]:nullptr;
     }
     uint64_t bytes() const noexcept { return allocatedPages_*sizeof(Page)+pages_.capacity()*sizeof(Page*); }
+    template<class Sink> void forEachAllocated(Sink&& sink) const {
+        for(size_t p=0;p<pages_.size();++p) if(pages_[p])
+            for(size_t s=0;s<PageSize;++s) sink(static_cast<uint64_t>(p*PageSize+s),(*pages_[p])[s]);
+    }
 private:
     size_t allocatedPages_{};
     std::pmr::memory_resource* resource_;

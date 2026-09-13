@@ -33,21 +33,25 @@ using ModuleId = Id<struct ModuleTag>;
 using FactId = Id<struct FactTag>;
 struct ProjectId { uint64_t high{}, low{}; auto operator<=>(const ProjectId&) const = default; };
 enum class Bank : uint8_t { Bit, Byte, Int, Float };
-enum class ExprOp : uint8_t { Literal, Variable, Add, Unknown };
+enum class ExprOp : uint8_t { Literal, Variable, Add, Unknown, Fixed };
 struct Expression {
     ExprId id; ExprOp op{}; Bank bank{}; uint32_t variable{};
     uint64_t literal{}; ExprId left{}, right{};
     auto operator<=>(const Expression&) const = default;
 };
-struct Script { ScriptId id; std::string name, source; };
+struct NativeSource {
+    std::string dataset, asset, sha256, lineage;
+    bool dreamcast{};
+};
+struct Script { ScriptId id; std::string name, source; std::optional<NativeSource> native; };
 struct Section { SectionId id; ScriptId script; std::string name; std::vector<InstructionId> order; };
 
 enum class ModuleRole : uint8_t { Cutscene, Interaction, Helper, FieldEntry };
 struct Module { ModuleId id; ScriptId script; std::string name; std::vector<SectionId> sections; InstructionId entry; ModuleRole role{}; };
 
 // A declared synthetic instruction language, not SPICE opcodes or the production IR.
-enum class Op : uint8_t { Read, Write, Call, Transition, Guard, Unknown };
-inline bool isControl(Op op) { return op==Op::Call || op==Op::Transition; }
+enum class Op : uint8_t { Read, Write, Call, Transition, Guard, Unknown, Jump, Return, Frame, Sleep };
+inline bool isControl(Op op) { return op==Op::Call || op==Op::Transition || op==Op::Jump; }
 struct Record {
     InstructionId id;
     SectionId section;
@@ -82,6 +86,10 @@ struct Undo {};
 struct Redo {};
 using Action = std::variant<Query, Edit, Undo, Redo, EditBatch>;
 struct Step { uint64_t id; Action action; };
+// Persist identity roles, not derived values/postings or private pool locations.
+struct FactIdentity { FactId id; OperandId operand; uint8_t kind{}; uint64_t role{}; };
+struct RecordIdentity { InstructionId instruction; std::array<OperandId,3> operands; std::vector<FactIdentity> facts; };
+struct Checkpoint { uint64_t revision{}, highWater{}; std::vector<RecordIdentity> identities; };
 struct Fixture {
     ProjectId project{1,1};
     std::vector<Script> scripts;
@@ -93,6 +101,7 @@ struct Fixture {
     std::vector<Record> records;
     std::vector<Step> trace;
     std::string checksum, traceChecksum;
+    std::optional<Checkpoint> checkpoint;
 };
 struct Capture {
     uint64_t instance{}, revision{}, generation{};
@@ -145,6 +154,7 @@ inline constexpr CandidateDescriptor ReferenceDescriptor{"reference", 3, 3};
 struct RunSpec {
     std::string candidate = "reference";
     std::string orderPolicy="shared",readerPolicy="selected";
+    std::string persistence="none";
     std::string fixture = "small-story";
     std::string trace = "semantic-edits";
     uint64_t seed = 1, count = 64;
@@ -164,6 +174,7 @@ struct Sample { uint64_t operation{}, ns{}, emitted{}, digest{}; std::string_vie
 core::Diagnostic diagnostic(core::DiagnosticCode code, std::string message);
 Result<void> validateSpec(const RunSpec& spec);
 Fixture makeFixture(uint64_t count, uint64_t seed, std::string_view shape="small-story");
+void fingerprintFixture(Fixture& fixture);
 uint64_t hashRecord(uint64_t hash, const Record& record);
 std::string canonicalDigest(std::span<const Record> records);
 Json encodeSpec(const RunSpec& spec);

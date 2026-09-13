@@ -31,7 +31,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SalsaRepositoryRoot)third-party\nlohmann-json\single_include;$(SalsaRepositoryRoot)third-party\SPICE\third-party\lodepng;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link><SubSystem>Console</SubSystem><AdditionalDependencies>bcrypt.lib;psapi.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
@@ -52,7 +52,12 @@
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
     </ClCompile>
   </ItemDefinitionGroup>
-  <ItemGroup><ClInclude Include="Evaluation.h" /><ClInclude Include="Reference.h" /><ClInclude Include="Program.h" /><ClInclude Include="Lifetime.h" /><ClInclude Include="Connectivity.h" /><ClInclude Include="StorageSupport.h" /><ClInclude Include="PackedStorage.h" /><ClInclude Include="PagedStorage.h" /></ItemGroup>
-  <ItemGroup><ClCompile Include="Evaluation.cpp" /><ClCompile Include="SelfTests.cpp" /><ClCompile Include="main.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="Evaluation.h" /><ClInclude Include="Reference.h" /><ClInclude Include="Program.h" /><ClInclude Include="Lifetime.h" /><ClInclude Include="Integration.h" /><ClInclude Include="IntegrationRun.h" /><ClInclude Include="Connectivity.h" /><ClInclude Include="StorageSupport.h" /><ClInclude Include="PackedStorage.h" /><ClInclude Include="PagedStorage.h" /></ItemGroup>
+  <ItemGroup><ClCompile Include="Evaluation.cpp" /><ClCompile Include="SelfTests.cpp" /><ClCompile Include="main.cpp" /><ClCompile Include="Native.cpp" /><ClCompile Include="Persistence.cpp" /><ClCompile Include="IntegrationSmoke.cpp" /><ClCompile Include="..\SalsaCore\src\Authoring\SctProjectContainer.cpp" /><ClCompile Include="..\SalsaCore\src\Foundation\Hashing.cpp" /><ClCompile Include="..\..\third-party\SPICE\third-party\lodepng\lodepng.cpp" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\third-party\SPICE\SpiceSCT\SpiceSCT.vcxproj"><Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project></ProjectReference>
+    <ProjectReference Include="..\..\third-party\SPICE\Compression\Compression.vcxproj"><Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project></ProjectReference>
+    <ProjectReference Include="..\..\third-party\SPICE\SpiceRoot\SpiceRoot.vcxproj"><Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project></ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

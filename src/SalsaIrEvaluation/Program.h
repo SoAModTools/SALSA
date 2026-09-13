@@ -186,6 +186,24 @@ public:
             for(const auto& e:input.expressions) { claim(e.id.value); validateExpression(e); expressionSlots_.ensure(e.id).slot=slotCount(expressions_.size()); expressions_.push_back(e); }
             for(const auto& r:input.records) { claim(r.id.value); auto& state=directory_.ensure(r.id); state.issued=true; }
             for(auto id:input.reserved) { claim(id.value); directory_.ensure(id).issued=true; }
+            const auto identity=[&](InstructionId id)->const RecordIdentity* {
+                if(!input.checkpoint) return nullptr;
+                const auto& seeds=input.checkpoint->identities;
+                auto at=std::ranges::lower_bound(seeds,id,{},&RecordIdentity::instruction);
+                expect(at!=seeds.end() && at->instruction==id,"Missing persisted instruction identity"); return &*at;
+            };
+            if(input.checkpoint) {
+                const auto& saved=*input.checkpoint;
+                expect(saved.identities.size()==input.records.size(),"Incomplete persisted identity roles");
+                InstructionId previous;
+                for(const auto& seed:saved.identities) {
+                    expect(seed.instruction>previous,"Duplicate/unordered persisted identity"); previous=seed.instruction;
+                    for(auto id:seed.operands) claim(id.value);
+                    for(const auto& fact:seed.facts) claim(fact.id.value);
+                }
+                expect(saved.highWater>=highWater_ && saved.highWater<UINT64_MAX && saved.revision<UINT64_MAX,"Invalid persisted allocator/revision");
+                highWater_=saved.highWater; capture_.revision=saved.revision; publicationBase_=saved.revision;
+            }
             std::ranges::sort(ids); expect(std::adjacent_find(ids.begin(),ids.end())==ids.end(),"Duplicate project-local ID");
             size_t orderedCount=0;
             for(uint32_t s=0;s<sections_.size();++s) for(uint32_t rank=0;rank<sections_[s].order.size();++rank) {
@@ -204,7 +222,7 @@ public:
                 if(isControl(r.op) && !r.evidence) {
                     const auto* target=directory_.find(InstructionId{r.value}); expect(target && target->rank!=NoSlot,"Dangling resolved call target");
                 }
-                rows.push_back(encode(r,nullptr));
+                rows.push_back(encode(r,nullptr,identity(r.id)));
             }
             const auto storageStart=Clock::now();
             auto loaded=store_.load(rows,input.sections); if(!loaded) return loaded;
@@ -216,7 +234,13 @@ public:
             std::pmr::vector<Fact> facts(context_.resource(Domain::Preparation)); facts.reserve(8);
             for(const auto& section:sections_) for(auto id:section.order) {
                 const auto* row=store_.lookup(id); extract(*row,nextInOrder(id),facts);
-                for(auto& f:facts) f.id=FactId{allocate()};
+                if(const auto* seed=identity(id)) {
+                    expect(seed->facts.size()==facts.size(),"Persisted fact roles do not match content");
+                    for(auto& f:facts) {
+                        auto at=std::ranges::find_if(seed->facts,[&](const FactIdentity& v){ return v.operand==f.operand && v.kind==static_cast<uint8_t>(f.kind) && v.role==f.role; });
+                        expect(at!=seed->facts.end(),"Missing persisted fact role"); f.id=at->id;
+                    }
+                } else for(auto& f:facts) f.id=FactId{allocate()};
                 index_.prepareBuckets(facts); index_.reserve(facts.size());
                 index_.apply(directory_.find(id)->head,facts);
             }
@@ -225,6 +249,26 @@ public:
         } catch(const std::exception& e) { return failure<void>(e.what()); }
     }
     Capture capture() const noexcept { return capture_; }
+    // Explicit save capture. No history, private layout, caches or baseline bytes.
+    Fixture checkpoint() const {
+        expect(loaded_,"Host is not loaded"); Fixture saved; saved.project=capture_.project;
+        saved.scripts=scripts_; saved.modules=modules_; saved.evidence=evidence_;
+        saved.expressions.assign(expressions_.begin(),expressions_.end());
+        saved.checkpoint=Checkpoint{capture_.revision,highWater_,{}};
+        saved.records.reserve(store_.metrics().live); saved.checkpoint->identities.reserve(store_.metrics().live);
+        for(const auto& section:sections_) {
+            saved.sections.push_back({section.id,section.script,section.name,{section.order.begin(),section.order.end()}});
+            for(auto id:section.order) {
+                const auto* row=store_.lookup(id); saved.records.push_back(decode(*row)); RecordIdentity seed; seed.instruction=id;
+                for(uint32_t i=0;i<3;++i) seed.operands[i]=operands_[row->firstOperand+i].id;
+                sourceFacts(id,[&](const Fact& f){ seed.facts.push_back({f.id,f.operand,static_cast<uint8_t>(f.kind),f.role}); });
+                std::ranges::sort(seed.facts,{},&FactIdentity::id); saved.checkpoint->identities.push_back(std::move(seed));
+            }
+        }
+        std::ranges::sort(saved.checkpoint->identities,{},&RecordIdentity::instruction);
+        directory_.forEachAllocated([&](uint64_t id,const InstructionState& state){ if(state.issued && !state.published) saved.reserved.push_back(InstructionId{id}); });
+        return saved;
+    }
     std::optional<Record> lookup(InstructionId id) const { const auto* row=store_.lookup(id); return row?std::optional<Record>(decode(*row)):std::nullopt; }
     template<class Sink> void enumerate(Sink&& sink) const { for(const auto& section:sections_) for(auto id:section.order) sink(decode(*store_.lookup(id))); }
     template<class Sink> void query(Query q,Sink&& sink) const {
@@ -330,6 +374,9 @@ public:
             std::set<SectionId> renamed;
             for(const auto& rename:batch.names) {
                 expect(renamed.insert(rename.section).second && sections_[sectionSlot(rename.section)].name==rename.before,"Rename precondition mismatch");
+                const auto& section=sections_[sectionSlot(rename.section)];
+                const auto script=std::ranges::find(scripts_,section.script,&Script::id);
+                expect(!script->native || (section.name!="init" && section.name!="loop") || rename.after==rename.before,"Required lifecycle section cannot be renamed");
                 changes->names.push_back(rename);
             }
             // Identify changed physical fallthrough without marking every copied order ID changed.
@@ -474,26 +521,30 @@ private:
     uint32_t sectionSlot(SectionId id) const { auto found=sectionSlots_.find(id); expect(found!=sectionSlots_.end(),"Dangling section owner"); return found->second; }
     const Expression& expression(ExprId id) const { const auto* found=expressionSlots_.find(id); expect(found && found->slot!=NoSlot,"Dangling expression"); return expressions_[found->slot]; }
     void validateExpression(const Expression& e) const {
-        expect(e.op<=ExprOp::Unknown && e.bank<=Bank::Float,"Unsupported expression/bank");
+        expect(e.op<=ExprOp::Fixed && e.bank<=Bank::Float,"Unsupported expression/bank");
         if(e.op==ExprOp::Add) { expression(e.left); expression(e.right); }
         else expect(!e.left.value && !e.right.value,"Unexpected expression children");
     }
     void validateRecord(const Record& r) const {
-        sectionSlot(r.section); expect(r.op<=Op::Unknown && r.bank<=Bank::Float,"Unsupported opcode/bank");
-        if(r.expression.value) { expression(r.expression); expect(r.op==Op::Write && r.value==0,"Expression value requires a write without a second literal"); }
+        sectionSlot(r.section); expect(r.op<=Op::Sleep && r.bank<=Bank::Float,"Unsupported opcode/bank");
+        if(r.expression.value) { expression(r.expression); expect((r.op==Op::Write || r.op==Op::Sleep) && r.value==0,"Expression value requires a write/wait without a second literal"); }
         if(r.schedule.value) expression(r.schedule);
         if(r.evidence) expect(r.evidence<=evidence_.size() && (isControl(r.op) || r.op==Op::Unknown),"Invalid unresolved evidence");
         if(r.op==Op::Guard) expect((r.bank==Bank::Bit || r.bank==Bank::Byte) && r.value<=(r.bank==Bank::Bit?1:255) && !r.expression.value && !r.schedule.value,"Unsupported guard; use literal bit/byte equality");
         if(r.op==Op::Unknown) expect(r.evidence!=0 && !r.variable,"Unknown instruction needs evidence and no inferred variable");
+        if(r.op==Op::Return || r.op==Op::Frame || r.op==Op::Sleep) {
+            expect(r.bank==Bank::Bit && !r.variable && !r.evidence,"Native terminal/wait has unexpected address/evidence");
+            if(r.op!=Op::Sleep) expect(!r.value && !r.expression.value,"Native terminal/frame has unexpected value");
+        }
         if(isControl(r.op)) expect(r.bank==Bank::Bit && !r.expression.value && !r.variable && (r.evidence?r.value==0:r.value!=0),"Invalid call binding");
     }
-    StoredRecord encode(const Record& r,const StoredRecord* old) {
+    StoredRecord encode(const Record& r,const StoredRecord* old,const RecordIdentity* seed=nullptr) {
         if(old) {
             auto previous=decode(*old); previous.section=r.section; previous.flags=r.flags;
             if(previous==r) { auto shared=*old; shared.section=r.section; shared.flags=r.flags; return shared; }
         }
         StoredRecord stored{r.id,r.section,r.op,0,r.flags};
-        const auto id=[&](uint32_t position){ return old?operands_[old->firstOperand+position].id:OperandId{allocate()}; };
+        const auto id=[&](uint32_t position){ return old?operands_[old->firstOperand+position].id:seed?seed->operands[position]:OperandId{allocate()}; };
         const auto primaryId=id(0), valueId=id(1), scheduleId=id(2);
         stored.firstOperand=operands_.append({Operand{primaryId,r.evidence?ValueKind::Unresolved:isControl(r.op)?ValueKind::Target:ValueKind::Address,r.bank,r.evidence?r.evidence:isControl(r.op)?r.value:r.variable},
             Operand{valueId,r.expression.value?ValueKind::Expression:ValueKind::Literal,Bank::Bit,r.expression.value?r.expression.value:r.value},
@@ -517,7 +568,7 @@ private:
         const auto r=decode(row); const auto address=operands_[row.firstOperand];
         if(r.op==Op::Unknown) facts.push_back({{},r.id,address.id,FactKind::Unknown,0,Bank::Bit,0,0,{},r.evidence});
         else if(isControl(r.op)) facts.push_back({{},r.id,address.id,FactKind::Call,0,Bank::Bit,r.value,0,{},r.evidence});
-        else facts.push_back({{},r.id,address.id,r.op==Op::Read?FactKind::Read:r.op==Op::Guard?FactKind::Guard:FactKind::Write,0,r.bank,r.variable,r.value,r.expression});
+        else if(r.op==Op::Read || r.op==Op::Guard || r.op==Op::Write) facts.push_back({{},r.id,address.id,r.op==Op::Read?FactKind::Read:r.op==Op::Guard?FactKind::Guard:FactKind::Write,0,r.bank,r.variable,r.value,r.expression});
         auto visit=[&](auto&& self,ExprId id,OperandId operand,uint64_t path,unsigned depth)->void {
             expect(depth<24,"Expression nesting exceeds the supported bound"); const auto& e=expression(id);
             if(e.op==ExprOp::Variable) facts.push_back({{},r.id,operand,FactKind::Read,path,e.bank,e.variable});
@@ -526,7 +577,7 @@ private:
         };
         if(r.expression.value) visit(visit,r.expression,operands_[row.firstOperand+1].id,1,0);
         if(r.schedule.value) visit(visit,r.schedule,operands_[row.firstOperand+2].id,1,0);
-        if(next.value) facts.push_back({{},r.id,{},FactKind::Fallthrough,0,Bank::Bit,next.value});
+        if(next.value && (r.schedule.value || (r.op!=Op::Jump && r.op!=Op::Return))) facts.push_back({{},r.id,{},FactKind::Fallthrough,0,Bank::Bit,next.value});
         work_.factsExtracted+=facts.size();
     }
     Result<Prepared> prepareInstall(std::shared_ptr<const ChangeSet> changes,int historyMode) {

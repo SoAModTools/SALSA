@@ -1,6 +1,7 @@
 #include "Program.h"
 #include "PagedStorage.h"
 #include "Connectivity.h"
+#include "Integration.h"
 #include <iostream>
 #include <future>
 #include <stdexcept>
@@ -170,8 +171,8 @@ int selfTests() {
             std::atomic_bool cancelled=true;
             auto stopped=execute(RunSpec{},Controls{&cancelled});
             require(stopped.at("disposition")=="cancelled","Cancellation not reported");
-            storySmoke(); lifetimeSmoke();
-            std::cout << "PASS lifetime/readers, story dependencies, and failure smoke\n";
+            storySmoke(); lifetimeSmoke(); integrationSmoke();
+            std::cout << "PASS lifetime/readers, story, native/container, and failure smoke\n";
         }
         {
             RunSpec spec; spec.fixture="story-connectivity"; auto first=execute(spec); ++spec.repetition; auto second=execute(spec);

@@ -201,7 +201,7 @@ private:
         std::array<Node,32> desired{}; size_t count=0;
         if(module!=NoSlot) host.sourceFacts(id,[&](const Fact& fact){ if(relevant(fact)) {
             expect(count<desired.size(),"Synthetic contribution budget exceeded"); auto& n=desired[count++]; n.fact=fact; n.module=module;
-            n.schedule=record->schedule; n.transition=record->op==Op::Transition;
+            n.schedule=record->schedule; n.transition=record->op==Op::Transition || record->op==Op::Jump;
             if(fact.kind==FactKind::Call && !fact.evidence) { const auto target=host.lookup(InstructionId{fact.key}); if(target) n.callee=moduleFor(target->section); if(n.callee!=NoSlot) n.entryTarget=states_[n.callee].declaration.entry.value==fact.key; }
         }});
         auto* existing=sources_.find(id); if(!existing && !count) return;

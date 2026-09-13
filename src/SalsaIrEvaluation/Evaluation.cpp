@@ -1,6 +1,7 @@
 #include "Program.h"
 #include "PagedStorage.h"
 #include "Connectivity.h"
+#include "IntegrationRun.h"
 #include <algorithm>
 #include <charconv>
 #include <fstream>
@@ -47,7 +48,7 @@ Json compatibility(const RunSpec& spec, const Fixture& fixture) {
     // Candidate is deliberately separate, so future storage variants can be compared.
     config.erase("candidate");
     return {{"spec", config}, {"fixture_checksum", fixture.checksum}, {"trace_checksum", fixture.traceChecksum},
-        {"build", buildIdentity()}, {"interface_version", 3}, {"common_variants", "program-host-v5/order-policy-v1/payload-pages-v1/detached-read-v1/direct-facts-v2/history-v4/story-v1"},
+        {"build", buildIdentity()}, {"interface_version", 3}, {"common_variants", "program-host-v6/order-policy-v1/payload-pages-v1/detached-read-v1/direct-facts-v3/history-v4/story-v1/native-v1/container-v1"},
         {"semantic_coverage", "synthetic-expression-batch-order-guard-transition-v3"}, {"workers", 1},
         {"instrumentation", "pmr-domain-counters-v1"}, {"cache_policy", "fresh-process-no-warmup-os-cache-uncontrolled"}};
 }
@@ -212,9 +213,13 @@ Fixture makeFixture(uint64_t count, uint64_t seed, std::string_view shape) {
         actions.push_back(EditBatch{{{current[0],write},{current[4],helper}},{},{}});
         query(40); query(42); actions.push_back(Undo{}); actions.push_back(Redo{}); query(40);
     }
+    for(const auto& action:actions) f.trace.push_back({f.trace.size()+1,action});
+    fingerprintFixture(f); return f;
+}
+void fingerprintFixture(Fixture& f) {
     uint64_t traceHash = FnvBasis;
-    for (const auto& action : actions) {
-        f.trace.push_back({f.trace.size() + 1, action});
+    for (const auto& step : f.trace) {
+        const auto& action=step.action;
         traceHash = word(traceHash, action.index());
         if (auto q = std::get_if<Query>(&action)) { traceHash = word(traceHash, static_cast<uint64_t>(q->kind)); traceHash = word(traceHash, q->key); traceHash=word(traceHash,static_cast<uint64_t>(q->bank)); }
         if (auto e = std::get_if<Edit>(&action)) { traceHash = hashRecord(traceHash, e->change.before); traceHash = hashRecord(traceHash, e->change.after); }
@@ -239,30 +244,31 @@ Fixture makeFixture(uint64_t count, uint64_t seed, std::string_view shape) {
     for(auto id:f.reserved) inputHash=word(inputHash,id.value);
     for(const auto& r:f.records) inputHash=hashRecord(inputHash,r);
     f.checksum=hex(inputHash); f.traceChecksum=hex(traceHash);
-    return f;
 }
 Result<void> validateSpec(const RunSpec& s) {
     if ((s.candidate != "reference" && s.candidate != "dense" && s.candidate != "paged" && s.candidate != "section-local") ||
-        (s.fixture != "small-story" && s.fixture != "few-long" && s.fixture != "many-short" && s.fixture != "high-use" && s.fixture != "churn" && s.fixture != "story-connectivity" && s.fixture != "lifetime") || s.trace != "semantic-edits")
+        (s.fixture != "small-story" && s.fixture != "few-long" && s.fixture != "many-short" && s.fixture != "high-use" && s.fixture != "churn" && s.fixture != "story-connectivity" && s.fixture != "lifetime" && s.fixture!="native-gc" && s.fixture!="native-dc") || s.trace != "semantic-edits")
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported, "Unknown storage candidate, synthetic fixture, or trace"));
     if((s.orderPolicy!="copy" && s.orderPolicy!="shared") || (s.readerPolicy!="selected" && s.readerPolicy!="whole"))
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported,"Unknown order/reader policy"));
-    if ((s.fixture=="story-connectivity" && s.count<16) || s.count < 8 || s.count > 1000000 || s.timeoutMs < 1 || s.timeoutMs > 3600000 || s.memoryMb < 32 || s.memoryMb > 65536)
+    if(s.persistence!="none" && s.persistence!="compressed") return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationUnsupported,"Unknown persistence policy"));
+    if (((s.fixture=="native-gc" || s.fixture=="native-dc") && s.count<32) || (s.fixture=="story-connectivity" && s.count<16) || s.count < 8 || s.count > 1000000 || s.timeoutMs < 1 || s.timeoutMs > 3600000 || s.memoryMb < 32 || s.memoryMb > 65536)
         return Result<void>::failure(diagnostic(core::DiagnosticCode::EvaluationInvalidInput, "Counts/limits outside supported range"));
     return Result<void>::success();
 }
 Json encodeSpec(const RunSpec& s) {
-    return {{"format","jahorta.salsa.ir-evaluation-spec"},{"version",2},{"candidate",s.candidate},{"order_policy",s.orderPolicy},{"reader_policy",s.readerPolicy},{"fixture",s.fixture},{"trace",s.trace},
+    return {{"format","jahorta.salsa.ir-evaluation-spec"},{"version",3},{"candidate",s.candidate},{"order_policy",s.orderPolicy},{"reader_policy",s.readerPolicy},{"persistence",s.persistence},{"fixture",s.fixture},{"trace",s.trace},
         {"seed",std::to_string(s.seed)},{"count",std::to_string(s.count)},
         {"timeout_ms",std::to_string(s.timeoutMs)},{"memory_mb",std::to_string(s.memoryMb)},
         {"repetition",std::to_string(s.repetition)}};
 }
 Result<RunSpec> decodeSpec(const Json& j) {
     try {
-        keys(j,{"format","version","candidate","order_policy","reader_policy","fixture","trace","seed","count","timeout_ms","memory_mb","repetition"});
-        if (j.at("format") != "jahorta.salsa.ir-evaluation-spec" || j.at("version") != 2) throw std::invalid_argument("Unsupported spec schema");
+        keys(j,{"format","version","candidate","order_policy","reader_policy","persistence","fixture","trace","seed","count","timeout_ms","memory_mb","repetition"});
+        if (j.at("format") != "jahorta.salsa.ir-evaluation-spec" || j.at("version") != 3) throw std::invalid_argument("Unsupported spec schema");
         RunSpec s;
         s.orderPolicy=j.at("order_policy").get<std::string>(); s.readerPolicy=j.at("reader_policy").get<std::string>();
+        s.persistence=j.at("persistence").get<std::string>();
         s.candidate=j.at("candidate").get<std::string>(); s.fixture=j.at("fixture").get<std::string>(); s.trace=j.at("trace").get<std::string>();
         s.seed=decimal(j.at("seed")); s.count=decimal(j.at("count")); s.timeoutMs=decimal(j.at("timeout_ms")); s.memoryMb=decimal(j.at("memory_mb"));
         const auto repetition=decimal(j.at("repetition")); if (repetition > UINT32_MAX) throw std::invalid_argument("Repetition overflow");
@@ -343,11 +349,16 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
         if (!valid) { fail(report,valid.diagnostics()[0].code==core::DiagnosticCode::EvaluationUnsupported ? "unsupported-required":"invalid-spec",valid.diagnostics()[0].message); report["complete"]=true; return report; }
         const auto readinessStart=Clock::now();
         report["phase"]="fixture";
-        auto fixture=makeFixture(spec.count,spec.seed,spec.fixture);
+        Fixture fixture; report["native_input"]=Json::object(); report["integration"]=Json::object();
+        const bool native=spec.fixture=="native-gc" || spec.fixture=="native-dc";
+        if(native) {
+            report["phase"]="native-source-parse-import"; auto input=makeNativeFixture(spec.count,spec.seed,spec.fixture=="native-dc");
+            fixture=std::move(input.fixture); report["native_input"]=std::move(input.measurements);
+        } else fixture=makeFixture(spec.count,spec.seed,spec.fixture);
         const auto fixtureNs=elapsed(readinessStart);
         report["compatibility"]=compatibility(spec,fixture);
-        report["capabilities"]={{"supported",{"load","lookup","enumerate","replace","query","undo","redo","insert","erase","same-script-owner-move","reorder","rename","expressions","unresolved-drafts","declared-modules","literal-guards","story-connections","bounded-helper-summary","detached-execution-readers","payload-reclamation","history-release"}},
-            {"unsupported",{"general-control-flow","concurrent-live-host-access","native-sct","persistence","cross-script-owner-move"}}};
+        report["capabilities"]={{"supported",{"load","lookup","enumerate","replace","query","undo","redo","insert","erase","same-script-owner-move","reorder","rename","expressions","unresolved-drafts","declared-modules","literal-guards","story-connections","bounded-helper-summary","detached-execution-readers","payload-reclamation","history-release","bounded-native-sct","compressed-ir-container"}},
+            {"unsupported",{"general-control-flow","concurrent-live-host-access","complete-native-sct","editor-project-migration","cross-script-owner-move"}}};
         std::vector<Sample> samples; samples.reserve(fixture.trace.size()*6+12);
         const auto modelReadyStart=Clock::now();
         Context context;
@@ -371,7 +382,8 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
             {"load_to_ready_ns",std::to_string(fixtureNs+modelReadyNs)},
             {"shared_input_values_order_ns",std::to_string(host.loadPhases()[0])},
             {"candidate_storage_ns",std::to_string(host.loadPhases()[1])},{"direct_indexes_ns",std::to_string(host.loadPhases()[2])},
-            {"scope","synthetic normalization + shared program and indexes; no SCT decode"}};
+            {"scope",native?"Synthetic native generation, SPICE parse/import, normalization, shared program and indexes":"synthetic normalization + shared program and indexes; no SCT decode"}};
+        if(native) report["native_input"]["native_input_to_ready_excluding_generation_ns"]=std::to_string(fixtureNs+modelReadyNs-decimal(report["native_input"].at("synthetic_source_generation_ns")));
         std::shared_ptr<const ReadSnapshot<Fact>> heldRead;
         report["lifetime"]=Json::array();
         const auto recordLifetime=[&](const char* phase) {
@@ -480,6 +492,8 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
             start=Clock::now(); heldRead.reset(); samples.push_back({operation++,elapsed(start),0,0,"reader-release"});
             recordLifetime("reader-released");
         }
+        if(report["disposition"]=="passed" && (native || spec.persistence=="compressed"))
+            runIntegration(host,report,controls,spec.persistence=="compressed",spec.orderPolicy=="shared");
         // Freeze measured state before formatting summaries. Smoke checks are separate from normal execution.
         const auto metrics=host.metrics();
         const auto storyMetrics=story.metrics();
@@ -569,7 +583,9 @@ Json executeCandidate(const RunSpec& spec, Controls controls) {
             {"story_relationships_emitted",std::to_string(entry.connectivity.relationshipsEmitted)}});
         report["query_scope"]="Known direct facts; unknown effects and unresolved targets are available through the Unknown bucket. Declared bit/byte equality guards and bounded immediate-helper effects; candidate connections, not runtime reachability. Scheduled calls are not traversed as immediate effects. Summary issue bits: cycle=1, unresolved/boundary=2, budget=4, missing-entry=8, unknown-value=16. Limits: 64 modules/4096 call visits per summary, 100000 emitted relationships per query; truncation is reported.";
         report["phase"]="finished";
-    } catch (const std::bad_alloc&) { fail(report,"resource-limited","Allocation failed"); }
+    } catch (const UnsupportedNative& e) { fail(report,"unsupported-required",e.what()); }
+    catch (const IntegrationCancelled& e) { fail(report,"cancelled",e.what()); }
+    catch (const std::bad_alloc&) { fail(report,"resource-limited","Allocation failed"); }
     catch (const std::exception& e) { fail(report,"operation-failed",e.what()); }
     report["complete"]=true;
     return report;
@@ -622,7 +638,12 @@ Result<Json> compareReports(const std::vector<Json>& reports) {
         runIds.push_back(runId); comparison["runs"].push_back(runId);
         const auto variant=r.at("spec").at("candidate").get<std::string>()+"/order="+r.at("spec").at("order_policy").get<std::string>()+"/reader="+r.at("spec").at("reader_policy").get<std::string>();
         comparison["measurements"].push_back({{"run_id",runId},{"variant",variant},{"candidate",r.at("spec").at("candidate")},
-            {"load",r.at("load")},{"lifetime",r.at("lifetime")},{"connectivity",r.at("connectivity")},{"storage",r.at("storage")},{"memory",r.at("memory")},{"work",r.at("work")}});
+            {"load",r.at("load")},{"native_input",r.at("native_input")},{"integration",r.at("integration")},{"lifetime",r.at("lifetime")},{"connectivity",r.at("connectivity")},{"storage",r.at("storage")},{"memory",r.at("memory")},{"work",r.at("work")}});
+        for(auto group:{"native_input","integration"}) for(const auto& [key,value]:r.at(group).items())
+            if(key.ends_with("_ns")) times[variant+"/"+group+"/"+key].push_back(decimal(value));
+        for(auto key:{"checkpoint_sha256","native_meaning_sha256"})
+            if(r.at("integration").value(key,std::string{})!=reports.front().at("integration").value(key,std::string{}))
+                return Result<Json>::failure(diagnostic(core::DiagnosticCode::EvaluationVerificationFailed,"Integration content/identity mismatch"));
         for(auto key:{"load_to_ready_ns","candidate_storage_ns","direct_indexes_ns","shared_input_values_order_ns","connectivity_ns"})
             times[variant+"/load/"+key].push_back(decimal(r.at("load").at(key)));
         std::vector<std::array<std::string,4>> schedule;

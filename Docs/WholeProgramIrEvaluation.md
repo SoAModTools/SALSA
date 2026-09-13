@@ -1,6 +1,6 @@
 # Whole-program IR evaluation tool
 
-`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR5 adds payload reclamation, shared order history, and detached consistent readers to the dense, paged, section-local, and reference storage candidates behind the shared program/editing host. It does not change the editor, load game files, or select a production representation.
+`SalsaIrEvaluation` is an experimental, Qt-free console tool for comparing SALSA's future internal representations. IR6 adds bounded SPICE SCT import/fresh export and compressed experimental persistence to the dense, paged, section-local, and reference storage candidates behind the shared program/editing host. It does not change the editor or select a production representation. Native experiments use synthetic SCT bytes; corpus loading is not enabled.
 
 ## Run an experiment
 
@@ -22,9 +22,10 @@ The trace is `semantic-edits`, using a declared synthetic instruction language a
 | `high-use` | The long-section distribution, with remaining reads/writes concentrated on BitVar[17]. |
 | `churn` | The long-section distribution, followed by a 300-instruction insertion, repeated batch deletion/undo, and section moves/undo/redo. |
 | `lifetime` | The churn workload plus 512 value edits with periodic undo/redo, a held reader, history release, and explicit reclamation. |
+| `native-gc` / `native-dc` | Two synthetic SCTs with required lifecycle sections and bit/byte/control/wait edits. GC uses big-endian raw output; DC uses little-endian AKLZ. Requires at least 32 instructions. |
 | `story-connectivity` | Six declared modules with bit/byte guards, shared helpers, cutscene/field transfers, scheduled calls, unknown effects, cycles, and edits with undo/redo. Requires at least 16 instructions. |
 
-The requested count is the initial instruction count; churn adds 300 records beyond the baseline edits. All candidates receive identical section catalogs, including empty sections, and identical inputs/traces. The trace exercises reads, literal/expression writes, direct calls, batch replacement/insertion/deletion, same-script section moves, reordering, renaming, unresolved targets, and undo/redo. These are not SCT opcode definitions. General control-flow interpretation, cross-script owner moves, native SCT conversion, concurrent live-host access, and persistence remain unsupported. Explicit detached execution readers are described below. The bounded declared-guard subset is described below.
+The requested count is the initial instruction count; churn adds 300 records beyond the baseline edits. All candidates receive identical section catalogs, including empty sections, and identical inputs/traces. The trace exercises reads, literal/expression writes, direct calls, batch replacement/insertion/deletion, same-script section moves, reordering, renaming, unresolved targets, and undo/redo. The original fixtures use a declared synthetic language. IR6 adds a bounded mapping to actual SCT opcodes, described below. General control-flow interpretation, cross-script owner moves, complete native SCT conversion, and concurrent live-host access remain unsupported. Explicit detached execution readers are described below. The bounded declared-guard subset is described below.
 
 Choose `--candidate reference`, `dense`, `paged`, or `section-local`:
 
@@ -71,7 +72,7 @@ Exit codes: 0 completed, 2 invalid request/report I/O error, 3 unsupported opera
 
 Three console smoke groups are available through `SalsaIrEvaluation self-test`: indexed load/edit/undo and bounded storage churn across all adapters/order policies; lifetime, detached readers, story dependencies and rejection/cancellation; and run/report/cross-candidate comparison. Private storage inspection runs only in these smoke checks, not as a prerequisite or extra pass in normal experiments. They are development checks, not a prerequisite to running experiments or a frozen specification for the future IR. Keep validation lightweight while these designs evolve.
 
-The public target and fixtures contain no corpus data. Keep routine reports local and ignored. Future game-input launchers and evidence belong in the private testing repository under SALSA's approved coverage policy and mutex. This target has no Qt or SPICE runtime dependency and requires no submodule changes.
+The public target and fixtures contain no corpus data. Keep routine reports local and ignored. Future game-input launchers and evidence belong in the private testing repository under SALSA's approved coverage policy and mutex. This target has no Qt dependency. IR6 links the existing public SpiceSCT/Compression/SpiceRoot libraries and reuses SALSA's container framing and SHA-256 implementation. It requires no submodule changes.
 
 
 ## Shared program foundation
@@ -101,7 +102,7 @@ All allocations needed for publication happen during preparation. Packed-table p
 
 `operation_work` also reports storage growth/movement/directory deltas and retained capacity after each action. Authored order copies and rank repairs remain separate shared-host costs. Dense growth relocates rows without rewriting numeric slot locations. Paged page additions move owner handles when necessary, not instruction records. The allocation resource captures those container allocations.
 
-Initial synthetic comparisons cover 10,000 and 100,000 initial instructions, four workload shapes, all four adapters, and five repetitions each, in separate workers with alternating candidate order. Local observations show the expected tradeoffs: dense uses few allocations but incurs global growth; paged avoids live-row relocation with bounded page slack; section-local narrows growth but allocates more when there are many sections. Shared direct indexes and long-section order/history work are substantial costs independent of storage choice. These observations do not select a production winner or measure editor startup. These IR3 observations predate the IR4 derived index. Million-record scaling, native SCT, and persistence remain later evaluation work. IR5 measures shared payload reclamation separately below.
+Initial synthetic comparisons cover 10,000 and 100,000 initial instructions, four workload shapes, all four adapters, and five repetitions each, in separate workers with alternating candidate order. Local observations show the expected tradeoffs: dense uses few allocations but incurs global growth; paged avoids live-row relocation with bounded page slack; section-local narrows growth but allocates more when there are many sections. Shared direct indexes and long-section order/history work are substantial costs independent of storage choice. These observations do not select a production winner or measure editor startup. These IR3 observations predate the IR4 derived index. Million-record scaling remains later evaluation work. IR5 measures shared payload reclamation and IR6 adds native/persistence observations separately below.
 
 
 ## Incremental story connectivity (IR4)
@@ -136,7 +137,7 @@ Derived pools retain spare slots/capacity, and the initial contribution reservat
 .\bin\x64\Release\SalsaIrEvaluation.exe run --candidate dense --fixture lifetime --count 100000 --order-policy shared --reader-policy selected --report "planning/Whole program IR/results/lifetime-run.json"
 ```
 
-Run specifications now use version 2, adding `order_policy` (`shared` or `copy`) and `reader_policy` (`selected` or `whole`). Defaults are `shared` and `selected`; report and comparison-manifest versions remain 1. These policies appear in comparison group names. The common variant identifies the new payload, history, order, and reader implementation. Earlier binaries are not comparable with this one.
+IR5 introduced run specification version 2, adding `order_policy` (`shared` or `copy`) and `reader_policy` (`selected` or `whole`). Defaults are `shared` and `selected`; report and comparison-manifest versions remain 1. These policies appear in comparison group names. The common variant identifies the new payload, history, order, and reader implementation. Earlier binaries are not comparable with this one.
 
 `OperandPool` holds immutable three-value bundles in 256-bundle pages. Live records, undo/redo history, and outstanding preparations keep bundles rooted. Private handles survive reclamation; authored IDs are never recycled. `clearHistory()` releases the journal and invalidates outstanding installations, while a still-held preparation protects its payload until cancelled or destroyed. Consumed/cancelled preparations release their roots promptly. Preparations remain tied to their host and allocator lifetime.
 
@@ -156,4 +157,53 @@ The lifetime fixture holds a reader across churn, 512 value edits and periodic u
 
 The bounded IR5 comparison comprises 36 supervised runs: 10,000/100,000 initial instructions, three repetitions, all four candidates under shared/selected, plus dense-only copy/selected and shared/whole alternatives. All intermediate query and final content comparisons agree. At 100k, sharing reduces copied order IDs over this trace from 960,665 to 252,717; selected readers hold 50k records and about 15.6 MB of estimated data versus 100k records and 31.2 MB for whole readers. These are local synthetic observations, not editor performance or a production storage decision.
 
-Remaining retention is explicit: partially occupied operand pages stay allocated with reusable holes; page-owner vectors, ID directories, receipt/root metadata and derived pools retain high-water capacity. History can grow until explicitly released; stale preparations or lagging consumers intentionally retain their roots/receipts. Explicit reader scopes can still be large copies. Maintenance scans the current pool and roots, and no million-record latency guarantee is claimed. Native SCT and compressed persistence evaluation are next in IR6.
+Remaining retention is explicit: partially occupied operand pages stay allocated with reusable holes; page-owner vectors, ID directories, receipt/root metadata and derived pools retain high-water capacity. History can grow until explicitly released; stale preparations or lagging consumers intentionally retain their roots/receipts. Explicit reader scopes can still be large copies. Maintenance scans the current pool and roots, and no million-record latency guarantee is claimed. IR6 adds native SCT and compressed persistence evaluation below.
+
+
+## Native SCT and compressed persistence (IR6)
+
+```powershell
+.\bin\x64\Release\SalsaIrEvaluation.exe run --candidate paged --fixture native-dc --count 10000 --persistence compressed --report "planning/Whole program IR/results/native-container.json"
+.\bin\x64\Release\SalsaIrEvaluation.exe run --candidate dense --fixture story-connectivity --count 10000 --persistence compressed --report "planning/Whole program IR/results/story-container.json"
+```
+
+Run specifications now use version 3. `--persistence none|compressed` defaults to `none` and can be used with any fixture. The native fixtures always exercise fresh SCT output; adding `compressed` also measures saving/reloading the edited model. The common implementation variant changes to reflect native control kinds, persisted identity roles, and the container adapter. Report and comparison-manifest versions remain 1. Development-format compatibility with earlier experiment builds is not provided.
+
+### Native coverage
+
+`importNative` uses SPICE's parser and document importer once per input. It copies the supported executable meaning into the shared IR, qualifies each script with a dataset key, normalized asset name, source SHA-256 and SPICE import lineage, then releases the parsed/document objects. Source-only opaque attachments are counted in the report and excluded from execution state. Non-code sections, supplementary text, unsupported opcodes or expressions, and unresolved execution targets fail explicitly instead of vanishing into a successful result.
+
+| Native instruction | IR meaning |
+| --- | --- |
+| 5 | Byte-variable assignment |
+| 17 / 18 | Set / clear a fixed bit index |
+| 10 / 11 / 12 | Jump / call / return |
+| 15 / 16 | Next frame / sleep |
+
+Expression coverage includes nonnegative integral encoded-decimal literals through 32767, fixed inline constants, bit/byte variable leaves, and conventional addition. Float literals, negative/fractional decimals, integer/float banks, comparisons, arbitrary stack programs, and opaque expressions remain outside this bounded adapter. Unknown/unresolved synthetic draft values remain supported by the program container; they are not silently converted into native output.
+
+Scheduling and skip-refresh modifiers retain their identities/values. Scheduled jumps/returns are explicitly unsupported. Jumps and returns have no ordinary fallthrough fact; calls retain their continuation. Physical fallthrough across section boundaries is explicitly unsupported in this adapter, so nonempty imported sections must end in an unscheduled jump or return. Synthetic story guards and abstract field transitions are not presented as implemented native branch or script-loading opcodes. Native module recovery and general story-condition extraction remain future work.
+
+Imported `init` and `loop` names are protected against rename commands; their bodies remain editable. A document missing a root can remain a saved draft. Fresh output requires exactly one nonempty `init` and `loop`, with explicit repair when missing. The adapter does not synthesize startup calls or replacement bodies. Section creation/removal remains outside the current host operation set.
+
+`exportNative` builds fresh SPICE documents from a captured checkpoint, then uses SPICE's exporter for validation, layout, relocation, encoding and optional AKLZ. Generated mappings connect authored script/section/instruction IDs to revision-qualified output instruction IDs, ordinals and decoded payload spans. No source-byte reuse or opaque preservation is required. The native fixture edits a bit, retargets a call, and inserts a write before a terminal, with undo/redo. Final output is reparsed and compared by supported values/order/target locations; checkpoint reload must also reproduce identical fresh output bytes.
+
+### Experimental save contract
+
+`ProgramHost::checkpoint()` is an explicit save capture. It retains project identity, semantic revision, allocator high-water state, scripts/source qualification, section order, modules, expressions, evidence, reserved instruction IDs, and live instruction/operand/fact identities. Deleted IDs remain retired through the high-water state. Fact identity roles are saved so supporting references survive reload; derived values/postings are rebuilt from authored content. No storage slots, pointers, compiler struct images, baseline bytes, undo journal, or module-summary cache are serialized.
+
+The semantic format is `jahorta.salsa.ir-program`, version 1, encoded as deterministic JSON with decimal-string identities and explicit ordered tables. It is stored as `ir/program.json` inside the existing SALSAPRJ v1 zlib/SHA-256 framing. This is a private experimental `.salsair` container, distinct from the editor's authoring project. The only accepted derived-cache policy is `rebuild`; history is explicitly `not-saved`. All candidates use the same codec.
+
+Decoding checks format, row shapes, numeric ranges and policy fields. Normal host construction then checks ownership, target references, expression dependencies, identity roles and allocator state while building storage and direct indexes. Derived construction checks module ownership/boundaries. A failed load is discarded; there is no extra whole-project verification step on edit or refresh. Reload preserves semantic revision and gives the host a fresh instance identity, so old prepared work cannot install into it.
+
+### Measurement scope
+
+Reports separate synthetic native-source generation, SPICE parse/decompression, document import, IR normalization, model/index construction, and readiness excluding source generation. Native input bytes are already in memory; these are not native-file disk-read timings. The generated SCTs use two scripts each, without claiming coverage of actual game inventories or releases.
+
+Persistence reports separate checkpoint capture, JSON construction/dump, compression/framing/checksum, temporary-file write/close and read, decompression/unpacking/checksum, JSON parsing, model decode, normal validation/storage/index load, and derived rebuild. File reads immediately follow writes; OS caching is uncontrolled, and no transaction/durability claim is made. Final identity/content/output comparisons are observations after measured loading/export work, not a prerequisite run before the workload.
+
+Windows process-wide peak working set/pagefile counters and current private bytes include native documents, input/checkpoint copies, JSON and compression buffers. They are cumulative process observations, not exact temporary-object accounting. Reload PMR domain totals are reported separately. Original host/save data may coexist with reloaded state, and the reports do not hide that residency. JSON/native conversion uses ordinary temporary containers outside PMR allocation counters.
+
+The focused IR6 comparison uses 1,000 and 10,000 initial instructions, all four candidates, three repetitions, and native-gc/native-dc/story-connectivity with compressed persistence. It is a bounded integration experiment; larger scaling and consolidated architecture selection belong to IR7. The retained suite remains three console smoke groups, plus six filtered existing SPICE SCT checks covering relocation, AKLZ, expression construction and scheduling. No GUI or corpus is loaded.
+
+IR6 does not migrate the live semantic editor, its existing compressed projects, or Python SALSA v7 import. Those production paths remain unchanged and supported; completing their operation coverage and metadata promotion is a later integration requirement. The next slice is IR7: consolidate the evidence and choose the representation to carry into production.
