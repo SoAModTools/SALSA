@@ -154,4 +154,34 @@
   </ItemGroup>
   <ItemGroup><ClInclude Include="src\Program\SemanticEdits.inl" /></ItemGroup>
   <ItemGroup><ClInclude Include="src\Program\ProgramRelationships.inl" /></ItemGroup>
+  <ItemGroup><ClCompile Include="src\Program\ProgramPersistence.cpp"/><ClInclude Include="include\SalsaCore\Program\ProgramPersistence.h"/><ClInclude Include="src\Program\BinaryArchive.inl"/></ItemGroup>
+  <ItemGroup><ClCompile Include="src\Program\LegacyProgramImport.cpp"/><ClInclude Include="include\SalsaCore\Program\LegacyProgramImport.h"/><ClInclude Include="src\Legacy\LegacyProgramBridge.h"/></ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\third-party\zstd\lib\common\debug.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\common\entropy_common.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\common\error_private.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\common\fse_decompress.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\common\pool.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\common\threading.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\common\xxhash.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\common\zstd_common.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\fse_compress.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\hist.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\huf_compress.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_compress.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_compress_literals.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_compress_sequences.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_compress_superblock.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_double_fast.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_fast.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_lazy.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_ldm.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_opt.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstd_preSplit.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\compress\zstdmt_compress.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\decompress\huf_decompress.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\decompress\zstd_ddict.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\decompress\zstd_decompress.c"/>
+    <ClCompile Include="..\..\third-party\zstd\lib\decompress\zstd_decompress_block.c"/>
+  </ItemGroup>
 </Project>

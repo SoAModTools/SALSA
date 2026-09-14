@@ -12,7 +12,7 @@ One executor serializes service requests. Each request returns a future containi
 
 `uses` and `incoming` read direct dependency buckets. Variable query results include the expressions needed to inspect those facts, using result-local handles. Readers can outlive edits, undo, maintenance and service shutdown. No caller receives a pointer into the mutable authority.
 
-`checkpoint` is an explicit full-project copy for save/export work. It is never the normal view refresh path. It carries its captured revision and history-state token; `markSaved` accepts an issued checkpoint token from the same generation. Saving a captured state while later edits exist leaves those later edits dirty. Undoing to saved content restores clean status without serializing or comparing project bytes. WP4 supplies the actual binary persistence consumer.
+`checkpoint` is an explicit full-project copy for save/export work. It is never the normal view refresh path. It carries its captured revision and history-state token; `markSaved` accepts an issued checkpoint token from the same generation. Saving a captured state while later edits exist leaves those later edits dirty. Undoing to saved content restores clean status without serializing or comparing project bytes. WP4 now supplies the [binary persistence consumer](WholeProgramIrPersistence.md).
 
 ## Primitive edits and publication
 
@@ -63,10 +63,14 @@ Cancellation is checked around source reading, parsing, import, normalization, p
 
 Four focused synthetic console scenarios cover local batch publication and history, retained readers and maintenance, repeated target ordinals/order/atomic failure, bounded loading with a controllable source barrier, deterministic fresh identities, cancellation, stale completion and shutdown. The six existing IR fixtures continue to cover typed content and structured ownership, including both native byte orders. No GUI or private-corpus run is required for this slice.
 
-Validation results are recorded with the implementation checkpoint. The existing editor's persistence, supported Python SALSA v7 importer and output path remain operational and unchanged; zstd 1 integration remains WP4.
+Validation results are recorded with the implementation checkpoint. The existing editor's persistence, supported Python SALSA v7 importer and output path remain operational and unchanged; production zstd 1 integration is now implemented in WP4; the old editor path remains until WP6.
 
 Delivery: elevated MSVC v145 Release SalsaCore/SalsaTests builds passed. All 12 focused console checks passed: four ProgramServiceTest cases, six WholeProgramTest cases, and two existing synthetic legacy byte-order/metadata-promotion regressions. Existing linked SpiceMLD LNK4020 PDB warnings remain. No GUI or private-corpus tests ran. No standalone SpiceTests executable is available in this checkout; the prior WP1 build failed in unrelated SpiceMix/PVM includes (`SpicePvm/Model/PvmTextureModel.h`). That unrelated submodule build was not repeated or modified. The focused native fixtures exercise the public SPICE SCT boundary directly.
 
 ## WP3 extension
 
 Semantic commands share this service and journal. Scoped module summaries, interactions and item explanations are lazy derived queries. See [WP3 contracts](WholeProgramIrSemantics.md) for metadata table costs, execution versus presentation receipts, dependency invalidation and bounded native recognition. WP4 persistence and WP6 editor integration remain separate.
+
+## WP4 project loading
+
+`openProject` prepares binary tables and presentation on a worker, optionally recovers workspace transactions, and adopts only against its captured revision/generation. It shares load supersession and shutdown handling with native collection loads. See [persistence contracts](WholeProgramIrPersistence.md) for bounded record IO, save tokens and the legacy import boundary.

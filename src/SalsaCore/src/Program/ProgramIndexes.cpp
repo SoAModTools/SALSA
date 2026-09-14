@@ -179,8 +179,8 @@ DirectFacts actionFacts(ProgramData& d, std::span<const SctActionId> actions, st
     }
     return facts;
 }
-void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
-    for (std::uint32_t i = 0; i < d.values.size(); ++i) shape(d, ValueId{i});
+void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics, bool checkValueShapes) {
+    if (checkValueShapes) for (std::uint32_t i = 0; i < d.values.size(); ++i) shape(d, ValueId{i});
     std::vector<SctActionId> ids;
     for (std::uint32_t i = 0; i < d.actions.size(); ++i) if (auto id = d.actions.find(i)->id; id.valid()) ids.push_back(id);
     auto facts = actionFacts(d, ids, diagnostics);

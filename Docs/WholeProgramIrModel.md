@@ -96,3 +96,7 @@ The bulk builder remains the import boundary. The [production service](WholeProg
 ## WP3 metadata and derived queries
 
 `VariableMeaning` adds project-wide or script-specific variable/value aliases with stable meaning IDs and explicit evidence. It remains cold authored metadata. Module summaries carry their own immutable payloads and dependency sets, separate from executable authority. Semantic receipts distinguish execution changes from aliases and language membership; no writer-reader Cartesian graph is stored. See [WP3 contracts](WholeProgramIrSemantics.md).
+
+## WP4 binary persistence
+
+The [binary project codec](WholeProgramIrPersistence.md) writes live content directly, with explicit field widths and portable remapped pool indices. Reopen reconstructs the owned paged tables and their derived postings without a native parse or executable JSON tree. Legacy v7 imports reuse the existing typed translation boundary and retain supported aliases and presentation folders.

@@ -1,3 +1,4 @@
+#include "SalsaCore/Program/LegacyProgramImport.h"
 #include "SalsaCore/Foundation/Hashing.h"
 #include "SalsaCore/Legacy/LegacyFreshImport.h"
 #include "SalsaCore/Legacy/LegacyConversionService.h"
@@ -751,6 +752,30 @@ TEST(LegacyFreshImportTest, TypedMetadataPromotionIsAtomicAndIdempotent) {
     ASSERT_NE(applied, after.value().items.end());
     EXPECT_EQ(applied->record.disposition, LegacyMetadataDisposition::Applied);
     EXPECT_FALSE(applied->assessment.eligible);
+}
+
+TEST(LegacyFreshImportTest, ImportsV7IntoBinaryProgramWithSupportedMetadata) {
+    namespace ir = salsa::core::program;
+    FreshImportTemporaryDirectory temporary;
+    const auto capsule=makeFreshImportCapsule(temporary.path(),{{"A001A","A001A"}},false,true);
+    const auto options=requestFor(temporary,capsule).publication;
+    const std::array selected{ir::LegacyProgramSelection{0,AssetLocator::fromRelativePath("field/A001A.sct").value(),options}};
+    auto imported=ir::LegacyProgramImport::importCapsule({"e44499b5-dcf0-449a-9815-5bdf558eface"},capsule,{Sha256Digest{{}}},selected);
+    ASSERT_TRUE(imported) << (imported.diagnostics().empty()?"":imported.diagnostics().front().message);
+    auto& project=imported.value().project;
+    ASSERT_EQ(project.program->scripts().size(),1u);
+    EXPECT_TRUE(project.program->scripts().front().context.legacyOrigin.has_value());
+    EXPECT_FALSE(project.program->metadata().meanings.empty());
+    EXPECT_FALSE(project.presentation.opcodeColors.empty());
+    EXPECT_FALSE(project.presentation.folders.empty());
+    EXPECT_TRUE(project.program->metadata().modules.empty());
+    ASSERT_EQ(imported.value().baselines.size(),1u);
+    EXPECT_EQ(sha256(imported.value().baselines.front().bytes).value(),project.program->baselines().front().source.revision.digest);
+    auto encoded=ir::ProgramPersistence::encode(*project.program,project.presentation);ASSERT_TRUE(encoded);
+    auto reloaded=ir::ProgramPersistence::decode(encoded.value());ASSERT_TRUE(reloaded) << (reloaded.diagnostics().empty()?"":reloaded.diagnostics().front().message);
+    EXPECT_EQ(reloaded.value().program->scripts().front().context.legacyOrigin->capsuleId,project.program->scripts().front().context.legacyOrigin->capsuleId);
+    EXPECT_EQ(reloaded.value().program->metadata().meanings.size(),project.program->metadata().meanings.size());
+    EXPECT_EQ(reloaded.value().presentation.folders.front().sections,project.presentation.folders.front().sections);
 }
 
 TEST(LegacyFreshImportTest, BuiltInPromotionAppliesV7AliasesColorsAndSectionFolders) {

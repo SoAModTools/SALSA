@@ -171,6 +171,6 @@ struct DirectFacts { std::vector<VariableUse> accesses, computed; std::vector<Ta
 void valueShape(const ProgramData&, ValueId);
 DirectFacts actionFacts(ProgramData&, std::span<const SctActionId>, std::vector<Diagnostic>&);
 void finalizePostings(ProgramData&);
-void buildIndexes(ProgramData&, std::vector<Diagnostic>&);
+void buildIndexes(ProgramData&, std::vector<Diagnostic>&, bool checkValueShapes = true);
 void finishMetadata(ProgramData&, std::vector<Diagnostic>&, bool allocateIds = true);
 } // namespace salsa::core::program

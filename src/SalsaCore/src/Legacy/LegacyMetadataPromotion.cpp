@@ -1,3 +1,4 @@
+#include "LegacyProgramBridge.h"
 #include "SalsaCore/Legacy/LegacyMetadataPromotion.h"
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
 
@@ -1083,4 +1084,45 @@ LegacyMetadataPromotionResult LegacyMetadataPromotionService::promote(
     return result;
 }
 
-}  // namespace salsa::core
+Result<legacy_detail::ScriptMetadata> legacy_detail::scriptMetadata(const nlohmann::ordered_json &record,
+                                                                    std::span<const LegacyEntityMapping> mappings) {
+    try {
+        const auto &sidecar = record.at("ir").at("sidecar");
+        const auto &aliases = sidecar.at("variables");
+        const auto &tree = sidecar.at("sect_tree");
+        PromotionGraphView graph;
+        graph.addRoot(aliases);
+        graph.addRoot(tree);
+        auto parsed = extractAliases(graph, aliases);
+        std::unordered_map<std::string, spice::sct::SctSectionId> sections;
+        for (auto &mapping : mappings)
+            if (mapping.kind == LegacyEntityKind::Section)
+                sections.emplace(mapping.legacyIdentity, spice::sct::SctSectionId(mapping.currentId));
+        auto folders = extractFolders(graph, tree, sections);
+        ScriptMetadata out;
+        if (parsed)
+            out.aliases = std::move(parsed).takeValue();
+        else
+            for (auto &d : parsed.diagnostics())
+                out.pending.push_back(d.message);
+        if (!folders)
+            for (auto &d : folders.diagnostics())
+                out.pending.push_back(d.message);
+        if (folders)
+            for (auto &folder : folders.value())
+                out.folders.push_back({std::move(folder.name), std::move(folder.sections), folder.parent});
+        return Result<ScriptMetadata>::success(std::move(out));
+    } catch (const std::exception &e) {
+        ScriptMetadata out;
+        out.pending.push_back(e.what());
+        return Result<ScriptMetadata>::success(std::move(out));
+    }
+}
+Result<SctWorkspaceAuthoringState> legacy_detail::projectMetadata(const std::filesystem::path &root) {
+    auto extracted = importedProjectMetadata(root);
+    if (!extracted)
+        return Result<SctWorkspaceAuthoringState>::failure(extracted.diagnostics());
+    return Result<SctWorkspaceAuthoringState>::success(
+        {std::move(extracted.value().aliases), std::move(extracted.value().colors)});
+}
+} // namespace salsa::core

@@ -1,1 +1,4 @@
 /third-party/nlohmann-json/** text eol=lf
+
+# Preserve the exact pinned dependency bytes used by SOURCE.json.
+/third-party/zstd/** -text

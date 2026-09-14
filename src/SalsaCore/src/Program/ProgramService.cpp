@@ -1,3 +1,4 @@
+#include "SalsaCore/Program/ProgramPersistence.h"
 #include "SalsaCore/Program/ProgramService.h"
 #include "ProgramInternal.h"
 #include "NativeCollection.h"
@@ -1458,6 +1459,65 @@ std::future<Result<ServiceStatus>> ProgramService::load(NativeLoadRequest reques
             promise->set_value(Result<ServiceStatus>::failure(failure(e.what())));
         } catch (...) {
             promise->set_value(Result<ServiceStatus>::failure(failure("Native collection load failed")));
+        }
+    }).detach();
+    return future;
+}
+std::future<Result<ProgramOpenResult>> ProgramService::openProject(ProgramOpenRequest request, std::stop_token stop) {
+    auto c = control_;
+    auto operation = ++c->loadGeneration;
+    auto promise = std::make_shared<std::promise<Result<ProgramOpenResult>>>();
+    auto future = promise->get_future();
+    std::thread([c, operation, request = std::move(request), stop, promise]() mutable {
+        try {
+            std::stop_source combined;
+            std::stop_callback cancel(stop, [&] { combined.request_stop(); });
+            std::stop_callback close(c->shutdownStop.get_token(), [&] { combined.request_stop(); });
+            auto token = combined.get_token();
+            auto expected = request.expected;
+            auto accepted = c->submit<bool>([expected, token](auto &o) {
+                                 o.match(expected, token);
+                                 return true;
+                             }).get();
+            if (!accepted) {
+                promise->set_value(Result<ProgramOpenResult>::failure(accepted.diagnostics()));
+                return;
+            }
+            if (request.recovery) {
+                stopped(token);
+                if (request.progress)
+                    request.progress({"Recovering workspace transactions", 0, 0, {}, false});
+                const auto &recovery = *request.recovery;
+                for (const auto &result :
+                     WorkspaceTransactionService::recoverAll(recovery.workspaceRoot, recovery.transactionsRelativeRoot))
+                    require(result.status == WorkspaceTransactionStatus::Verified ||
+                                result.status == WorkspaceTransactionStatus::RolledBack,
+                            "Workspace transaction recovery is blocked");
+                stopped(token);
+            }
+            auto loaded = ProgramPersistence::load(request.path, request.limits, token, request.progress);
+            if (!loaded) {
+                promise->set_value(Result<ProgramOpenResult>::failure(loaded.diagnostics()));
+                return;
+            }
+            auto diagnostics = loaded.diagnostics();
+            auto file = std::move(loaded).takeValue();
+            auto result =
+                c->submit<ProgramOpenResult>([expected, token, c, operation, file = std::move(file)](auto &o) mutable {
+                     require(c->loadGeneration == operation, "Program load was superseded");
+                     auto status = o.adopt(expected, std::move(file.program), token,
+                                           [c, operation] { return c->loadGeneration == operation; });
+                     return ProgramOpenResult{status, std::move(file.presentation)};
+                 }).get();
+            if (result)
+                promise->set_value(
+                    Result<ProgramOpenResult>::success(std::move(result).takeValue(), std::move(diagnostics)));
+            else
+                promise->set_value(std::move(result));
+        } catch (const std::exception &e) {
+            promise->set_value(Result<ProgramOpenResult>::failure(failure(e.what())));
+        } catch (...) {
+            promise->set_value(Result<ProgramOpenResult>::failure(failure("Program project loading failed")));
         }
     }).detach();
     return future;

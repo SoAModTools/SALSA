@@ -327,6 +327,8 @@ struct NativeLoadRequest {
 // One serialized owner; no live model pointers escape. Callbacks run off the UI
 // thread. The caller queues progress into its exclusive-operation widget.
 // Destruction requests shutdown without joining parser threads on the caller.
+struct ProgramOpenRequest;
+struct ProgramOpenResult;
 class ProgramService final {
   public:
     ProgramService();
@@ -337,6 +339,7 @@ class ProgramService final {
     // Consumes exclusive ownership, avoiding a full-program copy on adoption.
     std::future<Result<ServiceStatus>> adopt(Revision, std::shared_ptr<const Program>, std::stop_token = {});
     std::future<Result<ServiceStatus>> load(NativeLoadRequest, std::stop_token = {});
+    std::future<Result<ProgramOpenResult>> openProject(ProgramOpenRequest, std::stop_token = {});
     std::future<Result<PreparedChange>> prepare(EditRequest, std::stop_token = {});
     std::future<Result<ChangeReceipt>> install(PreparedChange, std::stop_token = {});
     std::future<Result<ChangeReceipt>> edit(EditRequest, std::stop_token = {});

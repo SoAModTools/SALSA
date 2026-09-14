@@ -1,3 +1,4 @@
+#include "LegacyProgramBridge.h"
 #include "SalsaCore/Legacy/LegacyFreshImport.h"
 
 #include "SalsaCore/Persistence/AtomicFile.h"
@@ -1320,4 +1321,28 @@ Result<FreshLegacyImportPreparation> LegacyFreshImportPreparer::prepare(
         {request, std::move(planned).takeValue(), stagedSourceDirectory});
 }
 
-}  // namespace salsa::core
+Result<legacy_detail::Script> legacy_detail::translate(const std::filesystem::path &root,
+                                                       const LegacyScriptSummary &summary,
+                                                       const SctPublicationOptions &options,
+                                                       const LegacyCapsuleValidationLimits &limits) {
+    if (summary.status != LegacyScriptStatus::Accepted)
+        return Result<Script>::failure(
+            importError(DiagnosticCode::LegacyImportInvalidRequest, "Legacy script was not accepted"));
+    auto record =
+        readScriptRecord(root / summary.recordRelativePath, limits, summary.compressedSize, summary.compressedSha256);
+    if (!record)
+        return Result<Script>::failure(record.diagnostics());
+    std::vector<std::string> reasons;
+    auto converted = translateDocument(record.value(), options, reasons);
+    if (!converted) {
+        std::string message = "Legacy script translation failed";
+        for (auto &reason : reasons)
+            message += "; " + reason;
+        return Result<Script>::failure(importError(DiagnosticCode::LegacyImportInvalidRequest, message));
+    }
+    auto metadata = scriptMetadata(record.value(), converted->mappings);
+    if (!metadata)
+        return Result<Script>::failure(metadata.diagnostics());
+    return Result<Script>::success({std::move(converted->document), std::move(metadata).takeValue()});
+}
+} // namespace salsa::core

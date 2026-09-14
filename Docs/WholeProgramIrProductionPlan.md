@@ -1,6 +1,6 @@
 # Production whole-program IR implementation plan
 
-Status: WP1, WP2 and WP3 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
+Status: WP1 through WP4 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
 
 ## Locked decisions
 
@@ -95,6 +95,8 @@ Completion: changing a cutscene guard, a late bit write, a shared helper or an o
 
 ## WP4 — Binary project persistence and legacy import
 
+Implemented in the production persistence/service and legacy import boundaries. See [binary format, loading and legacy contracts](WholeProgramIrPersistence.md). The editor cutover remains WP6.
+
 Define a versioned production binary table schema for executable content and authored metadata, independent of page layout and C++ ABI. Keep 64-bit authored identities, checked fixed-width internal indices and explicit meaningful order. Separate presentation/session data and retained source evidence from hot execution tables; no intermediate JSON tree or SPICE document is needed to reopen executable content.
 
 Extend container framing with an explicit codec identifier/version and bounded decoded record sizes; the current v1 framing implies zlib and must not silently reinterpret old bytes as zstd. New project saves use zstd level 1. Chunk tables as needed and process records with reusable bounded output buffers; do not retain one worst-case compressed allocation per record. Start single-threaded/no dictionary. Rebuild derived indexes once while loading the owned model; they are not a second persisted authority.
@@ -137,4 +139,4 @@ Keep the user's lightweight approach: no separate verification mode, exhaustive 
 
 Use the established standalone evaluator for focused production-backed loading/editing/persistence measurements after the relevant slice, not a complete corpus/compression rerun after every change. Reuse captured evidence when it remains applicable. The opt-in full GC US architecture exception remains scoped to its standalone SALSA experiment. New/changed native corpus acceptance follows SALSA's AGENTS.md policy; the me002 DC EU story-connectivity exception remains separate. Follow private-repository mutex/location rules if that repository is actually used for native acceptance. No corpus or planning evidence is committed.
 
-For each slice, record what became usable, remaining representation/coverage limits and scoped checks, then commit. No pushes or submodule changes. WP1 through WP3 are complete. WP4 is next; do not implement subsequent slices without authorization.
+For each slice, record what became usable, remaining representation/coverage limits and scoped checks, then commit. No pushes or submodule changes. WP1 through WP4 are complete. WP5 is next; do not implement subsequent slices without authorization.

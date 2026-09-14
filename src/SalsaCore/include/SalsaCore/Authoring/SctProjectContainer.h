@@ -9,6 +9,8 @@ namespace salsa::core {
 using SctProjectRecords = std::map<std::string, std::vector<std::byte>>;
 // SALSAPRJ v1: little-endian framing, named zlib records, SHA-256 of each
 // uncompressed record. Authoring schemas remain versioned JSON inside it.
+// The old editor keeps this path until WP6. Production IR uses the distinct
+// v2 framing in ProgramPersistence; neither decoder reinterprets the other.
 class SctProjectContainer final {
 public:
     static constexpr std::size_t MaximumRecordBytes = 256u << 20;

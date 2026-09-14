@@ -1,3 +1,5 @@
+#include "SalsaCore/Program/ProgramPersistence.h"
+#include "SalsaCore/Persistence/AtomicFile.h"
 #include "SalsaCore/Program/ProgramService.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include "SpiceSCT/SctInstructionFactory.h"
@@ -512,5 +514,139 @@ TEST(ProgramSemanticTest, PromotesPlainFlowAndPreservesSourceIdentity) {
     auto original = service.read(undo.value().status.current, {{}, {}, {header}}).get().value();
     EXPECT_EQ(original->actions[0].kind, ir::ActionKind::Instruction);
     service.shutdown().get();
+}
+
+TEST(ProgramPersistenceTest, BinaryRoundTripPreservesStructuredIdentityAndLiveContent) {
+    Fixture f;
+    ir::Presentation presentation;
+    presentation.tabs.push_back({f.script, true, f.writer});
+    presentation.activeTab = f.script;
+    presentation.placements.push_back({f.branch, 1.5, -9, true});
+    auto expression = ir::ValueBuffer::expression(*sct::SctExpressionFactory::bitVariable(121).expression).value();
+    ir::InsertConstruct sw{
+        f.sequence,
+        0,
+        ir::ActionKind::Switch,
+        ir::LoopKind::While,
+        expression,
+        {{{}, {}, {1, 7}, false, ir::CaseExit::Fallthrough}, {{}, {}, {}, true, ir::CaseExit::ExitSwitch}}};
+    auto updated =
+        f.service
+            .edit({f.revision,
+                   {ir::SemanticOperation{sw},
+                    ir::SemanticOperation{ir::PutMetadata{ir::Module{{}, f.script, "Scene", {f.sequence}}}},
+                    ir::SemanticOperation{ir::PutMetadata{SctLanguageGroup{{}, "Custom language", "custom"}}}}})
+            .get();
+    ASSERT_TRUE(updated) << messages(updated.diagnostics());
+    f.revision = updated.value().status.current;
+    auto cp = f.service.checkpoint(f.revision).get().value();
+    auto structuredSwitch = cp.program->find(f.sequence)->order->front();
+    auto lang = cp.program->metadata().languages.front().id;
+    auto membership = f.service.edit({f.revision, {ir::SemanticOperation{ir::AssignLanguages{f.text, {lang}}}}}).get();
+    ASSERT_TRUE(membership);
+    f.revision = membership.value().status.current;
+    ir::ValueBuffer content;
+    content.text(ir::ValueKind::PlainText, std::string((1u << 20) + 123, 'x'));
+    auto edit = f.service.edit({f.revision, {ir::ReplaceText{f.text, content}}}).get();
+    ASSERT_TRUE(edit);
+    f.revision = edit.value().status.current;
+    cp = f.service.checkpoint(f.revision).get().value();
+    auto encoded = ir::ProgramPersistence::encode(*cp.program, presentation);
+    ASSERT_TRUE(encoded) << messages(encoded.diagnostics());
+    auto loaded = ir::ProgramPersistence::decode(encoded.value());
+    ASSERT_TRUE(loaded) << messages(loaded.diagnostics());
+    EXPECT_EQ(loaded.value().program->highWater(), cp.program->highWater());
+    EXPECT_EQ(loaded.value().program->find(f.writer)->sourceInstruction, cp.program->find(f.writer)->sourceInstruction);
+    EXPECT_EQ(loaded.value().program->arms(structuredSwitch).front().id, cp.program->arms(structuredSwitch).front().id);
+    EXPECT_EQ(loaded.value().program->loop(f.loop)->condition, cp.program->loop(f.loop)->condition);
+    EXPECT_EQ(loaded.value().program->find(f.text)->languages, std::vector{lang});
+    EXPECT_EQ(loaded.value().presentation.tabs.front().selection, presentation.tabs.front().selection);
+    auto again = ir::ProgramPersistence::encode(*loaded.value().program, loaded.value().presentation);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again.value(), encoded.value());
+    EXPECT_LT(loaded.value().program->statistics().values,
+              cp.program->statistics().values); // obsolete edited text is not saved
+    auto damaged = encoded.value();
+    damaged[8] = std::byte{1};
+    EXPECT_FALSE(ir::ProgramPersistence::decode(damaged));
+    damaged = encoded.value();
+    damaged[damaged.size() / 2] ^= std::byte{0x80};
+    EXPECT_FALSE(ir::ProgramPersistence::decode(damaged));
+    EXPECT_FALSE(ir::ProgramPersistence::decode(std::span(encoded.value()).first(encoded.value().size() - 1)));
+    ir::PersistenceLimits tiny;
+    tiny.decodedBytes = 32;
+    EXPECT_FALSE(ir::ProgramPersistence::decode(encoded.value(), tiny));
+    std::stop_source stopped;
+    stopped.request_stop();
+    EXPECT_FALSE(ir::ProgramPersistence::decode(encoded.value(), {}, stopped.get_token()));
+    // The new file is an ordinary editable authority, not a cached view.
+    ir::ProgramService reopened;
+    auto open = reopened.adopt({}, std::move(loaded.value().program)).get();
+    ASSERT_TRUE(open);
+    auto change = reopened.edit({open.value().current, {ir::ReplaceParameter{f.writer, {0, {}}, word(222)}}}).get();
+    ASSERT_TRUE(change);
+    EXPECT_FALSE(reopened.uses(change.value().status.current, {ir::Bank::Bit, 222}).get().value().uses.empty());
+    ASSERT_TRUE(reopened.undo(change.value().status.current).get());
+    reopened.shutdown().get();
+}
+TEST(ProgramPersistenceTest, TransactionAndAsyncOpenRejectStaleOrCancelledResults) {
+    Fixture f;
+    auto cp = f.service.checkpoint(f.revision).get().value();
+    auto root = std::filesystem::temp_directory_path() / generateSctAuthoringUuid().value();
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() {
+            std::error_code ec;
+            std::filesystem::remove_all(root, ec);
+        }
+    } cleanup{root};
+    auto mutation = ir::ProgramPersistence::mutation(cp, {}, "authoring/program.salsa", {});
+    ASSERT_TRUE(mutation);
+    std::filesystem::create_directories(root / "authoring");
+    WorkspaceTransactionRequest tx{
+        "program-save", "workspace", "program-checkpoint", "save", {std::move(mutation).takeValue()}};
+    ASSERT_EQ(WorkspaceTransactionService::prepare(root, "transactions", tx).status,
+              WorkspaceTransactionStatus::Prepared);
+    auto committed = WorkspaceTransactionService::commitPrepared(root, "transactions", tx.transactionId);
+    ASSERT_EQ(committed.status, WorkspaceTransactionStatus::Verified) << messages(committed.diagnostics);
+    auto edited = f.service.edit({f.revision, {ir::ReplaceParameter{f.writer, {0, {}}, word(999)}}}).get();
+    ASSERT_TRUE(edited);
+    f.revision = edited.value().status.current;
+    ASSERT_TRUE(f.service.markSaved(cp.status.current, cp.status.historyState).get());
+    EXPECT_TRUE(f.service.status().get().value().dirty);
+    auto original = f.service.undo(f.revision).get();
+    ASSERT_TRUE(original);
+    f.revision = original.value().status.current;
+    EXPECT_FALSE(original.value().status.dirty);
+    std::promise<void> entered, release;
+    auto barrier = release.get_future().share();
+    std::atomic_bool once = false;
+    ir::ProgramOpenRequest request{f.revision, root / "authoring/program.salsa"};
+    request.progress = [&](const auto &) {
+        if (!once.exchange(true)) {
+            entered.set_value();
+            barrier.wait();
+        }
+    };
+    auto loading = f.service.openProject(request);
+    entered.get_future().wait();
+    // Owner service still answers while file work is blocked in its worker.
+    auto status = f.service.status();
+    EXPECT_EQ(status.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    auto changed = f.service.edit({f.revision, {ir::ReplaceParameter{f.writer, {0, {}}, word(777)}}}).get();
+    ASSERT_TRUE(changed);
+    f.revision = changed.value().status.current;
+    release.set_value();
+    EXPECT_FALSE(loading.get());
+    EXPECT_EQ(f.service.status().get().value().current, f.revision);
+    std::stop_source cancel;
+    cancel.request_stop();
+    request.expected = f.revision;
+    request.progress = {};
+    EXPECT_FALSE(f.service.openProject(request, cancel.get_token()).get());
+    auto opened = f.service.openProject(request).get();
+    ASSERT_TRUE(opened) << messages(opened.diagnostics());
+    EXPECT_NE(opened.value().status.current.generation, f.revision.generation);
+    EXPECT_FALSE(opened.value().status.dirty);
 }
 } // namespace

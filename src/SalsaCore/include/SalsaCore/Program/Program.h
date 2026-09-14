@@ -222,6 +222,7 @@ private:
     friend class ProgramBuilder;
     friend struct ServiceOwner;
     friend struct NativeCollection;
+    friend class ProgramPersistence;
     explicit Program(std::unique_ptr<ProgramData>);
     std::unique_ptr<ProgramData> data_;
 };
@@ -270,6 +271,7 @@ public:
     Result<std::shared_ptr<const Program>> finish();
 private:
     friend class NativeNormalizer;
+    friend class LegacyProgramImport;
     Result<std::uint64_t> allocateIdentity();
     std::unique_ptr<ProgramData> data_;
     std::vector<Diagnostic> diagnostics_;
