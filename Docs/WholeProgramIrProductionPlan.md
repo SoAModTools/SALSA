@@ -1,10 +1,11 @@
 # Production whole-program IR implementation plan
 
-Status: proposed production slices, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
+Status: WP1 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
 
 ## Locked decisions
 
-- Use paged instruction storage in SalsaCore. Dense, section-local and reference implementations remain evaluation tools, not production options.
+- Structured constructs are authoritative authored program content. An If/Else If/Else chain owns its ordered conditions and body sequences; there is no redundant Then wrapper. Generated branches and jumps are derived output, never a parallel editable instruction list.
+- Use paged action/value storage in SalsaCore, supporting instruction leaves and structured constructs. Dense, section-local and reference implementations remain evaluation tools, not production options.
 - Use zstd level 1 for new production authoring project payloads. Start with independent bounded records, one compression worker and no dictionary. Page size (initially 256 rows), record chunk size (initially up to 64 MiB) and physical table layout remain implementation details, not authored identity or native SCT requirements.
 - Keep portable explicit binary tables, shared section-order buffers, pooled variable-length values and indexes, scoped immutable reads, incremental dependency updates and one live authority.
 - Use zstd under its BSD 3-Clause option. Preserve copyright/license/disclaimer, package third-party notices and the dependency sources required for GPLv3 corresponding-source distribution. No SALSA license change or exception is needed.
@@ -45,6 +46,8 @@ Create a Qt-free production program area under SalsaCore (proposed SalsaCore/Pro
 
 Represent full typed opcode values, scheduling and refresh flags, fixed and repeated parameters, ordered SCPT operations, literal payloads, instruction/text targets, section order, text/control content and unresolved bindings. Retain all authored metadata within the same project aggregate: scripts/baselines, modules, entrypoints/activation, language groups, aliases and optional resource evidence. Keep existing external authored IDs where meaningful; qualify imported physical identities and translate them once into stable authored instruction/value identities. Never expose page/slot addresses as IDs.
 
+WP1 includes construction of first-class conditional chains and nested body sequences, with stable action/arm/sequence identities and direct condition-read indexing. Native ingestion initially retains explicit instruction control flow; safe recognition/promotion of imported chains belongs to WP3. Arbitrary jumps into branch interiors must remain explicit until a supported transformation can preserve them.
+
 Use bounded allocations for pages and pools. A value edit can replace an owned immutable range without replacing its enclosing project. Metadata and variable-length values need ownership/range descriptors, not a heap object per expression operation. Define ownership and lifetime contracts now; implement reclamation with the journal/readers in WP2.
 
 Import a script once through public SPICE parse/import APIs, normalize its typed data, then release temporary source/inspection/document graphs when their required immutable evidence is retained. Establish one bulk input interface usable by native import and binary loading. Keep native baseline resolution separate from executable authority.
@@ -69,7 +72,7 @@ Completion: semantic-level primitive edits and history execute without whole-pro
 
 ## WP3 — Semantic authoring and incremental relationships
 
-Port the existing sequence, structured-condition, module, entrypoint/activation, route, text/language and interpretation commands onto WP2 primitives. Semantic intent is editable metadata in the same authority. Editing an if/else group must not construct, serialize and readopt a whole SctDocument as its implementation.
+Port the existing sequence, structured-condition, module, entrypoint/activation, route, text/language and interpretation commands onto WP2 primitives. Structured intent is executable authored content in the same authority. Add commands for inserting/removing/reordering If/Else If/Else arms, editing conditions and moving body actions. Recognize and promote imported instruction flow only when its incoming edges, scheduling and exits can be retained; keep irregular flow explicit. Presentation shows sibling conditional arms, with each body directly beneath its condition. Unstructured typed instructions remain available as an escape hatch. Editing an if/else group must not construct, serialize and readopt a whole SctDocument as its implementation.
 
 Build function/module summaries and activation/transition relationships over direct facts and control flow. Preserve predicate structure, polarity, explicit targets, fallthrough, scheduling and source IDs. Whole-module traversal includes calls/shared helper dependencies, with explicit cycle/unknown handling. Never infer unconditional final story state just from the presence of a set or clear.
 
@@ -97,6 +100,8 @@ Completion: save/reopen a complete authored project with stable IDs, metadata an
 
 ## WP5 — Fresh native materialization and publication
 
+Lower structured constructs from the selected captured revision into explicit derived control flow first. For an ordered conditional chain, each false edge reaches the next condition or Else body; normal body exits share the continuation. Preserve early returns, explicit exits, scheduling and cross-construct targets. Generate deterministic jump identities with mappings back to the owning chain/arm; the user can inspect this output without acquiring a second editable authority. Re-lower only affected constructs and their layout dependencies.
+
 Materialize a selected captured script revision into a fresh SPICE SctDocument, including texts and control references, then compose native output through public SPICE APIs. Keep a lossless typed mapping for supported executable content without importing opaque source bytes into the IR. Generate realization locations qualified by project, revision, script and realization; derived wrappers map back to their authored entrypoint owners.
 
 Port the shared activation lowering so optional named wrappers and whole-block bypasses preserve original bodies, internal callers, unaffected scheduling and physical fallthrough. Required init/loop checks occur as part of export; missing-root drafts remain saveable. Optional MLD absence/staleness remains advisory. Apply release endianness/text conventions/compression at the export boundary; project zstd compression is independent of native SCT compression.
@@ -121,4 +126,4 @@ Keep the user's lightweight approach: no separate verification mode, exhaustive 
 
 Use the established standalone evaluator for focused production-backed loading/editing/persistence measurements after the relevant slice, not a complete corpus/compression rerun after every change. Reuse captured evidence when it remains applicable. The opt-in full GC US architecture exception remains scoped to its standalone SALSA experiment. New/changed native corpus acceptance follows SALSA's AGENTS.md policy; the me002 DC EU story-connectivity exception remains separate. Follow private-repository mutex/location rules if that repository is actually used for native acceptance. No corpus or planning evidence is committed.
 
-For each slice, record what became usable, remaining representation/coverage limits and scoped checks, then commit. No pushes or submodule changes. Start with WP1 after approval of its implementation scope; do not implement all six based only on this planning request.
+For each slice, record what became usable, remaining representation/coverage limits and scoped checks, then commit. No pushes or submodule changes. WP1 is complete. WP2 is next; do not implement subsequent slices without authorization.

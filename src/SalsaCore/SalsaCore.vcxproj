@@ -188,4 +188,12 @@
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Program\Program.h" />
+    <ClInclude Include="include\SalsaCore\Program\NativeImport.h" />
+    <ClInclude Include="src\Program\ProgramInternal.h" />
+    <ClCompile Include="src\Program\Program.cpp" />
+    <ClCompile Include="src\Program\NativeImport.cpp" />
+    <ClCompile Include="src\Program\ProgramIndexes.cpp" />
+  </ItemGroup>
 </Project>

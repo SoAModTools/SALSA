@@ -66,4 +66,5 @@
   </ItemGroup>
   <ItemGroup><ClCompile Include="test_sct_authoring_session.cpp"><Filter>SCT</Filter></ClCompile></ItemGroup>
   <ItemGroup><ClCompile Include="test_sct_sequence_authoring.cpp"><Filter>SCT</Filter></ClCompile></ItemGroup>
+  <ItemGroup><ClCompile Include="test_whole_program.cpp" /></ItemGroup>
 </Project>

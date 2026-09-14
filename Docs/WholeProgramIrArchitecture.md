@@ -2,6 +2,10 @@
 
 Decision accepted by the user on 2026-09-13: **paged instruction storage and zstd level 1 project compression**, together with shared section-order buffers, scoped immutable readers, incremental dependency indexes and portable binary project tables. The full GC US corpus and compression experiments are complete; these choices are no longer provisional. The editor has not been migrated. Alternative storage/codecs remain evaluation tools, not production representation toggles. See the [production implementation plan](WholeProgramIrProductionPlan.md).
 
+## Authored structure and lowering
+
+SALSA owns a structured authoring program: If/Else If/Else chains own ordered conditions and body sequences, alongside explicit typed instruction/control-flow leaves. The editor can therefore be flatter without requiring generated jumps to be the source of truth. A compiler-style lowering stage produces derived instruction flow for inspection and SPICE composition. Imported irregular control flow remains explicit until it can be safely promoted. Paged storage and zstd level 1 apply to this authored model; they do not require one record per native opcode. WP1 establishes construct records and input; WP3 adds semantic transformation commands; WP5 implements shared lowering.
+
 ## Why this combination
 
 The objective is to load an imported script collection quickly, find connections across scripts, and update the affected connections when someone edits a condition, effect or destination. Stable identities and incremental indexes provide that behavior. Physical record storage should keep edits inexpensive without tying modules or graph nodes to physical SCT sections.
