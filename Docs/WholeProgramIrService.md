@@ -33,7 +33,7 @@ The opaque prepared handle exposes a receipt preview, including newly allocated 
 
 Direct fact extraction examines affected source actions using the same rules as bulk ingestion. It replaces only buckets reached by old/new variable uses and action targets, including formerly empty buckets. Receipts contain affected action/sequence/section/text/condition identities, annotation indices, old/new variable and target keys, diagnostics and work counts. They contain no formatted UI models. Physical sequence and section order remains separate from explicit target operands.
 
-Deletion fails if unchanged execution references or authored metadata would dangle. Required `init`/`loop` names cannot be renamed or removed. Primitive operations cannot silently turn an ordinary section into a lifecycle root. Editing instruction content within required bodies remains possible. A coordinated edit is needed when changing metadata-bound operand layouts or entry/module section identities. Whole-construct insertion/removal/movement, arm/case-label changes, lifecycle repair, new metadata objects and module/entrypoint/language commands belong to WP3. Existing structured constructs and their identities survive WP2 leaf/condition edits.
+Deletion fails if unchanged execution references or authored metadata would dangle. Required `init`/`loop` names cannot be renamed or removed. Primitive operations cannot silently turn an ordinary section into a lifecycle root. Editing instruction content within required bodies remains possible. A coordinated edit is needed when changing metadata-bound operand layouts or entry/module section identities. Whole-construct insertion/removal/movement, arm/case-label changes, lifecycle repair and metadata commands are now available through [WP3 semantic operations](WholeProgramIrSemantics.md). Existing structured constructs and their identities survive WP2 leaf/condition edits.
 
 ## Lifetime and maintenance
 
@@ -66,3 +66,7 @@ Four focused synthetic console scenarios cover local batch publication and histo
 Validation results are recorded with the implementation checkpoint. The existing editor's persistence, supported Python SALSA v7 importer and output path remain operational and unchanged; zstd 1 integration remains WP4.
 
 Delivery: elevated MSVC v145 Release SalsaCore/SalsaTests builds passed. All 12 focused console checks passed: four ProgramServiceTest cases, six WholeProgramTest cases, and two existing synthetic legacy byte-order/metadata-promotion regressions. Existing linked SpiceMLD LNK4020 PDB warnings remain. No GUI or private-corpus tests ran. No standalone SpiceTests executable is available in this checkout; the prior WP1 build failed in unrelated SpiceMix/PVM includes (`SpicePvm/Model/PvmTextureModel.h`). That unrelated submodule build was not repeated or modified. The focused native fixtures exercise the public SPICE SCT boundary directly.
+
+## WP3 extension
+
+Semantic commands share this service and journal. Scoped module summaries, interactions and item explanations are lazy derived queries. See [WP3 contracts](WholeProgramIrSemantics.md) for metadata table costs, execution versus presentation receipts, dependency invalidation and bounded native recognition. WP4 persistence and WP6 editor integration remain separate.

@@ -203,4 +203,6 @@
     <ClCompile Include="src\Program\ProgramService.cpp" />
     <ClCompile Include="src\Program\NativeCollection.cpp" />
   </ItemGroup>
+  <ItemGroup><ClInclude Include="src\Program\SemanticEdits.inl" /></ItemGroup>
+  <ItemGroup><ClInclude Include="src\Program\ProgramRelationships.inl" /></ItemGroup>
 </Project>

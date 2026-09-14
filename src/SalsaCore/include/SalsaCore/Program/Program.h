@@ -143,6 +143,14 @@ struct Annotation {
     std::string alias;
     std::vector<SctAuthoringEvidence> evidence;
 };
+struct VariableMeaning {
+    SctMeaningId id;
+    SctScriptId script; // zero: project-wide; script-specific definitions override display
+    SctVariableKey variable;
+    std::optional<std::int64_t> value;
+    std::string name;
+    std::vector<SctAuthoringEvidence> evidence;
+};
 struct Metadata {
     std::vector<Module> modules;
     std::vector<Entrypoint> entrypoints;
@@ -151,6 +159,7 @@ struct Metadata {
     std::vector<SctAuthoringConnection> connections;
     std::vector<SctLogicalText> logicalTexts;
     std::vector<Annotation> annotations;
+    std::vector<VariableMeaning> meanings;
 };
 enum class Bank : std::uint8_t { Bit, Byte, Integer, Float };
 struct Variable {

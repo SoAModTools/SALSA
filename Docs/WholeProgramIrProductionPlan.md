@@ -1,6 +1,6 @@
 # Production whole-program IR implementation plan
 
-Status: WP1 and WP2 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
+Status: WP1, WP2 and WP3 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
 
 ## Locked decisions
 
@@ -81,6 +81,8 @@ Completion: semantic-level primitive edits and history execute without whole-pro
 
 ## WP3 — Semantic authoring and incremental relationships
 
+Implemented in the production service. See [semantic command and relationship contracts](WholeProgramIrSemantics.md), including the bounded native recognition scope.
+
 Port the existing sequence, structured-condition, module, entrypoint/activation, route, text/language and interpretation commands onto WP2 primitives. Structured intent is executable authored content in the same authority. Add commands for inserting/removing/reordering If/Else If/Else and switch arms, editing condition results/preparation and loop initialization/body/update, and moving body actions. Keep Break/Continue target identities stable, reject invalid lexical scopes, and preserve explicit case exit/fallthrough. Shared case targets become multiple labels on one owned arm/body; changing a label must not duplicate or replace that body. Recognize and promote imported instruction flow only when its incoming edges, scheduling and exits can be retained; keep irregular flow explicit. Presentation shows sibling conditional arms, with each body directly beneath its condition. Unstructured typed instructions remain available as an escape hatch. Editing an if/else group must not construct, serialize and readopt a whole SctDocument as its implementation.
 
 Build function/module summaries and activation/transition relationships over direct facts and control flow. Preserve predicate structure, polarity, explicit targets, fallthrough, scheduling and source IDs. Whole-module traversal includes calls/shared helper dependencies, with explicit cycle/unknown handling. Never infer unconditional final story state just from the presence of a set or clear.
@@ -135,4 +137,4 @@ Keep the user's lightweight approach: no separate verification mode, exhaustive 
 
 Use the established standalone evaluator for focused production-backed loading/editing/persistence measurements after the relevant slice, not a complete corpus/compression rerun after every change. Reuse captured evidence when it remains applicable. The opt-in full GC US architecture exception remains scoped to its standalone SALSA experiment. New/changed native corpus acceptance follows SALSA's AGENTS.md policy; the me002 DC EU story-connectivity exception remains separate. Follow private-repository mutex/location rules if that repository is actually used for native acceptance. No corpus or planning evidence is committed.
 
-For each slice, record what became usable, remaining representation/coverage limits and scoped checks, then commit. No pushes or submodule changes. WP1 is complete. WP2 is next; do not implement subsequent slices without authorization.
+For each slice, record what became usable, remaining representation/coverage limits and scoped checks, then commit. No pushes or submodule changes. WP1 through WP3 are complete. WP4 is next; do not implement subsequent slices without authorization.

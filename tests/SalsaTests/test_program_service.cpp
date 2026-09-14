@@ -259,7 +259,7 @@ TEST(ProgramServiceTest, BoundedLoadingIsResponsiveAndManifestDeterministic) {
     ASSERT_TRUE(status.get());
     auto loaded = load.get();
     ASSERT_TRUE(loaded) << messages(loaded.diagnostics());
-    EXPECT_GT(progress, 0);
+    EXPECT_GT(progress.load(), 0u);
     auto one = sequential.load(nativeRequest({}, 1)).get();
     ASSERT_TRUE(one) << messages(one.diagnostics());
     auto a = parallel.checkpoint(loaded.value().current).get().value().program;
@@ -306,5 +306,211 @@ TEST(ProgramServiceTest, CancelledStaleAndShutdownLoadsCannotReplaceAuthority) {
         if (mode < 2)
             EXPECT_EQ(f.service.status().get().value().current, f.revision);
     }
+}
+
+ir::SemanticOperation semantic(auto operation) {
+    return ir::SemanticOperation{std::move(operation)};
+}
+TEST(ProgramSemanticTest, StructuredArmsBodiesAndTransfersUseLocalHistory) {
+    Fixture f;
+    auto body = f.service.read(f.revision, {{}, {}, {f.loop}}).get().value()->loops[0].body;
+    auto expr = ir::ValueBuffer::expression(*sct::SctExpressionFactory::bitVariable(121).expression).value();
+    ir::InsertConstruct create;
+    create.sequence = body;
+    create.kind = ir::ActionKind::Switch;
+    create.condition = expr;
+    create.arms = {{{}, {}, {1, 2}, false, ir::CaseExit::Fallthrough}, {{}, {}, {3}, true}};
+    auto added = f.service.edit({f.revision, {semantic(create)}}).get();
+    ASSERT_TRUE(added) << messages(added.diagnostics());
+    f.revision = added.value().status.current;
+    auto switched = added.value().actions[0];
+    auto scope = f.service.read(f.revision, {{}, {}, {switched}}).get();
+    ASSERT_TRUE(scope);
+    ASSERT_EQ(scope.value()->arms.size(), 2);
+    auto first = scope.value()->arms[0], last = scope.value()->arms[1];
+    auto edited =
+        f.service
+            .edit(
+                {f.revision,
+                 {semantic(ir::ReplaceArms{
+                      switched, {{last.id, {}, {7}, true, ir::CaseExit::Fallthrough}, {first.id, {}, {5, 6}, false}}}),
+                  semantic(ir::InsertTransfer{first.body, 0, ir::TransferKind::Continue, f.loop})}})
+            .get();
+    ASSERT_TRUE(edited) << messages(edited.diagnostics());
+    f.revision = edited.value().status.current;
+    auto changed = f.service.read(f.revision, {{}, {}, {switched}}).get().value();
+    EXPECT_EQ(changed->arms[0].id, last.id);
+    EXPECT_EQ(changed->arms[1].body, first.body);
+    EXPECT_EQ(changed->transfers[0].target, f.loop);
+    EXPECT_FALSE(f.service.edit({f.revision, {semantic(ir::MoveAction{switched, f.sequence, 0})}}).get());
+    ASSERT_TRUE(f.service.maintain(f.revision).get());
+    auto undo = f.service.undo(f.revision).get();
+    ASSERT_TRUE(undo);
+    f.revision = undo.value().status.current;
+    EXPECT_EQ(f.service.read(f.revision, {{}, {}, {switched}}).get().value()->arms[0].id, first.id);
+    auto redo = f.service.redo(f.revision).get();
+    ASSERT_TRUE(redo);
+    f.revision = redo.value().status.current;
+    auto erased = f.service.edit({f.revision, {semantic(ir::EraseAction{switched})}}).get();
+    ASSERT_TRUE(erased) << messages(erased.diagnostics());
+    f.revision = erased.value().status.current;
+    auto restored = f.service.undo(f.revision).get();
+    ASSERT_TRUE(restored);
+    f.revision = restored.value().status.current;
+    EXPECT_EQ(f.service.read(f.revision, {{}, {}, {switched}}).get().value()->arms[1].body, first.body);
+}
+TEST(ProgramSemanticTest, ScopedSummariesReuseUnrelatedExecutionAndKeepPresentationSeparate) {
+    Fixture f;
+    auto added = f.service.edit({f.revision, {ir::AddSection{f.script, "independent", 1}}}).get();
+    ASSERT_TRUE(added);
+    f.revision = added.value().status.current;
+    auto checkpoint = f.service.checkpoint(f.revision).get().value().program;
+    auto extra = checkpoint->find(checkpoint->find(f.script)->sections[1])->body;
+    auto metadata = f.service
+                        .edit({f.revision,
+                               {semantic(ir::PutMetadata{ir::Module{{}, f.script, "Scene", {f.sequence}}}),
+                                semantic(ir::PutMetadata{ir::Module{{}, f.script, "Other", {extra}}})}})
+                        .get();
+    ASSERT_TRUE(metadata) << messages(metadata.diagnostics());
+    f.revision = metadata.value().status.current;
+    auto a = metadata.value().modules[0], b = metadata.value().modules[1];
+    auto beforeA = f.service.summarize(f.revision, a).get();
+    ASSERT_TRUE(beforeA) << messages(beforeA.diagnostics());
+    auto beforeB = f.service.summarize(f.revision, b).get();
+    ASSERT_TRUE(beforeB);
+    EXPECT_TRUE(f.service.uses(f.revision, {ir::Bank::Bit, 145}).get().value().uses.empty());
+    auto edit = f.service.edit({f.revision, {ir::ReplaceParameter{f.writer, {0, {}}, word(145)}}}).get();
+    ASSERT_TRUE(edit);
+    f.revision = edit.value().status.current;
+    auto afterA = f.service.summarize(f.revision, a).get();
+    ASSERT_TRUE(afterA);
+    EXPECT_FALSE(afterA.value().reused);
+    EXPECT_TRUE(f.service.summarize(f.revision, b).get().value().reused);
+    EXPECT_NE(beforeA.value().summary->build, afterA.value().summary->build);
+    EXPECT_EQ(f.service.uses(f.revision, {ir::Bank::Bit, 145}).get().value().uses.size(), 1);
+    auto named =
+        f.service
+            .edit(
+                {f.revision,
+                 {semantic(ir::PutAnnotation{{a, "First scene", {{SctEvidenceKind::UserAssertion, "My story alias"}}}}),
+                  semantic(ir::PutMetadata{SctLanguageGroup{{}, "Custom language", ""}})}})
+            .get();
+    ASSERT_TRUE(named) << messages(named.diagnostics());
+    f.revision = named.value().status.current;
+    EXPECT_TRUE(f.service.summarize(f.revision, a).get().value().reused);
+    EXPECT_EQ(f.service.explain(f.revision, a).get().value().label, "First scene");
+    auto info = f.service.interactions(f.revision, f.script).get();
+    ASSERT_TRUE(info);
+    auto language = info.value().languages[0].id;
+    auto assigned = f.service.edit({f.revision, {semantic(ir::AssignLanguages{f.text, {language}})}}).get();
+    ASSERT_TRUE(assigned);
+    f.revision = assigned.value().status.current;
+    EXPECT_TRUE(assigned.value().texts.empty());
+    EXPECT_EQ(assigned.value().presentationTexts.size(), 1);
+    EXPECT_TRUE(f.service.summarize(f.revision, a).get().value().reused);
+    auto undone = f.service.undo(f.revision).get();
+    ASSERT_TRUE(undone);
+    f.revision = undone.value().status.current;
+    EXPECT_TRUE(f.service.read(f.revision, {f.script}).get().value()->texts[0].languages.empty());
+    // A shared helper is a dependency of its callers, including late writes.
+    auto section = f.service.edit({f.revision, {ir::AddSection{f.script, "helper", 2}}}).get();
+    ASSERT_TRUE(section);
+    f.revision = section.value().status.current;
+    auto helperSequence = section.value().sequences[0];
+    ir::ValueBuffer write;
+    auto value = write.add(ir::ValueKind::Word, 151);
+    auto parameter = write.add(ir::ValueKind::Parameter, 0, 0, std::span(&value, 1));
+    write.add(ir::ValueKind::Instruction, 17, 0, std::span(&parameter, 1));
+    auto inserted = f.service.edit({f.revision, {ir::InsertInstruction{helperSequence, 0, write}}}).get();
+    ASSERT_TRUE(inserted);
+    f.revision = inserted.value().status.current;
+    auto helper = inserted.value().actions[0];
+    auto call = [&](SctActionId target) {
+        ir::ValueBuffer out;
+        auto v = out.add(ir::ValueKind::ActionReference, target.value);
+        auto p = out.add(ir::ValueKind::Parameter, 0, 0, std::span(&v, 1));
+        out.add(ir::ValueKind::Instruction, 11, 0, std::span(&p, 1));
+        return out;
+    };
+    auto called = f.service.edit({f.revision, {ir::InsertInstruction{f.sequence, 0, call(helper)}}}).get();
+    ASSERT_TRUE(called);
+    f.revision = called.value().status.current;
+    auto shared = f.service.summarize(f.revision, a).get();
+    ASSERT_TRUE(shared);
+    EXPECT_TRUE(std::ranges::any_of(shared.value().summary->flow,
+                                    [](auto &edge) { return edge.key.role == ir::FlowRole::Call; }));
+    EXPECT_TRUE(std::ranges::any_of(shared.value().summary->effects,
+                                    [](auto &effect) { return effect.variable == ir::Variable{ir::Bank::Bit, 151}; }));
+    auto changed = f.service.edit({f.revision, {ir::ReplaceParameter{helper, {0, {}}, word(152)}}}).get();
+    ASSERT_TRUE(changed);
+    f.revision = changed.value().status.current;
+    EXPECT_FALSE(f.service.summarize(f.revision, a).get().value().reused);
+    EXPECT_TRUE(f.service.summarize(f.revision, b).get().value().reused);
+    auto recursive = f.service.edit({f.revision, {ir::ReplaceInstruction{helper, call(helper)}}}).get();
+    ASSERT_TRUE(recursive);
+    f.revision = recursive.value().status.current;
+    EXPECT_TRUE(f.service.summarize(f.revision, a).get().value().summary->cyclic);
+    ir::Entrypoint entry;
+    entry.script = f.script;
+    entry.name = "M00001";
+    entry.kind = SctEntrypointKind::DirectHandler;
+    entry.body = helperSequence;
+    entry.activation = SctNamedActivation{"M00001", helper};
+    entry.enabled = false;
+    auto handler = f.service.edit({f.revision, {semantic(ir::PutMetadata{entry})}}).get();
+    ASSERT_TRUE(handler) << messages(handler.diagnostics());
+    f.revision = handler.value().status.current;
+    auto entries = f.service.interactions(f.revision, f.script).get();
+    ASSERT_TRUE(entries);
+    ASSERT_EQ(entries.value().entrypoints.size(), 1);
+    EXPECT_FALSE(entries.value().entrypoints[0].enabled);
+    auto repaired = f.service.edit({f.revision, {semantic(ir::BindLifecycle{f.section, "init"})}}).get();
+    ASSERT_TRUE(repaired) << messages(repaired.diagnostics());
+    f.revision = repaired.value().status.current;
+    auto required = f.service.interactions(f.revision, f.script).get().value().entrypoints.back();
+    ASSERT_TRUE(required.required());
+    required.enabled = false;
+    EXPECT_FALSE(f.service.edit({f.revision, {semantic(ir::PutMetadata{required})}}).get());
+}
+TEST(ProgramSemanticTest, PromotesPlainFlowAndPreservesSourceIdentity) {
+    ir::ProgramBuilder builder({Project});
+    auto script = builder.importedScript(baseline(), {}).value();
+    auto section = builder.section({{}, script, "scene"}).value();
+    auto seq = builder.sectionBody(section);
+    auto check = builder.expression(*sct::SctExpressionFactory::bitVariable(121).expression).value();
+    auto operand = [&](unsigned index, ir::ValueId value) {
+        return builder.value(ir::ValueKind::Parameter, index, 0, std::span(&value, 1)).value();
+    };
+    auto reference = [&](SctActionId id) { return builder.value(ir::ValueKind::ActionReference, id.value).value(); };
+    std::array parameters{operand(0, check), operand(1, reference({105}))};
+    auto header =
+        builder.instruction(seq, builder.value(ir::ValueKind::Instruction, 0, 0, parameters).value(), {101}).value();
+    auto empty = builder.value(ir::ValueKind::Instruction, 12).value();
+    builder.instruction(seq, empty, {102});
+    auto jump = operand(0, reference({106}));
+    builder.instruction(seq, builder.value(ir::ValueKind::Instruction, 10, 0, std::span(&jump, 1)).value(), {104});
+    builder.instruction(seq, empty, {105});
+    builder.instruction(seq, empty, {106});
+    auto built = builder.finish();
+    ASSERT_TRUE(built) << messages(built.diagnostics());
+    ir::ProgramService service;
+    auto adopted = service.adopt({}, std::move(built).takeValue()).get();
+    ASSERT_TRUE(adopted);
+    auto edit = service.edit({adopted.value().current, {semantic(ir::PromoteFlow{header, {106}})}}).get();
+    ASSERT_TRUE(edit) << messages(edit.diagnostics());
+    auto view = service.read(edit.value().status.current, {{}, {}, {header}}).get();
+    ASSERT_TRUE(view);
+    ASSERT_EQ(view.value()->arms.size(), 2);
+    EXPECT_EQ(view.value()->actions[0].id, header);
+    EXPECT_EQ(view.value()->actions[0].kind, ir::ActionKind::Conditional);
+    auto explanation = service.explain(edit.value().status.current, header).get();
+    ASSERT_TRUE(explanation);
+    ASSERT_EQ(explanation.value().records.size(), 1);
+    EXPECT_EQ(explanation.value().records[0].kind, SctEvidenceKind::Inference);
+    auto undo = service.undo(edit.value().status.current).get();
+    ASSERT_TRUE(undo);
+    auto original = service.read(undo.value().status.current, {{}, {}, {header}}).get().value();
+    EXPECT_EQ(original->actions[0].kind, ir::ActionKind::Instruction);
+    service.shutdown().get();
 }
 } // namespace

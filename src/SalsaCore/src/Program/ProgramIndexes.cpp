@@ -211,7 +211,11 @@ Result<std::uint64_t> ProgramBuilder::allocateIdentity() {
     try { require(data_ != nullptr, "Builder already finished"); return Result<std::uint64_t>::success(data_->allocate()); }
     catch (const std::exception& e) { diagnostics_.push_back(failure(e.what())); return Result<std::uint64_t>::failure(diagnostics_.back()); }
 }
-void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
+void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics, bool allocateIds) {
+    auto claim = [&](std::uint64_t id, EntityKind kind, std::uint32_t index) {
+        if (allocateIds) return d.claim(id, kind, index);
+        auto at=d.directory.find(id); require(id && at.kind==kind && at.index==index, "Invalid metadata identity directory"); return id;
+    };
     auto script = [&](SctScriptId id) { require(d.directory.find(id.value).kind == EntityKind::Script, "Missing metadata script owner"); };
     auto sequence = [&](SctSequenceId id, SctScriptId owner) { auto* s = d.sequence(id); require(s && s->script == owner, "Missing or foreign sequence owner"); };
     auto action = [&](SctActionId id, SctScriptId owner) { auto* a = d.action(id); require(a && d.sequence(a->owner)->script == owner, "Missing or foreign action reference"); };
@@ -241,7 +245,7 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
     };
     std::set<SctSequenceId> moduleOwners;
     for (std::uint32_t i = 0; i < d.metadata.modules.size(); ++i) {
-        auto& m = d.metadata.modules[i]; script(m.script); m.id = SctModuleId{d.claim(m.id.value, EntityKind::Module, i)};
+        auto& m = d.metadata.modules[i]; script(m.script); m.id = SctModuleId{claim(m.id.value, EntityKind::Module, i)};
         for (auto id : m.sequences) { sequence(id, m.script); require(moduleOwners.insert(id).second, "Multiple module owners for a sequence"); }
     }
     for (auto id : moduleOwners) {
@@ -252,14 +256,14 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
         }
     }
     for (std::uint32_t i = 0; i < d.metadata.languages.size(); ++i) {
-        auto& l = d.metadata.languages[i]; l.id = SctLanguageGroupId{d.claim(l.id.value, EntityKind::Language, i)};
+        auto& l = d.metadata.languages[i]; l.id = SctLanguageGroupId{claim(l.id.value, EntityKind::Language, i)};
     }
     // Edge ownership includes the repeated group ordinal and physical fallthrough.
     std::set<std::tuple<std::uint64_t, std::optional<spice::sct::SctParameterAddress>>> edges;
     std::set<std::pair<SctScriptId, std::string>> named;
     for (std::uint32_t i = 0; i < d.metadata.entrypoints.size(); ++i) {
         auto& e = d.metadata.entrypoints[i]; script(e.script); sequence(e.body, e.script);
-        e.id = SctEntrypointId{d.claim(e.id.value, EntityKind::Entry, i)};
+        e.id = SctEntrypointId{claim(e.id.value, EntityKind::Entry, i)};
         if (e.kind == SctEntrypointKind::Lifecycle) {
             require(e.required() && e.enabled, "init and loop are required, always-enabled lifecycle roots");
             require(std::ranges::any_of(d.sections, [&](const Section& s) { return s.script == e.script && s.name == e.name && s.body == e.body; }), "Lifecycle body must be its named root section");
@@ -278,7 +282,7 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
             "Unresolved activation for entrypoint " + std::to_string(e.id.value)});
     }
     for (std::uint32_t i = 0; i < d.metadata.ports.size(); ++i) {
-        auto& p = d.metadata.ports[i]; p.id = SctPortId{d.claim(p.id.value, EntityKind::Port, i)};
+        auto& p = d.metadata.ports[i]; p.id = SctPortId{claim(p.id.value, EntityKind::Port, i)};
         SctScriptId owner = std::visit([&](auto id) {
             using T = decltype(id);
             if constexpr (std::is_same_v<T, SctModuleId>) { auto* m = d.lookup(id.value, EntityKind::Module, d.metadata.modules); require(m != nullptr, "Dangling port module"); return m->script; }
@@ -313,7 +317,7 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
         }
     }
     for (std::uint32_t i = 0; i < d.metadata.connections.size(); ++i) {
-        auto& c = d.metadata.connections[i]; c.id = SctConnectionId{d.claim(c.id.value, EntityKind::Connection, i)};
+        auto& c = d.metadata.connections[i]; c.id = SctConnectionId{claim(c.id.value, EntityKind::Connection, i)};
         for (const auto* reference : {&c.source, &c.destination}) {
             if (const auto* id = std::get_if<SctPortId>(reference)) require(d.directory.find(id->value).kind == EntityKind::Port, "Dangling resolved connection port");
             else diagnostics.push_back({DiagnosticSeverity::Warning, DiagnosticCode::UnresolvedSctAuthoringBinding, "Unresolved connection " + std::to_string(c.id.value)});
@@ -327,9 +331,13 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
         }
     }
     for (std::uint32_t i = 0; i < d.metadata.logicalTexts.size(); ++i) {
-        auto& l = d.metadata.logicalTexts[i]; script(l.script); l.id = SctLogicalTextId{d.claim(l.id.value, EntityKind::LogicalText, i)};
+        auto& l = d.metadata.logicalTexts[i]; script(l.script); l.id = SctLogicalTextId{claim(l.id.value, EntityKind::LogicalText, i)};
         for (auto id : l.variants) { const auto* t = d.lookup(id.value, EntityKind::Text, d.texts); require(t && t->script == l.script, "Dangling logical text variant"); }
         if (l.module) { const auto* m = d.lookup(l.module->value, EntityKind::Module, d.metadata.modules); require(m && m->script == l.script, "Dangling logical text module"); }
+    }
+    for(std::uint32_t i=0;i<d.metadata.meanings.size();++i) {
+        auto& meaning=d.metadata.meanings[i];meaning.id=SctMeaningId{claim(meaning.id.value,EntityKind::Meaning,i)};
+        if(meaning.script.valid())script(meaning.script);
     }
     for (const auto& a : d.metadata.annotations) std::visit([&](auto id) {
         using T = decltype(id); auto actual = d.directory.find(id.value).kind;

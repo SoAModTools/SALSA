@@ -88,9 +88,81 @@ struct EditAnnotation {
     std::string alias;
     std::vector<SctAuthoringEvidence> evidence;
 };
+// New arms allocate identity; existing IDs retain their body and preparation.
+struct ArmEdit {
+    ArmId id;
+    std::optional<ValueBuffer> condition;
+    std::vector<std::int32_t> labels;
+    bool includesDefault = false;
+    CaseExit exit = CaseExit::ExitSwitch;
+};
+struct InsertConstruct {
+    SctSequenceId sequence;
+    std::size_t position = 0;
+    ActionKind kind = ActionKind::Conditional;
+    LoopKind loopKind = LoopKind::While;
+    ValueBuffer condition;
+    std::vector<ArmEdit> arms;
+};
+struct ReplaceArms {
+    SctActionId action;
+    std::vector<ArmEdit> arms;
+};
+struct InsertTransfer {
+    SctSequenceId sequence;
+    std::size_t position = 0;
+    TransferKind kind;
+    SctActionId target;
+};
+struct MoveAction {
+    SctActionId action;
+    SctSequenceId sequence;
+    std::size_t position = 0;
+};
+struct EraseAction {
+    SctActionId action;
+};
+struct BindLifecycle {
+    SectionId section;
+    std::string name;
+};
+struct ScriptSettings {
+    SctScriptId script;
+    std::string name;
+    std::optional<SctAuthoredOutputProfile> output;
+    std::vector<SctScriptContext::ResourceAssociation> resources;
+};
+struct RetargetTransfer {
+    SctActionId action, target;
+};
+// Recognizes a bounded If/Else diamond or While back-edge in one sequence.
+// Unsupported topology fails without altering its explicit instruction leaves.
+struct PromoteFlow {
+    SctActionId header, continuation;
+};
+using MetadataEntity = std::variant<Module, Entrypoint, SctAuthoringPort, SctLanguageGroup, SctAuthoringConnection,
+                                    SctLogicalText, VariableMeaning>;
+struct PutMetadata {
+    MetadataEntity entity;
+}; // zero ID allocates; nonzero updates
+using MetadataId = std::variant<SctModuleId, SctEntrypointId, SctPortId, SctLanguageGroupId, SctConnectionId,
+                                SctLogicalTextId, SctMeaningId>;
+struct EraseMetadata {
+    MetadataId id;
+};
+struct PutAnnotation {
+    Annotation annotation;
+}; // upsert by stable subject
+struct AssignLanguages {
+    SctTextResourceId text;
+    std::vector<SctLanguageGroupId> languages;
+};
+using SemanticOperation =
+    std::variant<InsertConstruct, ReplaceArms, InsertTransfer, MoveAction, EraseAction, RetargetTransfer, PromoteFlow,
+                 PutMetadata, EraseMetadata, PutAnnotation, AssignLanguages, BindLifecycle, ScriptSettings>;
 using Primitive = std::variant<ReplaceParameter, ReplaceInstruction, ReplaceCondition, ReplaceText, InsertInstruction,
                                EraseInstruction, MoveInstruction, RenameSection, ReorderSections, AddSection,
-                               EraseEmptySection, EditAnnotation>;
+                               EraseEmptySection, EditAnnotation, SemanticOperation>;
 struct EditRequest {
     Revision expected;
     std::vector<Primitive> operations;
@@ -100,8 +172,12 @@ struct ChangeReceipt {
     std::vector<SctActionId> actions;
     std::vector<SctSequenceId> sequences;
     std::vector<SectionId> sections;
-    std::vector<SctTextResourceId> texts;
+    std::vector<SctTextResourceId> texts, presentationTexts;
     std::vector<ConditionId> conditions;
+    std::vector<ArmId> arms;
+    std::vector<std::uint64_t> metadata;
+    std::vector<SctModuleId> modules;
+    bool presentationChanged = false;
     std::vector<Variable> oldVariables, newVariables;
     std::vector<SctActionId> oldTargets, newTargets;
     std::vector<std::size_t> annotations;
@@ -151,6 +227,76 @@ struct TargetQuery {
     SctActionId target;
     std::vector<TargetUse> uses;
 };
+enum class FlowRole {
+    Fallthrough,
+    Call,
+    Jump,
+    TrueBranch,
+    FalseBranch,
+    Case,
+    Default,
+    LoopBody,
+    LoopExit,
+    Break,
+    Continue,
+    Return,
+    Transition,
+    Unknown
+};
+struct RelationshipKey {
+    SctScriptId script;
+    SctActionId source;
+    FlowRole role = FlowRole::Unknown;
+    std::uint64_t arm = 0;
+    std::uint32_t ordinal = 0;
+    auto operator<=>(const RelationshipKey &) const = default;
+};
+struct FlowRelationship {
+    RelationshipKey key;
+    SctActionId target, scopeTarget;
+    SctSequenceId sequence;
+    std::optional<SctScriptId> scriptTarget;
+    std::optional<spice::sct::SctParameterAddress> operand;
+    ValueId predicate, schedule;
+    ConditionId condition, targetCondition;
+    SctSequenceId preparation;
+    std::vector<std::int32_t> labels;
+    bool skipRefresh = false;
+    std::uint64_t sourceInstruction = 0;
+};
+struct ModuleSummary {
+    SctModuleId module;
+    std::uint64_t build = 0;
+    std::vector<SctActionId> actions;
+    std::vector<SctSequenceId> sequences;
+    std::vector<SectionId> sections;
+    std::vector<SctTextResourceId> texts;
+    std::vector<Variable> variables;
+    std::vector<VariableUse> effects;
+    std::vector<FlowRelationship> flow;
+    std::vector<Loop> loops;
+    std::vector<Diagnostic> diagnostics;
+    ValueBuffer payload;
+    bool cyclic = false, unknown = false;
+};
+struct SummaryQuery {
+    ServiceStatus status;
+    std::shared_ptr<const ModuleSummary> summary;
+    bool reused = false;
+};
+struct InteractionQuery {
+    ServiceStatus status;
+    std::vector<Entrypoint> entrypoints;
+    std::vector<SctAuthoringConnection> connections;
+    std::vector<Annotation> annotations;
+    std::vector<VariableMeaning> meanings;
+    std::vector<SctLanguageGroup> languages;
+};
+struct ExplanationQuery {
+    ServiceStatus status;
+    std::string label;
+    std::vector<SctAuthoringEvidence> records;
+};
 struct Checkpoint {
     ServiceStatus status;
     std::shared_ptr<const Program> program;
@@ -199,6 +345,9 @@ class ProgramService final {
     std::future<Result<std::shared_ptr<const ReadScope>>> read(Revision, ReadSelection, std::stop_token = {});
     std::future<Result<VariableQuery>> uses(Revision, Variable);
     std::future<Result<TargetQuery>> incoming(Revision, SctActionId);
+    std::future<Result<SummaryQuery>> summarize(Revision, SctModuleId, std::stop_token = {});
+    std::future<Result<InteractionQuery>> interactions(Revision, SctScriptId);
+    std::future<Result<ExplanationQuery>> explain(Revision, decltype(Annotation::subject));
     std::future<Result<Checkpoint>> checkpoint(Revision, std::stop_token = {});
     std::future<Result<ServiceStatus>> markSaved(Revision captured, std::uint64_t historyState);
     std::future<Result<Maintenance>> maintain(Revision, bool discardHistory = false);

@@ -79,7 +79,7 @@ Bulk completion builds pooled contiguous variable-use and incoming-action-target
 
 Reads recognize SPICE's Bit/Byte/Int/Float variable operations, including low-16 comparison and float-backed IntVar forms. Secondary-value operations retain their exact type without pretending to be ordinary variables. Fixed destination indices recognize raw words, integral fixed-point decimals and integral float payloads. Computed destinations have a separate posting list rather than being dropped or assigned a guessed index. The destination rules cover assignments 5/6/7 and bit writes 17/18/19; opcode 19 is recorded as modification with unspecified resulting value. Set/clear facts mean the instruction occurs, not that its path executes or that it establishes a final story state. No entry-distance heuristic filters writes.
 
-Transitive calls, module summaries, guards, storyline paths and dirty dependency buckets belong to WP3. Per-source contribution replacement and reclamation are implemented by the WP2 service. WP1 does not build writer-reader Cartesian products, format whole story views or perform a corpus survey as a side effect of import.
+WP3 now supplies transitive helper observations and scoped module summaries; storyline reconstruction is not implemented. See [semantic contracts](WholeProgramIrSemantics.md). Per-source contribution replacement and reclamation are implemented by the WP2 service. WP1 does not build writer-reader Cartesian products, format whole story views or perform a corpus survey as a side effect of import.
 
 ## Delivery
 
@@ -91,4 +91,8 @@ Shared-label extension: the existing structured tests now exercise several label
 
 ## WP2 service
 
-The bulk builder remains the import boundary. The [production service](WholeProgramIrService.md) now owns mutable tables, local changes/history, scoped immutable readers and bounded asynchronous native loading. Editing does not rebuild a complete Program or use a native document as the live authority. Full checkpoints and payload reclamation are explicit operations. WP3 ports coordinated structured and metadata commands; WP6 integrates the editor.
+The bulk builder remains the import boundary. The [production service](WholeProgramIrService.md) now owns mutable tables, local changes/history, scoped immutable readers and bounded asynchronous native loading. Editing does not rebuild a complete Program or use a native document as the live authority. Full checkpoints and payload reclamation are explicit operations. WP3 provides coordinated structured and metadata commands; WP6 integrates the editor.
+
+## WP3 metadata and derived queries
+
+`VariableMeaning` adds project-wide or script-specific variable/value aliases with stable meaning IDs and explicit evidence. It remains cold authored metadata. Module summaries carry their own immutable payloads and dependency sets, separate from executable authority. Semantic receipts distinguish execution changes from aliases and language membership; no writer-reader Cartesian graph is stored. See [WP3 contracts](WholeProgramIrSemantics.md).

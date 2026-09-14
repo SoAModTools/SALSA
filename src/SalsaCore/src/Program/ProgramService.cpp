@@ -154,6 +154,19 @@ struct PreparedData {
     std::vector<RowSwap<ConditionRegion>> conditions;
     std::vector<RowSwap<Text>> texts;
     std::vector<RowSwap<Annotation>> annotations;
+    std::vector<RowSwap<Arm>> arms;
+    std::vector<RowSwap<Loop>> loops;
+    std::vector<RowSwap<Switch>> switches;
+    std::vector<RowSwap<Transfer>> transfers;
+    std::optional<std::vector<Module>> modules;
+    std::optional<std::vector<Entrypoint>> entries;
+    std::optional<std::vector<SctAuthoringPort>> ports;
+    std::optional<std::vector<SctLanguageGroup>> languages;
+    std::optional<std::vector<SctAuthoringConnection>> connections;
+    std::optional<std::vector<SctLogicalText>> logicalTexts;
+    std::optional<std::vector<VariableMeaning>> meanings;
+    std::optional<std::vector<Annotation>> annotationTable;
+    std::optional<std::set<std::uint64_t>> protection;
     std::vector<std::pair<std::uint64_t, Location>> locations;
     std::vector<std::pair<Variable, std::shared_ptr<const std::vector<VariableUse>>>> variables;
     std::vector<std::pair<SctActionId, std::shared_ptr<const std::vector<TargetUse>>>> targets;
@@ -169,6 +182,26 @@ struct PreparedData {
         swapRows(sections, d.sections);
         swapRows(scripts, d.scripts);
         swapRows(conditions, d.conditions);
+        swapRows(arms, d.arms);
+        swapRows(loops, d.loops);
+        swapRows(switches, d.switches);
+        swapRows(transfers, d.transfers);
+        if (modules)
+            modules->swap(d.metadata.modules);
+        if (entries)
+            entries->swap(d.metadata.entrypoints);
+        if (ports)
+            ports->swap(d.metadata.ports);
+        if (languages)
+            languages->swap(d.metadata.languages);
+        if (connections)
+            connections->swap(d.metadata.connections);
+        if (logicalTexts)
+            logicalTexts->swap(d.metadata.logicalTexts);
+        if (meanings)
+            meanings->swap(d.metadata.meanings);
+        if (annotationTable)
+            annotationTable->swap(d.metadata.annotations);
         swapRows(texts, d.texts);
         swapRows(annotations, d.metadata.annotations);
         for (auto &[id, other] : locations) {
@@ -203,6 +236,8 @@ struct PreparedData {
         }
     }
 };
+#include "SemanticEdits.inl"
+
 struct ServiceOwner {
     std::unique_ptr<ProgramData> data;
     std::shared_ptr<const unsigned char> token = std::make_shared<const unsigned char>(0);
@@ -215,6 +250,10 @@ struct ServiceOwner {
     std::size_t cursor = 0;
     std::vector<std::weak_ptr<PreparedData>> prepared;
     std::set<std::uint64_t> protectedIds;
+    std::map<SctModuleId, std::shared_ptr<const ModuleSummary>> summaries;
+    std::uint64_t summaryBuild = 0;
+    void invalidate(const ChangeReceipt &receipt) noexcept;
+    SummaryQuery summarize(Revision, SctModuleId, std::stop_token);
     ServiceStatus status() const {
         return {
             {data ? data->id : SctAuthoringProjectId{}, data ? data->revision : 0, generation}, state, state != saved};
@@ -266,7 +305,7 @@ struct ServiceOwner {
             std::visit(protect, a.subject);
     }
     ServiceStatus adopt(Revision expected, std::shared_ptr<const Program> p, std::stop_token stop,
-                        const std::function<bool()>& current = {}) {
+                        const std::function<bool()> &current = {}) {
         match(expected, stop);
         require(p && p.use_count() == 1, "Adoption needs exclusive ownership of the imported Program");
         ServiceOwner next;
@@ -282,6 +321,7 @@ struct ServiceOwner {
         data = std::move(next.data);
         protectedIds = std::move(next.protectedIds);
         history.clear();
+        summaries.clear();
         prepared.clear();
         cursor = 0;
         checkpointTokens.clear();
@@ -354,6 +394,8 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
                 require(d.sections[location(id.value, EntityKind::Section)].name != name,
                         "Section name already exists in script");
     };
+    SemanticTransaction semantic{
+        d, *p, collectOld, [&](SctActionId id) {affected.insert(id); }, changeLocation, action, order, putOrder};
     bool rolled = false;
     try {
         // Capture original contributions before any row is staged. A batch can
@@ -364,8 +406,10 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
             std::visit(
                 [&](const auto &edit) {
                     using T = std::decay_t<decltype(edit)>;
-                    if constexpr (std::is_same_v<T, ReplaceParameter> || std::is_same_v<T, ReplaceInstruction> ||
-                                  std::is_same_v<T, EraseInstruction> || std::is_same_v<T, MoveInstruction>)
+                    if constexpr (std::is_same_v<T, SemanticOperation>)
+                        semantic.capture(edit);
+                    else if constexpr (std::is_same_v<T, ReplaceParameter> || std::is_same_v<T, ReplaceInstruction> ||
+                                       std::is_same_v<T, EraseInstruction> || std::is_same_v<T, MoveInstruction>)
                         collectOld(edit.action);
                     else if constexpr (std::is_same_v<T, ReplaceCondition>)
                         collectOld(d.conditions[location(edit.condition.value, EntityKind::Condition)].owner);
@@ -378,7 +422,9 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
             std::visit(
                 [&](auto &edit) {
                     using T = std::decay_t<decltype(edit)>;
-                    if constexpr (std::is_same_v<T, ReplaceParameter> || std::is_same_v<T, ReplaceInstruction>) {
+                    if constexpr (std::is_same_v<T, SemanticOperation>)
+                        semantic.apply(edit);
+                    else if constexpr (std::is_same_v<T, ReplaceParameter> || std::is_same_v<T, ReplaceInstruction>) {
                         auto &a = action(edit.action);
                         require(a.kind == ActionKind::Instruction, "Primitive edit requires an instruction leaf");
                         auto value = importValue(d, edit.value);
@@ -539,20 +585,35 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
                         changeLocation(s.id.value, {});
                         changeLocation(s.body.value, {});
                     } else if constexpr (std::is_same_v<T, EditAnnotation>) {
+                        require(!p->annotationTable, "Use annotation upserts consistently within a batch");
                         require(edit.index < d.metadata.annotations.size(), "Missing annotation");
                         auto &a = touch(p->annotations, count32(edit.index), d.metadata.annotations[edit.index]);
                         a.alias = edit.alias;
                         a.evidence = edit.evidence;
+                        p->receipt.presentationChanged = true;
                     }
                 },
                 op);
+        }
+        semantic.finish();
+        if (semantic.changed) {
+            finishMetadata(d, p->diagnostics, false);
+            auto previous = std::move(protectedIds);
+            try {
+                protectMetadata();
+                p->protection = std::move(protectedIds);
+                protectedIds = std::move(previous);
+            } catch (...) {
+                protectedIds = std::move(previous);
+                throw;
+            }
         }
         std::vector<SctActionId> ids(affected.begin(), affected.end());
         auto now = actionFacts(d, ids, p->diagnostics);
         for (auto use : deletedIncoming)
             require(affected.contains(use.site.action), "Instruction still has incoming execution references");
         for (auto &c : p->actions)
-            if (c.other.id.valid() && protectedIds.contains(c.other.id.value)) {
+            if (!semantic.changed && c.other.id.valid() && protectedIds.contains(c.other.id.value)) {
                 auto *a = d.action(c.other.id);
                 require(a, "Metadata target was removed");
                 auto addresses = [&](ValueId root) {
@@ -611,15 +672,31 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
             p->receipt.sections.push_back(s.id.valid() ? s.id : c.other.id);
         }
         for (auto &c : p->scripts)
-            for (auto id : d.scripts[c.index].sections)
-                p->receipt.sections.push_back(id);
+            if (c.other.sections != d.scripts[c.index].sections)
+                for (auto id : d.scripts[c.index].sections)
+                    p->receipt.sections.push_back(id);
         unique(p->receipt.sections);
         for (auto &c : p->conditions)
-            p->receipt.conditions.push_back(d.conditions[c.index].id);
-        for (auto &c : p->texts)
-            p->receipt.texts.push_back(d.texts[c.index].id);
+            p->receipt.conditions.push_back(d.conditions[c.index].id.valid() ? d.conditions[c.index].id : c.other.id);
+        for (auto &c : p->texts) {
+            if (c.other.value != d.texts[c.index].value)
+                p->receipt.texts.push_back(d.texts[c.index].id);
+            else
+                p->receipt.presentationTexts.push_back(d.texts[c.index].id);
+        }
         for (auto &c : p->annotations)
             p->receipt.annotations.push_back(c.index);
+        auto identities = [](auto &items) {
+            std::erase_if(items, [](auto id) { return !id.valid(); });
+            unique(items);
+        };
+        identities(p->receipt.actions);
+        identities(p->receipt.sequences);
+        identities(p->receipt.sections);
+        identities(p->receipt.conditions);
+        identities(p->receipt.arms);
+        identities(p->receipt.modules);
+        unique(p->receipt.metadata);
         p->receipt.examinedActions = ids.size();
         unique(p->receipt.oldVariables);
         unique(p->receipt.newVariables);
@@ -694,11 +771,14 @@ ChangeReceipt ServiceOwner::install(PreparedChange change, std::stop_token stop)
     p->afterState = ++nextState;
     p->used = true;
     p->swap(*data);
+    if (p->protection)
+        p->protection->swap(protectedIds);
     history.resize(cursor);
     history.push_back(p);
     ++cursor;
     state = p->afterState;
     ++data->revision;
+    invalidate(receipt);
     return receipt;
 }
 ChangeReceipt ServiceOwner::travel(Revision expected, bool redo, std::stop_token stop) {
@@ -718,12 +798,15 @@ ChangeReceipt ServiceOwner::travel(Revision expected, bool redo, std::stop_token
     stopped(stop);
     stopped(shutdown);
     p->swap(*data);
+    if (p->protection)
+        p->protection->swap(protectedIds);
     if (redo)
         ++cursor;
     else
         --cursor;
     state = redo ? p->afterState : p->beforeState;
     ++data->revision;
+    invalidate(receipt);
     return receipt;
 }
 std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const ReadSelection &selection,
@@ -1000,6 +1083,53 @@ Maintenance ServiceOwner::maintain(Revision expected, bool discard) {
     for (std::uint32_t i = 0; i < d.sections.size(); ++i)
         if (!d.sections[i].id.valid() && !heldSections.contains(i))
             sectionSlots.push_back(i);
+    // Arm edits replace only an owner's small ordered descriptor range. Repack
+    // current and retained ranges here, so discarded label versions do not grow
+    // forever. Stable arm identities and history directory locations survive.
+    std::vector<Arm> compactArms;
+    std::vector<std::int32_t> compactLabels;
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> armRanges;
+    std::map<std::uint32_t, std::uint32_t> armSlots;
+    std::vector<std::pair<std::uint32_t *, std::uint32_t>> armHandles;
+    auto retainArms = [&](Action &action) {
+        if (!action.armCount)
+            return;
+        auto key = std::pair(action.firstArm, action.armCount);
+        auto [found, inserted] = armRanges.try_emplace(key, count32(compactArms.size()));
+        if (inserted) {
+            for (std::uint32_t i = 0; i < action.armCount; ++i) {
+                auto index = action.firstArm + i;
+                auto arm = d.arms[index];
+                auto labels = std::span(d.caseLabels).subspan(arm.firstLabel, arm.labelCount);
+                arm.firstLabel = count32(compactLabels.size());
+                compactLabels.insert(compactLabels.end(), labels.begin(), labels.end());
+                armSlots[index] = count32(compactArms.size());
+                compactArms.push_back(arm);
+            }
+        }
+        armHandles.push_back({&action.firstArm, found->second});
+    };
+    for (std::uint32_t i = 0; i < d.actions.size(); ++i)
+        if (d.actions.find(i)->id.valid())
+            retainArms(*d.actions.find(i));
+    for (auto &p : retained)
+        for (auto &change : p->actions)
+            retainArms(change.other);
+    std::vector<std::pair<std::uint64_t, Location>> armDirectory;
+    for (auto [from, to] : armSlots) {
+        auto id = d.arms[from].id;
+        auto location = d.directory.find(id.value);
+        if (location.kind == EntityKind::Arm && location.index == from)
+            armDirectory.push_back({id.value, {EntityKind::Arm, to}});
+    }
+    std::vector<std::pair<Location *, Location>> historyArms;
+    for (auto &p : retained)
+        for (auto &[id, location] : p->locations)
+            if (location.kind == EntityKind::Arm) {
+                auto found = armSlots.find(location.index);
+                require(found != armSlots.end(), "Missing retained arm range");
+                historyArms.push_back({&location, {EntityKind::Arm, found->second}});
+            }
     ProgramData compact;
     for (auto v : buffer.values)
         compact.values.append(v);
@@ -1014,6 +1144,14 @@ Maintenance ServiceOwner::maintain(Revision expected, bool discard) {
         *b.place = std::move(b.value);
     for (auto &[place, value] : targetBuckets)
         *place = std::move(value);
+    for (auto [place, to] : armHandles)
+        *place = to;
+    for (auto [id, to] : armDirectory)
+        d.directory.set(id, to);
+    for (auto [place, to] : historyArms)
+        *place = to;
+    d.arms = std::move(compactArms);
+    d.caseLabels = std::move(compactLabels);
     d.values = std::move(compact.values);
     d.children = std::move(compact.children);
     d.characters = std::move(compact.characters);
@@ -1040,6 +1178,8 @@ Maintenance ServiceOwner::maintain(Revision expected, bool discard) {
     });
     return result;
 }
+
+#include "ProgramRelationships.inl"
 
 struct ProgramService::Control : std::enable_shared_from_this<Control> {
     std::mutex mutex;
@@ -1161,6 +1301,103 @@ std::future<Result<TargetQuery>> ProgramService::incoming(Revision r, SctActionI
         return TargetQuery{o.status(), key, {range.begin(), range.end()}};
     });
 }
+std::future<Result<SummaryQuery>> ProgramService::summarize(Revision r, SctModuleId module, std::stop_token stop) {
+    return control_->submit<SummaryQuery>([r, module, stop](auto &o) { return o.summarize(r, module, stop); });
+}
+std::future<Result<InteractionQuery>> ProgramService::interactions(Revision r, SctScriptId script) {
+    return control_->submit<InteractionQuery>([r, script](auto &o) {
+        o.match(r);
+        require(o.data && o.data->directory.find(script.value).kind == EntityKind::Script,
+                "Missing interaction script");
+        auto &d = *o.data;
+        InteractionQuery out;
+        out.status = o.status();
+        for (auto &e : d.metadata.entrypoints)
+            if (e.script == script)
+                out.entrypoints.push_back(e);
+        for (auto &c : d.metadata.connections)
+            if (c.route && (c.route->sourceScript == script || c.route->destinationScript == script))
+                out.connections.push_back(c);
+        for (auto &a : d.metadata.annotations) {
+            auto belongs = std::visit(
+                [&](auto id) {
+                    auto at = d.directory.find(id.value);
+                    switch (at.kind) {
+                    case EntityKind::Script:
+                        return id.value == script.value;
+                    case EntityKind::Action:
+                        return d.sequence(d.actions.find(at.index)->owner)->script == script;
+                    case EntityKind::Module:
+                        return d.metadata.modules[at.index].script == script;
+                    case EntityKind::Entry:
+                        return d.metadata.entrypoints[at.index].script == script;
+                    case EntityKind::Section:
+                        return d.sections[at.index].script == script;
+                    case EntityKind::Sequence:
+                        return d.sequences[at.index].script == script;
+                    case EntityKind::Text:
+                        return d.texts[at.index].script == script;
+                    case EntityKind::Condition:
+                        return d.sequence(d.action(d.conditions[at.index].owner)->owner)->script == script;
+                    case EntityKind::Arm:
+                        return d.sequence(d.action(d.arms[at.index].owner)->owner)->script == script;
+                    default:
+                        return false;
+                    }
+                },
+                a.subject);
+            if (belongs)
+                out.annotations.push_back(a);
+        }
+        for (auto &meaning : d.metadata.meanings)
+            if (!meaning.script.valid() || meaning.script == script)
+                out.meanings.push_back(meaning);
+        out.languages = d.metadata.languages;
+        return out;
+    });
+}
+std::future<Result<ExplanationQuery>> ProgramService::explain(Revision r, decltype(Annotation::subject) subject) {
+    return control_->submit<ExplanationQuery>([r, subject](auto &o) {
+        o.match(r);
+        require(o.data != nullptr, "No program is open");
+        ExplanationQuery out;
+        out.status = o.status();
+        std::visit(
+            [&](auto id) {
+                using T = decltype(id);
+                constexpr auto kind = [] {
+                    if constexpr (std::is_same_v<T, SctScriptId>)
+                        return EntityKind::Script;
+                    else if constexpr (std::is_same_v<T, SectionId>)
+                        return EntityKind::Section;
+                    else if constexpr (std::is_same_v<T, SctSequenceId>)
+                        return EntityKind::Sequence;
+                    else if constexpr (std::is_same_v<T, SctActionId>)
+                        return EntityKind::Action;
+                    else if constexpr (std::is_same_v<T, ArmId>)
+                        return EntityKind::Arm;
+                    else if constexpr (std::is_same_v<T, ConditionId>)
+                        return EntityKind::Condition;
+                    else if constexpr (std::is_same_v<T, SctModuleId>)
+                        return EntityKind::Module;
+                    else if constexpr (std::is_same_v<T, SctEntrypointId>)
+                        return EntityKind::Entry;
+                    else
+                        return EntityKind::Text;
+                }();
+                require(o.data->directory.find(id.value).kind == kind, "Missing or mistyped explanation subject");
+                out.label = std::to_string(id.value);
+            },
+            subject);
+        for (auto &annotation : o.data->metadata.annotations)
+            if (annotation.subject == subject) {
+                if (!annotation.alias.empty())
+                    out.label = annotation.alias;
+                out.records.insert(out.records.end(), annotation.evidence.begin(), annotation.evidence.end());
+            }
+        return out;
+    });
+}
 std::future<Result<Checkpoint>> ProgramService::checkpoint(Revision r, std::stop_token stop) {
     return control_->submit<Checkpoint>([r, stop](auto &o) { return o.checkpoint(r, stop); });
 }
@@ -1209,8 +1446,8 @@ std::future<Result<ServiceStatus>> ProgramService::load(NativeLoadRequest reques
                                                     p = std::move(loaded).takeValue()](auto &o) mutable {
                                require(c->loadGeneration == operation, "Native load was superseded");
                                stopped(c->shutdownStop.get_token());
-                                  return o.adopt(expected, std::move(p), stop,
-                                      [c, operation] { return c->loadGeneration == operation; });
+                               return o.adopt(expected, std::move(p), stop,
+                                              [c, operation] { return c->loadGeneration == operation; });
                            }).get();
             if (result) {
                 diagnostics.insert(diagnostics.end(), result.diagnostics().begin(), result.diagnostics().end());

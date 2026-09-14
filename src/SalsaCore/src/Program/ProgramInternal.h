@@ -33,7 +33,7 @@ private:
     std::vector<std::unique_ptr<std::array<T, PageSize>>> pages_;
     std::uint32_t size_ = 0;
 };
-enum class EntityKind : std::uint8_t { None, Script, Baseline, Section, Sequence, Action, Arm, Text, Module, Entry, Port, Language, Connection, LogicalText, Condition };
+enum class EntityKind : std::uint8_t { None, Script, Baseline, Section, Sequence, Action, Arm, Text, Module, Entry, Port, Language, Connection, LogicalText, Condition, Meaning };
 struct Location { EntityKind kind = EntityKind::None; std::uint32_t index = 0; };
 // Sparse 64-bit identity support, one allocation per occupied directory page,
 // not a hash node/allocation per instruction. Zero is always absent.
@@ -172,5 +172,5 @@ void valueShape(const ProgramData&, ValueId);
 DirectFacts actionFacts(ProgramData&, std::span<const SctActionId>, std::vector<Diagnostic>&);
 void finalizePostings(ProgramData&);
 void buildIndexes(ProgramData&, std::vector<Diagnostic>&);
-void finishMetadata(ProgramData&, std::vector<Diagnostic>&);
+void finishMetadata(ProgramData&, std::vector<Diagnostic>&, bool allocateIds = true);
 } // namespace salsa::core::program
