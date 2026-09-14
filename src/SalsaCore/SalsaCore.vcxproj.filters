@@ -185,4 +185,11 @@
     <ClCompile Include="..\..\third-party\zstd\lib\decompress\zstd_decompress_block.c"/>
   </ItemGroup>
   <ItemGroup><ClCompile Include="src\Program\ProgramMaterializer.cpp"/><ClInclude Include="include\SalsaCore\Program\ProgramMaterializer.h"/></ItemGroup>
+  <ItemGroup><ClInclude Include="src\Program\ProgramEditor.inl" /></ItemGroup>
+  <ItemGroup><ClCompile Include="src\Program\EditorWorkspace.cpp"/><ClInclude Include="include\SalsaCore\Program\EditorWorkspace.h"/></ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Program\ProgramValues.cpp" />
+    <ClInclude Include="include\SalsaCore\Program\ProgramValues.h" />
+    <ClInclude Include="src\Program\ProgramTypedValues.h" />
+  </ItemGroup>
 </Project>

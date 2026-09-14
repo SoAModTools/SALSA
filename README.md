@@ -10,7 +10,7 @@ The original Python application is preserved under `legacy/python` as a behavior
 
 User-facing documentation starts at [Docs/README.md](Docs/README.md).
 
-Imported scripts also support [named sequences, shared conditions, and previous-location selection](Docs/SequencesAndConditions.md) through **Document > Sequences and Conditions**. Project export generates fresh SCT layout from understood content; valid drafts can be saved before unresolved text or references are repaired.
+The production editor uses the [whole-program service](Docs/WholeProgramIrEditor.md): one workspace authority, paged resident-script views, local journal edits, and binary project persistence with zstd level 1. Startup opens no dataset automatically. Native SCTs are imported once; reopening a saved workspace and its tabs reads the binary project. Native publication generates fresh SCT layout from authored content. Python SALSA v7 remains an import format only.
 
 ## Building
 
@@ -26,8 +26,8 @@ Build outputs are written to `bin/<platform>/<configuration>`.
 
 See [Entrypoints and resource context](Docs/EntrypointsAndResources.md) and the [portable SmoresScript library](SmoresScript/README.md) for S6 authoring and relationship contracts.
 
-[Language groups and text](Docs/LanguageGroupsAndText.md) provides editable name-based grouping, custom language groups, logical text correspondence, compound edits, and explicit insertion and splitting of shared strings through **Document > Language Groups and Text**.
+The **Authoring** menu opens language membership, modules/entrypoints, variable-use queries, item explanations and optional resources on demand. The earlier authoring documents describe domain contracts; their old **Document** menu paths refer to the retired snapshot editor. See [current editor controls and presentation limits](Docs/WholeProgramIrEditor.md).
 
 ## Testing
 
-Run the relevant filtered suites in `bin/x64/Debug/SalsaTests.exe` after building. `SalsaQtTests.exe` exercises the document controller with a Qt event loop and synthetic assets; it does not drive widgets or require game data. Manual testing covers the rendered GUI. Private corpus tests live in the sister testing repository and run only in Release.
+Run relevant filtered console suites in `bin/x64/Release/SalsaTests.exe` after building. The production program suites use synthetic data and do not launch the GUI. Historical Qt controller suites remain separate; GUI-loading tests and manual GUI runs require explicit authorization. Private corpus tests live in the sister testing repository and run only in Release, subject to the exceptions recorded in SALSA's AGENTS.md.

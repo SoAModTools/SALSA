@@ -1,6 +1,6 @@
 # Whole-program service (WP2)
 
-`SalsaCore/Program/ProgramService.h` is the Qt-free owner of the production IR. WP2 adds local primitive edits, history, immutable scoped readers and asynchronous collection ingestion. The existing editor still uses its previous authority; WP6 will switch it over. There is no live mirroring between representations.
+`SalsaCore/Program/ProgramService.h` is the Qt-free owner of the production IR. WP2 adds local primitive edits, history, immutable scoped readers and asynchronous collection ingestion. The production editor now uses this service; see [editor cutover](WholeProgramIrEditor.md). There is no live mirroring between representations.
 
 ## Requests and ownership
 
@@ -74,3 +74,5 @@ Semantic commands share this service and journal. Scoped module summaries, inter
 ## WP4 project loading
 
 `openProject` prepares binary tables and presentation on a worker, optionally recovers workspace transactions, and adopts only against its captured revision/generation. It shares load supersession and shutdown handling with native collection loads. See [persistence contracts](WholeProgramIrPersistence.md) for bounded record IO, save tokens and the legacy import boundary.
+
+WP6 extends `read` with explicit text/section/condition/sequence selection and a shallow mode. `outline` pages direct children; `locate` supplies stable navigation ancestry. `CreateText`/`RemoveText` use the same local journal; removal rejects metadata and execution references. `ProgramValues` shares typed expression/text decoding with the materializer for detached selected-item editors.

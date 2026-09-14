@@ -19,9 +19,14 @@ struct ScriptSummary {
     SctScriptId id;
     std::string name;
     std::size_t sections = 0;
+    SctScriptContext context;
+    std::optional<AssetLocator> locator;
+    std::optional<spice::sct::SctKnownTextConvention> textConvention;
 };
 struct Catalog {
     ServiceStatus status;
+    Statistics storage;
+    std::uint64_t childReferences = 0, characterBytes = 0;
     std::vector<ScriptSummary> scripts;
     std::vector<Module> modules;
 };
@@ -54,6 +59,14 @@ struct ReplaceText {
     SctTextResourceId text;
     ValueBuffer value;
 };
+struct CreateText {
+    SctScriptId script;
+    std::string name;
+    bool supplementary = false;
+    spice::sct::SctTextKind kind = spice::sct::SctTextKind::SctString;
+    ValueBuffer value;
+};
+struct RemoveText { SctTextResourceId text; };
 struct InsertInstruction {
     SctSequenceId sequence;
     std::size_t position = 0;
@@ -162,7 +175,7 @@ using SemanticOperation =
                  PutMetadata, EraseMetadata, PutAnnotation, AssignLanguages, BindLifecycle, ScriptSettings>;
 using Primitive = std::variant<ReplaceParameter, ReplaceInstruction, ReplaceCondition, ReplaceText, InsertInstruction,
                                EraseInstruction, MoveInstruction, RenameSection, ReorderSections, AddSection,
-                               EraseEmptySection, EditAnnotation, SemanticOperation>;
+                               EraseEmptySection, EditAnnotation, CreateText, RemoveText, SemanticOperation>;
 struct EditRequest {
     Revision expected;
     std::vector<Primitive> operations;
@@ -172,6 +185,7 @@ struct ChangeReceipt {
     std::vector<SctActionId> actions;
     std::vector<SctSequenceId> sequences;
     std::vector<SectionId> sections;
+    std::vector<SctScriptId> scriptLayouts;
     std::vector<SctTextResourceId> texts, presentationTexts;
     std::vector<ConditionId> conditions;
     std::vector<ArmId> arms;
@@ -198,7 +212,34 @@ struct ReadSelection {
     std::optional<SctScriptId> script;
     std::optional<SctModuleId> module;
     std::vector<SctActionId> actions;
+    std::vector<SctTextResourceId> texts;
+    bool descend = true;
+    bool referencedText = true;
+    std::vector<SectionId> sections;
+    std::vector<ConditionId> conditions;
+    std::vector<SctSequenceId> sequences;
 };
+using EditorSubject = decltype(Annotation::subject);
+struct OutlineRequest {
+    EditorSubject parent;
+    std::size_t offset = 0, limit = 128;
+};
+struct OutlineRow {
+    EditorSubject subject;
+    SctSequenceId sequence;
+    std::string label;
+    bool expandable = false;
+    std::optional<ActionKind> kind;
+};
+struct OutlinePage {
+    ServiceStatus status;
+    EditorSubject parent;
+    SctScriptId script;
+    std::size_t offset = 0, total = 0;
+    std::vector<OutlineRow> rows;
+    std::uint64_t elapsedMicroseconds = 0;
+};
+struct NavigationPath { ServiceStatus status; SctScriptId script; std::vector<EditorSubject> subjects; };
 // Owns only the selected closure. Safe across edits, maintenance and shutdown.
 // Sequence orders may contain IDs outside an explicit action selection.
 struct ReadScope {
@@ -346,6 +387,8 @@ class ProgramService final {
     std::future<Result<ChangeReceipt>> undo(Revision, std::stop_token = {});
     std::future<Result<ChangeReceipt>> redo(Revision, std::stop_token = {});
     std::future<Result<std::shared_ptr<const ReadScope>>> read(Revision, ReadSelection, std::stop_token = {});
+    std::future<Result<NavigationPath>> locate(Revision, EditorSubject);
+    std::future<Result<OutlinePage>> outline(Revision, OutlineRequest, std::stop_token = {});
     std::future<Result<VariableQuery>> uses(Revision, Variable);
     std::future<Result<TargetQuery>> incoming(Revision, SctActionId);
     std::future<Result<SummaryQuery>> summarize(Revision, SctModuleId, std::stop_token = {});

@@ -7,12 +7,14 @@ struct LegacyProgramSelection {
     AssetLocator locator;
     SctPublicationOptions publication;
     std::optional<GameRegion> region;
+    bool retainAliases = true, retainFolders = true;
 };
 struct LegacyProgramResult {
     ProjectFile project;
     // Retain through the existing baseline store/transaction. Never execution state.
     std::vector<SourceAssetSnapshot> baselines;
 };
+struct LegacyProgramMetadataPolicy { bool projectAliases = true, opcodeColors = true; };
 class LegacyProgramImport final {
   public:
     // The existing trusted Python-v7 converter produces this capsule first.
@@ -20,6 +22,6 @@ class LegacyProgramImport final {
     static Result<LegacyProgramResult> importCapsule(SctAuthoringProjectId, const std::filesystem::path &capsuleRoot,
                                                      const DatasetFingerprint &,
                                                      std::span<const LegacyProgramSelection>, std::stop_token = {},
-                                                     const SctLoadingObserver & = {});
+                                                     const SctLoadingObserver & = {}, LegacyProgramMetadataPolicy = {});
 };
 } // namespace salsa::core::program

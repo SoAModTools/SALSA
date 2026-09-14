@@ -1,6 +1,6 @@
 # SALSA User Guide
 
-SALSA is an editor for Skies of Arcadia Legends script files. This guide describes the editing workflows that are currently available.
+SALSA is an editor for Skies of Arcadia Legends script files. The current production entry point uses the [whole-program editor](WholeProgramIrEditor.md). Start there for loading, editing, saving and native publication. The topic guides below retain domain explanations; old snapshot-editor menu paths are historical and may differ from the current controls.
 
 ## Editing
 

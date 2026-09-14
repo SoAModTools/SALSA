@@ -32,6 +32,7 @@ struct Presentation {
 struct ProjectFile {
     std::shared_ptr<const Program> program;
     Presentation presentation;
+    std::optional<Sha256Digest> encodedDigest;
 };
 struct PersistenceLimits {
     std::uint64_t encodedBytes = 1ull << 30;
@@ -52,6 +53,7 @@ struct ProgramOpenRequest {
 struct ProgramOpenResult {
     ServiceStatus status;
     Presentation presentation;
+    std::optional<Sha256Digest> encodedDigest;
 };
 class ProgramPersistence final {
   public:

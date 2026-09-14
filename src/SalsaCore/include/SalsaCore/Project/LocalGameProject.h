@@ -23,6 +23,9 @@ public:
     [[nodiscard]] Result<SourceAssetSnapshot> loadAsset(
         const AssetLocator& locator) const override;
 
+    // Explicit optional context, qualified at selection time, outside the SCT catalog identity.
+    [[nodiscard]] Result<SourceAssetSnapshot> loadContextAsset(const AssetLocator&) const;
+
 private:
     LocalGameProject(
         LocalGameProjectOptions options,

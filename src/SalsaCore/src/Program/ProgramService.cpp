@@ -3,6 +3,7 @@
 #include "ProgramInternal.h"
 #include "NativeCollection.h"
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <set>
@@ -240,6 +241,8 @@ struct PreparedData {
 #include "SemanticEdits.inl"
 
 struct ServiceOwner {
+    std::map<EditorSubject,std::string> outlineAliases;
+    bool outlineAliasesDirty = true;
     std::unique_ptr<ProgramData> data;
     std::shared_ptr<const unsigned char> token = std::make_shared<const unsigned char>(0);
     std::stop_token shutdown;
@@ -312,6 +315,7 @@ struct ServiceOwner {
         ServiceOwner next;
         next.data = std::move(const_cast<Program *>(p.get())->data_);
         next.protectMetadata();
+        outlineAliases.clear();outlineAliasesDirty=true;
         stopped(stop);
         stopped(shutdown);
         require(generation < UINT64_MAX && nextState < UINT64_MAX, "Program generation/history state exhausted");
@@ -480,6 +484,34 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
                                     kind == ValueKind::EmptyIndexedText || kind == ValueKind::Unavailable,
                                 "Invalid text payload");
                         touch(p->texts, at, d.texts[at]).value = value;
+                    } else if constexpr (std::is_same_v<T, CreateText>) {
+                        auto scriptAt=location(edit.script.value,EntityKind::Script);
+                        if(!edit.supplementary)named(edit.script,edit.name);
+                        auto value=importValue(d,edit.value);auto kind=d.values.find(value.value)->kind;
+                        require(kind==ValueKind::PlainText || kind==ValueKind::Message || kind==ValueKind::EmptyIndexedText,"Invalid new text value");
+                        auto& script=touch(p->scripts,scriptAt,d.scripts[scriptAt]);
+                        auto id=SctTextResourceId{d.allocate()};auto index=count32(d.texts.size());d.texts.push_back({});p->texts.push_back({index,{}});
+                        changeLocation(id.value,{EntityKind::Text,index});d.texts[index]={id,edit.script,value,edit.kind,edit.supplementary,0,edit.name};
+                        if(edit.supplementary)script.supplementaryText.push_back(id);
+                        else {
+                            require(edit.name!="init" && edit.name!="loop","Required roots must be code sections");
+                            auto section=SectionId{d.allocate()};auto at=count32(d.sections.size());d.sections.push_back({});p->sections.push_back({at,{}});changeLocation(section.value,{EntityKind::Section,at});
+                            std::vector<ValueId> words;for(auto word:spice::sct::SctStringSectionContent{}.preambleWords)words.push_back(d.add(ValueKind::Word,word));
+                            auto preamble=d.add(ValueKind::Words,0,0,words);auto content=d.add(ValueKind::IndexedSection,id.value,0,std::span(&preamble,1));
+                            d.sections[at]={section,edit.script,edit.name,{},content};script.sections.push_back(section);
+                        }
+                    } else if constexpr (std::is_same_v<T, RemoveText>) {
+                        auto at=location(edit.text.value,EntityKind::Text);auto text=d.texts[at];
+                        require(!protectedIds.contains(edit.text.value),"Text has authored metadata references; remove those bindings first");
+                        // Deletion is uncommon and must reject execution references.
+                        // Inspect only instruction payloads owned by this script.
+                        for(std::size_t index=0;index<d.actions.size();++index){auto* a=d.actions.find(static_cast<std::uint32_t>(index));if(!a->id.valid() || a->kind!=ActionKind::Instruction || d.sequence(a->owner)->script!=text.script)continue;
+                            std::vector<ValueId> pending{a->value};while(!pending.empty()){auto id=pending.back();pending.pop_back();auto* v=d.values.find(id.value);require(!((v->kind==ValueKind::IndexedTextReference || v->kind==ValueKind::SupplementaryTextReference) && v->data==text.id.value),"Text is referenced by an instruction");auto children=d.child(id);pending.insert(pending.end(),children.begin(),children.end());}
+                        }
+                        auto scriptAt=location(text.script.value,EntityKind::Script);auto& script=touch(p->scripts,scriptAt,d.scripts[scriptAt]);
+                        if(text.supplementary)std::erase(script.supplementaryText,text.id);
+                        else {auto sections=script.sections;for(auto id:sections){auto index=location(id.value,EntityKind::Section);auto& section=d.sections[index];auto* v=d.values.find(section.content.value);if(v && v->kind==ValueKind::IndexedSection && v->data==text.id.value){require(!protectedIds.contains(id.value),"Text section has authored references");std::erase(script.sections,id);touch(p->sections,index,section)={};changeLocation(id.value,{});break;}}}
+                        touch(p->texts,at,d.texts[at])={};changeLocation(text.id.value,{});
                     } else if constexpr (std::is_same_v<T, InsertInstruction>) {
                         auto v = order(edit.sequence);
                         require(edit.position <= v.size(), "Insertion position is outside sequence");
@@ -673,15 +705,14 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
             p->receipt.sections.push_back(s.id.valid() ? s.id : c.other.id);
         }
         for (auto &c : p->scripts)
-            if (c.other.sections != d.scripts[c.index].sections)
-                for (auto id : d.scripts[c.index].sections)
-                    p->receipt.sections.push_back(id);
+            if (c.other.sections != d.scripts[c.index].sections || c.other.supplementaryText != d.scripts[c.index].supplementaryText)
+                p->receipt.scriptLayouts.push_back(d.scripts[c.index].context.id);
         unique(p->receipt.sections);
         for (auto &c : p->conditions)
             p->receipt.conditions.push_back(d.conditions[c.index].id.valid() ? d.conditions[c.index].id : c.other.id);
         for (auto &c : p->texts) {
             if (c.other.value != d.texts[c.index].value)
-                p->receipt.texts.push_back(d.texts[c.index].id);
+                p->receipt.texts.push_back(d.texts[c.index].id.valid()?d.texts[c.index].id:c.other.id);
             else
                 p->receipt.presentationTexts.push_back(d.texts[c.index].id);
         }
@@ -779,6 +810,7 @@ ChangeReceipt ServiceOwner::install(PreparedChange change, std::stop_token stop)
     ++cursor;
     state = p->afterState;
     ++data->revision;
+    if(receipt.presentationChanged || !receipt.annotations.empty()) outlineAliasesDirty = true;
     invalidate(receipt);
     return receipt;
 }
@@ -807,6 +839,7 @@ ChangeReceipt ServiceOwner::travel(Revision expected, bool redo, std::stop_token
         --cursor;
     state = redo ? p->afterState : p->beforeState;
     ++data->revision;
+    if(receipt.presentationChanged || !receipt.annotations.empty()) outlineAliasesDirty = true;
     invalidate(receipt);
     return receipt;
 }
@@ -820,7 +853,7 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
     CopyValues copy{d, out->payload};
     std::set<SctActionId> wanted;
     std::set<SctSequenceId> sequences, expanded;
-    std::set<SctTextResourceId> texts;
+    std::set<SctTextResourceId> texts(selection.texts.begin(),selection.texts.end());
     std::vector<SctActionId> pending = selection.actions;
     auto addSequence = [&](SctSequenceId id, bool contents) {
         auto *s = d.sequence(id);
@@ -829,7 +862,7 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
         if (contents && expanded.insert(id).second && s->order)
             pending.insert(pending.end(), s->order->begin(), s->order->end());
     };
-    require(selection.script || selection.module || !selection.actions.empty(),
+    require(selection.script || selection.module || !selection.actions.empty() || !selection.texts.empty() || !selection.sections.empty() || !selection.conditions.empty() || !selection.sequences.empty(),
             "A view needs an explicit scope; use checkpoint for the whole project");
     if (selection.script) {
         auto *script = d.lookup(selection.script->value, EntityKind::Script, d.scripts);
@@ -848,6 +881,27 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
         }
         texts.insert(script->supplementaryText.begin(), script->supplementaryText.end());
     }
+    for (auto id : selection.sections) {
+        auto *source = d.lookup(id.value, EntityKind::Section, d.sections);
+        require(source, "Missing selected section");
+        auto section = *source;
+        if (section.content.valid()) {
+            const auto *v = d.values.find(section.content.value);
+            if (v && v->kind == ValueKind::IndexedSection) texts.insert(SctTextResourceId{v->data});
+            section.content = copy.copy(section.content);
+        }
+        out->sections.push_back(section);
+        if (section.body.valid()) addSequence(section.body, selection.descend);
+    }
+    for (auto id : selection.conditions) {
+        auto *source = d.lookup(id.value, EntityKind::Condition, d.conditions);
+        require(source, "Missing selected condition");
+        auto condition = *source;
+        condition.result = copy.copy(condition.result);
+        out->conditions.push_back(condition);
+        addSequence(condition.preparation, selection.descend);
+    }
+    for (auto id : selection.sequences) addSequence(id, selection.descend);
     if (selection.module) {
         auto *m = d.lookup(selection.module->value, EntityKind::Module, d.metadata.modules);
         require(m, "Missing scope module");
@@ -873,7 +927,7 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
             arm.firstLabel = count32(out->caseLabels.size());
             out->caseLabels.insert(out->caseLabels.end(), labels.begin(), labels.end());
             out->arms.push_back(arm);
-            addSequence(arm.body, true);
+            addSequence(arm.body, selection.descend);
         }
         if (a.kind == ActionKind::Loop) {
             auto l = d.loops.at(a.detail);
@@ -881,7 +935,7 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
             out->loops.push_back(l);
             for (auto seq : {l.initialize, l.body, l.update})
                 if (seq.valid())
-                    addSequence(seq, true);
+                    addSequence(seq, selection.descend);
         }
         if (a.kind == ActionKind::Switch) {
             a.detail = count32(out->switches.size());
@@ -903,15 +957,17 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
             auto c = d.conditions[d.directory.find(id.value).index];
             c.result = copy.copy(c.result);
             out->conditions.push_back(c);
-            addSequence(c.preparation, true);
+            addSequence(c.preparation, selection.descend);
         }
         out->actions.push_back(a);
     }
     for (auto &v : out->payload.values)
-        if (v.kind == ValueKind::IndexedTextReference || v.kind == ValueKind::SupplementaryTextReference)
+        if (selection.referencedText && (v.kind == ValueKind::IndexedTextReference || v.kind == ValueKind::SupplementaryTextReference))
             texts.insert(SctTextResourceId{v.data});
     for (auto id : texts) {
-        auto t = d.texts[d.directory.find(id.value).index];
+        const auto* original = d.lookup(id.value,EntityKind::Text,d.texts);
+        require(original != nullptr,"Missing requested text");
+        auto t = *original;
         t.value = copy.copy(t.value);
         out->texts.push_back(std::move(t));
     }
@@ -922,6 +978,8 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
         owners.insert(s.script);
     if (selection.script)
         owners.insert(*selection.script);
+    for (const auto& text : out->texts) owners.insert(text.script);
+    for (const auto& section : out->sections) owners.insert(section.script);
     for (auto id : owners)
         out->scripts.push_back(d.scripts[d.directory.find(id.value).index]);
     std::sort(out->actions.begin(), out->actions.end(), [](auto &a, auto &b) { return a.id < b.id; });
@@ -1244,8 +1302,14 @@ std::future<Result<Catalog>> ProgramService::catalog(Revision r) {
         o.match(r);
         require(o.data != nullptr, "No program is open");
         Catalog result{o.status()};
-        for (auto &s : o.data->scripts)
-            result.scripts.push_back({s.context.id, s.context.name, s.sections.size()});
+        result.storage=o.data->stats;result.storage.actions=o.data->actions.size();result.storage.values=o.data->values.size();
+        result.storage.actionPages=o.data->actions.pageCount();result.storage.valuePages=o.data->values.pageCount();
+        result.childReferences=o.data->children.size();result.characterBytes=o.data->characters.size();
+        for (auto &s : o.data->scripts) {
+            const auto *baseline = o.data->lookup(s.context.baseline.value, EntityKind::Baseline, o.data->baselines);
+            result.scripts.push_back({s.context.id, s.context.name, s.sections.size(), s.context,
+                baseline ? std::optional(baseline->source.locator) : std::nullopt, baseline ? baseline->textConvention : std::nullopt});
+        }
         result.modules = o.data->metadata.modules;
         return result;
     });
@@ -1281,6 +1345,7 @@ std::future<Result<std::shared_ptr<const ReadScope>>> ProgramService::read(Revis
     return control_->submit<std::shared_ptr<const ReadScope>>(
         [r, s = std::move(s), stop](auto &o) { return o.read(r, s, stop); });
 }
+#include "ProgramEditor.inl"
 std::future<Result<VariableQuery>> ProgramService::uses(Revision r, Variable key) {
     return control_->submit<VariableQuery>([r, key](auto &o) {
         o.match(r);
@@ -1507,7 +1572,7 @@ std::future<Result<ProgramOpenResult>> ProgramService::openProject(ProgramOpenRe
                      require(c->loadGeneration == operation, "Program load was superseded");
                      auto status = o.adopt(expected, std::move(file.program), token,
                                            [c, operation] { return c->loadGeneration == operation; });
-                     return ProgramOpenResult{status, std::move(file.presentation)};
+                     return ProgramOpenResult{status, std::move(file.presentation),file.encodedDigest};
                  }).get();
             if (result)
                 promise->set_value(

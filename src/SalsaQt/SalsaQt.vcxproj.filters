@@ -15,57 +15,23 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Sct\SctRouteDialog.cpp" />
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="Application\MainWindow.cpp">
-      <Filter>Application</Filter>
-    </ClCompile>
     <ClCompile Include="Application\ExclusiveOperationController.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="Application\ExclusiveOperationCoordinator.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="Application\ExclusiveOperationDialog.cpp"><Filter>Application</Filter></ClCompile>
-    <ClCompile Include="Application\DisabledActionHintPresenter.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="Application\HelpWindow.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="Application\SalsaLogging.cpp"><Filter>Application</Filter></ClCompile>
-    <ClCompile Include="Application\TransientNoticePresenter.cpp"><Filter>Application</Filter></ClCompile>
     <ClCompile Include="Legacy\LegacyConversionDialog.cpp"><Filter>Legacy</Filter></ClCompile>
-    <ClCompile Include="Workspace\DiagnosticsModel.cpp"><Filter>Workspace</Filter></ClCompile>
-    <ClCompile Include="Workspace\ActivityLogModel.cpp"><Filter>Workspace</Filter></ClCompile>
-    <ClCompile Include="Workspace\WorkspaceController.cpp"><Filter>Workspace</Filter></ClCompile>
-    <ClCompile Include="Workspace\WorkspaceOperationController.cpp"><Filter>Workspace</Filter></ClCompile>
-    <ClCompile Include="Workspace\WorkspaceMaintenanceController.cpp"><Filter>Workspace</Filter></ClCompile>
-    <ClCompile Include="Workspace\DatasetOverviewWidget.cpp"><Filter>Workspace</Filter></ClCompile>
-    <ClCompile Include="Workspace\WorkspaceModel.cpp"><Filter>Workspace</Filter></ClCompile>
-    <ClCompile Include="Sct\SctDocumentController.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctSequenceEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctCatalogEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctExportDialog.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctRebaseDialog.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctDocumentWidget.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctOutlineModel.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctStructuredOutlineModel.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctMessageEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctMetadataEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctParameterTableModel.cpp"><Filter>SCT</Filter></ClCompile>
     <ClCompile Include="Sct\SctScptEditorWidget.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp"><Filter>SCT</Filter></ClCompile>
-    <QtMoc Include="Workspace\WorkspaceController.h"><Filter>Workspace</Filter></QtMoc>
-    <QtMoc Include="Workspace\WorkspaceOperationController.h"><Filter>Workspace</Filter></QtMoc>
-    <QtMoc Include="Workspace\WorkspaceMaintenanceController.h"><Filter>Workspace</Filter></QtMoc>
     <QtMoc Include="Application\ExclusiveOperationController.h"><Filter>Application</Filter></QtMoc>
     <QtMoc Include="Application\ExclusiveOperationCoordinator.h"><Filter>Application</Filter></QtMoc>
     <QtMoc Include="Application\ExclusiveOperationDialog.h"><Filter>Application</Filter></QtMoc>
     <QtMoc Include="Legacy\LegacyConversionDialog.h"><Filter>Legacy</Filter></QtMoc>
     <ClInclude Include="Sct\SctSequenceEditorDialog.h"><Filter>SCT</Filter></ClInclude>
-    <QtMoc Include="Sct\SctDocumentController.h"><Filter>SCT</Filter></QtMoc>
     <ClInclude Include="Sct\SctCatalogEditorDialog.h"><Filter>SCT</Filter></ClInclude>
-    <QtMoc Include="Sct\SctDocumentWidget.h"><Filter>SCT</Filter></QtMoc>
-    <QtMoc Include="Sct\SctOutlineModel.h"><Filter>SCT</Filter></QtMoc>
-    <QtMoc Include="Sct\SctStructuredOutlineModel.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctMessageEditorWidget.h"><Filter>SCT</Filter></QtMoc>
-    <QtMoc Include="Sct\SctParameterTableModel.h"><Filter>SCT</Filter></QtMoc>
     <QtMoc Include="Sct\SctScptEditorWidget.h"><Filter>SCT</Filter></QtMoc>
-    <QtMoc Include="Sct\SctSemanticNavigatorWidget.h"><Filter>SCT</Filter></QtMoc>
-    <QtMoc Include="Workspace\DatasetOverviewWidget.h"><Filter>Workspace</Filter></QtMoc>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Application\MainWindow.h">
@@ -88,14 +54,21 @@
     <QtRcc Include="SalsaHelp.qrc"><Filter>Application</Filter></QtRcc>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Sct\SctEntrypointEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctInterpretationDialog.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctStoryStateDialog.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctLanguageEditorDialog.cpp"><Filter>SCT</Filter></ClCompile>
-    <ClCompile Include="Sct\SctEntrypointTools.cpp"><Filter>SCT</Filter></ClCompile>
     <ClInclude Include="Sct\SctEntrypointTools.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="Sct\SctEntrypointEditorDialog.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="Sct\SctInterpretationDialog.h"><Filter>SCT</Filter></ClInclude>
     <ClInclude Include="Sct\SctLanguageEditorDialog.h"><Filter>SCT</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Sct\ProgramOutlineModel.cpp" />
+    <ClInclude Include="Sct\ProgramOutlineModel.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Application\ProgramOperation.cpp" />
+    <ClInclude Include="Application\ProgramOperation.h" />
+    <ClCompile Include="Application\ProgramWindow.cpp" />
+    <ClInclude Include="Application\ProgramWindow.h" />
+    <ClCompile Include="Sct\ProgramValueDialog.cpp" />
+    <ClInclude Include="Sct\ProgramValueDialog.h" />
   </ItemGroup>
 </Project>

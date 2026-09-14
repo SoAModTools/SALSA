@@ -1,4 +1,5 @@
 #include "SalsaCore/Program/ProgramMaterializer.h"
+#include "SalsaCore/Program/EditorWorkspace.h"
 #include "SalsaCore/Program/LegacyProgramImport.h"
 #include "SalsaCore/Foundation/Hashing.h"
 #include "SalsaCore/Legacy/LegacyFreshImport.h"
@@ -902,39 +903,40 @@ TEST(LegacyFreshImportTest, V7AuthoringProjectPreservesPromotedMetadataAndCanReo
         temporary.path() / L"workspace-stage", temporary.path() / L"recovery"});
     ASSERT_TRUE(committed.succeeded()) << (committed.diagnostics.empty() ? "" : committed.diagnostics.front().message);
     auto workspace = LocalSalsaWorkspace::openOrCreate(request.workspaceDirectory, *committed.dataset); ASSERT_TRUE(workspace);
-    auto checkpoint = SctAuthoringStore::load(workspace.value()); ASSERT_TRUE(checkpoint); ASSERT_TRUE(checkpoint.value());
-    auto state = checkpoint.value()->state;
-    ASSERT_EQ(state.project.scripts.size(), 1u);
-    const auto script = state.project.scripts.front().id;
-    EXPECT_EQ(state.project.scripts.front().legacyOrigin->scriptKey, "A001A");
-    const auto evidencePrefix = "legacy/" + state.project.scripts.front().legacyOrigin->capsuleId + "/";
-    EXPECT_TRUE(state.retainedEvidence.contains(evidencePrefix + "capsule.json"));
-    EXPECT_TRUE(state.retainedEvidence.contains(evidencePrefix + "scripts/000000.cbor.zlib"));
-    const auto retainedEvidence = state.retainedEvidence;
-    EXPECT_FALSE(state.programs.front()->inspectionLoaded());
-    EXPECT_TRUE(state.project.modules.empty());
-    ASSERT_EQ(state.project.workspaceAuthoring.projectAliases.size(), 1u);
-    EXPECT_EQ(state.project.workspaceAuthoring.projectAliases.front().alias, "ProjectFlag");
-    EXPECT_EQ(state.project.workspaceAuthoring.opcodeColors.size(), 1u);
-    auto current = SctAuthoringMaterializer::workingState(state.project, state.programs, script); ASSERT_TRUE(current);
-    ASSERT_EQ(current.value().aliases.size(), 1u); EXPECT_EQ(current.value().aliases.front().alias, "LocalCounter");
-    ASSERT_FALSE(current.value().folders.empty());
-    auto document = std::make_shared<spice::sct::SctDocument>(*current.value().document);
-    document->sections.front().nameBytes = "RENAMED";
-    // This minimal v7 fixture omits lifecycle roots; explicitly repair the draft.
-    for (const auto name : {"init","loop"}) document->sections.push_back({document->allocateSectionId(),name,spice::sct::SctScriptSectionContent{{{document->allocateInstructionId(),12}}}});
-    current.value().document = document;
-    auto edited = SctAuthoringMaterializer::replaceWorkingState(state.project, state.programs, script, current.value()); ASSERT_TRUE(edited);
-    state.project = edited.value(); ++state.project.revision.value;
-    auto saved = SctAuthoringStore::save(workspace.value(), state, checkpoint.value()->presentation, checkpoint.value()->digest); ASSERT_TRUE(saved);
-    auto reopened = SctAuthoringStore::load(workspace.value()); ASSERT_TRUE(reopened); ASSERT_TRUE(reopened.value());
-    EXPECT_EQ(reopened.value()->state.retainedEvidence, retainedEvidence);
-    EXPECT_FALSE(reopened.value()->state.programs.front()->inspectionLoaded());
-    auto output = SctAuthoringMaterializer::materialize({std::make_shared<const SctAuthoringProject>(reopened.value()->state.project),
-        reopened.value()->state.programs, {script}, SctAuthoringOutputMode::Rebuild});
-    ASSERT_TRUE(output.succeeded()); EXPECT_EQ(output.scripts.front().prepared->document->sections.front().nameBytes, "RENAMED");
-    EXPECT_FALSE(reopened.value()->state.programs.front()->inspectionLoaded());
+    namespace ir = program;
+    ir::EditorOpenRequest open{{request.sourceDirectory, committed.dataset->identity.platform, committed.dataset->identity.region},request.workspaceDirectory};
+    std::vector<std::string> phases;
+    auto loaded=ir::EditorWorkspaceIO::open(open,{},[&](const auto& p){phases.push_back(p.phase);});
+    ASSERT_TRUE(loaded) << (loaded.diagnostics().empty()?"":loaded.diagnostics().front().message);
+    auto session=loaded.value(); ASSERT_EQ(session->catalog.scripts.size(),1u);
+    const auto script=session->catalog.scripts.front().id;
+    EXPECT_EQ(session->catalog.scripts.front().context.legacyOrigin->scriptKey,"A001A");
+    EXPECT_TRUE(std::filesystem::exists(request.workspaceDirectory / "imports" / session->catalog.scripts.front().context.legacyOrigin->capsuleId / "capsule" / "capsule.json"));
+    EXPECT_TRUE(session->catalog.modules.empty());
+    auto metadata=session->service->interactions(session->status.current,script).get();ASSERT_TRUE(metadata);
+    EXPECT_EQ(metadata.value().meanings.size(),2u);
+    EXPECT_EQ(session->presentation.opcodeColors.size(),1u);EXPECT_FALSE(session->presentation.folders.empty());
+    auto outline=session->service->outline(session->status.current,{script,0,128}).get();ASSERT_TRUE(outline);
+    const auto section=std::get<ir::SectionId>(outline.value().rows.front().subject);
+    auto renamed=session->service->edit({session->status.current,{ir::RenameSection{section,"RENAMED"}}}).get();ASSERT_TRUE(renamed);session->status=renamed.value().status;
+    // This fixture lacks engine roots. Explicitly add bodies and bind them.
+    for(const auto* name:{"init","loop"}) {
+        auto added=session->service->edit({session->status.current,{ir::AddSection{script,std::string("draft_")+name,0}}}).get();ASSERT_TRUE(added);session->status=added.value().status;
+        auto root=session->service->outline(session->status.current,{script,0,1}).get().value().rows.front();
+        ir::ValueBuffer ret;ret.add(ir::ValueKind::Instruction,12);
+        auto repaired=session->service->edit({session->status.current,{ir::InsertInstruction{root.sequence,0,ret},ir::SemanticOperation{ir::BindLifecycle{std::get<ir::SectionId>(root.subject),name}}}}).get();ASSERT_TRUE(repaired);session->status=repaired.value().status;
+    }
+    session->presentation.tabs={{script,true,section}};session->presentation.activeTab=script;
+    auto saved=ir::EditorWorkspaceIO::save(*session,session->status.current,session->presentation);ASSERT_TRUE(saved);
+    phases.clear();auto reopened=ir::EditorWorkspaceIO::open(open,{},[&](const auto& p){phases.push_back(p.phase);});ASSERT_TRUE(reopened);
+    EXPECT_TRUE(std::ranges::none_of(phases,[](const auto& phase){return phase=="Importing script collection" || phase=="Parsing SCT";}));
+    EXPECT_EQ(reopened.value()->presentation.tabs.front().selection,ir::EditorSubject(section));
+    auto output=ir::EditorWorkspaceIO::publish(*reopened.value(),reopened.value()->status.current,script,
+        spice::sct::SctDocumentExportOptions{spice::sct::SctPlatform::GameCube,spice::sct::kSctShiftJisByte7FEncoding},temporary.path()/"published.sct",false);
+    ASSERT_TRUE(output) << (output.diagnostics().empty()?"":output.diagnostics().front().message);
+    EXPECT_TRUE(std::ranges::any_of(output.value().materialized.document->sections,[](const auto& s){return s.nameBytes=="RENAMED";}));
     EXPECT_EQ(digestFile(temporary.path() / L"fixture.prj").value(), original);
+
 }
 
 TEST(LegacyFreshImportTest, ValidatesOptionalPrivateOrganicCapsuleWithoutWriting) {

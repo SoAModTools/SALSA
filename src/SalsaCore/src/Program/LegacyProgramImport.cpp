@@ -6,7 +6,7 @@
 namespace salsa::core::program {
 Result<LegacyProgramResult> LegacyProgramImport::importCapsule(
     SctAuthoringProjectId project, const std::filesystem::path &root, const DatasetFingerprint &dataset,
-    std::span<const LegacyProgramSelection> selected, std::stop_token stop, const SctLoadingObserver &observer) {
+    std::span<const LegacyProgramSelection> selected, std::stop_token stop, const SctLoadingObserver &observer, LegacyProgramMetadataPolicy policy) {
     std::vector<Diagnostic> diagnostics;
     try {
         auto progress = [&](std::string phase, std::uint64_t n = 0, std::uint64_t total = 0) {
@@ -28,7 +28,7 @@ Result<LegacyProgramResult> LegacyProgramImport::importCapsule(
         LegacyProgramResult result;
         std::set<std::uint32_t> ordinals;
         std::set<AssetLocator> locators;
-        if (projectMetadata)
+        if (projectMetadata && policy.opcodeColors)
             result.project.presentation.opcodeColors = std::move(projectMetadata.value().opcodeColors);
         auto aliases = [&](SctScriptId script, const auto &rows) {
             for (auto &row : rows) {
@@ -44,7 +44,7 @@ Result<LegacyProgramResult> LegacyProgramImport::importCapsule(
                        "Imported v7 variable alias; capsule " + capsule.value().capsuleId}}});
             }
         };
-        if (projectMetadata)
+        if (projectMetadata && policy.projectAliases)
             aliases({}, projectMetadata.value().projectAliases);
         for (const auto &item : selected) {
             progress("Translating legacy script", result.baselines.size(), selected.size());
@@ -92,13 +92,13 @@ Result<LegacyProgramResult> LegacyProgramImport::importCapsule(
             auto id = builder.appendImported(script.value().document, std::move(baseline), std::move(context));
             if (!id)
                 return Result<LegacyProgramResult>::failure(id.diagnostics());
-            aliases(id.value(), script.value().metadata.aliases);
+            if (item.retainAliases) aliases(id.value(), script.value().metadata.aliases);
             std::map<std::uint64_t, SectionId> sections;
             for (auto &section : builder.data_->sections)
                 if (section.script == id.value())
                     sections[section.sourceSection] = section.id;
             auto offset = count32(result.project.presentation.folders.size());
-            for (auto &folder : script.value().metadata.folders) {
+            if (item.retainFolders) for (auto &folder : script.value().metadata.folders) {
                 PresentationFolder out{id.value(), folder.name};
                 for (auto section : folder.sections) {
                     auto found = sections.find(section.value());

@@ -244,4 +244,11 @@
     <Copy SourceFiles="$(SalsaRepositoryRoot)THIRD_PARTY_NOTICES.md" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true"/>
     <Copy SourceFiles="$(SalsaRepositoryRoot)third-party\zstd\LICENSE" DestinationFiles="$(OutDir)ZSTD-LICENSE.txt" SkipUnchangedFiles="true"/>
   </Target>
+  <ItemGroup><ClInclude Include="src\Program\ProgramEditor.inl" /></ItemGroup>
+  <ItemGroup><ClCompile Include="src\Program\EditorWorkspace.cpp"/><ClInclude Include="include\SalsaCore\Program\EditorWorkspace.h"/></ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Program\ProgramValues.cpp" />
+    <ClInclude Include="include\SalsaCore\Program\ProgramValues.h" />
+    <ClInclude Include="src\Program\ProgramTypedValues.h" />
+  </ItemGroup>
 </Project>

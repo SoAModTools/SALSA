@@ -678,7 +678,12 @@ Result<ProjectFile> ProgramPersistence::load(const std::filesystem::path &path, 
             require(bool(file.read(reinterpret_cast<char *>(bytes.data() + at), n)), "Truncated project file");
             at += n;
         }
-        return decode(bytes, limits, stop, observer);
+        auto decoded=decode(bytes, limits, stop, observer);
+        if (!decoded) return decoded;
+        auto digest=sha256(bytes);
+        if (!digest) return Result<ProjectFile>::failure(digest.diagnostics());
+        decoded.value().encodedDigest=digest.value();
+        return decoded;
     } catch (const std::exception &e) {
         return Result<ProjectFile>::failure(failure(e.what()));
     }

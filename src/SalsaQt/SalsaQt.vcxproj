@@ -54,67 +54,29 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="Sct\SctRouteDialog.cpp" />
     <ClCompile Include="Application\ExclusiveOperationController.cpp" />
     <ClCompile Include="Application\ExclusiveOperationCoordinator.cpp" />
     <ClCompile Include="Application\ExclusiveOperationDialog.cpp" />
-    <ClCompile Include="Application\DisabledActionHintPresenter.cpp" />
     <ClCompile Include="Application\HelpWindow.cpp" />
-    <ClCompile Include="Application\MainWindow.cpp" />
     <ClCompile Include="Application\SalsaLogging.cpp" />
-    <ClCompile Include="Application\TransientNoticePresenter.cpp" />
     <ClCompile Include="Legacy\LegacyConversionDialog.cpp" />
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="Sct\SctDocumentController.cpp" />
-    <ClCompile Include="Sct\SctSequenceEditorDialog.cpp" />
-    <ClCompile Include="Sct\SctEntrypointEditorDialog.cpp" />
-    <ClCompile Include="Sct\SctInterpretationDialog.cpp" />
-    <ClCompile Include="Sct\SctStoryStateDialog.cpp" />
-    <ClCompile Include="Sct\SctLanguageEditorDialog.cpp" />
     <!-- MSVC 14.51 crashes in LTCG for this dialog TU; retain ordinary /O2. -->
-    <ClCompile Include="Sct\SctEntrypointTools.cpp"><WholeProgramOptimization>false</WholeProgramOptimization></ClCompile>
     <ClInclude Include="Sct\SctEntrypointTools.h" />
-    <ClCompile Include="Sct\SctCatalogEditorDialog.cpp" />
-    <ClCompile Include="Sct\SctExportDialog.cpp" />
-    <ClCompile Include="Sct\SctRebaseDialog.cpp" />
-    <ClCompile Include="Sct\SctDocumentWidget.cpp" />
-    <ClCompile Include="Sct\SctOutlineModel.cpp" />
-    <ClCompile Include="Sct\SctStructuredOutlineModel.cpp" />
     <ClCompile Include="Sct\SctMessageEditorWidget.cpp" />
-    <ClCompile Include="Sct\SctMetadataEditorWidget.cpp" />
-    <ClCompile Include="Sct\SctParameterTableModel.cpp" />
     <ClCompile Include="Sct\SctScptEditorWidget.cpp" />
-    <ClCompile Include="Sct\SctSemanticNavigatorWidget.cpp" />
-    <ClCompile Include="Workspace\DiagnosticsModel.cpp" />
-    <ClCompile Include="Workspace\ActivityLogModel.cpp" />
-    <ClCompile Include="Workspace\WorkspaceController.cpp" />
-    <ClCompile Include="Workspace\WorkspaceOperationController.cpp" />
-    <ClCompile Include="Workspace\WorkspaceMaintenanceController.cpp" />
-    <ClCompile Include="Workspace\DatasetOverviewWidget.cpp" />
-    <ClCompile Include="Workspace\WorkspaceModel.cpp" />
     <QtMoc Include="Application\ExclusiveOperationController.h" />
     <QtMoc Include="Application\ExclusiveOperationCoordinator.h" />
     <QtMoc Include="Application\ExclusiveOperationDialog.h" />
-    <QtMoc Include="Workspace\WorkspaceController.h" />
-    <QtMoc Include="Workspace\WorkspaceOperationController.h" />
-    <QtMoc Include="Workspace\WorkspaceMaintenanceController.h" />
     <QtMoc Include="Legacy\LegacyConversionDialog.h" />
     <ClInclude Include="Sct\SctSequenceEditorDialog.h" />
     <ClInclude Include="Sct\SctEntrypointEditorDialog.h" />
     <ClInclude Include="Sct\SctInterpretationDialog.h" />
     <ClInclude Include="Sct\SctLanguageEditorDialog.h" />
-    <QtMoc Include="Sct\SctDocumentController.h" />
     <ClInclude Include="Sct\SctCatalogEditorDialog.h" />
-    <QtMoc Include="Sct\SctExportDialog.h" />
-    <QtMoc Include="Sct\SctRebaseDialog.h" />
-    <QtMoc Include="Sct\SctDocumentWidget.h" />
-    <QtMoc Include="Sct\SctOutlineModel.h" />
-    <QtMoc Include="Sct\SctStructuredOutlineModel.h" />
     <QtMoc Include="Sct\SctMessageEditorWidget.h" />
     <ClInclude Include="Sct\SctMetadataEditorWidget.h" />
-    <QtMoc Include="Sct\SctParameterTableModel.h" />
     <QtMoc Include="Sct\SctScptEditorWidget.h" />
-    <QtMoc Include="Sct\SctSemanticNavigatorWidget.h" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Application\MainWindow.h" />
@@ -126,7 +88,6 @@
     <ClInclude Include="Workspace\DiagnosticsModel.h" />
     <ClInclude Include="Workspace\ActivityLogModel.h" />
     <ClInclude Include="Ui\UiConstants.h" />
-    <QtMoc Include="Workspace\DatasetOverviewWidget.h" />
     <ClInclude Include="Workspace\WorkspaceModel.h" />
   </ItemGroup>
   <ItemGroup>
@@ -158,4 +119,16 @@
     <Error Condition="!Exists('$(SalsaQtDeployTool)')" Text="SALSA Qt deployment tool was not found at '$(SalsaQtDeployTool)'." />
     <Exec Command="&quot;$(SalsaQtDeployTool)&quot; $(SalsaQtDeployMode) --compiler-runtime --force --verbose 0 &quot;$(TargetPath)&quot;" EnvironmentVariables="VCINSTALLDIR=$(VCInstallDir)" />
   </Target>
+  <ItemGroup>
+    <ClCompile Include="Sct\ProgramOutlineModel.cpp" />
+    <ClInclude Include="Sct\ProgramOutlineModel.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Application\ProgramOperation.cpp" />
+    <ClInclude Include="Application\ProgramOperation.h" />
+    <ClCompile Include="Application\ProgramWindow.cpp" />
+    <ClInclude Include="Application\ProgramWindow.h" />
+    <ClCompile Include="Sct\ProgramValueDialog.cpp" />
+    <ClInclude Include="Sct\ProgramValueDialog.h" />
+  </ItemGroup>
 </Project>

@@ -1,6 +1,8 @@
 #include "SalsaCore/Program/ProgramPersistence.h"
 #include "SalsaCore/Persistence/AtomicFile.h"
 #include "SalsaCore/Program/ProgramService.h"
+#include "SalsaCore/Program/ProgramValues.h"
+#include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include "SpiceSCT/SctInstructionFactory.h"
 #include <gtest/gtest.h>
@@ -86,6 +88,46 @@ struct Fixture {
     }
     ~Fixture() { service.shutdown().get(); }
 };
+TEST(ProgramServiceTest, EditorPagesAndSelectedValuesRemainScoped) {
+    Fixture f;
+    auto page = f.service.outline(f.revision, {f.section, 1, 2}).get();
+    ASSERT_TRUE(page) << messages(page.diagnostics());
+    EXPECT_EQ(page.value().total, 4u);
+    ASSERT_EQ(page.value().rows.size(), 2u);
+    EXPECT_EQ(std::get<SctActionId>(page.value().rows[0].subject), f.other);
+    EXPECT_EQ(std::get<SctActionId>(page.value().rows[1].subject), f.branch);
+    auto empty = f.service.outline(f.revision, {f.section, 500, 128}).get();
+    ASSERT_TRUE(empty); EXPECT_TRUE(empty.value().rows.empty()); EXPECT_EQ(empty.value().total, 4u);
+    ir::ReadSelection selection; selection.actions = {f.loop}; selection.descend = false; selection.referencedText = false;
+    auto scope = f.service.read(f.revision, selection).get(); ASSERT_TRUE(scope);
+    EXPECT_EQ(scope.value()->actions.size(), 1u); EXPECT_TRUE(scope.value()->texts.empty());
+    ASSERT_EQ(scope.value()->conditions.size(), 1u);
+    auto expression = ir::ProgramValues::expression(scope.value()->payload, scope.value()->conditions[0].result);
+    ASSERT_TRUE(expression);
+    EXPECT_EQ(SctExpressionLanguage::project(expression.value()).text, SctExpressionLanguage::project(*sct::SctExpressionFactory::bitVariable(121).expression).text);
+    auto path = f.service.locate(f.revision, f.condition).get(); ASSERT_TRUE(path);
+    EXPECT_EQ(path.value().script, f.script);
+    EXPECT_EQ(path.value().subjects, (std::vector<ir::EditorSubject>{f.script,f.section,f.loop,f.condition}));
+    selection = {}; selection.texts = {f.text}; selection.descend = false;
+    auto text = f.service.read(f.revision, selection).get(); ASSERT_TRUE(text);
+    EXPECT_TRUE(text.value()->actions.empty()); ASSERT_EQ(text.value()->texts.size(), 1u);
+    auto value = ir::ProgramValues::text(text.value()->payload,text.value()->texts.front().value); ASSERT_TRUE(value);
+    EXPECT_EQ(std::get<sct::SctPlainText>(value.value()).utf8,"Original");
+    auto encoded=ir::ProgramValues::text(value.value()); ASSERT_TRUE(encoded);
+    auto changed=f.service.edit({f.revision,{ir::ReplaceText{f.text,encoded.value()}}}).get(); ASSERT_TRUE(changed);
+    EXPECT_FALSE(f.service.outline(f.revision,{f.section,0,128}).get());
+    f.revision=changed.value().status.current;
+    auto added=f.service.edit({f.revision,{ir::CreateText{f.script,"new_text",true,sct::SctTextKind::PlainString,encoded.value()}}}).get();ASSERT_TRUE(added);f.revision=added.value().status.current;
+    ASSERT_EQ(added.value().texts.size(),1u);const auto createdText=added.value().texts.front();
+    auto removed=f.service.edit({f.revision,{ir::RemoveText{createdText}}}).get();ASSERT_TRUE(removed);f.revision=removed.value().status.current;
+    auto restored=f.service.undo(f.revision).get();ASSERT_TRUE(restored);f.revision=restored.value().status.current;
+    ir::ReadSelection createdSelection;createdSelection.texts={createdText};createdSelection.descend=false;
+    ASSERT_TRUE(f.service.read(f.revision,createdSelection).get());
+    auto cp=f.service.checkpoint(f.revision).get();ASSERT_TRUE(cp);
+    auto binary=ir::ProgramPersistence::encode(*cp.value().program);ASSERT_TRUE(binary);
+    auto reopened=ir::ProgramPersistence::decode(binary.value());ASSERT_TRUE(reopened);EXPECT_NE(reopened.value().program->find(createdText),nullptr);
+
+}
 TEST(ProgramServiceTest, LocalBatchHistoryAndReaderLifetime) {
     Fixture f;
     auto old = f.service.read(f.revision, {{}, {}, {f.writer, f.loop}}).get();

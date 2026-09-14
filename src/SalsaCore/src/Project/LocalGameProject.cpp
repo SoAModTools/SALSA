@@ -411,6 +411,22 @@ const AssetCatalogSnapshot& LocalGameProject::snapshot() const noexcept {
     return catalog_;
 }
 
+Result<SourceAssetSnapshot> LocalGameProject::loadContextAsset(const AssetLocator& locator) const {
+    auto safe = rejectReparseComponents(dataset_.root, locator);
+    if (!safe) return Result<SourceAssetSnapshot>::failure(safe.diagnostics());
+    std::error_code ec;
+    auto path = std::filesystem::canonical(dataset_.root / locator.path(), ec);
+    if (ec || !pathIsWithin(dataset_.root, path))
+        return Result<SourceAssetSnapshot>::failure(error(DiagnosticCode::AssetOutsideDataset,
+            "The selected context asset cannot be resolved inside the dataset.", locator.path()));
+    auto bytes = readFile(path);
+    if (!bytes) return Result<SourceAssetSnapshot>::failure(bytes.diagnostics());
+    auto digest = sha256(bytes.value());
+    if (!digest) return Result<SourceAssetSnapshot>::failure(digest.diagnostics());
+    AssetDescriptor descriptor{locator, bytes.value().size(), SourceRevision{digest.value()}};
+    return Result<SourceAssetSnapshot>::success({std::move(descriptor), std::move(bytes).takeValue()});
+}
+
 Result<SourceAssetSnapshot> LocalGameProject::loadAsset(
     const AssetLocator& locator) const {
     const auto found = std::ranges::lower_bound(

@@ -1,4 +1,4 @@
-#include "Application/MainWindow.h"
+#include "Application/ProgramWindow.h"
 
 #include "SalsaCore/Application/ApplicationInfo.h"
 
@@ -20,7 +20,7 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationVersion(
         QString::fromUtf8(version.data(), static_cast<qsizetype>(version.size())));
 
-    salsa::qt::MainWindow mainWindow;
+    salsa::qt::ProgramWindow mainWindow;
     if (QCoreApplication::arguments().contains(QStringLiteral("--smoke-test"))) {
         return EXIT_SUCCESS;
     }
