@@ -5,6 +5,7 @@ SALSA is an editor for Skies of Arcadia Legends script files. The current produc
 ## Editing
 
 - [Parameters and SCPT expressions](Parameters.md)
+- [Story flags and platform differences](StoryFlags.md)
 - [Sequences and named conditions](SequencesAndConditions.md)
 - [Modules and authoring projects](ModulesAndProjects.md)
 - [Language groups and text](LanguageGroupsAndText.md)

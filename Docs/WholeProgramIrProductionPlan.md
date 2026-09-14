@@ -144,3 +144,12 @@ Use the established standalone evaluator for focused production-backed loading/e
 For each slice, record what became usable, remaining representation/coverage limits and scoped checks, then commit. No pushes or submodule changes. WP1 through WP5 are complete. WP6 now supplies the production authority and loading/editing/persistence/publication cutover. Its remaining presentation ports and validation limits are recorded below; do not treat this as a claim of full parity with every retired convenience surface.
 
 WP6 implementation notes and the remaining presentation-parity limits are recorded in [the editor cutover document](WholeProgramIrEditor.md). Do not confuse the new production entry point with completion of every retired convenience surface.
+
+
+## Story flags and platform bindings — planning follow-up
+
+Keep symbolic story-state identity separate from physical bank/index binding. The six reviewed GC/DC JP/US/EU executables each allocate 27,328 BitVars, but discovery families relocate and expand within that capacity and Legends adds other native meanings. Capacity, known occupancy, candidate availability, project reservation and lifecycle must remain distinct. The shared partial-clear window is `0x740–0x7FF`; an SCT absence is not evidence of native/resource non-use.
+
+Plan explicit platform-qualified bindings and project-wide reservations, with script-specific display aliases that do not imply script-local physical storage. No automatic numeric-offset translation, free-bit guarantee or bank expansion is implemented by this decision. Preserve raw references and allow users to define meanings. Ordinary encoding choices do not translate gameplay semantics. See [the authoring guide](StoryFlags.md); detailed research provenance remains in ignored planning records.
+
+Standalone cutscene modules retain entry slots and alternative incoming routes, including route conditions and preparation/consumption. Record whole-module writes and clears independently of return/continuation/transition/scheduled-work outcomes. Low flag numbers suggest initial grouping, not chronological edges or exclusion of higher flags. Binding and control edits update affected dependency buckets; aliases update presentation only. Symbolic allocation and the integrated cutscene presentation remain future work, not an expansion of the completed production storage slices.

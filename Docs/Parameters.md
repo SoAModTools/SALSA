@@ -8,6 +8,8 @@ Select an instruction to see its parameters. The parameter table has three colum
 
 Runtime notes are research aids. They may be incomplete or incorrect and do not impose validation, platform, or export rules.
 
+For bit-bank capacity, platform-specific discovery flags and choosing story-state indices, see [Story flags and platform differences](StoryFlags.md). An encodable index is not necessarily a valid or unused game-state slot.
+
 ## Editing parameter values
 
 Double-click an editable Value cell. Press Enter to validate and commit the change. Press Escape or move focus away to cancel it. Invalid input leaves the editor open, explains the problem, and does not create an Undo step.

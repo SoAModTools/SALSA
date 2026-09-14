@@ -21,6 +21,10 @@ The target settings are:
 
 Authoring-project export builds a fresh SCT from understood current content. Opaque imported bytes remain baseline evidence; referenced undecoded text and unsupported executable content require repair. A separate standalone-document preservation workflow retains its stricter source-preservation contract. Validation or encoding failure leaves the destination unchanged.
 
+## Platform-specific state
+
+Export encoding settings do not translate the meaning of raw variable indices. Dreamcast and GameCube have equal bit-bank capacity but different discovery-state locations and native feature consumers. Review [story flags and platform differences](StoryFlags.md) when moving content between platforms; symbolic allocation and automatic flag remapping are not current export features.
+
 ## Editing while export runs
 
 Export captures the exact active revision when it begins. You may continue editing while that revision is materialized, validated, and written in the background. If newer edits exist when the operation finishes, SALSA reports that they remain unpublished. Run export again when you want those edits included.
