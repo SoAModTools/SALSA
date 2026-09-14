@@ -156,7 +156,7 @@ TEST(WholeProgramTest, OwnsPreparedConditionsLoopsSwitchesAndScopedTransfers) {
         auto loop = *builder.loop(created.value());
         auto prep = builder.conditionPreparation(loop.condition);
         ASSERT_TRUE(builder.instruction(prep, write)); ASSERT_TRUE(builder.instruction(prep, write));
-        const std::array cases{ir::Case{1, ir::CaseExit::Fallthrough}, ir::Case{2}, ir::Case{}};
+        const std::array cases{ir::Case{{5, 1, 3}, false, ir::CaseExit::Fallthrough}, ir::Case{{2}}, ir::Case{{8}, true}};
         auto selected = builder.switchRegion(loop.body, result, cases); ASSERT_TRUE(selected);
         auto caseBodies = builder.branchBodies(selected.value());
         auto continuation = builder.transfer(caseBodies[0], ir::TransferKind::Continue, loop.owner);
@@ -184,7 +184,11 @@ TEST(WholeProgramTest, OwnsPreparedConditionsLoopsSwitchesAndScopedTransfers) {
         EXPECT_EQ(p.incoming(id).size(), 3);
         auto switchId = p.find(loop->body)->order->front();
         EXPECT_TRUE(p.switchRegion(switchId)); EXPECT_EQ(p.arms(switchId)[0].caseExit, ir::CaseExit::Fallthrough);
-        EXPECT_FALSE(p.arms(switchId)[2].caseValue);
+        EXPECT_TRUE(p.arms(switchId)[2].includesDefault);
+        auto sharedLabels = p.caseLabels(p.arms(switchId)[0].id);
+        EXPECT_EQ((std::vector<std::int32_t>(sharedLabels.begin(), sharedLabels.end())), (std::vector<std::int32_t>{5, 1, 3}));
+        EXPECT_EQ(p.arms(switchId).size(), 3); // Five numeric labels and Default, three owned bodies.
+        EXPECT_EQ(p.caseLabels(p.arms(switchId)[2].id).front(), 8);
         auto exit = p.find(p.arms(switchId)[1].body)->order->front();
         EXPECT_FALSE(p.transferDestination(exit)->sequence.valid());
         EXPECT_EQ(p.transferDestination(exit)->construct, switchId);
@@ -192,29 +196,41 @@ TEST(WholeProgramTest, OwnsPreparedConditionsLoopsSwitchesAndScopedTransfers) {
     }
 }
 TEST(WholeProgramTest, RejectsInvalidStructuredScopesAndSwitchCases) {
-    for (int invalid = 0; invalid < 6; ++invalid) {
+    for (int invalid = 0; invalid < 9; ++invalid) {
         SCOPED_TRACE(invalid);
         ir::ProgramBuilder b({Project});
         auto script = b.importedScript(baseline(), {}).value();
         auto section = b.section({{}, script, "scene"}).value(); auto root = b.sectionBody(section);
         auto condition = b.expression(bit(1)).value();
         auto loopId = b.loop(root, ir::LoopKind::For, condition).value(); auto loop = *b.loop(loopId);
-        const std::array cases{ir::Case{1}, ir::Case{}};
+        const std::array cases{ir::Case{{1}}, ir::Case{{}, true}};
         auto switchId = b.switchRegion(loop.body, condition, cases).value();
         if (invalid == 0) EXPECT_FALSE(b.transfer(root, ir::TransferKind::Continue, loopId));
         if (invalid == 1) EXPECT_FALSE(b.transfer(b.branchBodies(switchId)[0], ir::TransferKind::Continue, switchId));
         if (invalid == 2) {
-            const std::array duplicate{ir::Case{1}, ir::Case{1}};
+            const std::array duplicate{ir::Case{{1, 2}}, ir::Case{{2}}};
             EXPECT_FALSE(b.switchRegion(root, condition, duplicate));
         }
         if (invalid == 3) {
-            const std::array tail{ir::Case{{}, ir::CaseExit::Fallthrough}};
+            const std::array tail{ir::Case{{}, true, ir::CaseExit::Fallthrough}};
             EXPECT_FALSE(b.switchRegion(root, condition, tail));
         }
         if (invalid == 4) EXPECT_FALSE(b.transfer(loop.update, ir::TransferKind::Continue, loopId));
         if (invalid == 5) {
             b.metadata().modules.push_back({{}, script, "Outer", {root}});
             b.metadata().modules.push_back({{}, script, "Overlap", {b.conditionPreparation(loop.condition)}});
+        }
+        if (invalid == 6) {
+            const std::array duplicate{ir::Case{{1, 1}}};
+            EXPECT_FALSE(b.switchRegion(root, condition, duplicate));
+        }
+        if (invalid == 7) {
+            const std::array duplicate{ir::Case{{1}, true}, ir::Case{{}, true}};
+            EXPECT_FALSE(b.switchRegion(root, condition, duplicate));
+        }
+        if (invalid == 8) {
+            const std::array missingLabel{ir::Case{}};
+            EXPECT_FALSE(b.switchRegion(root, condition, missingLabel));
         }
         EXPECT_FALSE(b.finish());
     }

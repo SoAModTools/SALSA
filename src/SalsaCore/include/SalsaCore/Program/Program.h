@@ -45,7 +45,8 @@ struct Arm {
     SctActionId owner;
     ConditionId condition; // Conditional arm check; absent for Else and switch arms.
     SctSequenceId body;
-    std::optional<std::int32_t> caseValue; // Absent means Default for switch arms.
+    std::uint32_t firstLabel = 0, labelCount = 0; // Shared ordered case-label pool.
+    bool includesDefault = false; // Default may share this body with numeric labels.
     CaseExit caseExit = CaseExit::ExitSwitch;
 };
 struct ConditionRegion {
@@ -63,7 +64,12 @@ struct Loop {
     SctSequenceId initialize, body, update; // initialize/update exist only for For.
 };
 struct Switch { SctActionId owner; ConditionId selector; };
-struct Case { std::optional<std::int32_t> value; CaseExit exit = CaseExit::ExitSwitch; };
+// Construction input only; published labels are pooled, not a vector per arm.
+struct Case {
+    std::vector<std::int32_t> labels;
+    bool includesDefault = false;
+    CaseExit exit = CaseExit::ExitSwitch;
+};
 enum class TransferKind : std::uint8_t { Break, Continue };
 struct Transfer { SctActionId owner, target; TransferKind kind = TransferKind::Break; };
 struct TransferDestination {
@@ -195,6 +201,7 @@ public:
     std::span<const ValueId> children(ValueId) const noexcept;
     std::string_view text(ValueId) const noexcept;
     std::span<const Arm> arms(SctActionId) const noexcept;
+    std::span<const std::int32_t> caseLabels(ArmId) const noexcept;
     std::span<const VariableUse> uses(Variable) const noexcept;
     std::span<const VariableUse> computedWrites() const noexcept;
     std::span<const TargetUse> incoming(SctActionId) const noexcept;

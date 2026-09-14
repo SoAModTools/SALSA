@@ -28,6 +28,12 @@ SPICE owns native file parsing and composition. SALSA owns authoring identity, e
 
 No story graph redesign, automatic main-story certainty, full timeline simulation, pruning, new-script creation, SALT integration or MLD relationship expansion belongs to this conversion. Queries must still support all cutscene bit writes, including clears and writes late in a scene. Story presentation uses user-classified bits/relevant byte state; control flags are not automatically called story progress.
 
+## Additional authoring ideas and section boundaries
+
+See [optional authoring concepts](WholeProgramIrOptionalAuthoring.md). Shared switch labels are the selected core extension: one arm owns multiple labels and one body, with Default membership and fallthrough represented separately. Guards, wait views and named jump labels remain optional. Calls/returns can stay ordinary opcodes. Compound conditions within one SCPT parameter program already have an expression representation; no duplicate All/Any construct is required.
+
+Some cutscene sections may be organizational boundaries connected by fallthrough. Do not equate a section with a routine or an independent entrypoint, or infer lack of external entry from absence of observed jumps. WP3 grouping and WP5 lowering must retain the actual continuation and source boundaries, including modules spanning several sections. Do not synthesize calls/returns at every section boundary. Recognition is deferred; this records the user's observation and the design constraint.
+
 ## Proposed slices
 
 | Slice | Group | Working outcome |
@@ -73,7 +79,7 @@ Completion: semantic-level primitive edits and history execute without whole-pro
 
 ## WP3 — Semantic authoring and incremental relationships
 
-Port the existing sequence, structured-condition, module, entrypoint/activation, route, text/language and interpretation commands onto WP2 primitives. Structured intent is executable authored content in the same authority. Add commands for inserting/removing/reordering If/Else If/Else and switch arms, editing condition results/preparation and loop initialization/body/update, and moving body actions. Keep Break/Continue target identities stable, reject invalid lexical scopes, and preserve explicit case exit/fallthrough. Recognize and promote imported instruction flow only when its incoming edges, scheduling and exits can be retained; keep irregular flow explicit. Presentation shows sibling conditional arms, with each body directly beneath its condition. Unstructured typed instructions remain available as an escape hatch. Editing an if/else group must not construct, serialize and readopt a whole SctDocument as its implementation.
+Port the existing sequence, structured-condition, module, entrypoint/activation, route, text/language and interpretation commands onto WP2 primitives. Structured intent is executable authored content in the same authority. Add commands for inserting/removing/reordering If/Else If/Else and switch arms, editing condition results/preparation and loop initialization/body/update, and moving body actions. Keep Break/Continue target identities stable, reject invalid lexical scopes, and preserve explicit case exit/fallthrough. Shared case targets become multiple labels on one owned arm/body; changing a label must not duplicate or replace that body. Recognize and promote imported instruction flow only when its incoming edges, scheduling and exits can be retained; keep irregular flow explicit. Presentation shows sibling conditional arms, with each body directly beneath its condition. Unstructured typed instructions remain available as an escape hatch. Editing an if/else group must not construct, serialize and readopt a whole SctDocument as its implementation.
 
 Build function/module summaries and activation/transition relationships over direct facts and control flow. Preserve predicate structure, polarity, explicit targets, fallthrough, scheduling and source IDs. Whole-module traversal includes calls/shared helper dependencies, with explicit cycle/unknown handling. Never infer unconditional final story state just from the presence of a set or clear.
 

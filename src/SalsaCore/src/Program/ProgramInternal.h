@@ -62,6 +62,7 @@ struct ProgramData {
     std::vector<Sequence> sequences;
     std::vector<std::vector<SctActionId>> pendingOrders;
     std::vector<Arm> arms;
+    std::vector<std::int32_t> caseLabels;
     std::vector<ConditionRegion> conditions;
     std::vector<Loop> loops;
     std::vector<Switch> switches;

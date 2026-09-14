@@ -5,6 +5,11 @@ namespace salsa::core::program {
 const ConditionRegion* Program::find(ConditionId id) const noexcept {
     return data_->lookup(id.value, EntityKind::Condition, data_->conditions);
 }
+std::span<const std::int32_t> Program::caseLabels(ArmId id) const noexcept {
+    const auto* arm = data_->lookup(id.value, EntityKind::Arm, data_->arms);
+    if (!arm || !arm->labelCount) return {};
+    return std::span<const std::int32_t>(data_->caseLabels).subspan(arm->firstLabel, arm->labelCount);
+}
 const Loop* Program::loop(SctActionId id) const noexcept {
     const auto* a = find(id);
     return a && a->kind == ActionKind::Loop && a->detail < data_->loops.size() ? &data_->loops[a->detail] : nullptr;
@@ -72,9 +77,13 @@ Result<SctActionId> ProgramBuilder::switchRegion(SctSequenceId owner, ValueId se
         const auto* sequence = d.sequence(owner);
         require(sequence != nullptr, "Missing switch owner");
         const auto script = sequence->script;
-        std::set<std::optional<std::int32_t>> labels;
+        std::set<std::int32_t> labels;
+        bool hasDefault = false;
         for (std::size_t i = 0; i < cases.size(); ++i) {
-            require(labels.insert(cases[i].value).second, "Duplicate switch case or default");
+            require(!cases[i].labels.empty() || cases[i].includesDefault, "Switch arm needs labels or Default");
+            for (auto label : cases[i].labels) require(labels.insert(label).second, "Duplicate switch case label");
+            require(!cases[i].includesDefault || !hasDefault, "Duplicate switch Default");
+            hasDefault = hasDefault || cases[i].includesDefault;
             require(cases[i].exit == CaseExit::ExitSwitch || cases[i].exit == CaseExit::Fallthrough, "Unknown switch exit mode");
             require(cases[i].exit != CaseExit::Fallthrough || i + 1 < cases.size(), "Last switch arm cannot fall through");
         }
@@ -84,7 +93,10 @@ Result<SctActionId> ProgramBuilder::switchRegion(SctSequenceId owner, ValueId se
         for (const auto& c : cases) {
             ArmId arm{d.claim(0, EntityKind::Arm, count32(d.arms.size()))};
             const auto body = d.makeSequence(script, arm, {}, SequenceRole::ArmBody);
-            d.arms.push_back({arm, id, {}, body, c.value, c.exit});
+            const auto firstLabel = count32(d.caseLabels.size());
+            count32(d.caseLabels.size() + c.labels.size());
+            d.caseLabels.insert(d.caseLabels.end(), c.labels.begin(), c.labels.end());
+            d.arms.push_back({arm, id, {}, body, firstLabel, count32(c.labels.size()), c.includesDefault, c.exit});
         }
         const auto index = count32(d.switches.size());
         d.switches.push_back({id, check});
