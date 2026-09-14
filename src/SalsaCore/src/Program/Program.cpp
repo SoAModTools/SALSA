@@ -124,8 +124,9 @@ Result<SctActionId> ProgramBuilder::conditional(SctSequenceId owner, std::span<c
         const auto first = count32(d.arms.size());
         for (auto condition : conditions) {
             ArmId arm{d.claim(0, EntityKind::Arm, count32(d.arms.size()))};
-            const auto body = d.makeSequence(script, arm);
-            d.arms.push_back({arm, id, condition, body});
+            const auto body = d.makeSequence(script, arm, {}, SequenceRole::ArmBody);
+            const auto check = condition.valid() ? d.makeCondition(script, id, condition, arm) : ConditionId{};
+            d.arms.push_back({arm, id, check, body});
         }
         d.actions.append({id, owner, ActionKind::Conditional, {}, first, count32(conditions.size()), 0});
         d.pendingOrders[d.directory.find(owner.value).index].push_back(id);

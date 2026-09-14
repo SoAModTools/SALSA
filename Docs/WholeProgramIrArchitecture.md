@@ -4,7 +4,7 @@ Decision accepted by the user on 2026-09-13: **paged instruction storage and zst
 
 ## Authored structure and lowering
 
-SALSA owns a structured authoring program: If/Else If/Else chains own ordered conditions and body sequences, alongside explicit typed instruction/control-flow leaves. The editor can therefore be flatter without requiring generated jumps to be the source of truth. A compiler-style lowering stage produces derived instruction flow for inspection and SPICE composition. Imported irregular control flow remains explicit until it can be safely promoted. Paged storage and zstd level 1 apply to this authored model; they do not require one record per native opcode. WP1 establishes construct records and input; WP3 adds semantic transformation commands; WP5 implements shared lowering.
+SALSA owns a structured authoring program: If/Else If/Else chains own ordered conditions and body sequences, alongside explicit typed instruction/control-flow leaves. The editor can therefore be flatter without requiring generated jumps to be the source of truth. A compiler-style lowering stage produces derived instruction flow for inspection and SPICE composition. Imported irregular control flow remains explicit until it can be safely promoted. Paged storage and zstd level 1 apply to this authored model; they do not require one record per native opcode. Condition regions own preparation actions plus a result expression. While/DoWhile/For, Switch cases/default and scoped Break/Continue share this model, with explicit evaluation phases. WP1 establishes construct records and input; WP3 adds semantic transformation commands; WP5 implements shared lowering.
 
 ## Why this combination
 

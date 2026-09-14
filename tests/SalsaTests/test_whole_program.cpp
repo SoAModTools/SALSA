@@ -95,7 +95,7 @@ TEST(WholeProgramTest, StructuredChainOwnsFlatArmsAndBodiesWithoutGeneratedJumps
     EXPECT_EQ(p.find(chain.value())->kind, ir::ActionKind::Conditional);
     EXPECT_FALSE(p.find(chain.value())->value.valid());
     auto arms = p.arms(chain.value()); ASSERT_EQ(arms.size(), 3); EXPECT_FALSE(arms[2].condition.valid());
-    for (const auto& arm : arms) EXPECT_EQ(p.find(arm.body)->owner, arm.id);
+    for (const auto& arm : arms) EXPECT_EQ(std::get<ir::ArmId>(*p.find(arm.body)->owner), arm.id);
     EXPECT_EQ(p.uses({ir::Bank::Bit, 121}).size(), 2); EXPECT_EQ(p.uses({ir::Bank::Bit, 122}).size(), 1);
     EXPECT_EQ(p.uses({ir::Bank::Bit, 122})[0].site.arm, arms[1].id);
     EXPECT_TRUE(p.incoming(chain.value()).empty());
@@ -134,4 +134,90 @@ TEST(WholeProgramTest, NativeBoundaryParsesBothByteOrdersAndReleasesSource) {
         EXPECT_EQ(program.value()->scripts()[0].context.outputProfile->bigEndian, platform == sct::SctPlatform::GameCube);
     }
 }
+TEST(WholeProgramTest, OwnsPreparedConditionsLoopsSwitchesAndScopedTransfers) {
+    ir::ProgramBuilder builder({Project});
+    auto script = builder.importedScript(baseline(), {}).value();
+    auto section = builder.section({{}, script, "scene"}).value();
+    auto root = builder.sectionBody(section);
+    auto result = builder.expression(bit(121)).value();
+    auto constant = builder.expression(sct::SctExpressionFactory::encodedDecimalLiteral(44)).value();
+    auto parameter = builder.value(ir::ValueKind::Parameter, 0, 0, std::span(&constant, 1)).value();
+    auto write = builder.value(ir::ValueKind::Instruction, 17, 0, std::span(&parameter, 1)).value();
+    const std::array checks{result, result, ir::ValueId{}};
+    auto chain = builder.conditional(root, checks).value();
+    auto conditions = builder.branchConditions(chain);
+    ASSERT_EQ(conditions.size(), 3); EXPECT_NE(conditions[0], conditions[1]); EXPECT_FALSE(conditions[2].valid());
+    auto elseIfPrep = builder.conditionPreparation(conditions[1]);
+    auto preparedWrite = builder.instruction(elseIfPrep, write).value();
+    builder.metadata().annotations.push_back({conditions[1], "Second check", {{SctEvidenceKind::UserAssertion, "Prepare only after the first check fails"}}});
+    std::vector<std::pair<SctActionId, SctActionId>> continues;
+    for (auto kind : {ir::LoopKind::While, ir::LoopKind::DoWhile, ir::LoopKind::For}) {
+        auto created = builder.loop(root, kind, result); ASSERT_TRUE(created);
+        auto loop = *builder.loop(created.value());
+        auto prep = builder.conditionPreparation(loop.condition);
+        ASSERT_TRUE(builder.instruction(prep, write)); ASSERT_TRUE(builder.instruction(prep, write));
+        const std::array cases{ir::Case{1, ir::CaseExit::Fallthrough}, ir::Case{2}, ir::Case{}};
+        auto selected = builder.switchRegion(loop.body, result, cases); ASSERT_TRUE(selected);
+        auto caseBodies = builder.branchBodies(selected.value());
+        auto continuation = builder.transfer(caseBodies[0], ir::TransferKind::Continue, loop.owner);
+        ASSERT_TRUE(continuation); continues.emplace_back(loop.owner, continuation.value());
+        ASSERT_TRUE(builder.transfer(caseBodies[1], ir::TransferKind::Break, selected.value()));
+        ASSERT_TRUE(builder.transfer(caseBodies[2], ir::TransferKind::Break, loop.owner));
+        // Break is also meaningful while preparing a condition.
+        ASSERT_TRUE(builder.transfer(prep, ir::TransferKind::Break, loop.owner));
+        if (kind == ir::LoopKind::For) {
+            ASSERT_TRUE(builder.instruction(loop.initialize, write)); ASSERT_TRUE(builder.instruction(loop.update, write));
+        } else { EXPECT_FALSE(loop.initialize.valid()); EXPECT_FALSE(loop.update.valid()); }
+    }
+    auto built = builder.finish(); ASSERT_TRUE(built) << messages(built.diagnostics());
+    const auto& p = *built.value();
+    EXPECT_EQ(p.find(preparedWrite)->owner, elseIfPrep);
+    EXPECT_EQ(p.find(elseIfPrep)->role, ir::SequenceRole::ConditionPreparation);
+    EXPECT_EQ(p.find(conditions[1])->arm, p.arms(chain)[1].id);
+    EXPECT_EQ(p.uses({ir::Bank::Bit, 44}).size(), 9); // Else If, six check actions, For initialize/update.
+    EXPECT_TRUE(std::ranges::any_of(p.uses({ir::Bank::Bit, 121}), [&](const ir::VariableUse& use) { return use.site.condition == conditions[1]; }));
+    for (auto [id, continuation] : continues) {
+        const auto* loop = p.loop(id); ASSERT_NE(loop, nullptr);
+        auto destination = p.transferDestination(continuation); ASSERT_TRUE(destination);
+        EXPECT_EQ(destination->construct, id);
+        EXPECT_EQ(destination->sequence, loop->kind == ir::LoopKind::For ? loop->update : p.find(loop->condition)->preparation);
+        EXPECT_EQ(p.incoming(id).size(), 3);
+        auto switchId = p.find(loop->body)->order->front();
+        EXPECT_TRUE(p.switchRegion(switchId)); EXPECT_EQ(p.arms(switchId)[0].caseExit, ir::CaseExit::Fallthrough);
+        EXPECT_FALSE(p.arms(switchId)[2].caseValue);
+        auto exit = p.find(p.arms(switchId)[1].body)->order->front();
+        EXPECT_FALSE(p.transferDestination(exit)->sequence.valid());
+        EXPECT_EQ(p.transferDestination(exit)->construct, switchId);
+        EXPECT_EQ(p.incoming(switchId)[0].kind, ir::TargetUseKind::Break);
+    }
+}
+TEST(WholeProgramTest, RejectsInvalidStructuredScopesAndSwitchCases) {
+    for (int invalid = 0; invalid < 6; ++invalid) {
+        SCOPED_TRACE(invalid);
+        ir::ProgramBuilder b({Project});
+        auto script = b.importedScript(baseline(), {}).value();
+        auto section = b.section({{}, script, "scene"}).value(); auto root = b.sectionBody(section);
+        auto condition = b.expression(bit(1)).value();
+        auto loopId = b.loop(root, ir::LoopKind::For, condition).value(); auto loop = *b.loop(loopId);
+        const std::array cases{ir::Case{1}, ir::Case{}};
+        auto switchId = b.switchRegion(loop.body, condition, cases).value();
+        if (invalid == 0) EXPECT_FALSE(b.transfer(root, ir::TransferKind::Continue, loopId));
+        if (invalid == 1) EXPECT_FALSE(b.transfer(b.branchBodies(switchId)[0], ir::TransferKind::Continue, switchId));
+        if (invalid == 2) {
+            const std::array duplicate{ir::Case{1}, ir::Case{1}};
+            EXPECT_FALSE(b.switchRegion(root, condition, duplicate));
+        }
+        if (invalid == 3) {
+            const std::array tail{ir::Case{{}, ir::CaseExit::Fallthrough}};
+            EXPECT_FALSE(b.switchRegion(root, condition, tail));
+        }
+        if (invalid == 4) EXPECT_FALSE(b.transfer(loop.update, ir::TransferKind::Continue, loopId));
+        if (invalid == 5) {
+            b.metadata().modules.push_back({{}, script, "Outer", {root}});
+            b.metadata().modules.push_back({{}, script, "Overlap", {b.conditionPreparation(loop.condition)}});
+        }
+        EXPECT_FALSE(b.finish());
+    }
+}
+
 }

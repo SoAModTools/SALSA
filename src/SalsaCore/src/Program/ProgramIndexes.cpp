@@ -130,11 +130,23 @@ void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
     };
     for (std::uint32_t i = 0; i < d.actions.size(); ++i) {
         const auto& a = *d.actions.find(i); const auto script = d.sequence(a.owner)->script;
+        auto condition = [&](ConditionId id) {
+            const auto* region = d.lookup(id.value, EntityKind::Condition, d.conditions);
+            require(region && region->owner == a.id, "Missing or foreign condition region");
+            inspect(region->result, {a.id, {}, region->arm, 0, id}, script);
+        };
         if (a.kind == ActionKind::Conditional) {
             for (std::uint32_t j = 0; j < a.armCount; ++j) {
                 const auto& arm = d.arms[a.firstArm + j];
-                if (arm.condition.valid()) inspect(arm.condition, {a.id, {}, arm.id}, script);
+                if (arm.condition.valid()) condition(arm.condition);
             }
+            continue;
+        }
+        if (a.kind == ActionKind::Loop) { condition(d.loops.at(a.detail).condition); continue; }
+        if (a.kind == ActionKind::Switch) { condition(d.switches.at(a.detail).selector); continue; }
+        if (a.kind == ActionKind::Transfer) {
+            const auto& transfer = d.transfers.at(a.detail);
+            d.targetUses.push_back({{a.id}, transfer.target, transfer.kind == TransferKind::Break ? TargetUseKind::Break : TargetUseKind::Continue});
             continue;
         }
         const auto& instruction = node(d, a.value);
@@ -206,8 +218,12 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
     };
     auto site = [&](const Site& site, SctScriptId owner) {
         action(site.action, owner);
-        require(!(site.arm && site.parameter), "Site cannot be an arm condition and a parameter");
+        require(!((site.arm || site.condition) && site.parameter), "Site cannot be an arm condition and a parameter");
         if (site.arm) { auto* arm = d.lookup(site.arm->value, EntityKind::Arm, d.arms); require(arm && arm->owner == site.action, "Foreign arm reference"); }
+        if (site.condition) {
+            const auto* c = d.lookup(site.condition->value, EntityKind::Condition, d.conditions);
+            require(c && c->owner == site.action && c->arm == site.arm, "Foreign condition site");
+        }
         if (site.parameter) operand(site.action, *site.parameter);
     };
     std::set<SctSequenceId> moduleOwners;
@@ -218,8 +234,7 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
     for (auto id : moduleOwners) {
         auto* current = d.sequence(id);
         while (current->owner) {
-            const auto* arm = d.lookup(current->owner->value, EntityKind::Arm, d.arms);
-            current = d.sequence(d.action(arm->owner)->owner);
+            current = d.sequence(d.action(d.parentAction(*current))->owner);
             require(!moduleOwners.contains(current->id), "Module ownership overlaps an enclosing sequence");
         }
     }
@@ -311,6 +326,7 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
             else if constexpr (std::is_same_v<T, SctSequenceId>) return EntityKind::Sequence;
             else if constexpr (std::is_same_v<T, SctActionId>) return EntityKind::Action;
             else if constexpr (std::is_same_v<T, ArmId>) return EntityKind::Arm;
+            else if constexpr (std::is_same_v<T, ConditionId>) return EntityKind::Condition;
             else if constexpr (std::is_same_v<T, SctModuleId>) return EntityKind::Module;
             else if constexpr (std::is_same_v<T, SctEntrypointId>) return EntityKind::Entry;
             else return EntityKind::Text;

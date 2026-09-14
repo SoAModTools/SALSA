@@ -7,6 +7,7 @@
 namespace salsa::core::program {
 
 using SectionId = SctAuthoringId<struct ProgramSectionTag>;
+using ConditionId = SctAuthoringId<struct ProgramConditionTag>;
 using ArmId = SctAuthoringId<struct ProgramArmTag>;
 // Pool handles are internal addresses, never authored identity. They are valid
 // for the lifetime of their immutable Program (and may change on file loading).
@@ -28,7 +29,7 @@ struct Value {
     std::uint32_t first = 0, count = 0, detail = 0;
     ValueKind kind = ValueKind::Word;
 };
-enum class ActionKind : std::uint8_t { Instruction, Conditional };
+enum class ActionKind : std::uint8_t { Instruction, Conditional, Loop, Switch, Transfer };
 struct Action {
     SctActionId id;
     SctSequenceId owner;
@@ -36,18 +37,47 @@ struct Action {
     ValueId value; // Instruction payload; absent for a conditional.
     std::uint32_t firstArm = 0, armCount = 0;
     std::uint64_t sourceInstruction = 0; // Qualified by owner's script baseline.
+    std::uint32_t detail = UINT32_MAX; // Index into the kind-specific construct table.
 };
+enum class CaseExit : std::uint8_t { ExitSwitch, Fallthrough };
 struct Arm {
     ArmId id;
     SctActionId owner;
-    ValueId condition; // Absent only for the final Else arm.
+    ConditionId condition; // Conditional arm check; absent for Else and switch arms.
     SctSequenceId body;
+    std::optional<std::int32_t> caseValue; // Absent means Default for switch arms.
+    CaseExit caseExit = CaseExit::ExitSwitch;
 };
+struct ConditionRegion {
+    ConditionId id;
+    SctActionId owner;
+    std::optional<ArmId> arm;
+    SctSequenceId preparation;
+    ValueId result;
+};
+enum class LoopKind : std::uint8_t { While, DoWhile, For };
+struct Loop {
+    SctActionId owner;
+    LoopKind kind = LoopKind::While;
+    ConditionId condition;
+    SctSequenceId initialize, body, update; // initialize/update exist only for For.
+};
+struct Switch { SctActionId owner; ConditionId selector; };
+struct Case { std::optional<std::int32_t> value; CaseExit exit = CaseExit::ExitSwitch; };
+enum class TransferKind : std::uint8_t { Break, Continue };
+struct Transfer { SctActionId owner, target; TransferKind kind = TransferKind::Break; };
+struct TransferDestination {
+    SctActionId construct;
+    SctSequenceId sequence; // Absent means after the target construct (Break).
+};
+using SequenceOwner = std::variant<ArmId, ConditionId, SctActionId>;
+enum class SequenceRole : std::uint8_t { SectionBody, ArmBody, ConditionPreparation, LoopInitialize, LoopBody, LoopUpdate };
 struct Sequence {
     SctSequenceId id;
     SctScriptId script;
-    std::optional<ArmId> owner; // Root sequences belong to sections.
+    std::optional<SequenceOwner> owner; // Root sequences belong to sections.
     std::shared_ptr<const std::vector<SctActionId>> order;
+    SequenceRole role = SequenceRole::SectionBody;
 };
 struct Section {
     SectionId id;
@@ -78,6 +108,7 @@ struct Site {
     std::optional<spice::sct::SctParameterAddress> parameter; // Empty: schedule or structured condition.
     std::optional<ArmId> arm;
     std::uint32_t operation = 0;
+    std::optional<ConditionId> condition;
 };
 struct Module {
     SctModuleId id;
@@ -101,7 +132,7 @@ struct Entrypoint {
     bool required() const noexcept { return kind == SctEntrypointKind::Lifecycle && (name == "init" || name == "loop"); }
 };
 struct Annotation {
-    std::variant<SctScriptId, SectionId, SctSequenceId, SctActionId, ArmId,
+    std::variant<SctScriptId, SectionId, SctSequenceId, SctActionId, ArmId, ConditionId,
         SctModuleId, SctEntrypointId, SctTextResourceId> subject;
     std::string alias;
     std::vector<SctAuthoringEvidence> evidence;
@@ -129,7 +160,8 @@ struct VariableUse {
     std::optional<Variable> variable; // Missing for computed destinations.
     Bank destinationBank = Bank::Bit;
 };
-struct TargetUse { Site site; SctActionId target; }; // Operand reference, not a claim that this is a call.
+enum class TargetUseKind : std::uint8_t { Operand, Break, Continue };
+struct TargetUse { Site site; SctActionId target; TargetUseKind kind = TargetUseKind::Operand; };
 struct Statistics {
     std::uint64_t actions = 0, values = 0, actionPages = 0, valuePages = 0;
     std::uint64_t excludedSourceBytes = 0, unavailableItems = 0;
@@ -155,6 +187,11 @@ public:
     const Script* find(SctScriptId) const noexcept;
     const Text* find(SctTextResourceId) const noexcept;
     const Value* find(ValueId) const noexcept;
+    const ConditionRegion* find(ConditionId) const noexcept;
+    const Loop* loop(SctActionId) const noexcept;
+    const Switch* switchRegion(SctActionId) const noexcept;
+    const Transfer* transfer(SctActionId) const noexcept;
+    std::optional<TransferDestination> transferDestination(SctActionId) const noexcept;
     std::span<const ValueId> children(ValueId) const noexcept;
     std::string_view text(ValueId) const noexcept;
     std::span<const Arm> arms(SctActionId) const noexcept;
@@ -196,6 +233,15 @@ public:
     // Creates empty owned body sequences; use instruction/conditional to fill them.
     Result<SctActionId> conditional(SctSequenceId, std::span<const ValueId> conditions);
     std::vector<SctSequenceId> branchBodies(SctActionId) const;
+    std::vector<ConditionId> branchConditions(SctActionId) const;
+    SctSequenceId conditionPreparation(ConditionId) const noexcept;
+    Result<SctActionId> loop(SctSequenceId, LoopKind, ValueId condition);
+    std::optional<Loop> loop(SctActionId) const;
+    Result<SctActionId> switchRegion(SctSequenceId, ValueId selector, std::span<const Case>);
+    std::optional<Switch> switchRegion(SctActionId) const;
+    // Targets must lexically enclose this action. Continue targets a loop body;
+    // Break can target any enclosing loop or switch scope.
+    Result<SctActionId> transfer(SctSequenceId, TransferKind, SctActionId target);
     // Cold authoring metadata, never an SctDocument or a physical patch.
     Metadata& metadata();
     template<class Id> Result<Id> allocate() {

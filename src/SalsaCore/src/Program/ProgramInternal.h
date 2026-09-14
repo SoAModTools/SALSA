@@ -29,7 +29,7 @@ private:
     std::vector<std::unique_ptr<std::array<T, PageSize>>> pages_;
     std::uint32_t size_ = 0;
 };
-enum class EntityKind : std::uint8_t { None, Script, Baseline, Section, Sequence, Action, Arm, Text, Module, Entry, Port, Language, Connection, LogicalText };
+enum class EntityKind : std::uint8_t { None, Script, Baseline, Section, Sequence, Action, Arm, Text, Module, Entry, Port, Language, Connection, LogicalText, Condition };
 struct Location { EntityKind kind = EntityKind::None; std::uint32_t index = 0; };
 // Sparse 64-bit identity support, one allocation per occupied directory page,
 // not a hash node/allocation per instruction. Zero is always absent.
@@ -62,6 +62,10 @@ struct ProgramData {
     std::vector<Sequence> sequences;
     std::vector<std::vector<SctActionId>> pendingOrders;
     std::vector<Arm> arms;
+    std::vector<ConditionRegion> conditions;
+    std::vector<Loop> loops;
+    std::vector<Switch> switches;
+    std::vector<Transfer> transfers;
     std::vector<Text> texts;
     Metadata metadata;
     Directory directory;
@@ -104,9 +108,27 @@ struct ProgramData {
         auto first = count32(characters.size()); count32(characters.size() + text.size());
         characters.insert(characters.end(), text.begin(), text.end()); return add(kind, first, count32(text.size()));
     }
-    SctSequenceId makeSequence(SctScriptId script, std::optional<ArmId> owner = {}, SctSequenceId requested = {}) {
+    SctSequenceId makeSequence(SctScriptId script, std::optional<SequenceOwner> owner = {}, SctSequenceId requested = {}, SequenceRole role = SequenceRole::SectionBody) {
         SctSequenceId id{claim(requested.value, EntityKind::Sequence, count32(sequences.size()))};
-        sequences.push_back({id, script, owner, {}}); pendingOrders.emplace_back(); return id;
+        sequences.push_back({id, script, owner, {}, role}); pendingOrders.emplace_back(); return id;
+    }
+    ConditionId makeCondition(SctScriptId script, SctActionId owner, ValueId result, std::optional<ArmId> arm = {}) {
+        const auto* v = values.find(result.value);
+        require(v && v->kind == ValueKind::Expression, "A condition needs a typed result expression");
+        ConditionId id{claim(0, EntityKind::Condition, count32(conditions.size()))};
+        auto preparation = makeSequence(script, id, {}, SequenceRole::ConditionPreparation);
+        conditions.push_back({id, owner, arm, preparation, result}); return id;
+    }
+    SctActionId parentAction(const Sequence& sequence) const {
+        if (!sequence.owner) return {};
+        return std::visit([&](auto id) -> SctActionId {
+            using T = decltype(id);
+            if constexpr (std::is_same_v<T, ArmId>) {
+                auto* a = lookup(id.value, EntityKind::Arm, arms); require(a != nullptr, "Missing arm owner"); return a->owner;
+            } else if constexpr (std::is_same_v<T, ConditionId>) {
+                auto* c = lookup(id.value, EntityKind::Condition, conditions); require(c != nullptr, "Missing condition owner"); return c->owner;
+            } else return id;
+        }, *sequence.owner);
     }
     SctScriptId beginScript(SctAuthoringBaseline baseline, SctScriptContext context) {
         require(baseline.importedDocument.valid(), "Imported document identity is required");
