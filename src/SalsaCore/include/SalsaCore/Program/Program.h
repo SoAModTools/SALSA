@@ -137,9 +137,56 @@ struct Entrypoint {
     std::vector<SctAuthoringEvidence> evidence;
     bool required() const noexcept { return kind == SctEntrypointKind::Lifecycle && (name == "init" || name == "loop"); }
 };
+// Slots describe a cutscene interface without owning a second copy of its code.
+enum class SlotRole : std::uint8_t { Generic, Entry, Exit };
+enum class SlotBoundary : std::uint8_t { Operand, Fallthrough, Terminal, SequenceEnd };
+struct Port {
+    SctPortId id;
+    SctPortOwner owner;
+    std::string name;
+    std::optional<SctActionId> action;
+    std::optional<SctSequenceId> sequence;
+    SlotRole role = SlotRole::Generic;
+    SlotBoundary boundary = SlotBoundary::Operand;
+    std::optional<spice::sct::SctParameterAddress> operand;
+};
+
+enum class EntryMethod : std::uint8_t { Unknown, InternalCall, Arrival, BattleReturn, Handler, Signal, NamedEntry };
+enum class RouteOutcome : std::uint8_t { Observe, LocalTransfer, ReturnToCaller, ResumeLoop, ScriptTransition, ScheduledCall };
+enum class RequirementMatch : std::uint8_t { True, False, Case, Default };
+struct RouteRequirement {
+    Site site;
+    RequirementMatch match = RequirementMatch::True;
+    std::vector<std::int32_t> labels;
+};
+// Requirements in one path are conjunctive; paths are alternatives. Expressions
+// remain in the executable IR and are resolved from these stable source sites.
+struct RoutePath {
+    std::vector<RouteRequirement> requirements;
+    std::vector<SctActionId> preparation, consumption;
+};
+struct RouteDefinition {
+    EntryMethod method = EntryMethod::Unknown;
+    RouteOutcome outcome = RouteOutcome::Observe;
+    std::vector<RoutePath> paths;
+    std::optional<SctEntrypointId> entrypoint, arrival;
+    // Receipt of an explicit connection command, never a replay recipe.
+    std::optional<SctActionId> implementation, boundTarget;
+    std::optional<spice::sct::SctParameterAddress> targetOperand;
+    std::string boundFilename;
+    std::optional<std::uint32_t> implementationOpcode;
+};
+struct Connection {
+    SctConnectionId id;
+    SctAuthoringReference<SctPortId> source, destination;
+    std::vector<SctAuthoringEvidence> evidence;
+    std::optional<SctExecutableRoute> route;
+    std::optional<RouteDefinition> cutscene;
+};
+
 struct Annotation {
     std::variant<SctScriptId, SectionId, SctSequenceId, SctActionId, ArmId, ConditionId,
-        SctModuleId, SctEntrypointId, SctTextResourceId> subject;
+        SctModuleId, SctEntrypointId, SctTextResourceId, SctPortId, SctConnectionId> subject;
     std::string alias;
     std::vector<SctAuthoringEvidence> evidence;
 };
@@ -154,9 +201,9 @@ struct VariableMeaning {
 struct Metadata {
     std::vector<Module> modules;
     std::vector<Entrypoint> entrypoints;
-    std::vector<SctAuthoringPort> ports;
+    std::vector<Port> ports;
     std::vector<SctLanguageGroup> languages;
-    std::vector<SctAuthoringConnection> connections;
+    std::vector<Connection> connections;
     std::vector<SctLogicalText> logicalTexts;
     std::vector<Annotation> annotations;
     std::vector<VariableMeaning> meanings;

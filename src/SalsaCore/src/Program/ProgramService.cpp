@@ -162,9 +162,9 @@ struct PreparedData {
     std::vector<RowSwap<Transfer>> transfers;
     std::optional<std::vector<Module>> modules;
     std::optional<std::vector<Entrypoint>> entries;
-    std::optional<std::vector<SctAuthoringPort>> ports;
+    std::optional<std::vector<Port>> ports;
     std::optional<std::vector<SctLanguageGroup>> languages;
-    std::optional<std::vector<SctAuthoringConnection>> connections;
+    std::optional<std::vector<Connection>> connections;
     std::optional<std::vector<SctLogicalText>> logicalTexts;
     std::optional<std::vector<VariableMeaning>> meanings;
     std::optional<std::vector<Annotation>> annotationTable;
@@ -238,7 +238,9 @@ struct PreparedData {
         }
     }
 };
+#include "CutsceneInternal.inl"
 #include "SemanticEdits.inl"
+#include "CutsceneEdits.inl"
 
 struct ServiceOwner {
     std::map<EditorSubject,std::string> outlineAliases;
@@ -255,9 +257,11 @@ struct ServiceOwner {
     std::vector<std::weak_ptr<PreparedData>> prepared;
     std::set<std::uint64_t> protectedIds;
     std::map<SctModuleId, std::shared_ptr<const ModuleSummary>> summaries;
+    std::map<SctModuleId, std::shared_ptr<const CutsceneSummary>> cutscenes;
     std::uint64_t summaryBuild = 0;
+    CutsceneQuery cutscene(Revision, SctModuleId, std::stop_token);
     void invalidate(const ChangeReceipt &receipt) noexcept;
-    SummaryQuery summarize(Revision, SctModuleId, std::stop_token);
+    SummaryQuery summarize(Revision, SctModuleId, std::stop_token, bool cutsceneScope=false);
     ServiceStatus status() const {
         return {
             {data ? data->id : SctAuthoringProjectId{}, data ? data->revision : 0, generation}, state, state != saved};
@@ -305,6 +309,16 @@ struct ServiceOwner {
                 for (auto &o : c.route->observations)
                     protect(o.action);
             }
+        for (auto &c : m.connections) if (c.cutscene) {
+            const auto &r = *c.cutscene;
+            if(r.implementation) protect(*r.implementation);
+            if(r.boundTarget) protect(*r.boundTarget);
+            for (auto &path : r.paths) {
+                for(auto &q : path.requirements) { protect(q.site.action); if(q.site.condition) protect(*q.site.condition); if(q.site.arm) protect(*q.site.arm); }
+                for(auto id : path.preparation) protect(id);
+                for(auto id : path.consumption) protect(id);
+            }
+        }
         for (auto &a : m.annotations)
             std::visit(protect, a.subject);
     }
@@ -327,6 +341,7 @@ struct ServiceOwner {
         protectedIds = std::move(next.protectedIds);
         history.clear();
         summaries.clear();
+        cutscenes.clear();
         prepared.clear();
         cursor = 0;
         checkpointTokens.clear();
@@ -1239,6 +1254,7 @@ Maintenance ServiceOwner::maintain(Revision expected, bool discard) {
 }
 
 #include "ProgramRelationships.inl"
+#include "CutsceneRelationships.inl"
 
 struct ProgramService::Control : std::enable_shared_from_this<Control> {
     std::mutex mutex;
@@ -1367,6 +1383,9 @@ std::future<Result<TargetQuery>> ProgramService::incoming(Revision r, SctActionI
         return TargetQuery{o.status(), key, {range.begin(), range.end()}};
     });
 }
+std::future<Result<CutsceneQuery>> ProgramService::cutscene(Revision r, SctModuleId module, std::stop_token stop) {
+    return control_->submit<CutsceneQuery>([r, module, stop](auto &o) { return o.cutscene(r, module, stop); });
+}
 std::future<Result<SummaryQuery>> ProgramService::summarize(Revision r, SctModuleId module, std::stop_token stop) {
     return control_->submit<SummaryQuery>([r, module, stop](auto &o) { return o.summarize(r, module, stop); });
 }
@@ -1448,6 +1467,8 @@ std::future<Result<ExplanationQuery>> ProgramService::explain(Revision r, declty
                         return EntityKind::Module;
                     else if constexpr (std::is_same_v<T, SctEntrypointId>)
                         return EntityKind::Entry;
+                    else if constexpr (std::is_same_v<T, SctPortId>) return EntityKind::Port;
+                    else if constexpr (std::is_same_v<T, SctConnectionId>) return EntityKind::Connection;
                     else
                         return EntityKind::Text;
                 }();
@@ -1455,6 +1476,8 @@ std::future<Result<ExplanationQuery>> ProgramService::explain(Revision r, declty
                 out.label = std::to_string(id.value);
             },
             subject);
+        if(auto* id=std::get_if<SctPortId>(&subject))out.label=o.data->lookup(id->value,EntityKind::Port,o.data->metadata.ports)->name;
+        if(auto* id=std::get_if<SctConnectionId>(&subject))out.records=o.data->lookup(id->value,EntityKind::Connection,o.data->metadata.connections)->evidence;
         for (auto &annotation : o.data->metadata.annotations)
             if (annotation.subject == subject) {
                 if (!annotation.alias.empty())

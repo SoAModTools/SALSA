@@ -60,6 +60,13 @@ struct SemanticTransaction {
         std::visit(
             [&](auto &edit) {
                 using T = std::decay_t<decltype(edit)>;
+                if constexpr (std::is_same_v<T, ConnectSlots>) {
+                    if (auto id = std::get_if<SctPortId>(&edit.connection.source)) {
+                        auto* port=d.lookup(id->value,EntityKind::Port,d.metadata.ports);
+                        require(port, "Missing source slot"); if(port->action) collect(*port->action);
+                    }
+                    if(edit.connection.cutscene && edit.connection.cutscene->implementation) collect(*edit.connection.cutscene->implementation);
+                }
                 if constexpr (std::is_same_v<T, MoveAction> || std::is_same_v<T, EraseAction> ||
                               std::is_same_v<T, RetargetTransfer>)
                     captureTree(edit.action);
@@ -310,11 +317,11 @@ struct SemanticTransaction {
             return d.metadata.modules;
         else if constexpr (std::is_same_v<T, Entrypoint>)
             return d.metadata.entrypoints;
-        else if constexpr (std::is_same_v<T, SctAuthoringPort>)
+        else if constexpr (std::is_same_v<T, Port>)
             return d.metadata.ports;
         else if constexpr (std::is_same_v<T, SctLanguageGroup>)
             return d.metadata.languages;
-        else if constexpr (std::is_same_v<T, SctAuthoringConnection>)
+        else if constexpr (std::is_same_v<T, Connection>)
             return d.metadata.connections;
         else if constexpr (std::is_same_v<T, SctLogicalText>)
             return d.metadata.logicalTexts;
@@ -330,11 +337,11 @@ struct SemanticTransaction {
             save(p.modules);
         else if constexpr (std::is_same_v<T, Entrypoint>)
             save(p.entries);
-        else if constexpr (std::is_same_v<T, SctAuthoringPort>)
+        else if constexpr (std::is_same_v<T, Port>)
             save(p.ports);
         else if constexpr (std::is_same_v<T, SctLanguageGroup>)
             save(p.languages);
-        else if constexpr (std::is_same_v<T, SctAuthoringConnection>)
+        else if constexpr (std::is_same_v<T, Connection>)
             save(p.connections);
         else if constexpr (std::is_same_v<T, SctLogicalText>)
             save(p.logicalTexts);
@@ -346,11 +353,11 @@ struct SemanticTransaction {
             return EntityKind::Module;
         else if constexpr (std::is_same_v<T, Entrypoint>)
             return EntityKind::Entry;
-        else if constexpr (std::is_same_v<T, SctAuthoringPort>)
+        else if constexpr (std::is_same_v<T, Port>)
             return EntityKind::Port;
         else if constexpr (std::is_same_v<T, SctLanguageGroup>)
             return EntityKind::Language;
-        else if constexpr (std::is_same_v<T, SctAuthoringConnection>)
+        else if constexpr (std::is_same_v<T, Connection>)
             return EntityKind::Connection;
         else if constexpr (std::is_same_v<T, SctLogicalText>)
             return EntityKind::LogicalText;
@@ -399,12 +406,16 @@ struct SemanticTransaction {
         p.receipt.presentationChanged = true;
     }
     void promote(const PromoteFlow &);
+    void connect(const ConnectSlots &);
+    void parameter(SctActionId, spice::sct::SctParameterAddress, ValueId);
     void apply(const SemanticOperation &op) {
         changed = true;
         std::visit(
             [&](const auto &e) {
                 using T = std::decay_t<decltype(e)>;
-                if constexpr (std::is_same_v<T, InsertConstruct>)
+                if constexpr (std::is_same_v<T, ConnectSlots>)
+                    connect(e);
+                else if constexpr (std::is_same_v<T, InsertConstruct>)
                     insert(e);
                 else if constexpr (std::is_same_v<T, ReplaceArms>)
                     arms(e.action, e.arms);
@@ -440,11 +451,11 @@ struct SemanticTransaction {
                             else if constexpr (std::is_same_v<I, SctEntrypointId>)
                                 eraseMetadata<Entrypoint>(id);
                             else if constexpr (std::is_same_v<I, SctPortId>)
-                                eraseMetadata<SctAuthoringPort>(id);
+                                eraseMetadata<Port>(id);
                             else if constexpr (std::is_same_v<I, SctLanguageGroupId>)
                                 eraseMetadata<SctLanguageGroup>(id);
                             else if constexpr (std::is_same_v<I, SctConnectionId>)
-                                eraseMetadata<SctAuthoringConnection>(id);
+                                eraseMetadata<Connection>(id);
                             else if constexpr (std::is_same_v<I, SctLogicalTextId>)
                                 eraseMetadata<SctLogicalText>(id);
                             else

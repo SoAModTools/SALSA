@@ -35,11 +35,14 @@ F(SctScriptContext, v.id, v.name, v.baseline, v.platform, v.region, v.legacyOrig
   v.resources)
 F(SctNamedActivation, v.externalName, v.body)
 F(SctLocalActivation, v.source, v.operand, v.start, v.continuation, v.lifecycleEntry)
-F(SctAuthoringPort, v.id, v.owner, v.name, v.action, v.sequence)
+F(Port, v.id, v.owner, v.name, v.action, v.sequence, v.role, v.boundary, v.operand)
+F(RouteRequirement, v.site, v.match, v.labels)
+F(RoutePath, v.requirements, v.preparation, v.consumption)
+F(RouteDefinition, v.method, v.outcome, v.paths, v.entrypoint, v.arrival, v.implementation, v.boundTarget, v.targetOperand, v.boundFilename, v.implementationOpcode)
 F(SctRouteObservation, v.script, v.action, v.role, v.fingerprint)
 F(SctExecutableRoute, v.kind, v.sourceScript, v.destinationScript, v.sourceAction, v.sourceOperand, v.arrival,
   v.arrivalCase, v.sourceStem, v.targetFilename, v.discriminatorBit, v.discriminatorValue, v.observations, v.unresolved)
-F(SctAuthoringConnection, v.id, v.source, v.destination, v.evidence, v.route)
+F(Connection, v.id, v.source, v.destination, v.evidence, v.route, v.cutscene)
 F(SctLanguageGroup, v.id, v.name, v.recognitionKey)
 F(SctLogicalText, v.id, v.script, v.name, v.variants, v.module)
 F(SctVariableKey, v.kind, v.index)
@@ -56,7 +59,7 @@ F(DocumentTab, v.script, v.semanticView, v.selection)
 F(PresentationFolder, v.script, v.name, v.sections, v.parent)
 F(Presentation, v.placements, v.selection, v.tabs, v.activeTab, v.opcodeColors, v.folders)
 #undef F
-// Enum ordinals are explicit v1 schema contracts, independent of enum width.
+// Enum ordinals are explicit binary schema contracts, independent of enum width.
 template <class T> constexpr std::uint32_t enumMax();
 #define E(T, L)                                                                                                        \
     template <> constexpr std::uint32_t enumMax<T>() {                                                                 \
@@ -66,7 +69,7 @@ E(ValueKind, StringGroup)
 E(ActionKind, Transfer) E(CaseExit, Fallthrough) E(LoopKind, For) E(TransferKind, Continue) E(SequenceRole, LoopUpdate)
     E(SctEvidenceKind, UserAssertion) E(GamePlatform, Dreamcast) E(GameRegion, Japan)
         E(spice::sct::SctKnownTextConvention, ShiftJis8140) E(SctEntrypointKind, NamedSection)
-            E(SctTransitionKind, ShipBattleExit) E(SctRouteObservationRole, Continuation) E(SctVariableKind, Float)
+            E(SlotRole, Exit) E(SlotBoundary, SequenceEnd) E(EntryMethod, NamedEntry) E(RouteOutcome, ScheduledCall) E(RequirementMatch, Default) E(SctTransitionKind, ShipBattleExit) E(SctRouteObservationRole, Continuation) E(SctVariableKind, Float)
                 E(spice::sct::SctTextKind, SctString) E(smores::script::ResourceRole, StreamedTile)
 #undef E
                     template <class T>

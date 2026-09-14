@@ -251,4 +251,9 @@
     <ClInclude Include="include\SalsaCore\Program\ProgramValues.h" />
     <ClInclude Include="src\Program\ProgramTypedValues.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\Program\CutsceneInternal.inl" />
+    <ClInclude Include="src\Program\CutsceneEdits.inl" />
+    <ClInclude Include="src\Program\CutsceneRelationships.inl" />
+  </ItemGroup>
 </Project>

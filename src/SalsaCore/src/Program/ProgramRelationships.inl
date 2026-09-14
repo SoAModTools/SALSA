@@ -7,6 +7,14 @@ void ServiceOwner::invalidate(const ChangeReceipt &receipt) noexcept {
                 return true;
         return false;
     };
+    for(auto it=cutscenes.begin();it!=cutscenes.end();) {
+        const auto &s=*it->second;
+        if(intersects(s.actions,receipt.actions) || intersects(s.sequences,receipt.sequences) ||
+           intersects(s.sections,receipt.sections) || !receipt.scriptLayouts.empty() || intersects(s.texts,receipt.texts) ||
+           intersects(s.entryTargets,receipt.oldTargets) || intersects(s.entryTargets,receipt.newTargets) ||
+           !receipt.metadata.empty() || !receipt.modules.empty()) it=cutscenes.erase(it);
+        else ++it;
+    }
     for (auto it = summaries.begin(); it != summaries.end();) {
         const auto &s = *it->second;
         if (std::find(receipt.modules.begin(), receipt.modules.end(), it->first) != receipt.modules.end() ||
@@ -17,13 +25,13 @@ void ServiceOwner::invalidate(const ChangeReceipt &receipt) noexcept {
             ++it;
     }
 }
-SummaryQuery ServiceOwner::summarize(Revision expected, SctModuleId module, std::stop_token stop) {
+SummaryQuery ServiceOwner::summarize(Revision expected, SctModuleId module, std::stop_token stop, bool cutsceneScope) {
     match(expected, stop);
     require(data != nullptr, "No program is open");
     auto &d = *data;
     const auto *m = d.lookup(module.value, EntityKind::Module, d.metadata.modules);
     require(m, "Missing module");
-    if (auto it = summaries.find(module); it != summaries.end())
+    if (auto it = summaries.find(module); !cutsceneScope && it != summaries.end())
         return {status(), it->second, true};
     auto result = std::make_shared<ModuleSummary>();
     result->module = module;
@@ -149,8 +157,12 @@ SummaryQuery ServiceOwner::summarize(Revision expected, SctModuleId module, std:
             if (condition.valid())
                 relation.preparation = d.conditions[d.directory.find(condition.value).index].preparation;
             relation.sourceInstruction = a->sourceInstruction;
-            if (target.valid())
-                pending.push_back(target);
+            if (target.valid()) {
+                bool boundary=false;
+                if(cutsceneScope)for(const auto& other:d.metadata.modules)
+                    if(other.id!=module && other.script==m->script && moduleContains(d,other,d.action(target)->owner)){boundary=true;break;}
+                if(!boundary)pending.push_back(target);
+            }
             result->flow.push_back(std::move(relation));
             return result->flow.back();
         };
@@ -326,6 +338,6 @@ SummaryQuery ServiceOwner::summarize(Revision expected, SctModuleId module, std:
     }
     stopped(stop);
     stopped(shutdown);
-    summaries[module] = result;
+    if(!cutsceneScope)summaries[module] = result;
     return {status(), std::move(result), false};
 }

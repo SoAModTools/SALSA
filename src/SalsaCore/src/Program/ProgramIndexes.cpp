@@ -290,6 +290,22 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics, bool a
         }, p.owner);
         if (p.action) action(*p.action, owner);
         if (p.sequence) sequence(*p.sequence, owner);
+        if(p.role!=SlotRole::Generic) {
+            require(p.action || p.sequence,"A typed slot needs an action or sequence anchor");
+            if(p.action && p.sequence) require(d.action(*p.action)->owner==*p.sequence,"Slot anchors disagree");
+            if(auto id=std::get_if<SctModuleId>(&p.owner)) {
+                const auto* m=d.lookup(id->value,EntityKind::Module,d.metadata.modules);
+                auto seq=p.sequence.value_or(p.action?d.action(*p.action)->owner:SctSequenceId{});bool belongs=false;
+                while(auto* current=d.sequence(seq)) {
+                    if(std::ranges::find(m->sequences,seq)!=m->sequences.end()){belongs=true;break;}
+                    if(!current->owner)break;seq=d.action(d.parentAction(*current))->owner;
+                }
+                require(belongs,"Slot is outside its module");
+            }
+            if(p.role==SlotRole::Exit && p.boundary==SlotBoundary::Operand) {require(p.action && p.operand,"Operand exit needs an exact operand");operand(*p.action,*p.operand);}
+            if(p.role==SlotRole::Exit && p.boundary==SlotBoundary::SequenceEnd) require(p.sequence.has_value(),"Sequence-end exit needs a sequence");
+            if(p.role==SlotRole::Exit && (p.boundary==SlotBoundary::Terminal || p.boundary==SlotBoundary::Fallthrough)) require(p.action.has_value(),"Action boundary needs an action");
+        }
     }
     for (const auto& e : d.metadata.entrypoints) if (const auto* port = std::get_if<SctPortId>(&e.response))
         require(d.directory.find(port->value).kind == EntityKind::Port, "Dangling resolved response port");
@@ -316,11 +332,37 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics, bool a
                 s.context.name + " is an incomplete draft: missing " + name});
         }
     }
+    std::set<std::tuple<std::uint64_t,SlotBoundary,std::optional<spice::sct::SctParameterAddress>>> connectionEdges;
+    std::set<std::pair<SctActionId,std::optional<spice::sct::SctParameterAddress>>> implementedEdges;
     for (std::uint32_t i = 0; i < d.metadata.connections.size(); ++i) {
         auto& c = d.metadata.connections[i]; c.id = SctConnectionId{claim(c.id.value, EntityKind::Connection, i)};
         for (const auto* reference : {&c.source, &c.destination}) {
             if (const auto* id = std::get_if<SctPortId>(reference)) require(d.directory.find(id->value).kind == EntityKind::Port, "Dangling resolved connection port");
-            else diagnostics.push_back({DiagnosticSeverity::Warning, DiagnosticCode::UnresolvedSctAuthoringBinding, "Unresolved connection " + std::to_string(c.id.value)});
+            else if(!(reference==&c.destination && c.cutscene && (c.cutscene->outcome==RouteOutcome::ReturnToCaller || c.cutscene->outcome==RouteOutcome::ResumeLoop))) diagnostics.push_back({DiagnosticSeverity::Warning, DiagnosticCode::UnresolvedSctAuthoringBinding, "Unresolved connection " + std::to_string(c.id.value)});
+        }
+        if(c.cutscene) {
+            auto port=[&](const auto& ref)->const Port* {auto* id=std::get_if<SctPortId>(&ref);return id?d.lookup(id->value,EntityKind::Port,d.metadata.ports):nullptr;};
+            auto* source=port(c.source);auto* destination=port(c.destination);
+            if(source) require(source->role==SlotRole::Exit,"Cutscene route source must be an exit slot");
+            if(destination) require(destination->role==SlotRole::Entry,"Cutscene route destination must be an entry slot");
+            const auto& r=*c.cutscene;
+            auto anyAction=[&](SctActionId id) {require(d.action(id),"Dangling route action");};
+            if(r.implementation) {
+                require(source && r.outcome!=RouteOutcome::Observe,"Executable connection needs a source and outcome");anyAction(*r.implementation);
+                require(implementedEdges.emplace(*r.implementation,r.targetOperand).second,"Connections overlap the same implemented edge");
+                auto ownerScript=std::visit([&](auto id){using T=decltype(id);if constexpr(std::is_same_v<T,SctModuleId>)return d.lookup(id.value,EntityKind::Module,d.metadata.modules)->script;else return d.lookup(id.value,EntityKind::Entry,d.metadata.entrypoints)->script;},source->owner);
+                action(*r.implementation,ownerScript);
+                auto anchor=source->boundary==SlotBoundary::SequenceEnd?source->sequence->value:source->action->value;
+                require(connectionEdges.emplace(anchor,source->boundary,source->operand).second,"Duplicate executable connection edge owner");
+            }
+            if(r.boundTarget)anyAction(*r.boundTarget);
+            if(r.targetOperand){require(r.implementation.has_value(),"Route operand needs an implementation action");operand(*r.implementation,*r.targetOperand);}
+            for(auto id:{r.entrypoint,r.arrival}) if(id) require(d.directory.find(id->value).kind==EntityKind::Entry,"Dangling route entrypoint");
+            for(const auto& path:r.paths) {
+                for(const auto& q:path.requirements){anyAction(q.site.action);site(q.site,d.sequence(d.action(q.site.action)->owner)->script);}
+                for(auto id:path.preparation)anyAction(id);
+                for(auto id:path.consumption)anyAction(id);
+            }
         }
         if (c.route) {
             const auto& r = *c.route; script(r.sourceScript); script(r.destinationScript); action(r.sourceAction, r.sourceScript);
@@ -350,6 +392,8 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics, bool a
             else if constexpr (std::is_same_v<T, ConditionId>) return EntityKind::Condition;
             else if constexpr (std::is_same_v<T, SctModuleId>) return EntityKind::Module;
             else if constexpr (std::is_same_v<T, SctEntrypointId>) return EntityKind::Entry;
+            else if constexpr (std::is_same_v<T, SctPortId>) return EntityKind::Port;
+            else if constexpr (std::is_same_v<T, SctConnectionId>) return EntityKind::Connection;
             else return EntityKind::Text;
         }();
         require(actual == expected, "Dangling or mistyped annotation subject");

@@ -550,6 +550,15 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                 for (auto seq : module.sequences)
                     if (auto target = resolve(sequenceLabel(seq)))
                         record(module.id, sct::SctDocumentEntityId{*target});
+        for(const auto& port:p.metadata().ports) {
+            if(port.action && visited.contains(*port.action)) {
+                if(auto target=resolve(actionLabel(*port.action)))record(port.id,sct::SctDocumentEntityId{*target});
+            } else if(port.sequence && p.find(*port.sequence) && p.find(*port.sequence)->script==selected) {
+                if(auto target=resolve(sequenceLabel(*port.sequence)))record(port.id,sct::SctDocumentEntityId{*target});
+            }
+        }
+        for(const auto& connection:p.metadata().connections)if(connection.cutscene && connection.cutscene->implementation && visited.contains(*connection.cutscene->implementation))
+            if(auto target=resolve(actionLabel(*connection.cutscene->implementation)))record(connection.id,sct::SctDocumentEntityId{*target});
         for (const auto name : {"init", "loop"}) {
             const auto count = std::ranges::count_if(document.sections, [&](const auto &section) {
                 const auto *code = std::get_if<sct::SctScriptSectionContent>(&section.content);

@@ -1,10 +1,10 @@
 # Whole-program persistence and v7 import (WP4)
 
-WP4 supplies binary persistence for the production paged IR through `ProgramPersistence`, background installation through `ProgramService::openProject`, and supported Python SALSA v7 capsule ingestion through `LegacyProgramImport`. There is no JSON executable tree, native reparse, baseline hash scan or SPICE document reconstruction when reopening a saved program. The current Qt editor still uses its earlier authority and file path until WP6. WP5 supplies fresh native materialization.
+WP4 supplies binary persistence for the production paged IR through `ProgramPersistence`, background installation through `ProgramService::openProject`, and supported Python SALSA v7 capsule ingestion through `LegacyProgramImport`. There is no JSON executable tree, native reparse, baseline hash scan or SPICE document reconstruction when reopening a saved program. WP6 uses this authority and file path in the production Qt entry point. WP5 supplies fresh native materialization.
 
 ## Binary contract
 
-New project files use the eight-byte `SALSAPRJ` magic followed by three little-endian u32 fields: framing version **2**, codec **1** (Zstandard), and program binary schema **1**. The existing v1 container implies zlib and is not reinterpreted as this format. Unknown versions/codecs/schemas fail with a diagnostic; loading does not write or replace the original file. There is no development-schema converter.
+New project files use the eight-byte `SALSAPRJ` magic followed by three little-endian u32 fields: framing version **2**, codec **1** (Zstandard), and program binary schema **2**. The existing v1 container implies zlib and is not reinterpreted as this format. Unknown versions/codecs/schemas fail with a diagnostic; loading does not write or replace the original file. There is no development-schema converter.
 
 After the header, each independent record has a u32 decoded length, u32 compressed length and one complete zstd frame. A zero/zero record terminates the file; trailing bytes are rejected. Decoded records are at most 1 MiB. Frame checksums are enabled. Compression uses the pinned Zstandard 1.5.7 library at level 1, with one context, no dictionary and no worker threads. Encoder and decoder reuse bounded scratch buffers; they do not retain a worst-case compressed buffer for every record. The encoded file itself is held in memory for the existing transaction API. This framing is an integrity/container contract, not authentication or encryption.
 
@@ -25,6 +25,8 @@ The encoder flushes the semantic record before presentation starts. Presentation
 The decoder checks framing and configured bounds, constructs unpublished tables, checks ownership/references and arranges derived postings once. No partial project escapes on failure. Value shape checks are reused when arranging postings. Temporary ownership marks use contiguous arrays rather than one allocated tree node per instruction. Value child indices and text bytes are read directly into their pools without a temporary vector or string per value. Missing lifecycle roots remain drafts; unsupported or unresolved executable content retains its diagnostics. Export eligibility belongs to WP5's normal export boundary.
 
 Default limits are 1 GiB encoded, 4 GiB decoded and 64 million items in one collection. These are admission limits, not a measured process-memory ceiling: owned tables, ID directories, derived indexes, captured checkpoints and encoded input also occupy memory. Saving explicitly captures a complete checkpoint; ordinary view refresh still uses scoped readers.
+
+Schema 2 adds typed cutscene slots, route definitions referencing existing conditions, and connection-command observations. Slot/connection annotations can retain aliases and explanations. Derived cutscene queries are not persisted. Schema 1 development files are rejected without modifying them; Python SALSA v7 import remains supported.
 
 ## Save, recovery and background open
 

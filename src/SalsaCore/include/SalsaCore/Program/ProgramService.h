@@ -153,7 +153,7 @@ struct RetargetTransfer {
 struct PromoteFlow {
     SctActionId header, continuation;
 };
-using MetadataEntity = std::variant<Module, Entrypoint, SctAuthoringPort, SctLanguageGroup, SctAuthoringConnection,
+using MetadataEntity = std::variant<Module, Entrypoint, Port, SctLanguageGroup, Connection,
                                     SctLogicalText, VariableMeaning>;
 struct PutMetadata {
     MetadataEntity entity;
@@ -170,9 +170,16 @@ struct AssignLanguages {
     SctTextResourceId text;
     std::vector<SctLanguageGroupId> languages;
 };
+// Explicitly edits existing control flow and records the resulting connection
+// in the same journal entry. Missing/unsupported boundaries fail atomically.
+struct ConnectSlots {
+    Connection connection;
+    RouteOutcome outcome = RouteOutcome::LocalTransfer;
+    std::optional<ValueBuffer> schedule;
+};
 using SemanticOperation =
     std::variant<InsertConstruct, ReplaceArms, InsertTransfer, MoveAction, EraseAction, RetargetTransfer, PromoteFlow,
-                 PutMetadata, EraseMetadata, PutAnnotation, AssignLanguages, BindLifecycle, ScriptSettings>;
+                 PutMetadata, EraseMetadata, PutAnnotation, AssignLanguages, BindLifecycle, ScriptSettings, ConnectSlots>;
 using Primitive = std::variant<ReplaceParameter, ReplaceInstruction, ReplaceCondition, ReplaceText, InsertInstruction,
                                EraseInstruction, MoveInstruction, RenameSection, ReorderSections, AddSection,
                                EraseEmptySection, EditAnnotation, CreateText, RemoveText, SemanticOperation>;
@@ -325,10 +332,42 @@ struct SummaryQuery {
     std::shared_ptr<const ModuleSummary> summary;
     bool reused = false;
 };
+struct CutsceneRouteView {
+    SctConnectionId connection;
+    std::optional<SctPortId> slot;
+    SctActionId source, target;
+    std::optional<spice::sct::SctParameterAddress> operand;
+    FlowRole role = FlowRole::Unknown;
+    EntryMethod method = EntryMethod::Unknown;
+    RouteOutcome outcome = RouteOutcome::Observe;
+    std::vector<RoutePath> paths;
+    std::vector<ValueId> requirementValues; // Path order, local to summary payload.
+    std::optional<SctScriptId> destinationScript;
+    ValueId schedule;
+    bool inferred = true, unresolved = false, changed = false;
+    std::vector<SctAuthoringEvidence> evidence;
+};
+struct CutsceneSummary {
+    SctModuleId module;
+    std::uint64_t build = 0;
+    std::vector<Port> ports;
+    std::vector<CutsceneRouteView> incoming, exits;
+    std::vector<VariableUse> effects;
+    ValueBuffer payload;
+    // Includes helper dependencies, but helper returns are not cutscene exits.
+    std::vector<SctActionId> actions, entryTargets;
+    std::vector<SctSequenceId> sequences;
+    std::vector<SectionId> sections;
+    std::vector<SctTextResourceId> texts;
+    std::vector<std::uint64_t> metadata;
+    bool incomplete = false;
+    std::vector<Diagnostic> diagnostics;
+};
+struct CutsceneQuery { ServiceStatus status; std::shared_ptr<const CutsceneSummary> summary; bool reused = false; };
 struct InteractionQuery {
     ServiceStatus status;
     std::vector<Entrypoint> entrypoints;
-    std::vector<SctAuthoringConnection> connections;
+    std::vector<Connection> connections;
     std::vector<Annotation> annotations;
     std::vector<VariableMeaning> meanings;
     std::vector<SctLanguageGroup> languages;
@@ -392,6 +431,7 @@ class ProgramService final {
     std::future<Result<VariableQuery>> uses(Revision, Variable);
     std::future<Result<TargetQuery>> incoming(Revision, SctActionId);
     std::future<Result<SummaryQuery>> summarize(Revision, SctModuleId, std::stop_token = {});
+    std::future<Result<CutsceneQuery>> cutscene(Revision, SctModuleId, std::stop_token = {});
     std::future<Result<InteractionQuery>> interactions(Revision, SctScriptId);
     std::future<Result<ExplanationQuery>> explain(Revision, decltype(Annotation::subject));
     std::future<Result<Checkpoint>> checkpoint(Revision, std::stop_token = {});

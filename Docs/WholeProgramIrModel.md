@@ -100,3 +100,7 @@ The bulk builder remains the import boundary. The [production service](WholeProg
 ## WP4 binary persistence
 
 The [binary project codec](WholeProgramIrPersistence.md) writes live content directly, with explicit field widths and portable remapped pool indices. Reopen reconstructs the owned paged tables and their derived postings without a native parse or executable JSON tree. Legacy v7 imports reuse the existing typed translation boundary and retain supported aliases and presentation folders.
+
+## Cutscene interface follow-up
+
+[Cutscene routes](CutsceneRoutes.md) describes typed entry/exit ports, alternative requirement paths, scoped connection/effect queries, and undoable commands operating on the same paged instruction storage.

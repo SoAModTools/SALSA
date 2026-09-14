@@ -57,7 +57,7 @@ struct ProgramOpenResult {
 };
 class ProgramPersistence final {
   public:
-    // SALSAPRJ framing v2, codec 1 (zstd), binary table schema 1.
+    // SALSAPRJ framing v2, codec 1 (zstd), binary table schema 2.
     // Never accepts the old v1/zlib authoring container as a new program.
     static Result<std::vector<std::byte>> encode(const Program &, const Presentation & = {}, std::stop_token = {},
                                                  const SctLoadingObserver & = {});
