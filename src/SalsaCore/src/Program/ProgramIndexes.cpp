@@ -1,3 +1,4 @@
+#include "DispatchPredicates.h"
 #include "ProgramInternal.h"
 #include <bit>
 #include <cmath>
@@ -135,7 +136,7 @@ DirectFacts actionFacts(ProgramData& d, std::span<const SctActionId> actions, st
             require(region && region->owner == a.id, "Missing or foreign condition region");
             inspect(region->result, {a.id, {}, region->arm, 0, id}, script);
         };
-        if (a.kind == ActionKind::Conditional) {
+        if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Dispatch) {
             for (std::uint32_t j = 0; j < a.armCount; ++j) {
                 const auto& arm = d.arms[a.firstArm + j];
                 if (arm.condition.valid()) condition(arm.condition);
@@ -211,7 +212,47 @@ Result<std::uint64_t> ProgramBuilder::allocateIdentity() {
     try { require(data_ != nullptr, "Builder already finished"); return Result<std::uint64_t>::success(data_->allocate()); }
     catch (const std::exception& e) { diagnostics_.push_back(failure(e.what())); return Result<std::uint64_t>::failure(diagnostics_.back()); }
 }
-void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics, bool allocateIds) {
+void validateDispatch(const ProgramData &d, const Dispatch &region) {
+    const auto *root = d.action(region.owner);
+    require(root && root->kind == ActionKind::Dispatch && region.routes.size() == root->armCount,
+            "Invalid dispatch structure");
+    require(!region.routes.empty() && region.routes.size() <= 16 && region.samples.size() <= 32,
+            "Dispatch exceeds its bounded region limits");
+    std::set<ConditionId> samples;
+    for (const auto &sample : region.samples) {
+        const auto *c = d.lookup(sample.condition.value, EntityKind::Condition, d.conditions);
+        require(c && c->owner == root->id && !c->arm && sample.beforeRoute < region.routes.size() &&
+                    samples.insert(c->id).second,
+                "Invalid dispatch evaluation sample");
+        require(d.lookup(c->preparation.value, EntityKind::Sequence, d.sequences)->order->empty(), "Dispatch timing samples cannot contain instructions");
+        dispatch_detail::parse(dispatch_detail::expression(d, c->result));
+    }
+    for (std::size_t i = 0; i < region.routes.size(); ++i) {
+        const auto &route = region.routes[i];
+        const auto &arm = d.arms[root->firstArm + i];
+        require(route.arm == arm.id && arm.owner == root->id && arm.condition.valid(),
+                "Invalid dispatch route ownership");
+        const auto *c = d.lookup(arm.condition.value, EntityKind::Condition, d.conditions);
+        require(c && c->owner == root->id && c->arm == arm.id, "Invalid route predicate ownership");
+        require(d.lookup(c->preparation.value, EntityKind::Sequence, d.sequences)->order->empty(),
+                "Dispatch route preparation belongs in its body, not in its pure predicate");
+        dispatch_detail::parse(dispatch_detail::expression(d, c->result));
+        std::map<dispatch_detail::Code, std::uint32_t> phases;
+        for (auto id : route.samples) {
+            require(samples.contains(id), "Foreign dispatch sample binding");
+            auto phase = std::ranges::find(region.samples, id, &DispatchSample::condition)->beforeRoute;
+            require(phase <= i, "Dispatch sample occurs after its route");
+            auto code =
+                dispatch_detail::parse(dispatch_detail::expression(
+                                           d, d.lookup(id.value, EntityKind::Condition, d.conditions)->result))
+                    ->code;
+            auto [at, inserted] = phases.emplace(std::move(code), phase);
+            require(inserted || at->second == phase,
+                    "Repeated comparison at different evaluation phases needs an explicit dispatch region");
+        }
+    }
+}
+void finishMetadata(ProgramData &d, std::vector<Diagnostic> &diagnostics, bool allocateIds, bool checkDispatches) {
     auto claim = [&](std::uint64_t id, EntityKind kind, std::uint32_t index) {
         if (allocateIds) return d.claim(id, kind, index);
         auto at=d.directory.find(id); require(id && at.kind==kind && at.index==index, "Invalid metadata identity directory"); return id;
@@ -355,6 +396,15 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics, bool a
                 auto anchor=source->boundary==SlotBoundary::SequenceEnd?source->sequence->value:source->action->value;
                 require(connectionEdges.emplace(anchor,source->boundary,source->operand).second,"Duplicate executable connection edge owner");
             }
+            if (r.dispatchArm) {
+                auto *arm = d.lookup(r.dispatchArm->value, EntityKind::Arm, d.arms);
+                require(arm && d.action(arm->owner)->kind == ActionKind::Dispatch,
+                        "Dangling route-owned predicate");
+                if(source) {
+                    auto ownerScript=std::visit([&](auto id){using T=decltype(id);if constexpr(std::is_same_v<T,SctModuleId>)return d.lookup(id.value,EntityKind::Module,d.metadata.modules)->script;else return d.lookup(id.value,EntityKind::Entry,d.metadata.entrypoints)->script;},source->owner);
+                    action(arm->owner,ownerScript);
+                }
+            }
             if(r.boundTarget)anyAction(*r.boundTarget);
             if(r.targetOperand){require(r.implementation.has_value(),"Route operand needs an implementation action");operand(*r.implementation,*r.targetOperand);}
             for(auto id:{r.entrypoint,r.arrival}) if(id) require(d.directory.find(id->value).kind==EntityKind::Entry,"Dangling route entrypoint");
@@ -381,6 +431,10 @@ void finishMetadata(ProgramData& d, std::vector<Diagnostic>& diagnostics, bool a
         auto& meaning=d.metadata.meanings[i];meaning.id=SctMeaningId{claim(meaning.id.value,EntityKind::Meaning,i)};
         if(meaning.script.valid())script(meaning.script);
     }
+    if (checkDispatches)
+        for (const auto &region : d.dispatches)
+            if (region.owner.valid())
+                validateDispatch(d, region);
     for (const auto& a : d.metadata.annotations) std::visit([&](auto id) {
         using T = decltype(id); auto actual = d.directory.find(id.value).kind;
         auto expected = [] {

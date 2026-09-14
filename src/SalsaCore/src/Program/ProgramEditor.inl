@@ -37,6 +37,9 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                 label = schema ? std::string(schema->semantic.mnemonic) : "Opcode " + std::to_string(value->data);
                 break;
             }
+            case ActionKind::Dispatch:
+                label = "Route dispatch";
+                break;
             case ActionKind::Conditional:
                 label = "If / Else If / Else";
                 break;
@@ -124,13 +127,16 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     const auto *a = d.action(id);
                     require(a != nullptr, "Missing outline construct");
                     out.script = d.sequence(a->owner)->script;
-                    if (a->kind == ActionKind::Conditional || a->kind == ActionKind::Switch) {
+                    if (a->kind == ActionKind::Conditional || a->kind == ActionKind::Switch ||
+                        a->kind == ActionKind::Dispatch) {
                         if (a->kind == ActionKind::Switch)
                             condition(d.switches.at(a->detail).selector);
                         for (std::uint32_t i = 0; i < a->armCount; ++i) {
                             const auto &arm = d.arms[a->firstArm + i];
                             std::string label;
-                            if (a->kind == ActionKind::Conditional)
+                            if (a->kind == ActionKind::Dispatch)
+                                label = "Route " + std::to_string(i + 1);
+                            else if (a->kind == ActionKind::Conditional)
                                 label = arm.condition.valid() ? (i ? "Else If" : "If") : "Else";
                             else {
                                 label = "Case ";

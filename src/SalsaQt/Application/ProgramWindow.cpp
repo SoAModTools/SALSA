@@ -142,6 +142,12 @@ ProgramWindow::ProgramWindow(QWidget *parent) : QMainWindow(parent) {
     editMenu->addAction(tr("Move up"), this, [this] { move(-1); });
     editMenu->addAction(tr("Move down"), this, [this] { move(1); });
     editMenu->addAction(tr("Promote explicit If / While flow…"), this, [this] { promoteFlow(); });
+    editMenu->addAction(tr("Promote shared guards to route dispatch"), this, [this] {
+        if (!selectedSubject_ || operations_->active())
+            return;
+        if (auto *header = std::get_if<core::SctActionId>(&*selectedSubject_))
+            edit({ir::SemanticOperation{ir::PromoteDispatch{*header, {}}}});
+    });
     editMenu->addSeparator();
     editMenu->addAction(tr("Add sectionâ€¦"), this, [this] { addSection(); });
     editMenu->addAction(tr("Rename sectionâ€¦"), this, [this] { renameSection(); });
@@ -895,6 +901,11 @@ void ProgramWindow::editSelected() {
         if (a->kind == ir::ActionKind::Instruction) {
             action = *id;
             value = a->value;
+        } else if (a->kind == ir::ActionKind::Dispatch) {
+            QMessageBox::information(this, tr("Route dispatch"),
+                                     tr("Expand a route and select its Condition to edit the complete entry "
+                                        "requirement. Instructions belong in that route body."));
+            return;
         } else if (a->kind == ir::ActionKind::Conditional || a->kind == ir::ActionKind::Switch) {
             std::vector<ir::ArmEdit> arms;
             for (const auto &arm : selected_->arms) {

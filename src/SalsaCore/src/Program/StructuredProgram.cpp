@@ -2,6 +2,7 @@
 #include <set>
 
 namespace salsa::core::program {
+const Arm *Program::find(ArmId id) const noexcept { return data_->lookup(id.value, EntityKind::Arm, data_->arms); }
 const ConditionRegion* Program::find(ConditionId id) const noexcept {
     return data_->lookup(id.value, EntityKind::Condition, data_->conditions);
 }
@@ -17,6 +18,12 @@ const Loop* Program::loop(SctActionId id) const noexcept {
 const Switch* Program::switchRegion(SctActionId id) const noexcept {
     const auto* a = find(id);
     return a && a->kind == ActionKind::Switch && a->detail < data_->switches.size() ? &data_->switches[a->detail] : nullptr;
+}
+const Dispatch *Program::dispatch(SctActionId id) const noexcept {
+    const auto *a = find(id);
+    return a && a->kind == ActionKind::Dispatch && a->detail < data_->dispatches.size()
+               ? &data_->dispatches[a->detail]
+               : nullptr;
 }
 const Transfer* Program::transfer(SctActionId id) const noexcept {
     const auto* a = find(id);

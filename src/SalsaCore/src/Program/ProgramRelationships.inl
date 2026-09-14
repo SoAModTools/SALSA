@@ -245,6 +245,19 @@ SummaryQuery ServiceOwner::summarize(Revision expected, SctModuleId module, std:
                  t.kind == TransferKind::Break ? next(t.target) : sequence(seq, false), seq)
                 .scopeTarget = t.target;
         } else {
+            if (a->kind == ActionKind::Dispatch) {
+                const auto &region = d.dispatches[a->detail];
+                for (std::uint32_t i = 0; i < a->armCount; ++i) {
+                    const auto &arm = d.arms[a->firstArm + i];
+                    const auto &c = d.conditions[d.directory.find(arm.condition.value).index];
+                    edge(FlowRole::TrueBranch, sequence(arm.body, true), arm.body, c.result, c.id, arm.id.value, i)
+                        .dispatchMode = region.mode;
+                }
+                edge(FlowRole::Fallthrough, next(id)).dispatchMode = region.mode;
+                // The view reports logical routes. Exact sampled/priority dispatch
+                // is produced by materialization rather than guessed as Else If.
+                continue;
+            }
             if (a->kind == ActionKind::Loop) {
                 const auto &loop = d.loops[a->detail];
                 result->loops.push_back(loop);

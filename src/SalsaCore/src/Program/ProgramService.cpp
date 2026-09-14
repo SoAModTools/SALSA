@@ -1,7 +1,9 @@
-#include "SalsaCore/Program/ProgramPersistence.h"
 #include "SalsaCore/Program/ProgramService.h"
-#include "ProgramInternal.h"
+#include "DispatchPredicates.h"
 #include "NativeCollection.h"
+#include "ProgramInternal.h"
+#include "SalsaCore/Program/ProgramPersistence.h"
+#include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -159,6 +161,7 @@ struct PreparedData {
     std::vector<RowSwap<Arm>> arms;
     std::vector<RowSwap<Loop>> loops;
     std::vector<RowSwap<Switch>> switches;
+    std::vector<RowSwap<Dispatch>> dispatches;
     std::vector<RowSwap<Transfer>> transfers;
     std::optional<std::vector<Module>> modules;
     std::optional<std::vector<Entrypoint>> entries;
@@ -187,6 +190,7 @@ struct PreparedData {
         swapRows(arms, d.arms);
         swapRows(loops, d.loops);
         swapRows(switches, d.switches);
+        swapRows(dispatches, d.dispatches);
         swapRows(transfers, d.transfers);
         if (modules)
             modules->swap(d.metadata.modules);
@@ -238,9 +242,13 @@ struct PreparedData {
         }
     }
 };
+// Definitions below depend on this inclusion order.
+// clang-format off
 #include "CutsceneInternal.inl"
 #include "SemanticEdits.inl"
 #include "CutsceneEdits.inl"
+#include "DispatchEdits.inl"
+// clang-format on
 
 struct ServiceOwner {
     std::map<EditorSubject,std::string> outlineAliases;
@@ -311,6 +319,8 @@ struct ServiceOwner {
             }
         for (auto &c : m.connections) if (c.cutscene) {
             const auto &r = *c.cutscene;
+            if (r.dispatchArm)
+                protect(*r.dispatchArm);
             if(r.implementation) protect(*r.implementation);
             if(r.boundTarget) protect(*r.boundTarget);
             for (auto &path : r.paths) {
@@ -403,6 +413,15 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
         return std::vector<SctActionId>(s.order ? *s.order : std::vector<SctActionId>{});
     };
     auto putOrder = [&](SctSequenceId id, std::vector<SctActionId> v) {
+        if (!v.empty()) {
+            auto *seq = d.sequence(id);
+            if (seq->owner && std::holds_alternative<ConditionId>(*seq->owner)) {
+                auto condition = std::get<ConditionId>(*seq->owner);
+                auto *c = d.lookup(condition.value, EntityKind::Condition, d.conditions);
+                require(!c || d.action(c->owner)->kind != ActionKind::Dispatch,
+                        "Dispatch predicates are pure; place instructions in the route body");
+            }
+        }
         p->receipt.copiedOrderItems += v.size();
         d.sequence(id)->order = std::make_shared<const std::vector<SctActionId>>(std::move(v));
     };
@@ -486,10 +505,15 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
                         }
                     } else if constexpr (std::is_same_v<T, ReplaceCondition>) {
                         auto at = location(edit.condition.value, EntityKind::Condition);
+                        const auto *owner = d.action(d.conditions[at].owner);
+                        require(owner->kind != ActionKind::Dispatch || d.conditions[at].arm.has_value(),
+                                "Edit a route requirement, not its derived evaluation-timing sample");
                         collectOld(d.conditions[at].owner);
                         auto value = importValue(d, edit.value);
                         require(d.values.find(value.value)->kind == ValueKind::Expression,
                                 "Condition result must be an expression");
+                        if (owner->kind == ActionKind::Dispatch)
+                            dispatch_detail::parse(dispatch_detail::expression(d, value));
                         touch(p->conditions, at, d.conditions[at]).result = value;
                     } else if constexpr (std::is_same_v<T, ReplaceText>) {
                         auto at = location(edit.text.value, EntityKind::Text);
@@ -645,7 +669,7 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
         }
         semantic.finish();
         if (semantic.changed) {
-            finishMetadata(d, p->diagnostics, false);
+            finishMetadata(d, p->diagnostics, false, false);
             auto previous = std::move(protectedIds);
             try {
                 protectMetadata();
@@ -952,6 +976,10 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
                 if (seq.valid())
                     addSequence(seq, selection.descend);
         }
+        if (a.kind == ActionKind::Dispatch) {
+            a.detail = count32(out->dispatches.size());
+            out->dispatches.push_back(d.dispatches.at(source->detail));
+        }
         if (a.kind == ActionKind::Switch) {
             a.detail = count32(out->switches.size());
             out->switches.push_back(d.switches.at(source->detail));
@@ -968,6 +996,9 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
             checks.push_back(d.loops.at(source->detail).condition);
         if (source->kind == ActionKind::Switch)
             checks.push_back(d.switches.at(source->detail).selector);
+        if (source->kind == ActionKind::Dispatch)
+            for (const auto &sample : d.dispatches.at(source->detail).samples)
+                checks.push_back(sample.condition);
         for (auto id : checks) {
             auto c = d.conditions[d.directory.find(id.value).index];
             c.result = copy.copy(c.result);

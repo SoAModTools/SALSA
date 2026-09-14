@@ -39,6 +39,9 @@ struct SemanticTransaction {
         }
         if (a->kind == ActionKind::Switch)
             condition(d.switches[a->detail].selector);
+        if (a->kind == ActionKind::Dispatch)
+            for (const auto &sample : d.dispatches[a->detail].samples)
+                condition(sample.condition);
         return result;
     }
     void captureTree(SctActionId root) {
@@ -60,6 +63,13 @@ struct SemanticTransaction {
         std::visit(
             [&](auto &edit) {
                 using T = std::decay_t<decltype(edit)>;
+                if constexpr (std::is_same_v<T, PromoteDispatch>)
+                    captureTree(edit.header);
+                if constexpr (std::is_same_v<T, SetRouteRequirement>) {
+                    auto *arm = d.lookup(edit.route.value, EntityKind::Arm, d.arms);
+                    require(arm, "Missing dispatch route");
+                    collect(arm->owner);
+                }
                 if constexpr (std::is_same_v<T, ConnectSlots>) {
                     if (auto id = std::get_if<SctPortId>(&edit.connection.source)) {
                         auto* port=d.lookup(id->value,EntityKind::Port,d.metadata.ports);
@@ -183,6 +193,12 @@ struct SemanticTransaction {
                 if (seq.valid())
                     eraseSequence(seq);
             touch(p.loops, a.detail, d.loops[a.detail]) = {};
+        }
+        if (a.kind == ActionKind::Dispatch) {
+            const auto dispatch = d.dispatches[a.detail];
+            for (auto sample : dispatch.samples)
+                eraseCondition(sample.condition);
+            touch(p.dispatches, a.detail, d.dispatches[a.detail]) = {};
         }
         if (a.kind == ActionKind::Switch) {
             eraseCondition(d.switches[a.detail].selector);
@@ -406,6 +422,8 @@ struct SemanticTransaction {
         p.receipt.presentationChanged = true;
     }
     void promote(const PromoteFlow &);
+    void promoteDispatch(const PromoteDispatch &);
+    void routeRequirement(const SetRouteRequirement &);
     void connect(const ConnectSlots &);
     void parameter(SctActionId, spice::sct::SctParameterAddress, ValueId);
     void apply(const SemanticOperation &op) {
@@ -413,7 +431,11 @@ struct SemanticTransaction {
         std::visit(
             [&](const auto &e) {
                 using T = std::decay_t<decltype(e)>;
-                if constexpr (std::is_same_v<T, ConnectSlots>)
+                if constexpr (std::is_same_v<T, PromoteDispatch>)
+                    promoteDispatch(e);
+                else if constexpr (std::is_same_v<T, SetRouteRequirement>)
+                    routeRequirement(e);
+                else if constexpr (std::is_same_v<T, ConnectSlots>)
                     connect(e);
                 else if constexpr (std::is_same_v<T, InsertConstruct>)
                     insert(e);

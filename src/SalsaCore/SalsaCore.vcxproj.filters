@@ -197,4 +197,9 @@
     <ClInclude Include="src\Program\CutsceneEdits.inl" />
     <ClInclude Include="src\Program\CutsceneRelationships.inl" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\Program\DispatchPredicates.h" />
+    <ClInclude Include="src\Program\DispatchEdits.inl" />
+    <ClInclude Include="src\Program\DispatchLowering.inl" />
+  </ItemGroup>
 </Project>

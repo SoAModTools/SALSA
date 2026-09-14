@@ -37,7 +37,7 @@ struct Frames {
         w.raw("SALSAPRJ", 8);
         w.put(std::uint32_t{2});
         w.put(std::uint32_t{1});
-        w.put(std::uint32_t{2});
+        w.put(std::uint32_t{3});
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_compressionLevel, 1));
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_checksumFlag, 1));
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_nbWorkers, 0));
@@ -101,7 +101,7 @@ struct Unframes {
         require(std::memcmp(magic, "SALSAPRJ", 8) == 0, "Not a SALSA project container");
         require(r.get<std::uint32_t>() == 2, "Unsupported project container version; original file is unchanged");
         require(r.get<std::uint32_t>() == 1, "Unsupported project compression codec");
-        require(r.get<std::uint32_t>() == 2, "Unsupported program binary schema");
+        require(r.get<std::uint32_t>() == 3, "Unsupported program binary schema");
         for (;;) {
             checkStop(stop);
             auto n = r.get<std::uint32_t>(), c = r.get<std::uint32_t>();
@@ -244,7 +244,8 @@ void linkLoaded(ProgramData &d, std::vector<Diagnostic> &diagnostics, std::stop_
             require(v && v->kind == ValueKind::Instruction, "Missing instruction payload");
         } else {
             require(!a.value.valid(), "Structured action has native payload");
-            if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch) {
+            if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch ||
+                a.kind == ActionKind::Dispatch) {
                 require(a.armCount > 0, "Empty structured arms");
                 std::set<std::int32_t> labels;
                 bool seenDefault = false;
@@ -257,7 +258,7 @@ void linkLoaded(ProgramData &d, std::vector<Diagnostic> &diagnostics, std::stop_
                     auto &arm = d.arms.at(a.firstArm + j);
                     require(arm.owner == a.id, "Invalid arm owner");
                     seq(arm.body, script, arm.id, SequenceRole::ArmBody);
-                    if (a.kind == ActionKind::Conditional) {
+                    if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Dispatch) {
                         require(!arm.labelCount && !arm.includesDefault && arm.caseExit == CaseExit::ExitSwitch,
                                 "Conditional has switch labels");
                         if (arm.condition.valid())
@@ -275,6 +276,13 @@ void linkLoaded(ProgramData &d, std::vector<Diagnostic> &diagnostics, std::stop_
                         require(j + 1 < a.armCount || arm.caseExit != CaseExit::Fallthrough,
                                 "Final case cannot fall through");
                     }
+                }
+                if (a.kind == ActionKind::Dispatch) {
+                    const auto &region = d.dispatches.at(a.detail);
+                    require(region.owner == a.id && region.routes.size() == a.armCount,
+                            "Invalid dispatch owner/routes");
+                    for (const auto &sample : region.samples)
+                        check(sample.condition, a, {});
                 }
             } else if (a.kind == ActionKind::Loop) {
                 auto &l = d.loops.at(a.detail);
@@ -516,7 +524,8 @@ Result<std::vector<std::byte>> ProgramPersistence::encode(const Program &program
             w.put(a.kind);
             w.put(value(a.value));
             w.put(a.sourceInstruction);
-            if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch) {
+            if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch ||
+                a.kind == ActionKind::Dispatch) {
                 w.put(a.armCount);
                 for (auto arm : program.arms(a.id)) {
                     auto labels = program.caseLabels(arm.id);
@@ -527,6 +536,8 @@ Result<std::vector<std::byte>> ProgramPersistence::encode(const Program &program
                 }
                 if (a.kind == ActionKind::Switch)
                     w.put(d.switches.at(a.detail));
+                if (a.kind == ActionKind::Dispatch)
+                    w.put(d.dispatches.at(a.detail));
             } else if (a.kind == ActionKind::Loop)
                 w.put(d.loops.at(a.detail));
             else if (a.kind == ActionKind::Transfer)
@@ -618,7 +629,8 @@ Result<ProjectFile> ProgramPersistence::decode(std::span<const std::byte> bytes,
             a.kind = r.get<ActionKind>();
             a.value = r.get<ValueId>();
             a.sourceInstruction = r.get<std::uint64_t>();
-            if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch) {
+            if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch ||
+                a.kind == ActionKind::Dispatch) {
                 a.firstArm = count32(d->arms.size());
                 a.armCount = count();
                 for (std::uint32_t j = 0; j < a.armCount; ++j) {
@@ -634,6 +646,10 @@ Result<ProjectFile> ProgramPersistence::decode(std::span<const std::byte> bytes,
                 if (a.kind == ActionKind::Switch) {
                     a.detail = count32(d->switches.size());
                     d->switches.push_back(r.get<Switch>());
+                }
+                if (a.kind == ActionKind::Dispatch) {
+                    a.detail = count32(d->dispatches.size());
+                    d->dispatches.push_back(r.get<Dispatch>());
                 }
             } else if (a.kind == ActionKind::Loop) {
                 a.detail = count32(d->loops.size());

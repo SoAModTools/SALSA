@@ -35,3 +35,5 @@ This cutover supplies a compact service-backed editor surface. It is not a claim
 Activity records workspace preparation time, resident action/value page counts, pooled child-reference/character counts, and local edit work counts. Outline requests report page row counts and preparation time. These are current stage/work measurements, not previous evaluator timing claims, and page counts are not a measurement of total process memory.
 
 Validation uses focused synthetic console checks for scoped pages and value decoding, local history and persistence, native lowering, and the v7-to-binary workspace save/reopen/export path. The GUI is built with elevated v145 Release but is not launched or tested through a QApplication, in accordance with the user's instruction. No manual GUI readiness or usability measurement is claimed. No private corpus run is added by this cutover.
+
+The semantic outline also supports [route dispatch](CutsceneRoutes.md#independent-route-requirements): promote a structured shared guard, then edit each route’s complete Condition and body independently. Generated decision branches appear only in materialized output.

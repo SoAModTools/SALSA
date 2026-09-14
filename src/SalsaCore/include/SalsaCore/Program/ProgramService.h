@@ -170,16 +170,26 @@ struct AssignLanguages {
     SctTextResourceId text;
     std::vector<SctLanguageGroupId> languages;
 };
-// Explicitly edits existing control flow and records the resulting connection
-// in the same journal entry. Missing/unsupported boundaries fail atomically.
+// Recover a shared pure-guard region as independent route-owned predicates.
+// Optional bindings associate existing connection records with selected bodies.
+struct PromoteDispatch {
+    SctActionId header;
+    std::vector<std::pair<SctSequenceId, SctConnectionId>> bindings;
+};
+struct SetRouteRequirement {
+    ArmId route;
+    ValueBuffer value;
+};
+// Edits control flow and records the connection in one journal entry.
 struct ConnectSlots {
     Connection connection;
     RouteOutcome outcome = RouteOutcome::LocalTransfer;
     std::optional<ValueBuffer> schedule;
 };
 using SemanticOperation =
-    std::variant<InsertConstruct, ReplaceArms, InsertTransfer, MoveAction, EraseAction, RetargetTransfer, PromoteFlow,
-                 PutMetadata, EraseMetadata, PutAnnotation, AssignLanguages, BindLifecycle, ScriptSettings, ConnectSlots>;
+    std::variant<InsertConstruct, ReplaceArms, InsertTransfer, MoveAction, EraseAction, RetargetTransfer,
+                 PromoteFlow, PutMetadata, EraseMetadata, PutAnnotation, AssignLanguages, BindLifecycle,
+                 ScriptSettings, ConnectSlots, PromoteDispatch, SetRouteRequirement>;
 using Primitive = std::variant<ReplaceParameter, ReplaceInstruction, ReplaceCondition, ReplaceText, InsertInstruction,
                                EraseInstruction, MoveInstruction, RenameSection, ReorderSections, AddSection,
                                EraseEmptySection, EditAnnotation, CreateText, RemoveText, SemanticOperation>;
@@ -261,6 +271,7 @@ struct ReadScope {
     std::vector<ConditionRegion> conditions;
     std::vector<Loop> loops;
     std::vector<Switch> switches;
+    std::vector<Dispatch> dispatches;
     std::vector<Transfer> transfers;
     ValueBuffer payload;
 };
@@ -311,6 +322,7 @@ struct FlowRelationship {
     std::vector<std::int32_t> labels;
     bool skipRefresh = false;
     std::uint64_t sourceInstruction = 0;
+    std::optional<DispatchMode> dispatchMode; // Logical ordered route edge, not a raw CFG branch.
 };
 struct ModuleSummary {
     SctModuleId module;

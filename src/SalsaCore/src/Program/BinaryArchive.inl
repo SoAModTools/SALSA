@@ -10,6 +10,9 @@ F(Action, v.id, v.owner, v.kind, v.value, v.firstArm, v.armCount, v.sourceInstru
 F(Arm, v.id, v.owner, v.condition, v.body, v.firstLabel, v.labelCount, v.includesDefault, v.caseExit)
 F(ConditionRegion, v.id, v.owner, v.arm, v.preparation, v.result)
 F(Loop, v.owner, v.kind, v.condition, v.initialize, v.body, v.update)
+F(DispatchSample, v.condition, v.beforeRoute)
+F(DispatchRoute, v.arm, v.samples)
+F(Dispatch, v.owner, v.mode, v.samples, v.routes)
 F(Switch, v.owner, v.selector)
 F(Transfer, v.owner, v.target, v.kind)
 F(Section, v.id, v.script, v.name, v.body, v.content, v.sourceSection)
@@ -38,7 +41,8 @@ F(SctLocalActivation, v.source, v.operand, v.start, v.continuation, v.lifecycleE
 F(Port, v.id, v.owner, v.name, v.action, v.sequence, v.role, v.boundary, v.operand)
 F(RouteRequirement, v.site, v.match, v.labels)
 F(RoutePath, v.requirements, v.preparation, v.consumption)
-F(RouteDefinition, v.method, v.outcome, v.paths, v.entrypoint, v.arrival, v.implementation, v.boundTarget, v.targetOperand, v.boundFilename, v.implementationOpcode)
+F(RouteDefinition, v.method, v.outcome, v.paths, v.entrypoint, v.arrival, v.implementation, v.boundTarget,
+  v.targetOperand, v.boundFilename, v.implementationOpcode, v.dispatchArm)
 F(SctRouteObservation, v.script, v.action, v.role, v.fingerprint)
 F(SctExecutableRoute, v.kind, v.sourceScript, v.destinationScript, v.sourceAction, v.sourceOperand, v.arrival,
   v.arrivalCase, v.sourceStem, v.targetFilename, v.discriminatorBit, v.discriminatorValue, v.observations, v.unresolved)
@@ -66,14 +70,17 @@ template <class T> constexpr std::uint32_t enumMax();
         return static_cast<std::uint32_t>(T::L);                                                                       \
     }
 E(ValueKind, StringGroup)
-E(ActionKind, Transfer) E(CaseExit, Fallthrough) E(LoopKind, For) E(TransferKind, Continue) E(SequenceRole, LoopUpdate)
-    E(SctEvidenceKind, UserAssertion) E(GamePlatform, Dreamcast) E(GameRegion, Japan)
-        E(spice::sct::SctKnownTextConvention, ShiftJis8140) E(SctEntrypointKind, NamedSection)
-            E(SlotRole, Exit) E(SlotBoundary, SequenceEnd) E(EntryMethod, NamedEntry) E(RouteOutcome, ScheduledCall) E(RequirementMatch, Default) E(SctTransitionKind, ShipBattleExit) E(SctRouteObservationRole, Continuation) E(SctVariableKind, Float)
-                E(spice::sct::SctTextKind, SctString) E(smores::script::ResourceRole, StreamedTile)
+E(ActionKind, Dispatch)
+E(DispatchMode, FirstMatch) E(CaseExit, Fallthrough) E(LoopKind, For) E(TransferKind, Continue)
+    E(SequenceRole, LoopUpdate) E(SctEvidenceKind, UserAssertion) E(GamePlatform, Dreamcast) E(GameRegion, Japan)
+        E(spice::sct::SctKnownTextConvention, ShiftJis8140) E(SctEntrypointKind, NamedSection) E(SlotRole, Exit)
+            E(SlotBoundary, SequenceEnd) E(EntryMethod, NamedEntry) E(RouteOutcome, ScheduledCall)
+                E(RequirementMatch, Default) E(SctTransitionKind, ShipBattleExit)
+                    E(SctRouteObservationRole, Continuation) E(SctVariableKind, Float)
+                        E(spice::sct::SctTextKind, SctString) E(smores::script::ResourceRole, StreamedTile)
 #undef E
-                    template <class T>
-                    T empty() {
+                            template <class T>
+                            T empty() {
     return T{};
 }
 template <> AssetLocator empty() {

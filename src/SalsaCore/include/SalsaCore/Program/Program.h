@@ -29,7 +29,7 @@ struct Value {
     std::uint32_t first = 0, count = 0, detail = 0;
     ValueKind kind = ValueKind::Word;
 };
-enum class ActionKind : std::uint8_t { Instruction, Conditional, Loop, Switch, Transfer };
+enum class ActionKind : std::uint8_t { Instruction, Conditional, Loop, Switch, Transfer, Dispatch };
 struct Action {
     SctActionId id;
     SctSequenceId owner;
@@ -64,6 +64,23 @@ struct Loop {
     SctSequenceId initialize, body, update; // initialize/update exist only for For.
 };
 struct Switch { SctActionId owner; ConditionId selector; };
+enum class DispatchMode : std::uint8_t { Independent, FirstMatch };
+// Pure comparisons captured at their original evaluation phase. Predicates own
+// their values independently; these samples preserve read timing during lowering.
+struct DispatchSample {
+    ConditionId condition;
+    std::uint32_t beforeRoute = 0;
+};
+struct DispatchRoute {
+    ArmId arm;
+    std::vector<ConditionId> samples;
+};
+struct Dispatch {
+    SctActionId owner;
+    DispatchMode mode = DispatchMode::Independent;
+    std::vector<DispatchSample> samples;
+    std::vector<DispatchRoute> routes;
+};
 // Construction input only; published labels are pooled, not a vector per arm.
 struct Case {
     std::vector<std::int32_t> labels;
@@ -175,6 +192,7 @@ struct RouteDefinition {
     std::optional<spice::sct::SctParameterAddress> targetOperand;
     std::string boundFilename;
     std::optional<std::uint32_t> implementationOpcode;
+    std::optional<ArmId> dispatchArm; // Authoritative logical requirement/body in its dispatch region.
 };
 struct Connection {
     SctConnectionId id;
@@ -250,8 +268,10 @@ public:
     const Text* find(SctTextResourceId) const noexcept;
     const Value* find(ValueId) const noexcept;
     const ConditionRegion* find(ConditionId) const noexcept;
+    const Arm *find(ArmId) const noexcept;
     const Loop* loop(SctActionId) const noexcept;
     const Switch* switchRegion(SctActionId) const noexcept;
+    const Dispatch *dispatch(SctActionId) const noexcept;
     const Transfer* transfer(SctActionId) const noexcept;
     std::optional<TransferDestination> transferDestination(SctActionId) const noexcept;
     std::span<const ValueId> children(ValueId) const noexcept;

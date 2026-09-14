@@ -1,22 +1,18 @@
 #include "SalsaCore/Program/ProgramMaterializer.h"
-#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
+#include "DispatchPredicates.h"
 #include "ProgramInternal.h"
 #include "ProgramTypedValues.h"
+#include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
 #include <set>
 
 namespace salsa::core::program {
 namespace sct = spice::sct;
 namespace {
-enum class LabelKind {
-    Action,
-    After,
-    Sequence,
-    Check,
-    Arm
-};
+enum class LabelKind { Action, After, Sequence, Check, Arm, Dispatch };
 struct Label {
     LabelKind kind{};
     std::uint64_t id = 0;
+    std::uint64_t ordinal = 0, space = 0;
     auto operator<=>(const Label &) const = default;
 };
 Label actionLabel(SctActionId id) {
@@ -45,6 +41,7 @@ struct Step {
     std::vector<Fixup> fixups;
     std::vector<Subject> subjects;
     bool generated = true;
+    bool clone = false;
 };
 struct Template {
     std::vector<std::uint64_t> signature;
@@ -155,6 +152,19 @@ std::vector<std::uint64_t> signature(const Program &p, const Action &a) {
     }
     if (const auto *sw = p.switchRegion(a.id))
         condition(sw->selector);
+    if (const auto *region = p.dispatch(a.id)) {
+        out.push_back(static_cast<std::uint64_t>(region->mode));
+        for (auto sample : region->samples) {
+            out.push_back(sample.beforeRoute);
+            condition(sample.condition);
+        }
+        for (auto &route : region->routes) {
+            out.push_back(route.arm.value);
+            out.push_back(route.samples.size());
+            for (auto id : route.samples)
+                out.push_back(id.value);
+        }
+    }
     if (const auto *transfer = p.transfer(a.id)) {
         out.insert(out.end(), {transfer->target.value, static_cast<std::uint64_t>(transfer->kind)});
         if (const auto *loop = p.loop(transfer->target))
@@ -184,6 +194,7 @@ bool fallsThrough(const Program &p, SctSequenceId id) {
     }
     return true;
 }
+#include "DispatchLowering.inl"
 Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> sig) {
     Template t{std::move(sig)};
     Values values(p);
@@ -228,6 +239,9 @@ Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> s
     switch (a.kind) {
     case ActionKind::Instruction:
         t.steps.push_back(values.instruction(a));
+        break;
+    case ActionKind::Dispatch:
+        compileDispatch(p, a, t);
         break;
     case ActionKind::Conditional: {
         const auto arms = p.arms(a.id);
@@ -387,7 +401,66 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                 currentSection,
                 std::get<sct::SctScriptSectionContent>(document.sections[currentSection].content).instructions.size()};
         };
-        auto mark = [&](Label l) { require(labels.emplace(l, position()).second, "Duplicate lowering label"); };
+        std::uint64_t nextSpace = 0;
+        std::vector<std::pair<SctSequenceId, std::uint64_t>> clones;
+        std::set<std::pair<SctSequenceId, std::uint64_t>> sequenceOccurrences;
+        auto contained = [&](SctSequenceId id, SctSequenceId root) {
+            std::set<SctSequenceId> seen;
+            while (id.valid() && seen.insert(id).second) {
+                if (id == root)
+                    return true;
+                const auto *seq = p.find(id);
+                if (!seq || !seq->owner)
+                    return false;
+                auto parent = std::visit(
+                    [&](auto owner) -> SctActionId {
+                        using T = decltype(owner);
+                        if constexpr (std::is_same_v<T, SctActionId>)
+                            return owner;
+                        else {
+                            const auto *row = p.find(owner);
+                            return row ? row->owner : SctActionId{};
+                        }
+                    },
+                    *seq->owner);
+                const auto *a = p.find(parent);
+                id = a ? a->owner : SctSequenceId{};
+            }
+            return false;
+        };
+        auto labelSequence = [&](Label l) -> SctSequenceId {
+            if (l.kind == LabelKind::Sequence)
+                return SctSequenceId{l.id};
+            SctActionId action{l.id};
+            if (l.kind == LabelKind::Check) {
+                auto *c = p.find(ConditionId{l.id});
+                if (!c)
+                    return {};
+                action = c->owner;
+            }
+            if (l.kind == LabelKind::Arm) {
+                auto *arm = p.find(ArmId{l.id});
+                if (!arm)
+                    return {};
+                action = arm->owner;
+            }
+            auto *a = p.find(action);
+            return a ? a->owner : SctSequenceId{};
+        };
+        auto qualify = [&](Label l) {
+            for (auto at = clones.rbegin(); at != clones.rend(); ++at)
+                if (contained(labelSequence(l), at->first)) {
+                    l.space = at->second;
+                    break;
+                }
+            return l;
+        };
+        auto mark = [&](Label l) {
+            auto actual = qualify(l);
+            require(labels.emplace(actual, position()).second, "Duplicate lowering label");
+            if (actual.space)
+                labels.try_emplace(l, position()); // first occurrence for presentation only
+        };
         auto remapText = [&](sct::SctDocumentParameter &parameter) {
             if (auto *ref = std::get_if<sct::SctStringReference>(&parameter.value)) {
                 const auto found = indexed.find(SctTextResourceId{ref->target.value()});
@@ -404,13 +477,22 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
             cancelled();
             const auto *seq = p.find(id);
             require(seq && seq->script == selected && seq->order, "Missing or foreign sequence");
-            require(visitedSequences.insert(id).second, "Repeated or cyclic sequence ownership");
+            require(sequenceOccurrences.emplace(id, qualify(sequenceLabel(id)).space).second,
+                    "Repeated or cyclic sequence ownership");
+            visitedSequences.insert(id);
             mark(sequenceLabel(id));
             for (auto actionId : *seq->order) {
                 cancelled();
                 const auto *a = p.find(actionId);
                 require(a && a->owner == id, "Dangling action or invalid sequence owner");
-                require(visited.insert(actionId).second, "Duplicate action in lowering");
+                visited.insert(actionId);
+                if (!clones.empty())
+                    for (auto use : p.incoming(actionId)) {
+                        auto *source = p.find(use.site.action);
+                        require(source && contained(source->owner, clones.back().first),
+                                "Dispatch route body has an incoming cross-boundary execution reference; keep it "
+                                "explicit");
+                    }
                 mark(actionLabel(actionId));
                 auto sig = signature(p, *a);
                 const auto key = std::pair(selected, actionId);
@@ -429,9 +511,13 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                 for (const auto &step : found->second.steps) {
                     if (step.kind == Step::Mark)
                         mark(step.label);
-                    else if (step.kind == Step::Expand)
+                    else if (step.kind == Step::Expand) {
+                        if (step.clone)
+                            clones.emplace_back(step.sequence, ++nextSpace);
                         sequence(step.sequence);
-                    else {
+                        if (step.clone)
+                            clones.pop_back();
+                    } else {
                         if (step.normalExitFrom.valid() && !fallsThrough(p, step.normalExitFrom))
                             continue;
                         const auto from = position();
@@ -442,8 +528,10 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                         for (auto &group : instruction.repeatedParameterGroups)
                             for (auto &parameter : group.parameters)
                                 remapText(parameter);
-                        for (const auto &fixup : step.fixups)
+                        for (auto fixup : step.fixups) {
+                            fixup.target = qualify(fixup.target);
                             pending.push_back({from, fixup});
+                        }
                         for (const auto &subject : step.subjects)
                             record(subject, sct::SctDocumentEntityId{instruction.id}, step.generated);
                         std::get<sct::SctScriptSectionContent>(document.sections[currentSection].content)

@@ -76,6 +76,7 @@ struct ProgramData {
     std::vector<ConditionRegion> conditions;
     std::vector<Loop> loops;
     std::vector<Switch> switches;
+    std::vector<Dispatch> dispatches;
     std::vector<Transfer> transfers;
     std::vector<Text> texts;
     Metadata metadata;
@@ -172,5 +173,7 @@ void valueShape(const ProgramData&, ValueId);
 DirectFacts actionFacts(ProgramData&, std::span<const SctActionId>, std::vector<Diagnostic>&);
 void finalizePostings(ProgramData&);
 void buildIndexes(ProgramData&, std::vector<Diagnostic>&, bool checkValueShapes = true);
-void finishMetadata(ProgramData&, std::vector<Diagnostic>&, bool allocateIds = true);
+void validateDispatch(const ProgramData &, const Dispatch &);
+void finishMetadata(ProgramData &, std::vector<Diagnostic> &, bool allocateIds = true,
+                    bool checkDispatches = true);
 } // namespace salsa::core::program

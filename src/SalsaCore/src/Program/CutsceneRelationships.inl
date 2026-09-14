@@ -90,6 +90,21 @@ CutsceneQuery ServiceOwner::cutscene(Revision revision, SctModuleId module, std:
             dependencies.insert(path.consumption.begin(), path.consumption.end());
         }
     };
+    auto dispatchRequirements = [&](const Arm &selected) {
+        std::vector<RouteRequirement> result;
+        const auto *root = d.action(selected.owner);
+        const auto &region = d.dispatches[root->detail];
+        for (std::uint32_t i = 0; i < root->armCount; ++i) {
+            const auto &arm = d.arms[root->firstArm + i];
+            if (region.mode == DispatchMode::FirstMatch || arm.id == selected.id)
+                result.push_back({{root->id, {}, arm.id, 0, arm.condition},
+                                  arm.id == selected.id ? RequirementMatch::True : RequirementMatch::False,
+                                  {}});
+            if (arm.id == selected.id)
+                break;
+        }
+        return result;
+    };
     // Collect enclosing structured checks and raw branches on the selected caller's
     // straight-line region. Cycles/too many alternatives remain explicitly incomplete.
     auto pathsTo = [&](SctActionId source) {
@@ -102,7 +117,16 @@ CutsceneQuery ServiceOwner::cutscene(Revision revision, SctModuleId module, std:
             const auto parent = d.parentAction(*s);
             const auto *a = d.action(parent);
             dependencies.insert(parent);
-            if (a->kind == ActionKind::Conditional && s->role == SequenceRole::ArmBody) {
+            if (a->kind == ActionKind::Dispatch && s->role == SequenceRole::ArmBody) {
+                for (std::uint32_t i = 0; i < a->armCount; ++i) {
+                    const auto &arm = d.arms[a->firstArm + i];
+                    if (arm.body == seq) {
+                        auto required = dispatchRequirements(arm);
+                        for (auto &path : paths)
+                            path.requirements.insert(path.requirements.end(), required.begin(), required.end());
+                    }
+                }
+            } else if (a->kind == ActionKind::Conditional && s->role == SequenceRole::ArmBody) {
                 for (std::uint32_t i = 0; i < a->armCount; ++i) {
                     const auto &arm = d.arms[a->firstArm + i];
                     if (arm.condition.valid()) {
@@ -407,6 +431,16 @@ CutsceneQuery ServiceOwner::cutscene(Revision revision, SctModuleId module, std:
             view.method = r.method;
             view.evidence = c.evidence;
             view.paths = r.paths;
+            if (r.dispatchArm) {
+                const auto *arm = d.lookup(r.dispatchArm->value, EntityKind::Arm, d.arms);
+                if (view.paths.empty())
+                    view.paths.push_back({});
+                auto current=dispatchRequirements(*arm);
+                for (auto &path : view.paths) {
+                    std::erase_if(path.requirements,[&](const auto& q){return q.site.action==arm->owner;});
+                    path.requirements.insert(path.requirements.end(),current.begin(),current.end());
+                }
+            }
             view.source = r.implementation.value_or(src ? slotEntry(d, *src) : SctActionId{});
             view.target = hasDestination && dst ? slotEntry(d, *dst) : r.boundTarget.value_or(SctActionId{});
             view.operand = r.targetOperand;
