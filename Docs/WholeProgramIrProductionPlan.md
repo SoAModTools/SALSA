@@ -153,3 +153,27 @@ Keep symbolic story-state identity separate from physical bank/index binding. Th
 Plan explicit platform-qualified bindings and project-wide reservations, with script-specific display aliases that do not imply script-local physical storage. No automatic numeric-offset translation, free-bit guarantee or bank expansion is implemented by this decision. Preserve raw references and allow users to define meanings. Ordinary encoding choices do not translate gameplay semantics. See [the authoring guide](StoryFlags.md); detailed research provenance remains in ignored planning records.
 
 Standalone cutscene modules retain entry slots and alternative incoming routes, including route conditions and preparation/consumption. Record whole-module writes and clears independently of return/continuation/transition/scheduled-work outcomes. Low flag numbers suggest initial grouping, not chronological edges or exclusion of higher flags. Binding and control edits update affected dependency buckets; aliases update presentation only. Symbolic allocation and the integrated cutscene presentation remain future work, not an expansion of the completed production storage slices.
+
+
+## Future feature: named flag allocation with user overrides
+
+Status: agreed future feature; no allocator implementation or slice assignment is authorized here.
+
+- Create a stable symbolic flag identity, used by semantic conditions and effects, with a separately persisted numeric bank/index binding. Users may accept a suggested index, choose another candidate, or manually pin an index.
+- Suggest assignments using analyzed project scripts, known native/resource uses, resolvable computed-index ranges, lifecycle information, project reservations and user-designated allocation ranges. Report unknown coverage without requiring an exhaustive proof workflow. An unobserved slot is a candidate, not certified free storage.
+- Preserve imported numeric assignments. Naming an imported variable does not relocate it; association with a symbolic flag is explicit. Keep script-local display aliases distinct from project-global physical storage and reservations.
+- Once assigned, keep the binding stable across analysis, save/reopen and export. Newly discovered conflicts are reported for user action, never resolved by silently renumbering flags. Sharing an index is an explicit decision.
+- An explicit reassignment updates the flag's symbolic uses and relevant dependency buckets as one undoable change. Do not rewrite unrelated raw constants or assume every computed/native/resource reference can be relocated. Identify affected references and unresolved uses in the operation's explanation.
+- Reassignment can change the interpretation of existing game saves. Retain assignments for released mods unless the user deliberately changes them; save-game migration is separate work.
+- Initially allocate for the project's target. Leave room for explicit platform-qualified bindings to one symbolic meaning later. Do not infer a universal platform offset or expand native storage.
+
+## Future feature: portable variable annotation catalogs
+
+Status: agreed future feature; separate annotation import/export is not implemented by this plan.
+
+- Export selected annotations to a small, versioned JSON file independently of scripts, game assets and the project container. Share names, descriptions, categories, value meanings and supporting notes for individual variables, specific values, ranges or parameterized families.
+- Include stable catalog/entry identities, scope and platform/release qualifications so later imports can recognize updates. Retain researched interpretations, uncertainty and user assertions as distinct information. Broad range descriptions must not imply uniform ownership of every member.
+- Preserve optional script scope using portable identity/evidence. An unresolved script association stays unresolved until explicitly matched; it must not become a global annotation. Do not put machine-specific absolute paths or baseline bytes into the catalog.
+- Preview additions, updates and conflicts. Allow selected merges, retaining the current version, or explicit replacement. Project overrides take precedence while the imported original and its provenance remain inspectable; preserve script-specific overrides within their scope.
+- Keep descriptive variable bindings separate from executable assignment changes and allocation reservations. Importing a catalog changes labels/explanations only: it does not reserve slots, reassign flags, rewrite instructions or certify free storage. Reservation exchange, if wanted later, is a separately selected operation.
+- Apply an accepted import as one undoable metadata change. Refresh affected labels/explanations without rebuilding instruction facts or the whole connectivity graph. No automatic remote subscription or synchronization is included.
