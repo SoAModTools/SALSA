@@ -104,22 +104,21 @@ std::optional<Variable> read(const Value& op) {
     return {};
 }
 }
-void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
-    // Shape checks and connection extraction happen once at bulk construction.
-    // WP2 uses the same local contribution rules for changed records only.
-    for (std::uint32_t i = 0; i < d.values.size(); ++i) shape(d, ValueId{i});
+void valueShape(const ProgramData& d, ValueId id) { shape(d, id); }
+DirectFacts actionFacts(ProgramData& d, std::span<const SctActionId> actions, std::vector<Diagnostic>& diagnostics) {
+    DirectFacts facts;
     auto inspect = [&](ValueId id, Site site, SctScriptId script) {
         const auto& v = node(d, id);
         if (v.kind == ValueKind::Expression) {
             std::uint32_t ordinal = 0;
             for (auto op : d.child(id)) {
                 site.operation = ordinal++;
-                if (auto key = read(node(d, op))) d.accesses.push_back({site, Access::Read, id, key, key->bank});
+                if (auto key = read(node(d, op))) facts.accesses.push_back({site, Access::Read, id, key, key->bank});
             }
         } else if (v.kind == ValueKind::ActionReference) {
             auto* target = d.action(SctActionId{v.data});
             require(target && d.sequence(target->owner)->script == script, "Dangling or cross-script resolved instruction target");
-            d.targetUses.push_back({site, SctActionId{v.data}});
+            facts.targets.push_back({site, SctActionId{v.data}});
         } else if (v.kind == ValueKind::IndexedTextReference || v.kind == ValueKind::SupplementaryTextReference) {
             auto* target = d.lookup(v.data, EntityKind::Text, d.texts);
             require(target && target->script == script && target->supplementary == (v.kind == ValueKind::SupplementaryTextReference), "Dangling or incompatible resolved text target");
@@ -128,8 +127,9 @@ void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
                 "Unresolved operand in action " + std::to_string(site.action.value)});
         }
     };
-    for (std::uint32_t i = 0; i < d.actions.size(); ++i) {
-        const auto& a = *d.actions.find(i); const auto script = d.sequence(a.owner)->script;
+    for (auto id : actions) {
+        const auto* found = d.action(id); if (!found) continue;
+        const auto& a = *found; const auto script = d.sequence(a.owner)->script;
         auto condition = [&](ConditionId id) {
             const auto* region = d.lookup(id.value, EntityKind::Condition, d.conditions);
             require(region && region->owner == a.id, "Missing or foreign condition region");
@@ -146,7 +146,7 @@ void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
         if (a.kind == ActionKind::Switch) { condition(d.switches.at(a.detail).selector); continue; }
         if (a.kind == ActionKind::Transfer) {
             const auto& transfer = d.transfers.at(a.detail);
-            d.targetUses.push_back({{a.id}, transfer.target, transfer.kind == TransferKind::Break ? TargetUseKind::Break : TargetUseKind::Continue});
+            facts.targets.push_back({{a.id}, transfer.target, transfer.kind == TransferKind::Break ? TargetUseKind::Break : TargetUseKind::Continue});
             continue;
         }
         const auto& instruction = node(d, a.value);
@@ -166,8 +166,8 @@ void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
                 VariableUse use{site, opcode == 17 ? Access::Set : opcode == 18 ? Access::Clear : opcode == 19 ? Access::Modify : Access::Assign, value, {}, bank};
                 if (index) {
                     use.variable = Variable{bank, bank == Bank::Bit ? *index : *index & 65535};
-                    d.accesses.push_back(use);
-                } else { use.access = Access::ComputedWrite; d.computed.push_back(use); }
+                    facts.accesses.push_back(use);
+                } else { use.access = Access::ComputedWrite; facts.computed.push_back(use); }
             }
         };
         for (; start < parameters.size(); ++start) {
@@ -177,6 +177,21 @@ void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
             } else parameter(parameters[start], {});
         }
     }
+    return facts;
+}
+void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
+    for (std::uint32_t i = 0; i < d.values.size(); ++i) shape(d, ValueId{i});
+    std::vector<SctActionId> ids;
+    for (std::uint32_t i = 0; i < d.actions.size(); ++i) if (auto id = d.actions.find(i)->id; id.valid()) ids.push_back(id);
+    auto facts = actionFacts(d, ids, diagnostics);
+    d.accesses = std::move(facts.accesses); d.computed = std::move(facts.computed); d.targetUses = std::move(facts.targets);
+    d.variableUses.clear(); d.incomingRanges.clear();
+    finalizePostings(d);
+    if (d.stats.unavailableItems || d.stats.excludedSourceBytes) diagnostics.push_back({DiagnosticSeverity::Warning,
+        DiagnosticCode::SctSourceArtifactOmitted, "Source-only bytes were excluded; unavailable typed content remains explicit in this draft."});
+}
+void finalizePostings(ProgramData& d) {
+    d.variableUses.clear(); d.incomingRanges.clear();
     // Contiguous postings avoid one vector allocation per referenced action.
     // Range replacement/reclamation is supplied by WP2; these are bulk indexes.
     std::stable_sort(d.accesses.begin(), d.accesses.end(), [](const VariableUse& a, const VariableUse& b) { return a.variable < b.variable; });
@@ -191,8 +206,6 @@ void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics) {
         if (!range.count) range.first = i;
         ++range.count;
     }
-    if (d.stats.unavailableItems || d.stats.excludedSourceBytes) diagnostics.push_back({DiagnosticSeverity::Warning,
-        DiagnosticCode::SctSourceArtifactOmitted, "Source-only bytes were excluded; unavailable typed content remains explicit in this draft."});
 }
 Result<std::uint64_t> ProgramBuilder::allocateIdentity() {
     try { require(data_ != nullptr, "Builder already finished"); return Result<std::uint64_t>::success(data_->allocate()); }

@@ -211,6 +211,8 @@ public:
     Statistics statistics() const noexcept;
 private:
     friend class ProgramBuilder;
+    friend struct ServiceOwner;
+    friend struct NativeCollection;
     explicit Program(std::unique_ptr<ProgramData>);
     std::unique_ptr<ProgramData> data_;
 };

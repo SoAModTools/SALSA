@@ -29,11 +29,13 @@ std::span<const Arm> Program::arms(SctActionId id) const noexcept {
     return std::span<const Arm>(data_->arms).subspan(a->firstArm, a->armCount);
 }
 std::span<const VariableUse> Program::uses(Variable variable) const noexcept {
+    if (auto edited = data_->editedUses.find(variable); edited != data_->editedUses.end() && edited->second) return *edited->second;
     auto it = data_->variableUses.find(variable);
     return it == data_->variableUses.end() ? std::span<const VariableUse>{} : std::span<const VariableUse>(data_->accesses).subspan(it->second.first, it->second.count);
 }
-std::span<const VariableUse> Program::computedWrites() const noexcept { return data_->computed; }
+std::span<const VariableUse> Program::computedWrites() const noexcept { return data_->editedComputed ? std::span<const VariableUse>(*data_->editedComputed) : std::span<const VariableUse>(data_->computed); }
 std::span<const TargetUse> Program::incoming(SctActionId id) const noexcept {
+    if (auto edited = data_->editedIncoming.find(id); edited != data_->editedIncoming.end() && edited->second) return *edited->second;
     auto at = data_->directory.find(id.value);
     if (at.kind != EntityKind::Action || at.index >= data_->incomingRanges.size()) return {};
     const auto range = data_->incomingRanges[at.index];

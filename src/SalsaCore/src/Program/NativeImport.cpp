@@ -164,11 +164,14 @@ Result<SctScriptId> ProgramBuilder::appendImported(const sct::SctDocument& docum
     }
 }
 Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::uint8_t> bytes,
-    SctAuthoringBaseline baseline, SctScriptContext context, const sct::SctDocumentImportOptions& options) {
+    SctAuthoringBaseline baseline, SctScriptContext context, const sct::SctDocumentImportOptions& options, std::stop_token stop, SctLoadingObserver progress) {
     try {
+        auto phase = [&](const char* name) { require(!stop.stop_requested(), "Native load cancelled"); if (progress) progress({name, 0, 0, context.name}); };
+        phase("Checking source baseline");
         auto digest = sha256(std::as_bytes(bytes));
         if (!digest) return Result<SctScriptId>::failure(digest.diagnostics());
         require(bytes.size() == baseline.source.byteSize && digest.value() == baseline.source.revision.digest, "Native input differs from its imported baseline");
+        phase("Parsing SCT");
         auto parsed = sct::SctParser{}.parse(bytes, {}, sct::SctParseOptions{true});
         require(parsed.parseOk, "SPICE could not parse native SCT");
         auto selected = options;
@@ -180,6 +183,7 @@ Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::u
         if (selected.declaredSourcePlatform) baseline.recipe.platform = *selected.declaredSourcePlatform == sct::SctPlatform::GameCube ? GamePlatform::GameCube : GamePlatform::Dreamcast;
         if (selected.sourceTextEncoding) baseline.textConvention = sct::findSctKnownTextConvention(*selected.sourceTextEncoding);
         baseline.recipe.trustSelectedTextEncoding = selected.footerTextPromotion == sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding;
+        phase("Importing typed SCT");
         auto imported = sct::SctDocumentImporter::import(parsed, selected);
         require(imported.document.has_value(), "SPICE could not import native SCT");
         std::vector<Diagnostic> diagnostics;
@@ -190,8 +194,10 @@ Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::u
         const auto& source = imported.context.receipt().source;
         if (!context.outputProfile) context.outputProfile = SctAuthoredOutputProfile{
             source.byteOrder == sct::SctSourceByteOrder::BigEndian, source.wrapper == sct::SctSourceWrapper::Aklz, source.header.values};
+        phase("Normalizing program");
         auto result = builder.appendImported(*imported.document, std::move(baseline), std::move(context));
         if (!result) return result;
+        phase("Script normalized");
         return Result<SctScriptId>::success(result.value(), std::move(diagnostics));
     } catch (const std::exception& e) {
         return Result<SctScriptId>::failure({DiagnosticSeverity::Error, DiagnosticCode::SctImportFailed, e.what()});

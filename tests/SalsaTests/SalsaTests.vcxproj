@@ -108,4 +108,7 @@
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ItemGroup><ClCompile Include="test_whole_program.cpp" /></ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="test_program_service.cpp" />
+  </ItemGroup>
 </Project>

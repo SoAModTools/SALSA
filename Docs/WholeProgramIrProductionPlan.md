@@ -1,6 +1,6 @@
 # Production whole-program IR implementation plan
 
-Status: WP1 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
+Status: WP1 and WP2 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
 
 ## Locked decisions
 
@@ -64,6 +64,8 @@ Build direct incoming-target and variable access postings. Recognize literal num
 Completion: load multiple scripts into the production model, perform direct lookups and reverse bit/target queries, and inspect full instruction/text content without resident editable SctDocuments or a second production representation. A small fixture covers names shared across scripts and the float-encoded bit case that exposed the experiment bug. Existing editor remains on its old authority in this slice.
 
 ## WP2 — Core service, edits, history and lifetimes
+
+Implemented in `SalsaCore/Program/ProgramService.h`. See [service contracts and boundaries](WholeProgramIrService.md) for request types, scoped readers, primitive edits, history/reclamation and bounded native ingestion. The editor cutover remains WP6.
 
 Put the mutable program behind one serialized owner executor. Public operations are typed load/query/edit/undo/redo/read-scope requests using project identity and expected revision. Qt invokes this service; workers never mutate live authority. Scoped reader handles expose a coherent selected script/module/action range, with explicit lifetime. A full-project checkpoint is an explicit save operation, never the default view capture.
 

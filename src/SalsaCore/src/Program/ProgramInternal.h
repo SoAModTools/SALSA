@@ -16,6 +16,10 @@ inline Diagnostic failure(std::string message) {
 template<class T> class Pages {
 public:
     static constexpr std::uint32_t PageSize = 256;
+    Pages() = default;
+    Pages(const Pages& other) : size_(other.size_) { for (const auto& p : other.pages_) pages_.push_back(std::make_unique<std::array<T, PageSize>>(*p)); }
+    Pages(Pages&&) noexcept = default;
+    Pages& operator=(Pages&&) noexcept = default;
     std::uint32_t size() const noexcept { return size_; }
     std::size_t pageCount() const noexcept { return pages_.size(); }
     const T* find(std::uint32_t i) const noexcept { return i < size_ ? &(*pages_[i / PageSize])[i % PageSize] : nullptr; }
@@ -37,6 +41,12 @@ class Directory {
     static constexpr std::uint64_t Width = 1024;
     std::unordered_map<std::uint64_t, std::unique_ptr<std::array<Location, Width>>> pages_;
 public:
+    Directory() = default;
+    Directory(const Directory& other) { for (const auto& [key,p] : other.pages_) pages_.emplace(key, std::make_unique<std::array<Location, Width>>(*p)); }
+    Directory(Directory&&) noexcept = default;
+    Directory& operator=(Directory&&) noexcept = default;
+    void reserve(std::uint64_t id) { auto& p = pages_[id / Width]; if (!p) p = std::make_unique<std::array<Location, Width>>(); }
+    void set(std::uint64_t id, Location at) noexcept { (*pages_.find(id / Width)->second)[id % Width] = at; }
     Location find(std::uint64_t id) const noexcept {
         auto it = pages_.find(id / Width);
         return it == pages_.end() ? Location{} : (*it->second)[id % Width];
@@ -77,6 +87,10 @@ struct ProgramData {
     std::vector<Range> incomingRanges;
     std::vector<SctActionId> successors; // Indexed by action slot, not identity.
     Statistics stats;
+    // Bulk postings stay pooled. Only edited buckets acquire replaceable ranges.
+    std::map<Variable, std::shared_ptr<const std::vector<VariableUse>>> editedUses;
+    std::map<SctActionId, std::shared_ptr<const std::vector<TargetUse>>> editedIncoming;
+    std::shared_ptr<const std::vector<VariableUse>> editedComputed;
     std::uint64_t allocate() {
         require(highWater < UINT64_MAX, "Authored identity allocator exhausted"); return ++highWater;
     }
@@ -153,6 +167,10 @@ struct ProgramData {
 };
 // Native normalization is also used by the public expression input operation.
 ValueId normalizeExpression(ProgramData&, const spice::sct::SctCanonicalExpression&);
+struct DirectFacts { std::vector<VariableUse> accesses, computed; std::vector<TargetUse> targets; };
+void valueShape(const ProgramData&, ValueId);
+DirectFacts actionFacts(ProgramData&, std::span<const SctActionId>, std::vector<Diagnostic>&);
+void finalizePostings(ProgramData&);
 void buildIndexes(ProgramData&, std::vector<Diagnostic>&);
 void finishMetadata(ProgramData&, std::vector<Diagnostic>&);
 } // namespace salsa::core::program

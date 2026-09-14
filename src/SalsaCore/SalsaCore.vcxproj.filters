@@ -146,4 +146,10 @@
     <ClCompile Include="src\Program\NativeImport.cpp" />
     <ClCompile Include="src\Program\ProgramIndexes.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Program\ProgramService.h" />
+    <ClInclude Include="src\Program\NativeCollection.h" />
+    <ClCompile Include="src\Program\ProgramService.cpp" />
+    <ClCompile Include="src\Program\NativeCollection.cpp" />
+  </ItemGroup>
 </Project>

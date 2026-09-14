@@ -79,7 +79,7 @@ Bulk completion builds pooled contiguous variable-use and incoming-action-target
 
 Reads recognize SPICE's Bit/Byte/Int/Float variable operations, including low-16 comparison and float-backed IntVar forms. Secondary-value operations retain their exact type without pretending to be ordinary variables. Fixed destination indices recognize raw words, integral fixed-point decimals and integral float payloads. Computed destinations have a separate posting list rather than being dropped or assigned a guessed index. The destination rules cover assignments 5/6/7 and bit writes 17/18/19; opcode 19 is recorded as modification with unspecified resulting value. Set/clear facts mean the instruction occurs, not that its path executes or that it establishes a final story state. No entry-distance heuristic filters writes.
 
-Transitive calls, module summaries, guards, storyline paths and dirty dependency buckets belong to WP3. Per-source contribution replacement and reclamation belong to WP2. WP1 does not build writer-reader Cartesian products, format whole story views or perform a corpus survey as a side effect of import.
+Transitive calls, module summaries, guards, storyline paths and dirty dependency buckets belong to WP3. Per-source contribution replacement and reclamation are implemented by the WP2 service. WP1 does not build writer-reader Cartesian products, format whole story views or perform a corpus survey as a side effect of import.
 
 ## Delivery
 
@@ -88,3 +88,7 @@ WP1 uses four focused synthetic console checks: typed multi-script imports and d
 The structured extension adds two focused console checks covering prepared Else If/loop checks, all loop forms, switch arms/fallthrough/default, nested transfer destinations, condition indexing and invalid scopes/cases/ownership. Elevated v145 Release build and all six WholeProgramTest checks passed. Existing linked SPICE MLD PDB warnings remain. No GUI or corpus run; the earlier unrelated standalone SpiceTests build failure was not retried for this core-only change.
 
 Shared-label extension: the existing structured tests now exercise several labels per body, Default sharing a body, authored label order, and rejection of duplicate/absent labels. The elevated v145 Release build and all six focused core checks passed; no GUI or corpus tests ran. Other suggested authoring conveniences are optional; see [optional authoring concepts](WholeProgramIrOptionalAuthoring.md).
+
+## WP2 service
+
+The bulk builder remains the import boundary. The [production service](WholeProgramIrService.md) now owns mutable tables, local changes/history, scoped immutable readers and bounded asynchronous native loading. Editing does not rebuild a complete Program or use a native document as the live authority. Full checkpoints and payload reclamation are explicit operations. WP3 ports coordinated structured and metadata commands; WP6 integrates the editor.
