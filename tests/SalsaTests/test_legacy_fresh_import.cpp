@@ -1,3 +1,4 @@
+#include "SalsaCore/Program/ProgramMaterializer.h"
 #include "SalsaCore/Program/LegacyProgramImport.h"
 #include "SalsaCore/Foundation/Hashing.h"
 #include "SalsaCore/Legacy/LegacyFreshImport.h"
@@ -776,6 +777,28 @@ TEST(LegacyFreshImportTest, ImportsV7IntoBinaryProgramWithSupportedMetadata) {
     EXPECT_EQ(reloaded.value().program->scripts().front().context.legacyOrigin->capsuleId,project.program->scripts().front().context.legacyOrigin->capsuleId);
     EXPECT_EQ(reloaded.value().program->metadata().meanings.size(),project.program->metadata().meanings.size());
     EXPECT_EQ(reloaded.value().presentation.folders.front().sections,project.presentation.folders.front().sections);
+    // Legacy drafts may omit the engine roots. Repair explicitly before native
+    // export; no importer or materializer silently invents lifecycle bodies.
+    ir::ProgramService service;
+    auto adopted=service.adopt({},std::move(reloaded.value().program)).get(); ASSERT_TRUE(adopted);
+    auto revision=adopted.value().current;
+    const auto script=project.program->scripts().front().context.id;
+    for (const auto name : {"init","loop"}) {
+        auto added=service.edit({revision,{ir::AddSection{script,std::string("repair_")+name,0}}}).get(); ASSERT_TRUE(added);
+        revision=added.value().status.current;
+        auto checkpoint=service.checkpoint(revision).get().value();
+        const auto section=checkpoint.program->find(script)->sections.front();
+        const auto sequence=checkpoint.program->find(section)->body;
+        ir::ValueBuffer ret; ret.add(ir::ValueKind::Instruction,12);
+        auto repaired=service.edit({revision,{ir::InsertInstruction{sequence,0,ret},ir::SemanticOperation{ir::BindLifecycle{section,name}}}}).get(); ASSERT_TRUE(repaired) << (repaired.diagnostics().empty()?"":repaired.diagnostics().front().message);
+        revision=repaired.value().status.current;
+    }
+    ir::ProgramMaterializer materializer;
+    auto exported=materializer.exportScript(service.checkpoint(revision).get().value(),revision,script,
+        {"f44499b5-dcf0-449a-9815-5bdf558eface"},spice::sct::SctDocumentExportOptions{options.platform,options.textEncoding,options.byteOrder,options.wrapper});
+    ASSERT_TRUE(exported) << (exported.diagnostics().empty()?"":exported.diagnostics().front().message);
+    EXPECT_FALSE(exported.value().bytes.empty());
+    service.shutdown().get();
 }
 
 TEST(LegacyFreshImportTest, BuiltInPromotionAppliesV7AliasesColorsAndSectionFolders) {

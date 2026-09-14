@@ -1,6 +1,6 @@
 # Production whole-program IR implementation plan
 
-Status: WP1 through WP4 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
+Status: WP1 through WP5 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
 
 ## Locked decisions
 
@@ -113,6 +113,8 @@ Completion: save/reopen a complete authored project with stable IDs, metadata an
 
 ## WP5 — Fresh native materialization and publication
 
+Implemented: `program::ProgramMaterializer` supplies selected-script lowering, exact local template reuse, fresh SPICE export, and qualified authored/generated mappings. Activation lowering is shared with the existing backend. See [materialization contracts](WholeProgramIrMaterialization.md). The editor publication adapter and live-authority cutover remain WP6.
+
 Lower structured constructs from the selected captured revision into explicit derived control flow first. For an ordered conditional chain, each false edge reaches the next condition or Else body; normal body exits share the continuation. Lower loops with the documented entry/check/update order, including final failed checks and For Continue through update. Lower Switch with one selector evaluation and explicit arm exits/fallthrough; route Break to the target construct continuation. Preserve early returns, explicit exits, scheduling and cross-construct targets. Generate deterministic jump identities with mappings back to the owning chain/arm; the user can inspect this output without acquiring a second editable authority. Re-lower only affected constructs and their layout dependencies.
 
 Materialize a selected captured script revision into a fresh SPICE SctDocument, including texts and control references, then compose native output through public SPICE APIs. Keep a lossless typed mapping for supported executable content without importing opaque source bytes into the IR. Generate realization locations qualified by project, revision, script and realization; derived wrappers map back to their authored entrypoint owners.
@@ -121,7 +123,7 @@ Port the shared activation lowering so optional named wrappers and whole-block b
 
 Route both core export and editor publication through this one materializer, using the captured revision and ordinary operation diagnostics. Unsupported executable structures or dangling targets fail gracefully there. Do not add a separate project verification workflow or reparse export after every edit.
 
-Completion: representative authored edits can save, reopen and export from the production model through the same core path with stable mappings and correct activation behavior. Retain supported v7-to-native export. No UI cutover is required to exercise this end-to-end path.
+Completion: representative authored edits can save, reopen and export from the production model through the same core path with stable mappings and correct activation behavior. Retain supported v7 import followed by native SCT export; v7 project export is not supported. No UI cutover is required to exercise this end-to-end path.
 
 ## WP6 — Editor cutover and retirement
 
@@ -139,4 +141,4 @@ Keep the user's lightweight approach: no separate verification mode, exhaustive 
 
 Use the established standalone evaluator for focused production-backed loading/editing/persistence measurements after the relevant slice, not a complete corpus/compression rerun after every change. Reuse captured evidence when it remains applicable. The opt-in full GC US architecture exception remains scoped to its standalone SALSA experiment. New/changed native corpus acceptance follows SALSA's AGENTS.md policy; the me002 DC EU story-connectivity exception remains separate. Follow private-repository mutex/location rules if that repository is actually used for native acceptance. No corpus or planning evidence is committed.
 
-For each slice, record what became usable, remaining representation/coverage limits and scoped checks, then commit. No pushes or submodule changes. WP1 through WP4 are complete. WP5 is next; do not implement subsequent slices without authorization.
+For each slice, record what became usable, remaining representation/coverage limits and scoped checks, then commit. No pushes or submodule changes. WP1 through WP5 are complete. WP6 is next; do not implement subsequent slices without authorization.

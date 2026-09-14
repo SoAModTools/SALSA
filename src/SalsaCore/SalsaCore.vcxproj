@@ -207,7 +207,9 @@
   <ItemGroup><ClInclude Include="src\Program\ProgramRelationships.inl" /></ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Program\ProgramPersistence.cpp" />
+    <ClCompile Include="src\Program\ProgramMaterializer.cpp" />
     <ClInclude Include="include\SalsaCore\Program\ProgramPersistence.h" />
+    <ClInclude Include="include\SalsaCore\Program\ProgramMaterializer.h" />
     <ClInclude Include="src\Program\BinaryArchive.inl" />
     <ClCompile Include="..\..\third-party\zstd\lib\common\debug.c"><CompileAs>CompileAsC</CompileAs><PreprocessorDefinitions>ZSTD_DISABLE_ASM;%(PreprocessorDefinitions)</PreprocessorDefinitions><ObjectFileName>$(IntDir)zstd_common_debug.obj</ObjectFileName><WarningLevel>TurnOffAllWarnings</WarningLevel></ClCompile>
     <ClCompile Include="..\..\third-party\zstd\lib\common\entropy_common.c"><CompileAs>CompileAsC</CompileAs><PreprocessorDefinitions>ZSTD_DISABLE_ASM;%(PreprocessorDefinitions)</PreprocessorDefinitions><ObjectFileName>$(IntDir)zstd_common_entropy_common.obj</ObjectFileName><WarningLevel>TurnOffAllWarnings</WarningLevel></ClCompile>

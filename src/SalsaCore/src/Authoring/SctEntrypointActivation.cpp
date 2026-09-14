@@ -35,26 +35,40 @@ Result<SctAuthoringState> checked(SctAuthoringState next) {
 }
 
 Result<void> SctEntrypointAuthoring::validateActivations(const SctAuthoringProject& p, SctScriptId script, const sct::SctDocument& d) {
+    std::vector<SctActivationEntry> entries;
+    for (const auto& e : p.entrypoints) if (e.script == script) {
+        entries.push_back({e.id, e.name, e.enabled, e.activation});
+        if (const auto* a = std::get_if<SctNamedActivation>(&e.activation); a && e.binding) {
+            const auto* sequence = p.find(e.binding->sequence);
+            const auto section = std::ranges::find(d.sections, a->externalName, &sct::SctDocumentSection::nameBytes);
+            if (sequence && (section == d.sections.end() || sequence->section != section->id))
+                return Result<void>::failure(error("Named activation and response binding must describe the same section."));
+        }
+    }
+    return validateActivations(entries, [&](SctActionId id) { return instruction(p,script,id); }, d);
+}
+Result<void> SctEntrypointAuthoring::validateActivations(std::span<const SctActivationEntry> entries,
+    const SctActivationResolver& resolve, const sct::SctDocument& d) {
     const auto index = sct::SctDocumentIndex::build(d);
     std::set<std::string> names;
-    std::set<std::tuple<SctActionId, std::optional<sct::SctParameterAddress>,bool>> edges;
-    for (const auto& e : p.entrypoints) if (e.script == script) {
+    std::set<std::tuple<sct::SctInstructionId, std::optional<sct::SctParameterAddress>,bool>> edges;
+    std::set<SctEntrypointId> identities;
+    for (const auto& e : entries) {
+        if (!e.id.valid() || !identities.insert(e.id).second)
+            return Result<void>::failure(error("Missing or duplicate activation identity."));
         if (const auto* a = std::get_if<SctNamedActivation>(&e.activation)) {
-            const auto body = instruction(p, script, a->body);
+            const auto body = resolve(a->body);
             const auto section = std::ranges::find(d.sections, a->externalName, &sct::SctDocumentSection::nameBytes);
             const auto* code = section == d.sections.end() ? nullptr : std::get_if<sct::SctScriptSectionContent>(&section->content);
-            const auto* sequence = e.binding ? p.find(e.binding->sequence) : nullptr;
             if (!body || !code || code->instructions.empty() || code->instructions.front().id != *body || !names.insert(a->externalName).second)
                 return Result<void>::failure(error("Named activation must uniquely own its current section entry."));
-            if (sequence && sequence->section != section->id)
-                return Result<void>::failure(error("Named activation and response binding must describe the same section."));
             if (required(a->externalName) && !e.enabled) return Result<void>::failure(error("init and loop are always enabled."));
         } else if (const auto* a = std::get_if<SctLocalActivation>(&e.activation)) {
-            const auto source = instruction(p, script, a->source), start = instruction(p, script, a->start), continuation = instruction(p, script, a->continuation);
+            const auto source = resolve(a->source), start = resolve(a->start), continuation = resolve(a->continuation);
             if (!source || !start || !continuation || *start == *continuation || !index.find(d,*continuation) || !index.find(d,*start))
                 return Result<void>::failure(error("Activation actions must resolve in the owning script, with a distinct bypass continuation."));
             const auto* from = index.find(d,*source);
-            if (!from || !edges.emplace(a->source,a->operand,a->lifecycleEntry).second) return Result<void>::failure(error("Missing or multiply owned activation edge."));
+            if (!from || !edges.emplace(*source,a->operand,a->lifecycleEntry).second) return Result<void>::failure(error("Missing or multiply owned activation edge."));
             if (a->lifecycleEntry) {
                 const auto loc = index.instructionLocation(*start);
                 const auto* section = loc ? index.find(d,loc->sectionId) : nullptr;
@@ -82,15 +96,23 @@ Result<SctEntrypointAuthoring::Lowered> SctEntrypointAuthoring::lower(const SctA
     if (!p.find(script)) return Result<Lowered>::failure(error("Captured activation script is missing from the project."));
     auto valid = validateProgram(p,script,authored,true);
     if (!valid) return Result<Lowered>::failure(valid.diagnostics());
-    Lowered result{authored,{}};
+    std::vector<SctActivationEntry> entries;
+    for (const auto& e : p.entrypoints) if (e.script == script) entries.push_back({e.id,e.name,e.enabled,e.activation});
+    return lower(entries, [&](SctActionId id) { return instruction(p,script,id); }, authored);
+}
+Result<SctEntrypointAuthoring::Lowered> SctEntrypointAuthoring::lower(std::span<const SctActivationEntry> sourceEntries,
+    const SctActivationResolver& resolve, sct::SctDocument authored) {
+    auto valid = validateActivations(sourceEntries,resolve,authored);
+    if (!valid) return Result<Lowered>::failure(valid.diagnostics());
+    Lowered result{std::move(authored),{}};
     auto& d = result.document;
-    std::vector<const SctAuthoringEntrypoint*> entries;
-    for (const auto& e : p.entrypoints) if (e.script == script && !e.enabled) entries.push_back(&e);
+    std::vector<const SctActivationEntry*> entries;
+    for (const auto& e : sourceEntries) if (!e.enabled) entries.push_back(&e);
     std::ranges::sort(entries, [](const auto* a, const auto* b) { return a->id < b->id; });
     for (const auto* e : entries) {
         SctRealizationRecord record{e->id,{}};
         if (const auto* a = std::get_if<SctLocalActivation>(&e->activation)) {
-            const auto source = *instruction(p,script,a->source), destination = *instruction(p,script,a->continuation);
+            const auto source = *resolve(a->source), destination = *resolve(a->continuation);
             for (auto& section : d.sections) if (auto* code = std::get_if<sct::SctScriptSectionContent>(&section.content)) {
                 auto from = std::ranges::find(code->instructions,source,&sct::SctDocumentInstruction::id);
                 if (from == code->instructions.end()) continue;
@@ -118,7 +140,7 @@ Result<SctEntrypointAuthoring::Lowered> SctEntrypointAuthoring::lower(const SctA
         } else if (const auto* a = std::get_if<SctNamedActivation>(&e->activation)) {
             auto section = std::ranges::find(d.sections,a->externalName,&sct::SctDocumentSection::nameBytes);
             const auto position = static_cast<std::size_t>(section-d.sections.begin());
-            const auto body = *instruction(p,script,a->body);
+            const auto body = *resolve(a->body);
             // Physical predecessors continue into the original body, never the
             // newly introduced external-only wrapper.
             if (position) if (auto* prior = std::get_if<sct::SctScriptSectionContent>(&d.sections[position-1].content);

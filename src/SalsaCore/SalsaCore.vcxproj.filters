@@ -184,4 +184,5 @@
     <ClCompile Include="..\..\third-party\zstd\lib\decompress\zstd_decompress.c"/>
     <ClCompile Include="..\..\third-party\zstd\lib\decompress\zstd_decompress_block.c"/>
   </ItemGroup>
+  <ItemGroup><ClCompile Include="src\Program\ProgramMaterializer.cpp"/><ClInclude Include="include\SalsaCore\Program\ProgramMaterializer.h"/></ItemGroup>
 </Project>
