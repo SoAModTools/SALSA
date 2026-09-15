@@ -1,16 +1,10 @@
 #pragma once
+#include "SalsaCore/Foundation/LoadingProgress.h"
 #include "SalsaCore/Authoring/SctAuthoringSession.h"
 #include "SalsaCore/Persistence/LocalSalsaWorkspace.h"
 #include "SalsaCore/Persistence/WorkspaceTransaction.h"
 
 namespace salsa::core {
-struct SctLoadingProgress final {
-    std::string phase;
-    std::uint64_t completed = 0, total = 0;
-    std::string item;
-    bool cancellable = true;
-};
-using SctLoadingObserver = std::function<void(const SctLoadingProgress&)>;
 struct SctAuthoringCheckpoint final {
     SctAuthoringState state;
     SctAuthoringPresentation presentation;

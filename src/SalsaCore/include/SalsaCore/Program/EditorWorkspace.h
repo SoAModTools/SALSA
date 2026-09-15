@@ -1,5 +1,6 @@
 #pragma once
 #include <map>
+#include "SalsaCore/Editor/WorkspaceFeatures.h"
 #include "SalsaCore/Program/ProgramPersistence.h"
 #include "SalsaCore/Program/ProgramMaterializer.h"
 #include "SalsaCore/Project/LocalGameProject.h"
@@ -35,6 +36,9 @@ struct EditorSaveResult {
 };
 class EditorWorkspaceIO final {
   public:
+    static editor::WorkspaceOverview overview(const EditorWorkspace &);
+    static Result<editor::WorkspaceOverview> reviewSources(const EditorWorkspace &, Revision,
+        std::stop_token = {}, const SctLoadingObserver & = {});
     // Blocking worker functions; never run these on the UI thread. Cancellation
     // leaves the previous installed session untouched. A worker owns its stage.
     static Result<std::shared_ptr<EditorWorkspace>> open(const EditorOpenRequest &, std::stop_token = {},

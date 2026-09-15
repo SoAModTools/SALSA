@@ -20,9 +20,10 @@ class ScriptOutlineComponent;
 class TextEditorComponent;
 class ScriptEditingActions;
 class NavigatorComponent;
-// Composes the current workspace and the new editor session. Existing advanced
-// tool handlers remain here only until G2-G6 replace them with feature components.
-// They are not the contract presented to those components.
+class WorkspaceComponent;
+// Composes the workspace, feature components and shared editor session.
+// Remaining backend-specific advanced handlers are quarantined in
+// ProgramWorkspaceAdvanced.cpp and are not the feature component contract.
 class ProgramWorkspaceController final : public QObject {
   public:
     explicit ProgramWorkspaceController(QMainWindow *shell);
@@ -46,10 +47,6 @@ class ProgramWorkspaceController final : public QObject {
     bool prepareSelection(std::function<void()>);
     void reveal(Tab &, core::program::EditorSubject, std::function<void()> = {});
     void editSelected();
-    void insert();
-    void remove();
-    void move(int);
-    void addSection();
     void renameSection();
     void edit(std::vector<core::program::Primitive>);
     void changed(const core::program::ChangeReceipt &);
@@ -57,12 +54,7 @@ class ProgramWorkspaceController final : public QObject {
     void save(std::function<void()> = {});
     void publish();
     void importLegacy();
-    void tools();
-    void variableUses();
-    void variableMeanings();
-    void resources();
     void promoteFlow();
-    void annotate();
     void editText();
     void inspectLowered();
     void updateTitle();
@@ -73,11 +65,13 @@ class ProgramWorkspaceController final : public QObject {
     Tab *active();
     const core::program::ScriptSummary *script(core::SctScriptId) const;
     void recentMenu();
+    void reviewSources();
     void markSession();
     std::shared_ptr<core::program::EditorWorkspace> workspace_;
     ExclusiveOperationCoordinator *operations_;
     QTabWidget *tabs_;
     QListWidget *scripts_;
+    WorkspaceComponent *workspaceView_;
     InstructionInspector *inspector_;
     TextEditorComponent *textEditor_;
     ScriptEditingActions *editing_;

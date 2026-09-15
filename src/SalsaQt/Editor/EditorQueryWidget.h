@@ -29,5 +29,6 @@ std::optional<core::editor::Subject> pickReference(EditorSessionPresenter *, cor
 class NavigatorComponent final : public QWidget {
   public:
     explicit NavigatorComponent(EditorSessionPresenter *, QWidget *parent = nullptr);
+    std::function<void()> showVariableSearch;
 };
 } // namespace salsa::qt

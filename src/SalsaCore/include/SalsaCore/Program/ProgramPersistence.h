@@ -13,6 +13,7 @@ struct DocumentTab {
     SctScriptId script;
     bool semanticView = true;
     std::optional<Subject> selection;
+    editor::OutlineViewState instructions, semantic;
 };
 // Transient editor session/presentation is stored separately from execution.
 struct Presentation {
@@ -53,7 +54,7 @@ class ProgramPersistence final {
     static Result<std::shared_ptr<const ProgramFragment>> decodeFragment(std::span<const std::byte>);
 
   public:
-    // SALSAPRJ framing v2, codec 1 (zstd), binary table schema 6.
+    // SALSAPRJ framing v2, codec 1 (zstd), binary table schema 7.
     // Never accepts the old v1/zlib authoring container as a new program.
     static Result<std::vector<std::byte>> encode(const Program &, const Presentation & = {}, std::stop_token = {},
                                                  const SctLoadingObserver & = {});

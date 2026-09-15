@@ -206,6 +206,67 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
         return Result<std::shared_ptr<EditorWorkspace>>::failure(failure(e.what()));
     }
 }
+editor::WorkspaceOverview EditorWorkspaceIO::overview(const EditorWorkspace &session) {
+    editor::WorkspaceOverview out;
+    out.revision = session.status.current;
+    out.dirty = session.status.dirty;
+    out.needsInitialSave = session.needsInitialSave;
+    if(session.dataset) out.datasetRoot = session.dataset->dataset().root.generic_string();
+    if(session.workspace) {
+        out.workspaceRoot = session.workspace->descriptor().root.generic_string();
+        out.checkpointPath = session.workspace->componentPath(projectPath(*session.workspace)).generic_string();
+    }
+    for(const auto &script : session.catalog.scripts) {
+        editor::WorkspaceSource row;
+        row.script = script.id; row.name = script.name;
+        if(script.baselineSource) {
+            row.asset = script.baselineSource->locator.identityKey();
+            row.baselineBytes = script.baselineSource->byteSize;
+            row.baselineDigest = script.baselineSource->revision.digest.toHex();
+        } else row.state = editor::SourceState::Unqualified;
+        out.sources.push_back(std::move(row));
+    }
+    return out;
+}
+Result<editor::WorkspaceOverview> EditorWorkspaceIO::reviewSources(const EditorWorkspace &session,
+    Revision revision, std::stop_token stop, const SctLoadingObserver &observer) {
+    try {
+        require(session.service && session.dataset, "No source dataset is open");
+        progress(observer,stop,"Reading workspace catalog");
+        auto captured = session;
+        captured.catalog = take(session.service->catalog(revision).get());
+        captured.status = captured.catalog.status;
+        auto out = overview(captured);
+        auto scanned = take(session.dataset->rescan(stop,[&](const DatasetScanProgress &p) {
+            if(observer) observer({p.phase == DatasetScanPhase::Discovering ? "Discovering source files" :
+                "Comparing source fingerprints", p.completed, p.total.value_or(0), p.currentPath.generic_string()});
+        }));
+        std::map<std::string, const AssetDescriptor *> assets;
+        for(const auto &asset : scanned.snapshot().assets) assets.emplace(asset.locator.identityKey(), &asset);
+        std::set<std::string> owned;
+        for(auto &row : out.sources) {
+            require(!stop.stop_requested(), "Source review cancelled");
+            if(row.state == editor::SourceState::Unqualified) continue;
+            owned.insert(row.asset);
+            auto found = assets.find(row.asset);
+            if(found == assets.end()) { row.state = editor::SourceState::Missing; continue; }
+            row.currentBytes = found->second->byteSize;
+            row.currentDigest = found->second->revision.digest.toHex();
+            row.state = row.currentDigest == row.baselineDigest ? editor::SourceState::Unchanged : editor::SourceState::Changed;
+        }
+        for(const auto &[asset, descriptor] : assets) if(!owned.contains(asset)) {
+            editor::WorkspaceSource row; row.asset = asset; row.name = asset;
+            row.currentBytes = descriptor->byteSize; row.currentDigest = descriptor->revision.digest.toHex();
+            row.state = editor::SourceState::Added; out.sources.push_back(std::move(row));
+        }
+        require(!stop.stop_requested(), "Source review cancelled");
+        require(take(session.service->status().get()).current == revision, "Workspace changed during source review");
+        out.inspected = true;
+        return Result<editor::WorkspaceOverview>::success(std::move(out));
+    } catch(const std::exception &e) {
+        return Result<editor::WorkspaceOverview>::failure(failure(e.what()));
+    }
+}
 Result<EditorSaveResult> EditorWorkspaceIO::save(const EditorWorkspace &session, Revision revision,
                                                  const Presentation &presentation, std::stop_token stop,
                                                  const SctLoadingObserver &observer) {

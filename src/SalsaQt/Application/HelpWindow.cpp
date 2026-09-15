@@ -18,6 +18,9 @@ HelpWindow::HelpWindow(QWidget* parent)
     resize(900, 650);
     topics_->setMaximumWidth(220);
     const std::pair<const char*, const char*> entries[] = {
+        {"Current Editor", "WholeProgramIrEditor.md"},
+        {"Workspace and Sources", "WorkspaceAndSources.md"},
+        {"Capabilities and Limits", "GuiCapabilityStatus.md"},
         {"User Guide", "README.md"},
         {"Legacy Import", "LegacyImport.md"},
         {"Exporting SCT", "Exporting.md"},

@@ -115,4 +115,11 @@
     <ClCompile Include="Editor\InteractionTools.cpp" />
     <ClCompile Include="Editor\RouteTools.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Editor\WorkspaceComponent.h" />
+    <ClCompile Include="Editor\WorkspaceComponent.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Application\ProgramWorkspaceAdvanced.cpp" />
+  </ItemGroup>
 </Project>

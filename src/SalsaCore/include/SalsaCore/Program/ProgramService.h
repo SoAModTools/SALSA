@@ -16,6 +16,7 @@ struct ScriptSummary {
     SctScriptContext context;
     std::optional<AssetLocator> locator;
     std::optional<spice::sct::SctKnownTextConvention> textConvention;
+    std::optional<AssetDescriptor> baselineSource;
 };
 struct Catalog {
     ServiceStatus status;

@@ -409,6 +409,41 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
     for (const auto& entry : std::filesystem::directory_iterator(root))
         EXPECT_FALSE(entry.path().filename().string().starts_with(".salsa-import-"));
 }
+TEST(ProgramServiceTest, SourceReviewComparesImmutableBaselinesWithoutParsingOrEditing) {
+    const auto root=std::filesystem::temp_directory_path()/generateSctAuthoringUuid().value();
+    struct Cleanup {std::filesystem::path root;~Cleanup(){std::error_code ec;std::filesystem::remove_all(root,ec);}} cleanup{root};
+    std::filesystem::create_directories(root/"source");
+    auto bytes=nativeBytes();
+    for(auto name:{"a.sct","b.sct","c.sct"}) ASSERT_TRUE(replaceFileAtomically(root/"source"/name,std::as_bytes(std::span(bytes))));
+    auto opened=ir::EditorWorkspaceIO::open({{root/"source"},root/"workspace"});
+    ASSERT_TRUE(opened)<<messages(opened.diagnostics());auto session=opened.value();
+    const auto revision=session->status.current;
+    auto before=session->service->checkpoint(revision).get();ASSERT_TRUE(before);
+    auto immutable=ir::ProgramPersistence::encode(*before.value().program);ASSERT_TRUE(immutable);
+    // Even invalid SCT bytes can be reviewed: this operation does not invoke a parser.
+    const std::array changed{std::byte{0xaa}};
+    ASSERT_TRUE(replaceFileAtomically(root/"source/a.sct",changed));
+    ASSERT_TRUE(std::filesystem::remove(root/"source/b.sct"));
+    ASSERT_TRUE(replaceFileAtomically(root/"source/new.sct",changed));
+    unsigned parsing=0;std::size_t events=0;
+    auto review=ir::EditorWorkspaceIO::reviewSources(*session,revision,{},[&](const auto &p){++events;if(p.phase=="Parsing SCT")++parsing;});
+    ASSERT_TRUE(review)<<messages(review.diagnostics());EXPECT_TRUE(review.value().inspected);EXPECT_GT(events,0u);EXPECT_EQ(parsing,0u);
+    std::map<std::string,editor::SourceState> states;
+    for(const auto &row:review.value().sources){states[row.asset]=row.state;
+        if(row.asset=="a.sct"){ASSERT_TRUE(row.script);EXPECT_NE(row.baselineDigest,row.currentDigest);EXPECT_EQ(row.currentBytes,1u);}}
+    EXPECT_EQ(states["a.sct"],editor::SourceState::Changed);
+    EXPECT_EQ(states["b.sct"],editor::SourceState::Missing);
+    EXPECT_EQ(states["c.sct"],editor::SourceState::Unchanged);
+    EXPECT_EQ(states["new.sct"],editor::SourceState::Added);
+    auto after=session->service->checkpoint(revision).get();ASSERT_TRUE(after);
+    EXPECT_EQ(ir::ProgramPersistence::encode(*after.value().program).value(),immutable.value());
+    std::stop_source stop;stop.request_stop();
+    EXPECT_FALSE(ir::EditorWorkspaceIO::reviewSources(*session,revision,stop.get_token()));
+    auto stale=revision;++stale.revision;EXPECT_FALSE(ir::EditorWorkspaceIO::reviewSources(*session,stale));
+    // A later scan remains compared to the imported source, not the previous scan.
+    auto repeated=ir::EditorWorkspaceIO::reviewSources(*session,revision);ASSERT_TRUE(repeated);
+    EXPECT_EQ(repeated.value().sources.front().state,editor::SourceState::Changed);
+}
 TEST(ProgramServiceTest, DatasetMainConventionResolvesEarlierAmbiguousTextWithoutRereading) {
     auto request=nativeRequest({},2);std::array<unsigned,2> reads{};
     for(std::size_t n=0;n<2;++n) {
@@ -689,6 +724,8 @@ TEST(ProgramPersistenceTest, BinaryRoundTripPreservesStructuredIdentityAndLiveCo
     ir::Presentation presentation;
     presentation.tabs.push_back({f.script, true, f.writer});
     presentation.activeTab = f.script;
+    presentation.tabs.front().instructions = {{f.sequence}, {f.writer}, f.writer};
+    presentation.tabs.front().semantic = {{f.branch}, {f.branch, f.loop}, f.loop};
     presentation.placements.push_back({f.branch, 1.5, -9, true});
     auto expression = ir::ValueBuffer::expression(*sct::SctExpressionFactory::bitVariable(121).expression).value();
     ir::InsertConstruct sw{
@@ -729,6 +766,11 @@ TEST(ProgramPersistenceTest, BinaryRoundTripPreservesStructuredIdentityAndLiveCo
     EXPECT_EQ(loaded.value().program->loop(f.loop)->condition, cp.program->loop(f.loop)->condition);
     EXPECT_EQ(loaded.value().program->find(f.text)->languages, std::vector{lang});
     EXPECT_EQ(loaded.value().presentation.tabs.front().selection, presentation.tabs.front().selection);
+    EXPECT_EQ(loaded.value().presentation.tabs.front().instructions.expanded, presentation.tabs.front().instructions.expanded);
+    EXPECT_EQ(loaded.value().presentation.tabs.front().semantic.selected, presentation.tabs.front().semantic.selected);
+    EXPECT_EQ(loaded.value().presentation.tabs.front().semantic.current, presentation.tabs.front().semantic.current);
+    auto oldSchema = encoded.value(); oldSchema[16] = std::byte{6};
+    EXPECT_FALSE(ir::ProgramPersistence::decode(oldSchema));
     auto again = ir::ProgramPersistence::encode(*loaded.value().program, loaded.value().presentation);
     ASSERT_TRUE(again);
     EXPECT_EQ(again.value(), encoded.value());

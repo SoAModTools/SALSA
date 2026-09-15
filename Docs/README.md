@@ -11,6 +11,8 @@ SALSA is an editor for Skies of Arcadia Legends script files. The current produc
 - [Language groups and text](LanguageGroupsAndText.md)
 - [Exporting SCT documents](Exporting.md)
 - [Keyboard shortcuts](KeyboardShortcuts.md)
+- [Workspace and source recovery](WorkspaceAndSources.md)
+- [Current GUI capabilities and remaining limits](GuiCapabilityStatus.md)
 
 ## Migration
 
@@ -20,4 +22,4 @@ SALSA is an editor for Skies of Arcadia Legends script files. The current produc
 
 - [Standalone SCT connectivity survey](ConnectivitySurvey.md)
 
-More guides will be added as localization and workspace-wide tools become available.
+See the current editor guide for reachable controls and the capability status for remaining backend/UI gaps.

@@ -137,6 +137,7 @@ NavigatorComponent::NavigatorComponent(EditorSessionPresenter *session, QWidget 
     layout->addWidget(number);
     auto *local = new QCheckBox(tr("Active script only"), this);
     local->setChecked(true);
+    showVariableSearch=[kind,local,number]{kind->setCurrentIndex(1);local->setChecked(false);number->setFocus();};
     layout->addWidget(local);
     auto *search = new QPushButton(tr("Search"), this);
     layout->addWidget(search);

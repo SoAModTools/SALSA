@@ -242,4 +242,10 @@
     <ClInclude Include="src\Program\StoryQueries.inl" />
     <ClInclude Include="src\Program\StoryEdits.inl" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Editor\WorkspaceFeatures.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Foundation\LoadingProgress.h" />
+  </ItemGroup>
 </Project>

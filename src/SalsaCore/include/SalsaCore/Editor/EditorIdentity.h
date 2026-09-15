@@ -1,6 +1,8 @@
 #pragma once
 #include "SalsaCore/Authoring/SctAuthoringIdentity.h"
 #include <variant>
+#include <vector>
+#include <optional>
 // Existing persisted identity types, independent of program storage records.
 namespace salsa::core::program {
 using SectionId = SctAuthoringId<struct ProgramSectionTag>;
@@ -11,6 +13,10 @@ namespace salsa::core::editor {
 using Subject = std::variant<SctScriptId, program::SectionId, SctSequenceId, SctActionId,
     program::ArmId, program::ConditionId, SctModuleId, SctEntrypointId, SctTextResourceId,
     SctPortId, SctConnectionId>;
+struct OutlineViewState {
+    std::vector<Subject> expanded, selected;
+    std::optional<Subject> current;
+};
 struct Revision {
     SctAuthoringProjectId project;
     std::uint64_t revision = 0, generation = 0;

@@ -1426,7 +1426,8 @@ std::future<Result<Catalog>> ProgramService::catalog(Revision r) {
         for (auto &s : o.data->scripts) {
             const auto *baseline = o.data->lookup(s.context.baseline.value, EntityKind::Baseline, o.data->baselines);
             result.scripts.push_back({s.context.id, s.context.name, s.sections.size(), s.context,
-                baseline ? std::optional(baseline->source.locator) : std::nullopt, baseline ? baseline->textConvention : std::nullopt});
+                baseline ? std::optional(baseline->source.locator) : std::nullopt, baseline ? baseline->textConvention : std::nullopt,
+                baseline ? std::optional(baseline->source) : std::nullopt});
         }
         result.modules = o.data->metadata.modules;
         return result;

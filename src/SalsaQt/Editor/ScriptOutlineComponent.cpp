@@ -89,13 +89,21 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     tree_->setColumnHidden(1, true);
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this] {
-        if (isVisible() && window()->isActiveWindow() && !restoring_ && selectionChanged)
+        if (isVisible() && window()->isActiveWindow() && !restoring_ && !restoringSession_ &&
+            selectionChanged)
             selectionChanged();
     });
     connect(tree_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this] {
         if (!restoring_)
             activate();
     });
+    auto presentationChange = [this] {
+        if (!restoring_ && !restoringSession_ && presentationChanged)
+            presentationChanged();
+    };
+    connect(tree_, &QTreeView::expanded, this, presentationChange);
+    connect(tree_, &QTreeView::collapsed, this, presentationChange);
+    connect(tree_->selectionModel(), &QItemSelectionModel::selectionChanged, this, presentationChange);
     connect(tree_, &QTreeView::doubleClicked, this, [this] {
         if (editRequested)
             editRequested();
@@ -125,12 +133,12 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
     model_->pageReady = [this] { restoreVisible(); };
 
     connect(modes_, &QTabBar::currentChanged, this, [this](int mode) {
-        auto selected = session_->selection();
+        const auto oldMode = model_->mode();
+        viewStates_[oldMode == ed::ViewMode::Semantic ? 1 : 0] = viewState(oldMode);
         model_->setMode(mode ? ed::ViewMode::Semantic : ed::ViewMode::Instructions);
         if (script_.valid()) {
             bind(script_);
-            if (selected)
-                reveal(*selected);
+            restoreSession();
         }
         if (modeChanged)
             modeChanged();
@@ -157,8 +165,107 @@ std::vector<ed::Subject> ScriptOutlineComponent::selectedItems() const {
             items.push_back(row->subject);
     return items;
 }
+ed::OutlineViewState ScriptOutlineComponent::viewState(ed::ViewMode mode) const {
+    if (mode != model_->mode() || restoringSession_)
+        return viewStates_[mode == ed::ViewMode::Semantic ? 1 : 0];
+    ed::OutlineViewState state;
+    state.selected = selectedItems();
+    if (auto *row = model_->row(currentIndex()))
+        state.current = row->subject;
+    std::function<void(QModelIndex)> collect = [&](auto parent) {
+        for (int n = 0; n < model_->rowCount(parent); ++n) {
+            auto index = model_->index(n, 0, parent);
+            if (tree_->isExpanded(index)) {
+                if (auto *row = model_->row(index))
+                    state.expanded.push_back(row->subject);
+                collect(index);
+            }
+        }
+    };
+    collect({});
+    return state;
+}
+void ScriptOutlineComponent::setViewStates(ed::OutlineViewState instructions, ed::OutlineViewState semantic) {
+    viewStates_[0] = std::move(instructions);
+    viewStates_[1] = std::move(semantic);
+}
+void ScriptOutlineComponent::restoreSession(std::function<void()> ready) {
+    auto state = viewStates_[model_->mode() == ed::ViewMode::Semantic ? 1 : 0];
+    restoringSession_ = true;
+    auto generation = ++sessionRestoreGeneration_;
+    auto mode = model_->mode();
+    auto revision = session_->revision();
+    auto targets = state.expanded;
+    targets.insert(targets.end(), state.selected.begin(), state.selected.end());
+    if (state.current)
+        targets.push_back(*state.current);
+    auto next = std::make_shared<std::function<void()>>();
+    auto cursor = std::make_shared<std::size_t>(0);
+    *next = [this, mode, revision, generation, state = std::move(state), targets = std::move(targets), cursor,
+             weak = std::weak_ptr(next), ready = std::move(ready)]() mutable {
+        auto next = weak.lock();
+        if (!next)
+            return;
+        if (generation != sessionRestoreGeneration_ || mode != model_->mode() ||
+            revision != session_->revision()) {
+            if (generation == sessionRestoreGeneration_)
+                restoringSession_ = false;
+            *next = {};
+            if (ready)
+                ready();
+            return;
+        }
+        if (*cursor < targets.size()) {
+            auto subject = targets[(*cursor)++];
+            auto expandItem = *cursor <= state.expanded.size();
+            reveal(subject, [this, subject, expandItem, next, generation, mode, revision] {
+                if (expandItem && generation == sessionRestoreGeneration_ && mode == model_->mode() &&
+                    revision == session_->revision()) {
+                    auto index = model_->find(subject);
+                    if (index.isValid())
+                        tree_->expand(index);
+                }
+                QTimer::singleShot(0, this, [next] {
+                    auto run = *next;
+                    if (run)
+                        run();
+                });
+            });
+            return;
+        }
+        {
+            QSignalBlocker blocker(tree_->selectionModel());
+            tree_->selectionModel()->clearSelection();
+            for (auto subject : state.selected) {
+                auto index = model_->find(subject);
+                if (index.isValid())
+                    tree_->selectionModel()->select(index,
+                                                    QItemSelectionModel::Select | QItemSelectionModel::Rows);
+            }
+            if (state.current) {
+                auto index = model_->find(*state.current);
+                if (index.isValid()) {
+                    tree_->selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
+                    scrollTo(index);
+                }
+            }
+        }
+        restoringSession_ = false;
+        *next = {};
+        activate();
+        if (selectionChanged)
+            selectionChanged();
+        if (ready)
+            ready();
+    };
+    QTimer::singleShot(0, this, [next] {
+        auto run = *next;
+        if (run)
+            run();
+    });
+}
 void ScriptOutlineComponent::activate() {
-    if (restoring_ || !isVisible() || !window()->isActiveWindow())
+    if (restoring_ || restoringSession_ || !isVisible() || !window()->isActiveWindow())
         return;
     auto *row = model_->row(currentIndex());
     session_->selectMany(selectedItems(), row ? std::optional(row->subject) : std::nullopt);

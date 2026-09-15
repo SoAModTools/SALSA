@@ -6,5 +6,20 @@
     <file alias="Parameters.md">../../Docs/Parameters.md</file>
     <file alias="LanguageGroupsAndText.md">../../Docs/LanguageGroupsAndText.md</file>
     <file alias="KeyboardShortcuts.md">../../Docs/KeyboardShortcuts.md</file>
+    <file alias="WholeProgramIrEditor.md">../../Docs/WholeProgramIrEditor.md</file>
+    <file alias="WorkspaceAndSources.md">../../Docs/WorkspaceAndSources.md</file>
+    <file alias="GuiCapabilityStatus.md">../../Docs/GuiCapabilityStatus.md</file>
+    <file alias="WholeProgramIrPersistence.md">../../Docs/WholeProgramIrPersistence.md</file>
+    <file alias="WholeProgramIrModel.md">../../Docs/WholeProgramIrModel.md</file>
+    <file alias="WholeProgramIrService.md">../../Docs/WholeProgramIrService.md</file>
+    <file alias="WholeProgramIrMaterialization.md">../../Docs/WholeProgramIrMaterialization.md</file>
+    <file alias="SequencesAndConditions.md">../../Docs/SequencesAndConditions.md</file>
+    <file alias="ModulesAndProjects.md">../../Docs/ModulesAndProjects.md</file>
+    <file alias="StoryFlags.md">../../Docs/StoryFlags.md</file>
+    <file alias="StoryInterpretations.md">../../Docs/StoryInterpretations.md</file>
+    <file alias="CutsceneRoutes.md">../../Docs/CutsceneRoutes.md</file>
+    <file alias="CrossScriptRoutes.md">../../Docs/CrossScriptRoutes.md</file>
+    <file alias="EntrypointsAndResources.md">../../Docs/EntrypointsAndResources.md</file>
+    <file alias="ResponsiveLoading.md">../../Docs/ResponsiveLoading.md</file>
   </qresource>
 </RCC>
