@@ -199,6 +199,15 @@ void SctScptEditorWidget::setCommitHandler(CommitHandler handler) {
     commitHandler_ = std::move(handler);
 }
 
+bool SctScptEditorWidget::bindValue(const spice::sct::SctCanonicalExpression &expression,
+    std::function<bool(const spice::sct::SctCanonicalExpression &)> handler) {
+    if(!prepareToClear())return false;
+    detached_=true;valueHandler_=std::move(handler);locator_.reset();site_.reset();
+    original_=expression;termination_=expression.termination;
+    const auto *program=std::get_if<spice::sct::SctTypedScptProgram>(&expression.body);
+    operations_=program?program->operations:std::vector<spice::sct::SctScptOperation>{};
+    stale_=false;setDirty(false);refresh();return true;
+}
 bool SctScptEditorWidget::bind(const core::AssetLocator& locator,
     const spice::sct::SctParameterSite& site,
     const spice::sct::SctCanonicalExpression& expression) {
@@ -215,6 +224,7 @@ bool SctScptEditorWidget::bind(const core::AssetLocator& locator,
             if (dirty_) return false;
         }
     }
+    detached_=false;valueHandler_={};
     locator_ = locator;
     site_ = site;
     original_ = expression;
@@ -244,6 +254,7 @@ bool SctScptEditorWidget::prepareToClear() {
 }
 
 void SctScptEditorWidget::clear() {
+    detached_=false;valueHandler_={};
     locator_.reset(); site_.reset(); original_.reset(); operations_.clear();
     stale_ = false; setDirty(false); refresh();
 }
@@ -311,8 +322,9 @@ void SctScptEditorWidget::refresh() {
         preview_->setText(tr("Semantic result unavailable: %1")
             .arg(QString::fromStdString(projection.explanation)));
     }
-    const bool bound = locator_.has_value() && site_.has_value();
-    if (bound) heading_->setText(tr("%1 — instruction %2, parameter %3")
+    const bool bound = detached_ || (locator_.has_value() && site_.has_value());
+    if(detached_) heading_->setText(tr("Authoring expression draft"));
+    else if (bound) heading_->setText(tr("%1 — instruction %2, parameter %3")
         .arg(QString::fromStdWString(locator_->path().wstring()))
         .arg(site_->instruction.value()).arg(site_->parameter.schemaIndex));
     else heading_->setText(tr("Select a typed SCPT parameter to begin."));
@@ -327,7 +339,7 @@ void SctScptEditorWidget::setDirty(const bool dirty) {
 }
 
 void SctScptEditorWidget::convertToConventionalExpression() {
-    if (!site_) return;
+    if (!site_ && !detached_) return;
     const auto parsed = core::SctExpressionLanguage::parse(
         expressionEdit_->text().trimmed().toStdString());
     if (!parsed.succeeded()) {
@@ -414,7 +426,7 @@ void SctScptEditorWidget::editSelected() {
 }
 
 void SctScptEditorWidget::addOperation(const int kind) {
-    if (!site_) return;
+    if (!site_ && !detached_) return;
     if (kind == 0) {
         const QStringList kinds{tr("Fixed decimal"), tr("Float literal"),
             tr("Integer input (factory-selected form)"), tr("Integer variable"),
@@ -454,7 +466,7 @@ void SctScptEditorWidget::addOperation(const int kind) {
 }
 
 void SctScptEditorWidget::addOperator(const std::uint32_t encodingWord) {
-    if (!site_) return;
+    if (!site_ && !detached_) return;
     const auto classification = spice::sct::classifySctScptWord(encodingWord);
     const auto kind = classification.kind == spice::sct::SctScptWordKind::CompareOperator
         ? spice::sct::SctScptBinaryOperationKind::Comparison
@@ -482,14 +494,14 @@ void SctScptEditorWidget::moveSelected(const int direction) {
 }
 
 void SctScptEditorWidget::apply() {
-    if (!locator_ || !site_ || !commitHandler_ || stale_) return;
+    if (stale_ || (!detached_ && (!locator_ || !site_ || !commitHandler_))) return;
     const auto built = spice::sct::SctExpressionFactory::program(operations_, termination_);
     if (!built.expression) {
         status_->setText(tr("The ordered operations do not form one valid SCPT parameter. The draft was retained."));
         return;
     }
     committing_ = true;
-    const auto committed = commitHandler_(*locator_, *site_, *built.expression);
+    const auto committed = detached_ ? valueHandler_(*built.expression) : commitHandler_(*locator_, *site_, *built.expression);
     committing_ = false;
     if (!committed) {
         status_->setText(tr("The parameter edit was rejected. The draft was retained."));

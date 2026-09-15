@@ -1,6 +1,9 @@
 #include "Application/ProgramWorkspaceController.h"
 #include "Editor/EditorSessionPresenter.h"
 #include "Editor/InstructionInspector.h"
+#include "Editor/TextEditorComponent.h"
+#include "Editor/ScriptEditingActions.h"
+#include "Editor/EditorQueryWidget.h"
 #include "Editor/ScriptOutlineComponent.h"
 #include "SalsaCore/Editor/ProgramBackend.h"
 #include "Application/ProgramOperation.h"
@@ -111,6 +114,18 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     dock(tr("Instruction inspector"), "programDetails", inspector_, Qt::RightDockWidgetArea);
     connect(editor_, &EditorSessionPresenter::changed, this, &ProgramWorkspaceController::refreshChanged);
     connect(editor_, &EditorSessionPresenter::diagnostic, this, &ProgramWorkspaceController::log);
+    editing_=new ScriptEditingActions(editor_,shell_);
+    textEditor_=new TextEditorComponent(editor_,shell_);
+    auto *textDock=dock(tr("Text editor and preview"),"programTextEditor",textEditor_,Qt::BottomDockWidgetArea);
+    auto *navigator=new NavigatorComponent(editor_,shell_);
+    dock(tr("Navigator"),"programNavigator",navigator,Qt::LeftDockWidgetArea)->hide();
+    connect(editor_,&EditorSessionPresenter::navigationRequested,this,[this](auto subject){
+        if(!workspace_)return;auto revision=workspace_->status.current;
+        await(this,workspace_->service->locate(revision,subject),[this,subject,revision](auto result){
+            if(!result||!workspace_||workspace_->status.current!=revision)return;
+            auto id=result.value().script;openScript(id,[this,id,subject]{auto at=std::ranges::find(documents_,id,&Tab::script);if(at!=documents_.end())reveal(*at,subject);});
+        });
+    });
     activity_ = new QPlainTextEdit(shell_);
     activity_->setReadOnly(true);
     activity_->setMaximumBlockCount(1000);
@@ -146,9 +161,12 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     editMenu->addAction(editor_->undoAction());
     editMenu->addAction(editor_->redoAction());
     editMenu->addAction(inspector_->editParameterAction());
+    editMenu->addAction(editing_->editAction());editMenu->addAction(editing_->timingAction());
+    editMenu->addAction(editing_->structureAction());editMenu->addAction(editing_->promoteAction());
+    editMenu->addAction(textEditor_->createAction());editMenu->addAction(textEditor_->deleteAction());
     editMenu->addSeparator();
     editMenu->addAction(tr("Edit selected itemâ€¦"), this, [this] { editSelected(); }, QKeySequence(Qt::Key_Return));
-    editMenu->addAction(tr("Insertâ€¦"), this, [this] { insert(); }, QKeySequence(Qt::Key_Insert));
+    editMenu->addAction(editing_->insertAction());
     editMenu->addAction(tr("Delete selected action"), this, [this] { remove(); }, QKeySequence::Delete);
     editMenu->addAction(tr("Move up"), this, [this] { move(-1); });
     editMenu->addAction(tr("Move down"), this, [this] { move(1); });
@@ -166,9 +184,10 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     auto *authoring = shell_->menuBar()->addMenu(tr("&Authoring"));
     authoring->addAction(tr("Modules, entrypoints and language groupsâ€¦"), this, [this] { tools(); });
     authoring->addAction(tr("Find variable usesâ€¦"), this, [this] { variableUses(); });
-    authoring->addAction(tr("Edit selected textâ€¦"), this, [this] { editText(); });
+    authoring->addAction(tr("Edit selected textâ€¦"), this, [this,textDock] { textDock->show(); textDock->raise(); textEditor_->setFocus(); });
     authoring->addAction(tr("Inspect generated instructionsâ€¦"), this, [this] { inspectLowered(); });
     auto *view = shell_->menuBar()->addMenu(tr("&View"));
+    view->addAction(editor_->backAction());view->addAction(editor_->forwardAction());
     for (auto *d : shell_->findChildren<QDockWidget *>())
         view->addAction(d->toggleViewAction());
     connect(scripts_, &QListWidget::itemActivated, this,
@@ -253,6 +272,7 @@ bool ProgramWorkspaceController::readyToLeave() {
         operations_->focusActive();
         return false;
     }
+    if(!textEditor_->prepareToLeave())return false;
     if (!workspace_ || !(workspace_->status.dirty || workspace_->needsInitialSave || sessionDirty_))
         return true;
     auto answer = QMessageBox::question(shell_, tr("Save project"), tr("Save changes before leaving this workspace?"),
@@ -542,6 +562,9 @@ void ProgramWorkspaceController::openScript(core::SctScriptId id, std::function<
     }
     auto *tree = new ScriptOutlineComponent(editor_, tabs_);
     auto *model = tree->outlineModel();
+    auto savedMode=std::ranges::find(workspace_->presentation.tabs,id,&ir::DocumentTab::script);
+    tree->setSemantic(savedMode==workspace_->presentation.tabs.end() || savedMode->semanticView);
+    tree->modeChanged=[this]{markSession();};
     documents_.push_back({tree, model, id, {}});
     tabs_->setCurrentIndex(tabs_->addTab(tree, q(script(id)->name)));
     model->diagnostic = [this](auto message) { log(message); };
@@ -565,59 +588,7 @@ void ProgramWorkspaceController::openScript(core::SctScriptId id, std::function<
 }
 
 void ProgramWorkspaceController::reveal(Tab &tab, ir::EditorSubject subject, std::function<void()> finished) {
-    auto revision = workspace_->status.current;
-    QPointer<QTreeView> tree = tab.view;
-    QPointer<ProgramOutlineModel> model = tab.model;
-    await(this, workspace_->service->locate(revision, subject),
-          [this, tree, model, revision, finished = std::move(finished)](auto result) mutable {
-              if (!result || !tree || !model || !workspace_ || workspace_->status.current != revision) {
-                  if (!result)
-                      log(errors(result));
-                  if (finished)
-                      finished();
-                  return;
-              }
-              auto path = std::make_shared<std::vector<ir::EditorSubject>>(std::move(result.value().subjects));
-              auto *timer = new QTimer(tree);
-              timer->setInterval(16);
-              connect(timer, &QTimer::timeout, this,
-                      [this, timer, tree, model, path, at = std::size_t{1}, parent = QModelIndex{}, revision,
-                       finished = std::move(finished)]() mutable {
-                          auto finish = [&] {
-                              timer->stop();
-                              timer->deleteLater();
-                              if (finished)
-                                  finished();
-                          };
-                          if (!tree || !model || !workspace_ || workspace_->status.current != revision) {
-                              finish();
-                              return;
-                          }
-                          if (at >= path->size()) {
-                              tree->setCurrentIndex(parent);
-                              tree->scrollTo(parent);
-                              finish();
-                              return;
-                          }
-                          auto next = model->find((*path)[at]);
-                          if (next.isValid()) {
-                              parent = next;
-                              ++at;
-                              if (at < path->size())
-                                  tree->expand(next);
-                              return;
-                          }
-                          if (model->canFetchMore(parent)) {
-                              model->fetchMore(parent);
-                              return;
-                          }
-                          if (!model->pending(parent)) {
-                              log(tr("Saved selection is no longer present."));
-                              finish();
-                          }
-                      });
-              timer->start();
-          });
+    tab.view->reveal(subject,std::move(finished));
 }
 void ProgramWorkspaceController::select(Tab &tab, const QModelIndex &index) {
     if (!workspace_)
@@ -740,9 +711,11 @@ ir::Presentation ProgramWorkspaceController::presentation() const {
         if (it != documents_.end()) {
             auto previous = std::ranges::find(out.tabs, it->script, &ir::DocumentTab::script);
             if (previous == out.tabs.end())
-                out.tabs.push_back({it->script, true, it->selection});
-            else
+                out.tabs.push_back({it->script, it->model->mode()==core::editor::ViewMode::Semantic, it->selection});
+            else {
                 previous->selection = it->selection;
+                previous->semanticView=it->model->mode()==core::editor::ViewMode::Semantic;
+            }
             if (i == tabs_->currentIndex())
                 out.activeTab = it->script;
         }

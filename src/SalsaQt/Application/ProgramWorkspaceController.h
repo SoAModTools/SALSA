@@ -16,6 +16,10 @@ class ExclusiveOperationCoordinator;
 class ProgramOperation;
 class EditorSessionPresenter;
 class InstructionInspector;
+class ScriptOutlineComponent;
+class TextEditorComponent;
+class ScriptEditingActions;
+class NavigatorComponent;
 // Composes the current workspace and the new editor session. Existing advanced
 // tool handlers remain here only until G2-G6 replace them with feature components.
 // They are not the contract presented to those components.
@@ -29,7 +33,7 @@ class ProgramWorkspaceController final : public QObject {
   private:
     QMainWindow *shell_;
     struct Tab {
-        QTreeView *view = nullptr;
+        ScriptOutlineComponent *view = nullptr;
         ProgramOutlineModel *model = nullptr;
         core::SctScriptId script;
         std::optional<core::program::EditorSubject> selection;
@@ -75,6 +79,8 @@ class ProgramWorkspaceController final : public QObject {
     QTabWidget *tabs_;
     QListWidget *scripts_;
     InstructionInspector *inspector_;
+    TextEditorComponent *textEditor_;
+    ScriptEditingActions *editing_;
     EditorSessionPresenter *editor_;
     QPlainTextEdit *activity_;
     QLabel *status_;

@@ -1,6 +1,6 @@
 # Production whole-program IR implementation plan
 
-Status: WP1 through WP6 implementation has landed, including the production editor cutover. GUI feature parity remains incomplete. G1 of the GUI/backend separation workstream is implemented; G2 everyday editing is next. This document does not authorize implementation by itself. Branch: whole_program_ir. Paged storage and zstd level 1 remain the current production choices; future backend changes must not require replacing the GUI.
+Status: WP1 through WP6 implementation has landed, including the production editor cutover. GUI feature parity remains incomplete. G1 and G2 of the GUI/backend separation workstream are implemented; G3 productivity and organization is next. This document does not authorize implementation by itself. Branch: whole_program_ir. Paged storage and zstd level 1 remain the current production choices; future backend changes must not require replacing the GUI.
 
 ## Next workstream — GUI/backend separation and capability restoration
 
@@ -17,7 +17,7 @@ Keep reads scoped and asynchronous, discard stale results, and update only affec
 Planned implementation groups:
 
 1. **G1: boundary and first vertical slice — implemented.** Qt-free contracts and ProgramBackend adapter; thin shell, separate outline/inspector components and shared presenter; parameter edits and history with local refresh. Advanced legacy tool handlers remain transitional until their G2-G6 ports. See [G1 implementation notes](WholeProgramIrEditor.md#g1--editor-contracts-and-first-component-slice-implemented).
-2. **G2: everyday editing.** Restore paired instruction/semantic views, imported-flow presentation, inspectors, docked text editing/preview, text creation, reference navigation/history and the complete instruction picker.
+2. **G2: everyday editing — implemented.** Paired views with conservative imported-flow recognition, richer inspectors, detached text editing/preview and creation, paged navigation/history, complete instruction picker and structured/scheduling edit intents. Recognition and preview limits, transitional general-value editing and unperformed live GUI review are recorded in [the G2 checkpoint](WholeProgramIrEditor.md#g2--everyday-script-editing-components-implemented).
 3. **G3: editing productivity.** Restore clipboard/snippets, multi-selection/movement, section folders/order, bookmarks, metadata/colors and catalog customization.
 4. **G4: authoring tools.** Restore standalone modules, named sequences/conditions, complete language/logical-text workflows, entrypoint/resource selection and tile-selector editing/preview.
 5. **G5: story and routes.** Restore variable meanings, story/interaction workspaces, item explanations, path/narrative editing, route endpoint controls and coordinated output using the newer route-owned semantics.

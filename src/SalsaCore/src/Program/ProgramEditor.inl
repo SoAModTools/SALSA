@@ -62,6 +62,31 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
             const auto *seq = d.sequence(id);
             require(seq && seq->order, "Missing outline sequence");
             out.script = seq->script;
+            if (request.semantic) {
+                const auto &shapes=owner.flows(id,stop);
+                std::size_t n=0, shape=0;
+                while(n<seq->order->size()) {
+                    stopped(stop);
+                    if(shape<shapes.size() && shapes[shape].start==n) {
+                        const auto &f=shapes[shape++];
+                        if(out.total>=request.offset && out.rows.size()<request.limit)
+                            append({f.header,id,f.loop ? "While (recognized)" : "If (recognized)",true,
+                                f.loop ? ActionKind::Loop : ActionKind::Conditional,editor::FlowOccurrence{f.header,false}});
+                        else ++out.total;
+                        if(!f.loop && f.alternate<f.end) {
+                            if(out.total>=request.offset && out.rows.size()<request.limit)
+                                append({f.header,id,"Else (recognized)",true,ActionKind::Conditional,editor::FlowOccurrence{f.header,true}});
+                            else ++out.total;
+                        }
+                        n=f.end;
+                    } else {
+                        if(out.total>=request.offset && out.rows.size()<request.limit) action((*seq->order)[n],id);
+                        else ++out.total;
+                        ++n;
+                    }
+                }
+                return;
+            }
             // Direct indexing gives constant work per requested row, independent
             // of how many sibling actions precede the requested page.
             const auto start = std::max(out.total, request.offset) - out.total;
@@ -87,6 +112,22 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
             require(seq != nullptr, "Missing condition preparation");
             append({id, c->preparation, "Condition", true});
         };
+        if(request.semantic && request.occurrence) {
+            const auto *header=d.action(request.occurrence->header);
+            require(header,"Recognized header no longer exists");
+            const auto &shapes=owner.flows(header->owner,stop);
+            auto found=std::ranges::find(shapes,header->id,&ExplicitFlow::header);
+            require(found!=shapes.end(),"Recognized flow changed; refresh this parent");
+            const auto &order=*d.sequence(header->owner)->order;
+            out.script=d.sequence(header->owner)->script;
+            auto begin=request.occurrence->alternate ? found->alternate : found->start+1;
+            auto end=request.occurrence->alternate ? found->end : found->closing;
+            out.total=request.offset;
+            for(auto n=begin+std::min(request.offset,end-begin);n<end && out.rows.size()<request.limit;++n)
+                action(order[n],header->owner);
+            out.total=end-begin;
+            return out;
+        }
         std::visit(
             [&](auto id) {
                 using T = decltype(id);
@@ -180,8 +221,8 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
     });
 }
 
-std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, EditorSubject subject) {
-    return control_->submit<NavigationPath>([revision, subject](auto &owner) mutable {
+std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, EditorSubject subject, bool semantic) {
+    return control_->submit<NavigationPath>([revision, subject, semantic](auto &owner) mutable {
         owner.match(revision, {});
         require(owner.data != nullptr, "No program is open");
         auto &d = *owner.data;
@@ -259,6 +300,26 @@ std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, Ed
                 subject);
             if (done) {
                 std::reverse(out.subjects.begin(), out.subjects.end());
+                if(semantic) {
+                    std::vector<EditorSubject> path;
+                    for(const auto &item:out.subjects) {
+                        if(auto id=std::get_if<SctActionId>(&item)) {
+                            auto *action=d.action(*id);bool consumed=false;
+                            for(const auto &flow:owner.flows(action->owner,{})) {
+                                const auto &order=*d.sequence(action->owner)->order;
+                                auto pos=static_cast<std::size_t>(std::ranges::find(order,*id)-order.begin());
+                                if(pos<flow.start || pos>=flow.end)continue;
+                                bool alternate=pos>=flow.alternate;
+                                path.push_back(flow.header);out.occurrences.push_back(editor::FlowOccurrence{flow.header,alternate});
+                                if(pos!=flow.start && pos!=flow.closing) {path.push_back(item);out.occurrences.push_back({});}
+                                consumed=true;break;
+                            }
+                            if(consumed)continue;
+                        }
+                        path.push_back(item);out.occurrences.push_back({});
+                    }
+                    out.subjects=std::move(path);
+                } else out.occurrences.resize(out.subjects.size());
                 return out;
             }
         }

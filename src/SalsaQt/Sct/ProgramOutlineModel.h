@@ -10,10 +10,12 @@ class ProgramOutlineModel final : public QAbstractItemModel {
   public:
     explicit ProgramOutlineModel(QObject *parent = nullptr);
     void bind(std::shared_ptr<core::editor::Backend>, core::editor::Revision, core::SctScriptId);
+    void setMode(core::editor::ViewMode mode) { mode_=mode; }
+    core::editor::ViewMode mode() const { return mode_; }
     bool pending(const QModelIndex &index) const;
     void apply(const core::editor::Change &);
     const core::editor::OutlineRow *row(const QModelIndex &) const;
-    QModelIndex find(const core::editor::Subject &) const;
+    QModelIndex find(const core::editor::Subject &, std::optional<core::editor::FlowOccurrence> = {}) const;
     std::function<void()> ready;
     std::function<void(QString)> diagnostic;
     std::function<void(std::uint64_t, std::size_t)> measured;
@@ -39,6 +41,7 @@ class ProgramOutlineModel final : public QAbstractItemModel {
     std::vector<std::size_t> free_;
     std::shared_ptr<core::editor::Backend> service_;
     core::editor::Revision revision_;
+    core::editor::ViewMode mode_ = core::editor::ViewMode::Instructions;
     std::uint64_t generation_ = 0, nextRequest_ = 0;
     std::size_t slot(const QModelIndex &) const;
     QModelIndex indexFor(std::size_t) const;

@@ -512,11 +512,21 @@ void SctMessageEditorWidget::buildUi() {
     connect(closeDuration_, &QSpinBox::valueChanged, this, optionsChanged);
 }
 
+bool SctMessageEditorWidget::bindValue(const spice::sct::SctTextValue &value,
+    spice::sct::SctTextKind kind, spice::sct::SctTextStorage storage,
+    std::function<bool(spice::sct::SctTextValue)> handler) {
+    if(!flushPending())return false;
+    locator_.reset();target_.reset();detached_=true;valueHandler_=std::move(handler);
+    textKind_=kind;textStorage_=storage;committedDraft_.reset();
+    identityLabel_->setText(tr("Authoring text draft"));
+    return refreshText(value);
+}
 bool SctMessageEditorWidget::bindText(
     core::AssetLocator locator, core::SctTextTarget target,
     const spice::sct::SctTextValue& value, const spice::sct::SctTextKind kind,
     const spice::sct::SctTextStorage storage) {
     if (!flushPending()) return false;
+    detached_=false;valueHandler_={};
     locator_ = std::move(locator);
     target_ = std::move(target);
     textKind_ = kind;
@@ -535,6 +545,7 @@ bool SctMessageEditorWidget::bindMessage(
     std::shared_ptr<const core::SctDocumentSnapshot> snapshot,
     core::SctMessageTarget target) {
     if (!flushPending()) return false;
+    detached_=false;valueHandler_={};
     locator_ = std::move(locator);
     target_ = std::move(target);
     committedDraft_.reset();
@@ -812,13 +823,15 @@ core::SctMessageDraft SctMessageEditorWidget::draftFromWidgets() {
 bool SctMessageEditorWidget::commitDraft(
     const core::SctMessageDraft& draft,
     const core::SctMessageEditKind kind) {
-    if (!hasBinding() || !commitHandler_) return false;
+    if (!hasBinding() || (!commitHandler_ && !valueHandler_)) return false;
     if (committedDraft_.has_value() && *committedDraft_ == draft) {
         failedCommitKind_.reset();
         return true;
     }
     committing_ = true;
-    const bool success = commitHandler_(*locator_, *target_, draft, kind);
+    const auto typed = core::SctMessageAuthoringProfile::materialize(draft);
+    const bool success = detached_ ? (typed.succeeded() && valueHandler_(*typed.message))
+                                  : commitHandler_(*locator_, *target_, draft, kind);
     committing_ = false;
     if (success) {
         committedDraft_ = draft;
@@ -875,11 +888,11 @@ bool SctMessageEditorWidget::flushPending() {
 
 bool SctMessageEditorWidget::flushPlainText() {
     commitTimer_->stop();
-    if (!locator_ || !target_ || !plainTextCommitHandler_) return true;
+    if (!detached_ && (!locator_ || !target_ || !plainTextCommitHandler_)) return true;
     const auto value = plainText_->toPlainText().toUtf8().toStdString();
     if (value == committedPlainText_) return true;
     committing_ = true;
-    const auto success = plainTextCommitHandler_(*locator_, *target_, value);
+    const auto success = detached_ ? valueHandler_(spice::sct::SctPlainText{value}) : plainTextCommitHandler_(*locator_, *target_, value);
     committing_ = false;
     if (success) {
         committedPlainText_ = value;
@@ -1106,6 +1119,7 @@ void SctMessageEditorWidget::clear() {
     commitTimer_->stop();
     pendingBurst_ = Burst::None;
     pendingCommitKind_.reset();
+    detached_=false;valueHandler_={};
     locator_.reset();
     target_.reset();
     committedDraft_.reset();
@@ -1128,7 +1142,7 @@ void SctMessageEditorWidget::focusEditor() {
 }
 
 bool SctMessageEditorWidget::hasBinding() const noexcept {
-    return locator_.has_value() && target_.has_value();
+    return detached_ || (locator_.has_value() && target_.has_value());
 }
 
 bool SctMessageEditorWidget::isBoundTo(

@@ -47,6 +47,9 @@ public:
 
     explicit SctMessageEditorWidget(QWidget* parent = nullptr);
 
+    // Detached authoring draft: no source locator or physical document identity.
+    bool bindValue(const spice::sct::SctTextValue &, spice::sct::SctTextKind,
+        spice::sct::SctTextStorage, std::function<bool(spice::sct::SctTextValue)>);
     void setCommitHandler(CommitHandler handler);
     void setPlainTextCommitHandler(PlainTextCommitHandler handler);
     void setTextValueCommitHandler(TextValueCommitHandler handler);
@@ -105,6 +108,8 @@ private:
     void loadOpaqueText(const spice::sct::SctOpaqueText& text);
     [[nodiscard]] bool flushPlainText();
 
+    std::function<bool(spice::sct::SctTextValue)> valueHandler_;
+    bool detached_ = false;
     CommitHandler commitHandler_{};
     PlainTextCommitHandler plainTextCommitHandler_{};
     TextValueCommitHandler textValueCommitHandler_{};

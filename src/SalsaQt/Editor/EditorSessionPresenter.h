@@ -23,11 +23,20 @@ class EditorSessionPresenter final : public QObject {
     QAction *undoAction() const { return undo_; }
     QAction *redoAction() const { return redo_; }
     bool busy() const;
+    const std::optional<core::editor::Subject> &selection() const { return selection_; }
+    void execute(QString, core::editor::EditIntent, std::optional<core::editor::Revision> = {});
+    void navigate(core::editor::Subject);
+    QAction *backAction() const { return back_; }
+    QAction *forwardAction() const { return forward_; }
+
   signals:
     void inspectionChanged();
+    void sessionChanged();
+    void navigationRequested(const salsa::core::editor::Subject &);
     void changed(const salsa::core::editor::Change &);
     void diagnostic(const QString &);
     void availabilityChanged();
+
   private:
     void history(bool);
     void submit(QString, std::function<core::Result<core::editor::Change>(std::stop_token)>);
@@ -40,6 +49,9 @@ class EditorSessionPresenter final : public QObject {
     std::optional<core::editor::Inspection> inspection_;
     std::stop_source readStop_;
     std::uint64_t selectionGeneration_ = 0, sessionGeneration_ = 0;
-    QAction *undo_, *redo_;
+    QAction *undo_, *redo_, *back_, *forward_;
+    std::vector<core::editor::Subject> navigation_;
+    std::size_t navigationAt_ = 0;
+    std::optional<core::editor::Subject> historyTarget_;
 };
-}
+} // namespace salsa::qt

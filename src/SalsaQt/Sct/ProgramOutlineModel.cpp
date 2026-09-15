@@ -89,7 +89,7 @@ void ProgramOutlineModel::fetchMore(const QModelIndex &parent) {
     auto *watcher = new QFutureWatcher<core::Result<ir::OutlinePage>>(this);
     const auto revision = revision_;
     auto service = service_;
-    ir::OutlineRequest input{node.row.subject, node.children.size(), 128};
+    ir::OutlineRequest input{node.row.subject, node.children.size(), 128, mode_, node.row.occurrence};
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, n, generation, revision, request] {
         auto result = watcher->result();
         watcher->deleteLater();
@@ -144,9 +144,9 @@ void ProgramOutlineModel::fetchMore(const QModelIndex &parent) {
     watcher->setFuture(
         QtConcurrent::run([service, revision, input] { return service->outline(revision, input); }));
 }
-QModelIndex ProgramOutlineModel::find(const ir::Subject &subject) const {
+QModelIndex ProgramOutlineModel::find(const ir::Subject &subject, std::optional<ir::FlowOccurrence> occurrence) const {
     for (std::size_t n = 1; n < nodes_.size(); ++n)
-        if (nodes_[n].live && nodes_[n].row.subject == subject)
+        if (nodes_[n].live && nodes_[n].row.subject == subject && nodes_[n].row.occurrence == occurrence)
             return indexFor(n);
     return {};
 }
@@ -179,6 +179,13 @@ void ProgramOutlineModel::apply(const ir::Change &change) {
                 resetChildren(0);
                 return;
             }
+    if(mode_==ir::ViewMode::Semantic && !change.projectionSequences.empty()) {
+        std::vector<std::size_t> affected;
+        for(std::size_t n=1;n<nodes_.size();++n) if(nodes_[n].live && nodes_[n].fetched &&
+            !nodes_[n].row.occurrence && !std::holds_alternative<core::SctActionId>(nodes_[n].row.subject) &&
+            std::ranges::find(change.projectionSequences,nodes_[n].row.sequence)!=change.projectionSequences.end())affected.push_back(n);
+        for(auto n:affected)if(nodes_[n].live)resetChildren(n);
+    }
     std::vector<std::size_t> orders, labels;
     for (std::size_t n = 1; n < nodes_.size(); ++n) {
         const auto &node = nodes_[n];
@@ -210,24 +217,25 @@ void ProgramOutlineModel::apply(const ir::Change &change) {
         if (nodes_[n].live) {
             auto parent = nodes_[n].parent;
             auto expected = nodes_[n].row.subject;
+            auto occurrence = nodes_[n].row.occurrence;
             auto generation = generation_;
             auto revision = revision_;
             auto service = service_;
             auto *watcher = new QFutureWatcher<core::Result<ir::OutlinePage>>(this);
-            ir::OutlineRequest request{nodes_[parent].row.subject, nodes_[n].ordinal, 1};
-            connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, n, expected, generation, revision] {
+            ir::OutlineRequest request{nodes_[parent].row.subject, nodes_[n].ordinal, 1, mode_, nodes_[parent].row.occurrence};
+            connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, n, expected, occurrence, generation, revision] {
                 auto result = watcher->result();
                 watcher->deleteLater();
                 if (generation != generation_ || revision != revision_ || n >= nodes_.size() || !nodes_[n].live ||
-                    nodes_[n].row.subject != expected)
+                    nodes_[n].row.subject != expected || nodes_[n].row.occurrence != occurrence)
                     return;
-                if (!result || result.value().rows.empty() || result.value().rows.front().subject != expected)
+                if (!result || result.value().rows.empty() || result.value().rows.front().subject != expected || result.value().rows.front().occurrence != occurrence)
                     return;
                 const auto oldKind = nodes_[n].row.kind;
                 nodes_[n].row = result.value().rows.front();
                 emit dataChanged(indexFor(n), indexFor(n));
                 if (nodes_[n].fetched && (oldKind != nodes_[n].row.kind ||
-                                          (nodes_[n].row.kind && *nodes_[n].row.kind != ir::RowKind::Instruction)))
+                                          (nodes_[n].row.kind && !nodes_[n].row.occurrence && *nodes_[n].row.kind != ir::RowKind::Instruction)))
                     resetChildren(n);
             });
             watcher->setFuture(

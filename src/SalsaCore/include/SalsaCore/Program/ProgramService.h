@@ -2,6 +2,7 @@
 #include "SalsaCore/Program/NativeImport.h"
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
 #include <future>
+#include "SalsaCore/Editor/EditorBackend.h"
 #include <stop_token>
 
 namespace salsa::core::program {
@@ -195,6 +196,7 @@ struct ChangeReceipt {
     std::vector<SctSequenceId> sequences;
     std::vector<SectionId> sections;
     std::vector<SctScriptId> scriptLayouts;
+    std::vector<SctSequenceId> projectionSequences;
     std::vector<SctTextResourceId> texts, presentationTexts;
     std::vector<ConditionId> conditions;
     std::vector<ArmId> arms;
@@ -232,6 +234,8 @@ using EditorSubject = decltype(Annotation::subject);
 struct OutlineRequest {
     EditorSubject parent;
     std::size_t offset = 0, limit = 128;
+    bool semantic = false;
+    std::optional<editor::FlowOccurrence> occurrence;
 };
 struct OutlineRow {
     EditorSubject subject;
@@ -239,6 +243,7 @@ struct OutlineRow {
     std::string label;
     bool expandable = false;
     std::optional<ActionKind> kind;
+    std::optional<editor::FlowOccurrence> occurrence;
 };
 struct OutlinePage {
     ServiceStatus status;
@@ -248,7 +253,7 @@ struct OutlinePage {
     std::vector<OutlineRow> rows;
     std::uint64_t elapsedMicroseconds = 0;
 };
-struct NavigationPath { ServiceStatus status; SctScriptId script; std::vector<EditorSubject> subjects; };
+struct NavigationPath { ServiceStatus status; SctScriptId script; std::vector<EditorSubject> subjects; std::vector<std::optional<editor::FlowOccurrence>> occurrences; };
 // Owns only the selected closure. Safe across edits, maintenance and shutdown.
 // Sequence orders may contain IDs outside an explicit action selection.
 struct ReadScope {
@@ -430,8 +435,10 @@ class ProgramService final {
     std::future<Result<ChangeReceipt>> undo(Revision, std::stop_token = {});
     std::future<Result<ChangeReceipt>> redo(Revision, std::stop_token = {});
     std::future<Result<std::shared_ptr<const ReadScope>>> read(Revision, ReadSelection, std::stop_token = {});
-    std::future<Result<NavigationPath>> locate(Revision, EditorSubject);
+    std::future<Result<NavigationPath>> locate(Revision, EditorSubject, bool semantic = false);
     std::future<Result<OutlinePage>> outline(Revision, OutlineRequest, std::stop_token = {});
+    std::future<Result<editor::BrowsePage>> browse(Revision, editor::BrowseRequest, std::stop_token = {});
+    std::future<Result<std::optional<SctActionId>>> recognizedContinuation(Revision, SctActionId, std::stop_token = {});
     std::future<Result<VariableQuery>> uses(Revision, Variable);
     std::future<Result<TargetQuery>> incoming(Revision, SctActionId);
     std::future<Result<SummaryQuery>> summarize(Revision, SctModuleId, std::stop_token = {});

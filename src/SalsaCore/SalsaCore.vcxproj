@@ -268,4 +268,9 @@
     <ClCompile Include="src\Editor\ProgramBackend.cpp" />
   </ItemGroup>
   <ItemGroup><ClInclude Include="include\SalsaCore\Authoring\SctAuthoringIdentity.h" /></ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Editor\ProgramEditing.cpp" />
+    <ClInclude Include="src\Program\ExplicitFlow.h" />
+    <ClInclude Include="src\Program\ProgramBrowse.inl" />
+  </ItemGroup>
 </Project>

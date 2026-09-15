@@ -9,6 +9,7 @@ class InstructionInspector final : public QWidget {
   public:
     explicit InstructionInspector(EditorSessionPresenter *, QWidget *parent = nullptr);
     QAction *editParameterAction() const { return edit_; }
+
   private:
     void refresh();
     void availability();
@@ -16,6 +17,6 @@ class InstructionInspector final : public QWidget {
     EditorSessionPresenter *session_;
     QLabel *title_, *description_;
     QTableWidget *parameters_;
-    QAction *edit_;
+    QAction *edit_, *follow_;
 };
-}
+} // namespace salsa::qt

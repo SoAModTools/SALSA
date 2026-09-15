@@ -26,6 +26,8 @@ public:
         const spice::sct::SctCanonicalExpression&)>;
 
     explicit SctScptEditorWidget(QWidget* parent = nullptr);
+    bool bindValue(const spice::sct::SctCanonicalExpression &,
+        std::function<bool(const spice::sct::SctCanonicalExpression &)>);
     void setCommitHandler(CommitHandler handler);
     [[nodiscard]] bool bind(const core::AssetLocator& locator,
         const spice::sct::SctParameterSite& site,
@@ -53,6 +55,8 @@ private:
     void apply();
     void revert();
 
+    bool detached_ = false;
+    std::function<bool(const spice::sct::SctCanonicalExpression &)> valueHandler_;
     CommitHandler commitHandler_{};
     std::optional<core::AssetLocator> locator_{};
     std::optional<spice::sct::SctParameterSite> site_{};

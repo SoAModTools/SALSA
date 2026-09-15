@@ -2,6 +2,7 @@
 #include "DispatchPredicates.h"
 #include "NativeCollection.h"
 #include "ProgramInternal.h"
+#include "ExplicitFlow.h"
 #include "SalsaCore/Program/ProgramPersistence.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include <algorithm>
@@ -259,6 +260,46 @@ struct ServiceOwner {
     std::map<std::uint64_t, std::uint64_t> checkpointTokens;
     std::uint64_t savedRevision = 0;
     std::vector<std::uint32_t> freeActions, freeSequences, freeSections;
+    std::map<SctSequenceId, std::vector<ExplicitFlow>> outlineFlows;
+    const std::vector<ExplicitFlow> &flows(SctSequenceId sequence, std::stop_token stop) {
+        if (auto found = outlineFlows.find(sequence); found != outlineFlows.end()) return found->second;
+        std::vector<ExplicitFlow> result;
+        const auto &order = *data->sequence(sequence)->order;
+        auto parameterTarget = [&](const Action *a, unsigned index) -> SctActionId {
+            if (!a || a->kind != ActionKind::Instruction) return {};
+            for (auto id : data->child(a->value)) {
+                const auto *p = data->values.find(id.value);
+                if (p->kind == ValueKind::Parameter && p->data == index && p->count == 1) {
+                    const auto *v = data->values.find(data->child(id).front().value);
+                    if (v->kind == ValueKind::ActionReference) return SctActionId{v->data};
+                }
+            }
+            return {};
+        };
+        std::map<SctActionId, std::size_t> positions;
+        for (std::size_t n=0;n<order.size();++n) positions[order[n]]=n;
+        for (std::size_t n=0;n<order.size();++n) {
+            stopped(stop);
+            const auto *a = data->action(order[n]);
+            if (!a || a->kind != ActionKind::Instruction || data->values.find(a->value.value)->data != 0) continue;
+            auto falseTarget=parameterTarget(a,1); auto at=positions.find(falseTarget);
+            if (at==positions.end() || at->second<=n+1) continue;
+            auto exitTarget=parameterTarget(data->action(order[at->second-1]),0);
+            auto continuation=exitTarget==a->id ? falseTarget : exitTarget;
+            if (!continuation.valid() || !positions.contains(continuation)) continue;
+            try { auto shape=recognizeExplicit(*data,a->id,continuation, incoming); result.push_back(shape); n=shape.end-1; }
+            catch (const std::exception &) { /* Irregular flow stays explicit and editable. */ }
+        }
+        return outlineFlows.emplace(sequence,std::move(result)).first->second;
+    }
+    void invalidateOutline(const ChangeReceipt &receipt) {
+        for (auto seq:receipt.sequences) outlineFlows.erase(seq);
+        for (auto id:receipt.actions) if(auto *a=data->action(id)) outlineFlows.erase(a->owner);
+        // A new caller can invalidate recognition in a different sequence.
+        for(auto id:receipt.oldTargets) if(auto *a=data->action(id)) outlineFlows.erase(a->owner);
+        for(auto id:receipt.newTargets) if(auto *a=data->action(id)) outlineFlows.erase(a->owner);
+        if(!receipt.scriptLayouts.empty()) outlineFlows.clear();
+    }
     std::uint64_t generation = 0, state = 0, nextState = 0, saved = 0;
     std::vector<std::shared_ptr<PreparedData>> history;
     std::size_t cursor = 0;
@@ -339,7 +380,7 @@ struct ServiceOwner {
         ServiceOwner next;
         next.data = std::move(const_cast<Program *>(p.get())->data_);
         next.protectMetadata();
-        outlineAliases.clear();outlineAliasesDirty=true;
+        outlineAliases.clear();outlineAliasesDirty=true;outlineFlows.clear();
         stopped(stop);
         stopped(shutdown);
         require(generation < UINT64_MAX && nextState < UINT64_MAX, "Program generation/history state exhausted");
@@ -850,6 +891,21 @@ ChangeReceipt ServiceOwner::install(PreparedChange change, std::stop_token stop)
     state = p->afterState;
     ++data->revision;
     if(receipt.presentationChanged || !receipt.annotations.empty()) outlineAliasesDirty = true;
+    receipt.projectionSequences=receipt.sequences;
+    for(const auto &row:p->actions) {
+        const auto *current=data->actions.find(row.index);const auto &before=row.other;
+        bool shape=current->kind!=before.kind || !current->id.valid() || !before.id.valid();
+        if(current->kind==ActionKind::Instruction && before.kind==ActionKind::Instruction && current->value.valid() && before.value.valid()) {
+            const auto *a=data->values.find(current->value.value),*b=data->values.find(before.value.value);
+            shape|=a->data!=b->data || a->detail!=b->detail;
+        }
+        shape|=!receipt.oldTargets.empty() || !receipt.newTargets.empty();
+        if(shape){if(current->owner.valid())receipt.projectionSequences.push_back(current->owner);if(before.owner.valid())receipt.projectionSequences.push_back(before.owner);}
+    }
+    for(auto id:receipt.oldTargets)if(auto *a=data->action(id))receipt.projectionSequences.push_back(a->owner);
+    for(auto id:receipt.newTargets)if(auto *a=data->action(id))receipt.projectionSequences.push_back(a->owner);
+    unique(receipt.projectionSequences);
+    invalidateOutline(receipt);
     invalidate(receipt);
     return receipt;
 }
@@ -879,6 +935,21 @@ ChangeReceipt ServiceOwner::travel(Revision expected, bool redo, std::stop_token
     state = redo ? p->afterState : p->beforeState;
     ++data->revision;
     if(receipt.presentationChanged || !receipt.annotations.empty()) outlineAliasesDirty = true;
+    receipt.projectionSequences=receipt.sequences;
+    for(const auto &row:p->actions) {
+        const auto *current=data->actions.find(row.index);const auto &before=row.other;
+        bool shape=current->kind!=before.kind || !current->id.valid() || !before.id.valid();
+        if(current->kind==ActionKind::Instruction && before.kind==ActionKind::Instruction && current->value.valid() && before.value.valid()) {
+            const auto *a=data->values.find(current->value.value),*b=data->values.find(before.value.value);
+            shape|=a->data!=b->data || a->detail!=b->detail;
+        }
+        shape|=!receipt.oldTargets.empty() || !receipt.newTargets.empty();
+        if(shape){if(current->owner.valid())receipt.projectionSequences.push_back(current->owner);if(before.owner.valid())receipt.projectionSequences.push_back(before.owner);}
+    }
+    for(auto id:receipt.oldTargets)if(auto *a=data->action(id))receipt.projectionSequences.push_back(a->owner);
+    for(auto id:receipt.newTargets)if(auto *a=data->action(id))receipt.projectionSequences.push_back(a->owner);
+    unique(receipt.projectionSequences);
+    invalidateOutline(receipt);
     invalidate(receipt);
     return receipt;
 }
@@ -1393,6 +1464,7 @@ std::future<Result<std::shared_ptr<const ReadScope>>> ProgramService::read(Revis
         [r, s = std::move(s), stop](auto &o) { return o.read(r, s, stop); });
 }
 #include "ProgramEditor.inl"
+#include "ProgramBrowse.inl"
 std::future<Result<VariableQuery>> ProgramService::uses(Revision r, Variable key) {
     return control_->submit<VariableQuery>([r, key](auto &o) {
         o.match(r);

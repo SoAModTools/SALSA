@@ -541,6 +541,17 @@ TEST(ProgramSemanticTest, PromotesPlainFlowAndPreservesSourceIdentity) {
     ir::ProgramService service;
     auto adopted = service.adopt({}, std::move(built).takeValue()).get();
     ASSERT_TRUE(adopted);
+    editor::ProgramBackend adapter(std::shared_ptr<ir::ProgramService>(&service,[](auto*){}));
+    auto revision=adopted.value().current;
+    auto physical=adapter.outline(revision,{section,0,128});ASSERT_TRUE(physical);EXPECT_EQ(physical.value().total,5u);
+    auto semanticPage=adapter.outline(revision,{section,0,128,editor::ViewMode::Semantic});ASSERT_TRUE(semanticPage);
+    ASSERT_EQ(semanticPage.value().rows.size(),3u);EXPECT_EQ(semanticPage.value().rows[0].subject,editor::Subject{header});
+    ASSERT_TRUE(semanticPage.value().rows[1].occurrence);EXPECT_TRUE(semanticPage.value().rows[1].occurrence->alternate);
+    auto body=adapter.outline(revision,{header,0,128,editor::ViewMode::Semantic,semanticPage.value().rows[0].occurrence});ASSERT_TRUE(body);
+    ASSERT_EQ(body.value().rows.size(),1u);EXPECT_EQ(body.value().rows[0].subject,editor::Subject{SctActionId{102}});
+    auto path=adapter.locate(revision,SctActionId{105},editor::ViewMode::Semantic);ASSERT_TRUE(path);
+    ASSERT_EQ(path.value().subjects.size(),4u);ASSERT_TRUE(path.value().occurrences[2]);EXPECT_TRUE(path.value().occurrences[2]->alternate);
+    EXPECT_EQ(service.status().get().value().current,revision);
     auto edit = service.edit({adopted.value().current, {semantic(ir::PromoteFlow{header, {106}})}}).get();
     ASSERT_TRUE(edit) << messages(edit.diagnostics());
     auto view = service.read(edit.value().status.current, {{}, {}, {header}}).get();
@@ -556,6 +567,10 @@ TEST(ProgramSemanticTest, PromotesPlainFlowAndPreservesSourceIdentity) {
     ASSERT_TRUE(undo);
     auto original = service.read(undo.value().status.current, {{}, {}, {header}}).get().value();
     EXPECT_EQ(original->actions[0].kind, ir::ActionKind::Instruction);
+    auto scheduled=adapter.execute(undo.value().status.current,editor::SetTiming{SctActionId{102},true,{}});ASSERT_TRUE(scheduled);
+    EXPECT_EQ(scheduled.value().projectionSequences,std::vector<SctSequenceId>{seq});
+    auto explicitAgain=adapter.outline(scheduled.value().status.current,{section,0,128,editor::ViewMode::Semantic});ASSERT_TRUE(explicitAgain);
+    EXPECT_EQ(explicitAgain.value().total,5u); // Changing timing invalidates only the owning projection.
     service.shutdown().get();
 }
 
@@ -736,7 +751,7 @@ TEST(EditorBackendTest, InvalidCancelledAndReadonlyEditsLeaveStateUntouched) {
     ASSERT_EQ(repeated.value().parameters.size(), 2u);
     EXPECT_EQ(repeated.value().parameters[0].key.group, 0u);
     EXPECT_EQ(repeated.value().parameters[1].key.group, 1u);
-    EXPECT_EQ(repeated.value().parameters[1].kind, editor::ParameterKind::ReadOnly);
+    EXPECT_EQ(repeated.value().parameters[1].kind, editor::ParameterKind::ActionTarget);
     EXPECT_FALSE(backend.replaceParameter(f.revision, {f.branch, {2, 1}, "0"}));
     std::stop_source cancelled; cancelled.request_stop();
     EXPECT_FALSE(backend.replaceParameter(f.revision, {f.writer, {0, {}}, "123"}, cancelled.get_token()));
@@ -745,4 +760,47 @@ TEST(EditorBackendTest, InvalidCancelledAndReadonlyEditsLeaveStateUntouched) {
     wrong = f.revision; wrong.project.value = "00000000-0000-4000-8000-000000000000";
     EXPECT_FALSE(backend.inspect(wrong, f.writer));
     EXPECT_EQ(f.service.status().get().value().current, f.revision);
+}
+
+TEST(EditorBackendTest, CreatesAndBindsTextWithPagedNavigationAndHistory) {
+    Fixture f;editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service,[](auto*){}));
+    const auto catalog=backend.opcodes();EXPECT_NE(std::ranges::find(catalog,265,&editor::Opcode::code),catalog.end());
+    auto inserted=backend.execute(f.revision,editor::InsertOpcode{f.writer,24});ASSERT_TRUE(inserted)<<messages(inserted.diagnostics());
+    auto revision=inserted.value().status.current;
+    editor::BrowseRequest query;query.kind=editor::BrowseKind::Opcodes;query.script=f.script;query.number=24;query.limit=1;
+    auto found=backend.browse(revision,query);ASSERT_TRUE(found);ASSERT_EQ(found.value().rows.size(),1u);
+    auto instructionId=std::get<SctActionId>(found.value().rows.front().subject);
+    auto created=backend.execute(revision,editor::CreateText{f.script,"debug note",true,sct::SctTextKind::PlainString,sct::SctPlainText{"Hello"}});
+    ASSERT_TRUE(created)<<messages(created.diagnostics());ASSERT_TRUE(created.value().suggestedSelection);
+    auto textId=std::get<SctTextResourceId>(*created.value().suggestedSelection);revision=created.value().status.current;
+    auto inspected=backend.inspect(revision,instructionId);ASSERT_TRUE(inspected);
+    auto param=std::ranges::find(inspected.value().parameters,editor::ParameterKind::FooterText,&editor::Parameter::kind);
+    ASSERT_NE(param,inspected.value().parameters.end());
+    auto bound=backend.execute(revision,editor::BindReference{instructionId,param->key,textId});ASSERT_TRUE(bound)<<messages(bound.diagnostics());
+    revision=bound.value().status.current;
+    editor::BrowseRequest uses;uses.kind=editor::BrowseKind::Incoming;uses.target=textId;
+    auto refs=backend.browse(revision,uses);ASSERT_TRUE(refs);ASSERT_EQ(refs.value().rows.size(),1u);EXPECT_EQ(refs.value().rows.front().subject,editor::Subject{instructionId});
+    auto draft=backend.text(revision,textId);ASSERT_TRUE(draft);draft.value().value=sct::SctPlainText{"Edited"};
+    auto saved=backend.execute(revision,editor::WriteText{draft.value()});ASSERT_TRUE(saved);revision=saved.value().status.current;
+    EXPECT_FALSE(backend.execute(revision,editor::WriteText{draft.value()}));
+    EXPECT_FALSE(backend.execute(revision,editor::DeleteItem{textId})); // Referenced text remains protected.
+    auto undo=backend.history(revision,false);ASSERT_TRUE(undo);
+    auto original=backend.text(undo.value().status.current,textId);ASSERT_TRUE(original);
+    EXPECT_EQ(std::get<sct::SctPlainText>(original.value().value).utf8,"Hello");
+}
+TEST(EditorBackendTest, CreatesAndEditsStructuredArmsWithoutWidgetStorageTypes) {
+    Fixture f;editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service,[](auto*){}));
+    auto condition=*sct::SctExpressionFactory::bitVariable(121).expression;
+    auto inserted=backend.execute(f.revision,editor::InsertStructure{f.other,"If",condition});ASSERT_TRUE(inserted)<<messages(inserted.diagnostics());
+    auto revision=inserted.value().status.current;
+    auto rows=backend.outline(revision,{f.section});ASSERT_TRUE(rows);
+    auto at=std::ranges::find_if(rows.value().rows,[&](const auto&r){return r.label=="If / Else If / Else";});ASSERT_NE(at,rows.value().rows.end());
+    auto action=std::get<SctActionId>(at->subject);auto draft=backend.structure(revision,action);ASSERT_TRUE(draft);ASSERT_EQ(draft.value().arms.size(),2u);
+    auto body=backend.execute(revision,editor::InsertOpcode{draft.value().arms[0].id,12});ASSERT_TRUE(body)<<messages(body.diagnostics());revision=body.value().status.current;
+    draft=backend.structure(revision,action);auto originalArm=draft.value().arms[0].id;
+    editor::ArmDraft added;added.condition=*sct::SctExpressionFactory::bitVariable(122).expression;
+    draft.value().arms.insert(draft.value().arms.begin()+1,added);
+    auto edited=backend.execute(revision,editor::WriteArms{draft.value()});ASSERT_TRUE(edited)<<messages(edited.diagnostics());
+    auto current=backend.structure(edited.value().status.current,action);ASSERT_TRUE(current);EXPECT_EQ(current.value().arms.size(),3u);EXPECT_EQ(current.value().arms[0].id,originalArm);
+    EXPECT_FALSE(backend.execute(edited.value().status.current,editor::WriteArms{draft.value()}));
 }
