@@ -132,4 +132,14 @@
     <ClCompile Include="Sct\ProgramValueDialog.cpp" />
     <ClInclude Include="Sct\ProgramValueDialog.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Application\ProgramWorkspaceController.cpp" />
+    <ClInclude Include="Application\ProgramWorkspaceController.h" />
+    <QtMoc Include="Editor\EditorSessionPresenter.h" />
+    <ClCompile Include="Editor\EditorSessionPresenter.cpp" />
+    <ClCompile Include="Editor\InstructionInspector.cpp" />
+    <ClInclude Include="Editor\InstructionInspector.h" />
+    <ClCompile Include="Editor\ScriptOutlineComponent.cpp" />
+    <ClInclude Include="Editor\ScriptOutlineComponent.h" />
+  </ItemGroup>
 </Project>

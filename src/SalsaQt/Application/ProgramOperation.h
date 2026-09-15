@@ -1,6 +1,6 @@
 #pragma once
 #include "Application/ExclusiveOperationController.h"
-#include "SalsaCore/Program/ProgramService.h"
+#include "SalsaCore/Authoring/SctAuthoringStore.h"
 #include <QFutureWatcher>
 #include <QTimer>
 #include <any>

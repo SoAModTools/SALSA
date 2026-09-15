@@ -4,7 +4,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 #include <algorithm>
 namespace salsa::qt {
-namespace ir = core::program;
+namespace ir = core::editor;
 ProgramOutlineModel::ProgramOutlineModel(QObject *parent) : QAbstractItemModel(parent) {
     nodes_.resize(1);
 }
@@ -65,7 +65,7 @@ bool ProgramOutlineModel::pending(const QModelIndex &i) const {
     auto n = slot(i);
     return n < nodes_.size() && nodes_[n].loading;
 }
-void ProgramOutlineModel::bind(std::shared_ptr<ir::ProgramService> service, ir::Revision revision,
+void ProgramOutlineModel::bind(std::shared_ptr<ir::Backend> service, ir::Revision revision,
                                core::SctScriptId script) {
     beginResetModel();
     ++generation_;
@@ -142,9 +142,9 @@ void ProgramOutlineModel::fetchMore(const QModelIndex &parent) {
         }
     });
     watcher->setFuture(
-        QtConcurrent::run([service, revision, input] { return service->outline(revision, input).get(); }));
+        QtConcurrent::run([service, revision, input] { return service->outline(revision, input); }));
 }
-QModelIndex ProgramOutlineModel::find(const ir::EditorSubject &subject) const {
+QModelIndex ProgramOutlineModel::find(const ir::Subject &subject) const {
     for (std::size_t n = 1; n < nodes_.size(); ++n)
         if (nodes_[n].live && nodes_[n].row.subject == subject)
             return indexFor(n);
@@ -171,7 +171,7 @@ void ProgramOutlineModel::resetChildren(std::size_t n) {
     nodes_[n].request = ++nextRequest_;
     fetchMore(indexFor(n));
 }
-void ProgramOutlineModel::apply(const ir::ChangeReceipt &change) {
+void ProgramOutlineModel::apply(const ir::Change &change) {
     revision_ = change.status.current;
     if (!nodes_.empty())
         if (auto *script = std::get_if<core::SctScriptId>(&nodes_[0].row.subject))
@@ -194,7 +194,7 @@ void ProgramOutlineModel::apply(const ir::ChangeReceipt &change) {
                 bool changed = change.presentationChanged;
                 if constexpr (std::is_same_v<T, core::SctActionId>)
                     changed |= std::ranges::find(change.actions, id) != change.actions.end();
-                else if constexpr (std::is_same_v<T, ir::SectionId>)
+                else if constexpr (std::is_same_v<T, core::program::SectionId>)
                     changed |= std::ranges::find(change.sections, id) != change.sections.end();
                 if (changed)
                     labels.push_back(n);
@@ -227,11 +227,11 @@ void ProgramOutlineModel::apply(const ir::ChangeReceipt &change) {
                 nodes_[n].row = result.value().rows.front();
                 emit dataChanged(indexFor(n), indexFor(n));
                 if (nodes_[n].fetched && (oldKind != nodes_[n].row.kind ||
-                                          (nodes_[n].row.kind && *nodes_[n].row.kind != ir::ActionKind::Instruction)))
+                                          (nodes_[n].row.kind && *nodes_[n].row.kind != ir::RowKind::Instruction)))
                     resetChildren(n);
             });
             watcher->setFuture(
-                QtConcurrent::run([service, revision, request] { return service->outline(revision, request).get(); }));
+                QtConcurrent::run([service, revision, request] { return service->outline(revision, request); }));
         }
 }
 } // namespace salsa::qt

@@ -202,4 +202,11 @@
     <ClInclude Include="src\Program\DispatchEdits.inl" />
     <ClInclude Include="src\Program\DispatchLowering.inl" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Editor\EditorIdentity.h" />
+    <ClInclude Include="include\SalsaCore\Editor\EditorBackend.h" />
+    <ClInclude Include="include\SalsaCore\Editor\ProgramBackend.h" />
+    <ClCompile Include="src\Editor\ProgramBackend.cpp" />
+  </ItemGroup>
+  <ItemGroup><ClInclude Include="include\SalsaCore\Authoring\SctAuthoringIdentity.h" /></ItemGroup>
 </Project>

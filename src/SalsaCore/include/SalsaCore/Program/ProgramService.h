@@ -5,16 +5,8 @@
 #include <stop_token>
 
 namespace salsa::core::program {
-struct Revision {
-    SctAuthoringProjectId project;
-    std::uint64_t revision = 0, generation = 0;
-    auto operator<=>(const Revision &) const = default;
-};
-struct ServiceStatus {
-    Revision current;
-    std::uint64_t historyState = 0;
-    bool dirty = false;
-};
+using Revision = editor::Revision;
+using ServiceStatus = editor::SessionStatus;
 struct ScriptSummary {
     SctScriptId id;
     std::string name;

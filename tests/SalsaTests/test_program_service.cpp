@@ -1,4 +1,5 @@
 #include "SalsaCore/Program/ProgramPersistence.h"
+#include "SalsaCore/Editor/ProgramBackend.h"
 #include "SalsaCore/Persistence/AtomicFile.h"
 #include "SalsaCore/Program/ProgramService.h"
 #include "SalsaCore/Program/ProgramValues.h"
@@ -692,3 +693,56 @@ TEST(ProgramPersistenceTest, TransactionAndAsyncOpenRejectStaleOrCancelledResult
     EXPECT_FALSE(opened.value().status.dirty);
 }
 } // namespace
+
+TEST(EditorBackendTest, SelectedParameterEditAndHistoryKeepIdentityAndAffectedRows) {
+    Fixture f;
+    editor::ProgramBackend adapter(std::shared_ptr<ir::ProgramService>(&f.service, [](auto *) {}));
+    editor::Backend &backend = adapter;
+    auto before = backend.inspect(f.revision, f.writer);
+    ASSERT_TRUE(before) << messages(before.diagnostics());
+    ASSERT_EQ(before.value().parameters.size(), 1u);
+    EXPECT_EQ(before.value().parameters[0].value, "121");
+    auto edit = backend.replaceParameter(f.revision, {f.writer, {0, {}}, "122"});
+    ASSERT_TRUE(edit) << messages(edit.diagnostics());
+    EXPECT_EQ(edit.value().actions, std::vector<SctActionId>{f.writer});
+    EXPECT_TRUE(edit.value().sequences.empty());
+    EXPECT_TRUE(edit.value().scriptLayouts.empty());
+    auto current = edit.value().status.current;
+    auto inspected = backend.inspect(current, f.writer);
+    ASSERT_TRUE(inspected);
+    EXPECT_EQ(inspected.value().subject, before.value().subject);
+    EXPECT_EQ(inspected.value().parameters[0].value, "122");
+    auto row = backend.outline(current, {f.section, 0, 1});
+    ASSERT_TRUE(row); ASSERT_EQ(row.value().rows.size(), 1u);
+    EXPECT_EQ(row.value().rows.front().subject, editor::Subject{f.writer});
+    EXPECT_EQ(row.value().total, 4u);
+    auto undone = backend.history(current, false); ASSERT_TRUE(undone);
+    auto restored = backend.inspect(undone.value().status.current, f.writer); ASSERT_TRUE(restored);
+    EXPECT_EQ(restored.value().parameters[0].value, "121");
+    auto redone = backend.history(undone.value().status.current, true); ASSERT_TRUE(redone);
+    auto again = backend.inspect(redone.value().status.current, f.writer); ASSERT_TRUE(again);
+    EXPECT_EQ(again.value().parameters[0].value, "122");
+    // Captured reads remain detached; stale commands cannot silently follow edits.
+    EXPECT_EQ(before.value().parameters[0].value, "121");
+    EXPECT_FALSE(backend.replaceParameter(f.revision, {f.writer, {0, {}}, "123"}));
+    EXPECT_FALSE(backend.inspect(f.revision, f.writer));
+}
+TEST(EditorBackendTest, InvalidCancelledAndReadonlyEditsLeaveStateUntouched) {
+    Fixture f;
+    editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service, [](auto *) {}));
+    EXPECT_FALSE(backend.replaceParameter(f.revision, {f.writer, {0, {}}, "4294967296"}));
+    EXPECT_FALSE(backend.replaceParameter(f.revision, {f.writer, {99, {}}, "1"}));
+    auto repeated = backend.inspect(f.revision, f.branch); ASSERT_TRUE(repeated);
+    ASSERT_EQ(repeated.value().parameters.size(), 2u);
+    EXPECT_EQ(repeated.value().parameters[0].key.group, 0u);
+    EXPECT_EQ(repeated.value().parameters[1].key.group, 1u);
+    EXPECT_EQ(repeated.value().parameters[1].kind, editor::ParameterKind::ReadOnly);
+    EXPECT_FALSE(backend.replaceParameter(f.revision, {f.branch, {2, 1}, "0"}));
+    std::stop_source cancelled; cancelled.request_stop();
+    EXPECT_FALSE(backend.replaceParameter(f.revision, {f.writer, {0, {}}, "123"}, cancelled.get_token()));
+    auto wrong = f.revision; ++wrong.generation;
+    EXPECT_FALSE(backend.outline(wrong, {f.section}));
+    wrong = f.revision; wrong.project.value = "00000000-0000-4000-8000-000000000000";
+    EXPECT_FALSE(backend.inspect(wrong, f.writer));
+    EXPECT_EQ(f.service.status().get().value().current, f.revision);
+}

@@ -1,14 +1,12 @@
 #pragma once
 
+#include "SalsaCore/Editor/EditorIdentity.h"
 #include "SalsaCore/Authoring/SctAuthoringProject.h"
 #include <memory>
 #include <span>
 
 namespace salsa::core::program {
 
-using SectionId = SctAuthoringId<struct ProgramSectionTag>;
-using ConditionId = SctAuthoringId<struct ProgramConditionTag>;
-using ArmId = SctAuthoringId<struct ProgramArmTag>;
 // Pool handles are internal addresses, never authored identity. They are valid
 // for the lifetime of their immutable Program (and may change on file loading).
 struct ValueId {
@@ -203,8 +201,7 @@ struct Connection {
 };
 
 struct Annotation {
-    std::variant<SctScriptId, SectionId, SctSequenceId, SctActionId, ArmId, ConditionId,
-        SctModuleId, SctEntrypointId, SctTextResourceId, SctPortId, SctConnectionId> subject;
+    editor::Subject subject;
     std::string alias;
     std::vector<SctAuthoringEvidence> evidence;
 };

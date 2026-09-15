@@ -32,7 +32,7 @@ This cutover supplies a compact service-backed editor surface. It is not a claim
 
 ## Measurements and validation
 
-Activity records workspace preparation time, resident action/value page counts, pooled child-reference/character counts, and local edit work counts. Outline requests report page row counts and preparation time. These are current stage/work measurements, not previous evaluator timing claims, and page counts are not a measurement of total process memory.
+Activity records workspace preparation time, resident action/value page counts, pooled child-reference/character counts, and diagnostics. Outline requests report page row counts and preparation time. These are current stage/work measurements, not previous evaluator timing claims, and page counts are not a measurement of total process memory.
 
 Validation uses focused synthetic console checks for scoped pages and value decoding, local history and persistence, native lowering, and the v7-to-binary workspace save/reopen/export path. The GUI is built with elevated v145 Release but is not launched or tested through a QApplication, in accordance with the user's instruction. No manual GUI readiness or usability measurement is claimed. No private corpus run is added by this cutover.
 
@@ -49,3 +49,17 @@ Source observations and explicit decoding choices remain in baseline evidence. N
 Version-7 files retain decoded strings and normalized parameter data, not reliable original platform/region/text-encoding provenance. The existing trusted converter and metadata review remain in place. Its baseline-construction settings have defaults and optional conversion overrides, rather than mandatory platform/region questions. Raw legacy overrides may still need an explicit byte-order choice. A conversion profile is labelled as a conversion choice, not detected source identity.
 
 Target availability, conditional platform blocks, and output-opcode suppression remain deferred. Export settings continue to be selected separately.
+
+## G1 — Editor contracts and first component slice (implemented)
+
+`SalsaCore/Editor/EditorBackend.h` is the Qt-free boundary for paged outline rows, revision-qualified inspection, parameter replacement and history. `ProgramBackend` implements it with the existing single `ProgramService`; it copies only selected display/parameter values and translates edits into existing journal commands. Shared authoring IDs now have a small independent header. No new ID allocator, storage format, native document authority or backend picker was introduced.
+
+`ProgramWindow` is a small application shell. `ProgramWorkspaceController` composes its menus/docks and coordinates loading/persistence. `ScriptOutlineComponent`, `ProgramOutlineModel` and `InstructionInspector` depend on the editor boundary, with `EditorSessionPresenter` coordinating selection, revision-qualified worker delivery, local change notifications and Undo/Redo. These components do not include ProgramService, ReadScope or SctDocument snapshots. The inspector contributes its Edit parameter action; the presenter contributes history actions. Shell menus host those actions.
+
+Select an instruction to see its parameters in the Instruction inspector dock. Select a parameter and choose Edit parameter, or double-click its row. G1 supports unsigned 32-bit decimal words and SCPT expression text, including addressed parameters within repeated groups. Other types remain visible with an explanation and use the existing selected-item editor. Apply creates one engine history operation; cancelling the parameter dialog leaves the committed value untouched. Undo/Redo refresh the same selection and affected outline rows without a whole-tree reset for scalar edits.
+
+Inspection is asynchronous. Selection/revision/session changes invalidate late deliveries; replacing selection requests stop on its previous read. Operation work is still under the exclusive-operation coordinator, including cancellation and diagnostics. Hidden tabs do not take over inspection when their model changes. Existing tool drafts are loaded only on invocation, avoiding a duplicate IR read on ordinary selection.
+
+This closes G1's narrow vertical slice, not the full inspector or semantic editor restoration. The current advanced tool implementations remain temporarily in the workspace coordinator and still use ProgramService/ProgramValueDialog; they must migrate into their feature components in G2-G6. Moving those methods out of the window is not counted as restoring or decoupling their capabilities. Paired views, richer SCPT controls, reference editing and docked text workflows remain G2.
+
+Validation: elevated MSVC v145 Release builds of SalsaCore, SalsaQt and SalsaTests; two new synthetic console adapter checks plus the existing scoped-pages/values check. Coverage includes stable identity, parameter edit/undo/redo, bounded pages and affected-row receipts, fixed versus repeated addresses, detached old values, stale revision/project/generation, cancellation, invalid input and read-only parameters. GUI execution and Qt GUI tests were not performed; live appearance, focus and event-loop behavior remain unverified. No private corpus or submodule changes. Existing dependency PDB warnings remain.
