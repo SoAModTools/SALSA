@@ -320,6 +320,28 @@ TEST(ProgramServiceTest, BoundedLoadingIsResponsiveAndManifestDeterministic) {
     parallel.shutdown().get();
     sequential.shutdown().get();
 }
+TEST(ProgramServiceTest, DatasetMainConventionResolvesEarlierAmbiguousTextWithoutRereading) {
+    auto request=nativeRequest({},2);std::array<unsigned,2> reads{};
+    for(std::size_t n=0;n<2;++n) {
+        sct::SctDocument document;
+        for(auto name:{"init","loop"})document.sections.push_back({document.allocateSectionId(),name,sct::SctScriptSectionContent{{{document.allocateInstructionId(),12}}}});
+        sct::SctMessage message;message.body.elements={sct::SctTextChunk{n==0?"\xe3\x81\x82":"\xe3\x80\x80"}};
+        document.sections.push_back({document.allocateSectionId(),"line",sct::SctStringSectionContent{{document.allocateStringId(),message,sct::SctTextKind::SctString}}});
+        auto encoded=sct::SctDocumentExporter::exportDocument(document,sct::SctDocumentExportOptions{sct::SctPlatform::GameCube,sct::kSctShiftJisByte7FEncoding});ASSERT_TRUE(encoded.success);
+        auto &item=request.items[n];item.baseline.textConvention.reset();item.options={};item.baseline.source.byteSize=encoded.bytes.size();
+        item.baseline.source.revision.digest=sha256(std::as_bytes(std::span(encoded.bytes))).value();
+        item.read=[&,n,bytes=std::move(encoded.bytes)](auto){++reads[n];return Result<std::vector<std::uint8_t>>::success(bytes);};
+    }
+    ir::ProgramService service;auto loaded=service.load(std::move(request)).get();ASSERT_TRUE(loaded)<<messages(loaded.diagnostics());
+    auto checkpoint=service.checkpoint(loaded.value().current).get();ASSERT_TRUE(checkpoint);
+    const auto &program=*checkpoint.value().program;
+    EXPECT_EQ(reads,(std::array<unsigned,2>{1,1}));
+    for(const auto &base:program.baselines())EXPECT_EQ(base.textConvention,sct::SctKnownTextConvention::ShiftJisByte7F);
+    ir::ReadSelection select;select.texts={program.texts().front().id};
+    auto read=service.read(loaded.value().current,select).get();ASSERT_TRUE(read);
+    auto text=ir::ProgramValues::text(read.value()->payload,read.value()->texts.front().value);ASSERT_TRUE(text);
+    EXPECT_EQ(std::get<sct::SctTextChunk>(std::get<sct::SctMessage>(text.value()).body.elements.front()).utf8,"\xe3\x81\x82");
+}
 TEST(ProgramServiceTest, CancelledStaleAndShutdownLoadsCannotReplaceAuthority) {
     Fixture f;
     for (unsigned mode = 0; mode < 3; ++mode) {

@@ -38,6 +38,25 @@ bool equivalentInterpretations(const sct::SctSourceTextRecordAssessment &record)
     }
     return first != nullptr;
 }
+NativeTextEvidence indexedEvidence(const sct::SctSourceTextAssessment &assessment) {
+    NativeTextEvidence out;out.automatic=true;out.recommendation=assessment.recommendation.convention;
+    out.candidates=assessment.indexedSctStrings.viableConventions;
+    for(auto ordinal:assessment.indexedSctStrings.recordOrdinals) {
+        const auto &record=assessment.records[ordinal];
+        if(record.viableConventions.size()==sct::kSctKnownTextConventions.size())continue;
+        for(auto candidate:record.viableConventions)++out.support[static_cast<std::size_t>(candidate)];
+    }
+    return out;
+}
+const sct::SctTextInterpretation *footerInterpretation(const sct::SctSourceTextRecordAssessment &record) {
+    // Footer debug text is independent of the main indexed-string convention.
+    // Prefer the observed Shift-JIS debug convention in a tie, not the dataset
+    // region. Complete alternatives remain SPICE's responsibility.
+    for(auto convention:{sct::SctKnownTextConvention::ShiftJisByte7F,sct::SctKnownTextConvention::ShiftJis8140,sct::SctKnownTextConvention::Windows1252Byte7F})
+        for(const auto &candidate:record.interpretations)
+            if(candidate.knownConvention==convention && candidate.complete && candidate.semanticValue)return &candidate;
+    return nullptr;
+}
 struct ExpressionScratch { std::vector<ValueId> words, operations; };
 ValueId normalizeExpression(ProgramData& d, const sct::SctCanonicalExpression& expression, ExpressionScratch& scratch) {
     const auto* program = std::get_if<sct::SctTypedScptProgram>(&expression.body);
@@ -90,6 +109,7 @@ class NativeNormalizer {
         }, parameter.value);
         return d.add(ValueKind::Parameter, parameter.schemaIndex, 0, std::span(&value, 1));
     }
+public:
     ValueId text(const sct::SctTextValue& text) {
         return std::visit([&](const auto& value) -> ValueId {
             using T = std::decay_t<decltype(value)>;
@@ -184,6 +204,61 @@ public:
         return script;
     }
 };
+sct::SctKnownTextConvention selectNativeConvention(std::span<const NativeTextEvidence> evidence) {
+    using Score=std::array<std::uint64_t,3>;
+    std::array<Score,sct::kSctKnownTextConventions.size()> scores{};
+    for(const auto &file:evidence) if(file.automatic) {
+        if(file.recommendation)++scores[static_cast<std::size_t>(*file.recommendation)][1];
+        if(!file.candidates.empty() && file.candidates.size()<scores.size())
+            for(auto c:file.candidates)scores[static_cast<std::size_t>(c)][0]+=6/file.candidates.size();
+        for(std::size_t n=0;n<scores.size();++n)scores[n][2]+=file.support[n];
+    }
+    // SPICE exposes viable candidates, not a confidence ranking for tied cases.
+    // Stable descriptor order is only our last-resort decoding assumption.
+    std::size_t best=0;for(std::size_t n=1;n<scores.size();++n)if(scores[n]>scores[best])best=n;
+    return sct::kSctKnownTextConventions[best].convention;
+}
+void resolveNativeText(ProgramData &d,std::span<const NativeTextEvidence> evidence,std::stop_token stop) {
+    const auto main=selectNativeConvention(evidence);
+    NativeNormalizer normalize(d);
+    using TextKey=std::pair<SctScriptId,std::uint64_t>;
+    std::vector<std::pair<TextKey,Text*>> indexed;
+    if(std::ranges::any_of(evidence,[](const auto &file){return !file.pending.empty();})) {
+        indexed.reserve(d.texts.size());
+        for(auto &text:d.texts)if(!text.supplementary)indexed.push_back({{text.script,text.sourceText},&text});
+        std::ranges::sort(indexed,{},[](const auto &item){return item.first;});
+    }
+    for(const auto &file:evidence) {
+        require(!stop.stop_requested(),"Native text resolution cancelled");
+        if(!file.automatic || file.recommendation)continue;
+        auto *script=d.lookup(file.script.value,EntityKind::Script,d.scripts);
+        require(script,"Missing pending text script");
+        auto location=d.directory.find(script->context.baseline.value);
+        require(location.kind==EntityKind::Baseline,"Missing imported baseline");
+        auto *baseline=&d.baselines.at(location.index);
+        const bool changed=baseline->textConvention!=main;
+        baseline->textConvention=main;
+        baseline->importEvidence.push_back({SctEvidenceKind::Inference,
+            "Indexed text uses dataset default " + std::string(sct::findSctKnownTextConvention(main)->stableName) +
+            "; selected by weighted indexed-string candidate support across files, with unique recommendations breaking ties. Ties use stable descriptor order. This is an editable import assumption."});
+        if(!changed)continue;
+        for(const auto &pending:file.pending) {
+            require(!stop.stop_requested(),"Native text resolution cancelled");
+            const TextKey key{file.script,pending.sourceText};
+            auto entry=std::ranges::lower_bound(indexed,key,{},[](const auto &item){return item.first;});
+            require(entry!=indexed.end() && entry->first==key,"Missing pending indexed text");
+            auto *found=entry->second;
+            auto decoded=sct::SctTextInspectionService::interpret(pending.bytes,pending.kind,sct::SctTextStorage::IndexedSection,*sct::sctTextEncodingFor(main));
+            if(!decoded.complete || !decoded.semanticValue) {
+                baseline->importEvidence.push_back({SctEvidenceKind::Inference,"Dataset convention could not completely decode indexed text " + std::to_string(pending.sourceText) + "; retained its local interpretation for correction."});
+                continue;
+            }
+            const auto old=*d.values.find(found->value.value);
+            if(old.kind==ValueKind::Unavailable && old.detail==3){--d.stats.unavailableItems;d.stats.excludedSourceBytes-=old.data;}
+            found->value=normalize.text(*decoded.semanticValue);
+        }
+    }
+}
 Result<SctScriptId> ProgramBuilder::appendImported(const sct::SctDocument& document, SctAuthoringBaseline baseline, SctScriptContext context) {
     try {
         require(data_ != nullptr, "Builder already finished");
@@ -194,7 +269,7 @@ Result<SctScriptId> ProgramBuilder::appendImported(const sct::SctDocument& docum
     }
 }
 Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::uint8_t> bytes,
-    SctAuthoringBaseline baseline, SctScriptContext context, const sct::SctDocumentImportOptions& options, std::stop_token stop, SctLoadingObserver progress) {
+    SctAuthoringBaseline baseline, SctScriptContext context, const sct::SctDocumentImportOptions& options, std::stop_token stop, SctLoadingObserver progress, NativeTextEvidence* collectionEvidence) {
     try {
         auto phase = [&](const char* name) { require(!stop.stop_requested(), "Native load cancelled"); if (progress) progress({name, 0, 0, context.name}); };
         phase("Checking source baseline");
@@ -208,41 +283,21 @@ Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::u
         if (!selected.declaredSourcePlatform && baseline.recipe.platform)
             selected.declaredSourcePlatform = *baseline.recipe.platform == GamePlatform::GameCube ? sct::SctPlatform::GameCube : sct::SctPlatform::Dreamcast;
         if (!selected.sourceTextEncoding && baseline.textConvention) selected.sourceTextEncoding = sct::sctTextEncodingFor(*baseline.textConvention);
-        if (!selected.sourceTextEncoding) {
-            phase("Assessing source text with SPICE");
-            const auto assessment = sct::SctSourceTextDetector::assess(parsed);
-            auto convention = assessment.recommendation.convention;
-            bool equivalent = false;
-            // An ASCII-only script can have several viable conventions with the
-            // same semantic result. Choose a deterministic decoding recipe, not
-            // a claim about its original region or encoding.
-            if (!convention && !assessment.records.empty()) {
-                for (const auto &candidate : sct::sctKnownTextConventions()) {
-                    if (std::ranges::all_of(assessment.records, [&](const auto &record) {
-                            return equivalentInterpretations(record) && std::ranges::find(record.viableConventions,
-                                candidate.convention) != record.viableConventions.end();
-                        })) {
-                        convention = candidate.convention;
-                        equivalent = true;
-                        break;
-                    }
-                }
-            }
-            if (!convention && !assessment.records.empty())
-                return Result<SctScriptId>::failure({DiagnosticSeverity::Error,
-                    DiagnosticCode::SctSourceTextSelectionRequired,
-                    "SPICE could not select an unambiguous text convention for " + baseline.source.locator.path().generic_string() +
-                    ". Select a source text override to continue; no script has been installed.", baseline.source.locator.path()});
-            if (convention) selected.sourceTextEncoding = sct::sctTextEncodingFor(*convention);
-            baseline.importEvidence.push_back({SctEvidenceKind::SourceObservation,
-                equivalent ? "SPICE found equivalent text interpretations; selected a deterministic decoding recipe. Original convention remains unknown."
-                           : convention ? "Source text convention selected from SPICE's unique indexed-string assessment."
-                                        : "SPICE found no text records requiring a text convention."});
-        } else {
-            baseline.importEvidence.push_back({SctEvidenceKind::UserAssertion,
-                "Source text convention supplied by the import selection or retained baseline recipe."});
-        }
         if (baseline.recipe.trustSelectedTextEncoding) selected.footerTextPromotion = sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding;
+        sct::SctSourceTextAssessment assessment;
+        if(!selected.sourceTextEncoding || selected.footerTextPromotion!=sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding) {
+            phase("Assessing source text with SPICE");
+            assessment=sct::SctSourceTextDetector::assess(parsed);
+        }
+        auto evidence=indexedEvidence(assessment);
+        evidence.automatic=!selected.sourceTextEncoding;
+        if(evidence.automatic) {
+            const auto convention=selectNativeConvention(std::span(&evidence,1));
+            selected.sourceTextEncoding=sct::sctTextEncodingFor(convention);
+            baseline.importEvidence.push_back({evidence.recommendation?SctEvidenceKind::SourceObservation:SctEvidenceKind::Inference,
+                evidence.recommendation?"Source text convention selected from SPICE's indexed-string recommendation.":"SPICE indexed text is ambiguous or insufficient; selected an editable decoding assumption. Collection import resolves its dataset default before installation."});
+        } else baseline.importEvidence.push_back({SctEvidenceKind::UserAssertion,
+            "Source text convention supplied by the import selection or retained baseline recipe."});
         // Persist the recipe actually used, including explicit import overrides.
         if (selected.declaredSourcePlatform) baseline.recipe.platform = *selected.declaredSourcePlatform == sct::SctPlatform::GameCube ? GamePlatform::GameCube : GamePlatform::Dreamcast;
         if (selected.sourceTextEncoding) baseline.textConvention = sct::findSctKnownTextConvention(*selected.sourceTextEncoding);
@@ -252,7 +307,7 @@ Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::u
         require(imported.document.has_value(), "SPICE could not import native SCT");
         std::vector<Diagnostic> diagnostics;
         for (const auto& item : imported.diagnostics) {
-            diagnostics.push_back({DiagnosticSeverity::Warning, DiagnosticCode::SctImportFailed, item.message});
+            diagnostics.push_back({DiagnosticSeverity::Warning, DiagnosticCode::SctImportFailed, "SPICE initial import observation (before SALSA text selection): " + item.message});
             baseline.importEvidence.push_back({SctEvidenceKind::SourceObservation, item.message});
         } // Imported drafts retain source diagnostics without retaining the native graph.
         const auto& source = imported.context.receipt().source;
@@ -261,9 +316,43 @@ Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::u
             (source.wrapper == sct::SctSourceWrapper::Aklz ? ", AKLZ wrapper." : ", raw SCT.")});
         if (!context.outputProfile) context.outputProfile = SctAuthoredOutputProfile{
             source.byteOrder == sct::SctSourceByteOrder::BigEndian, source.wrapper == sct::SctSourceWrapper::Aklz, source.header.values};
+        std::map<std::uint32_t,sct::SctSupplementaryTextId> footerIds;
+        for(const auto &record:imported.context.receipt().sourceMap.records())
+            if(record.role==sct::SctSourceSpanRole::FooterEntry && record.target)
+                if(auto entity=std::get_if<sct::SctDocumentEntityId>(&*record.target))
+                    if(auto id=std::get_if<sct::SctSupplementaryTextId>(entity))footerIds.emplace(record.span.offset,*id);
+        for(const auto &record:assessment.records) {
+            if(record.location.storage==sct::SctTextStorage::Footer) {
+                // An explicit trusted-footer override still wins.
+                if(selected.footerTextPromotion==sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding)continue;
+                auto mapped=footerIds.find(record.location.decodedPayloadOffset);if(mapped==footerIds.end())continue;
+                auto text=std::ranges::find(imported.document->supplementaryText,mapped->second,&sct::SctDocumentSupplementaryText::id);
+                if(text==imported.document->supplementaryText.end())continue;
+                if(auto interpretation=footerInterpretation(record)) {
+                    text->value=*interpretation->semanticValue;
+                    baseline.importEvidence.push_back({SctEvidenceKind::Inference,
+                        "Footer text " + std::to_string(mapped->second.value()) + " imported independently as " + std::string(sct::findSctKnownTextConvention(*interpretation->knownConvention)->stableName) +
+                        (record.ambiguous?"; ambiguous complete interpretations prefer Shift-JIS debug text. Editable import assumption.":" from SPICE's complete interpretation.")});
+                }
+            } else if(record.location.physicalSectionIndex) {
+                auto &section=imported.document->sections.at(*record.location.physicalSectionIndex);
+                if(auto string=std::get_if<sct::SctStringSectionContent>(&section.content)) {
+                    if(evidence.automatic && std::holds_alternative<sct::SctOpaqueText>(string->string.value)) {
+                        for(const auto &candidate:record.interpretations)if(candidate.complete && candidate.semanticValue) {
+                            string->string.value=*candidate.semanticValue;
+                            baseline.importEvidence.push_back({SctEvidenceKind::Inference,"Indexed text " + std::to_string(string->string.id.value()) + " uses a complete local SPICE interpretation because the main convention could not decode it. Editable import assumption."});
+                            break;
+                        }
+                    }
+                    if(collectionEvidence && evidence.automatic && !evidence.recommendation && (!equivalentInterpretations(record) || record.viableConventions.size()!=sct::kSctKnownTextConventions.size()))
+                        evidence.pending.push_back({string->string.id.value(),record.location.kind,record.bytes});
+                }
+            }
+        }
         phase("Normalizing program");
         auto result = builder.appendImported(*imported.document, std::move(baseline), std::move(context));
         if (!result) return result;
+        if(collectionEvidence){evidence.script=result.value();*collectionEvidence=std::move(evidence);}
         phase("Script normalized");
         return Result<SctScriptId>::success(result.value(), std::move(diagnostics));
     } catch (const std::exception& e) {

@@ -244,7 +244,7 @@ TEST(WholeProgramTest, RejectsInvalidStructuredScopesAndSwitchCases) {
 
 }
 
-TEST(WholeProgramTest, AmbiguousNativeTextRequiresExplicitSelection) {
+TEST(WholeProgramTest, AmbiguousNativeTextUsesEditableDefaultAndHonorsOverride) {
     sct::SctDocument d;
     for (auto name : {"init", "loop"}) d.sections.push_back({d.allocateSectionId(), name, sct::SctScriptSectionContent{{{d.allocateInstructionId(), 12}}}});
     sct::SctMessage text; text.body.elements = {sct::SctTextChunk{"\xe3\x81\x82"}};
@@ -255,14 +255,39 @@ TEST(WholeProgramTest, AmbiguousNativeTextRequiresExplicitSelection) {
     base.source.revision.digest = sha256(std::as_bytes(std::span(encoded.bytes))).value();
     ir::ProgramBuilder builder({Project});
     auto ambiguous = ir::appendNative(builder, encoded.bytes, base, {}, {});
-    ASSERT_FALSE(ambiguous);
-    ASSERT_FALSE(ambiguous.diagnostics().empty());
-    EXPECT_EQ(ambiguous.diagnostics()[0].code, DiagnosticCode::SctSourceTextSelectionRequired);
-    EXPECT_EQ(ambiguous.diagnostics()[0].path, base.source.locator.path());
+    ASSERT_TRUE(ambiguous) << messages(ambiguous.diagnostics());
+    auto automatic=builder.finish();ASSERT_TRUE(automatic);
+    EXPECT_EQ(automatic.value()->texts().size(),1);
+    ir::ProgramBuilder overridden({Project});
     sct::SctDocumentImportOptions selected; selected.sourceTextEncoding = sct::kSctShiftJisByte7FEncoding;
-    auto accepted = ir::appendNative(builder, encoded.bytes, base, {}, selected);
+    auto accepted = ir::appendNative(overridden, encoded.bytes, base, {}, selected);
     ASSERT_TRUE(accepted) << messages(accepted.diagnostics());
-    auto built = builder.finish(); ASSERT_TRUE(built);
+    auto built = overridden.finish(); ASSERT_TRUE(built);
     EXPECT_EQ(built.value()->texts().size(), 1);
     EXPECT_FALSE(built.value()->scripts()[0].context.platform);
+}
+
+TEST(WholeProgramTest, WesternIndexedTextAndShiftJisFooterImportIndependently) {
+    sct::SctDocument d;auto footer=d.allocateSupplementaryTextId();auto messageFooter=d.allocateSupplementaryTextId();
+    sct::SctDocumentInstruction print{d.allocateInstructionId(),23};
+    print.fixedParameters={{0,sct::SctSupplementaryTextReference{footer}}};
+    sct::SctDocumentInstruction messagePrint{d.allocateInstructionId(),24};messagePrint.fixedParameters={{0,sct::SctSupplementaryTextReference{messageFooter}}};
+    d.sections.push_back({d.allocateSectionId(),"init",sct::SctScriptSectionContent{{print,messagePrint,{d.allocateInstructionId(),12}}}});
+    d.sections.push_back({d.allocateSectionId(),"loop",sct::SctScriptSectionContent{{{d.allocateInstructionId(),12}}}});
+    sct::SctMessage text;text.body.elements={sct::SctTextChunk{"caf\xc3\xa9"}};
+    d.sections.push_back({d.allocateSectionId(),"line",sct::SctStringSectionContent{{d.allocateStringId(),text,sct::SctTextKind::SctString}}});
+    d.supplementaryText.push_back({footer,sct::SctTextKind::PlainString,sct::SctOpaqueText{{0x81,0x40,0}}});
+    d.supplementaryText.push_back({messageFooter,sct::SctTextKind::SctString,sct::SctOpaqueText{{0x81,0x40,0}}});
+    auto encoded=sct::SctDocumentExporter::exportDocument(d,sct::SctDocumentExportOptions{sct::SctPlatform::Dreamcast,sct::kSctWindows1252Byte7FEncoding});ASSERT_TRUE(encoded.success);
+    auto base=baseline();base.textConvention.reset();base.source.byteSize=encoded.bytes.size();base.source.revision.digest=sha256(std::as_bytes(std::span(encoded.bytes))).value();
+    ir::ProgramBuilder builder({Project});auto imported=ir::appendNative(builder,encoded.bytes,base,{});ASSERT_TRUE(imported)<<messages(imported.diagnostics());
+    auto program=builder.finish();ASSERT_TRUE(program)<<messages(program.diagnostics());
+    EXPECT_EQ(program.value()->baselines().front().textConvention,sct::SctKnownTextConvention::Windows1252Byte7F);
+    ASSERT_EQ(program.value()->texts().size(),3);
+    EXPECT_EQ(program.value()->statistics().unavailableItems,0);
+    for(const auto &record:program.value()->texts())if(record.supplementary) {
+        auto value=record.value;
+        if(record.kind==sct::SctTextKind::SctString)value=program.value()->children(value).front();
+        EXPECT_EQ(program.value()->text(value),"\xe3\x80\x80");
+    }
 }

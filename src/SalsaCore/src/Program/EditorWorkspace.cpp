@@ -107,14 +107,13 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
                                                          {uuid()},
                                                          convention,
                                                          {},
-                                                         {request.dataset.platform, convention.has_value()}}};
+                                                         {request.dataset.platform, false}}};
                 item.context.name = asset.locator.path().stem().string();
                 item.context.platform = request.dataset.platform;
                 item.context.region = request.dataset.region;
                 item.workingBytes = std::max<std::uint64_t>(1024 * 1024, asset.byteSize * 8);
                 if (convention) {
                     item.options.sourceTextEncoding = spice::sct::sctTextEncodingFor(*convention);
-                    item.options.footerTextPromotion = spice::sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding;
                 }
                 item.read = [dataset = out->dataset, workspace = out->workspace,
                              locator = asset.locator](std::stop_token stop) {

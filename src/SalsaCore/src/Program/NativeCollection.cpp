@@ -110,6 +110,7 @@ Result<std::shared_ptr<const Program>> loadNativeCollection(NativeLoadRequest re
         };
         auto d = std::make_unique<ProgramData>();
         d->id = request.project;
+        std::vector<NativeTextEvidence> textEvidence(request.items.size());
         std::size_t next = 0;
         while (next < request.items.size()) {
             check();
@@ -143,7 +144,7 @@ Result<std::shared_ptr<const Program>> loadNativeCollection(NativeLoadRequest re
                         ProgramBuilder builder(request.project, 0, first);
                         auto imported =
                             appendNative(builder, bytes.value(), std::move(item.baseline), std::move(item.context),
-                                         item.options, combined.get_token(), progress);
+                                         item.options, combined.get_token(), progress, &textEvidence[ordinal]);
                         if (!imported)
                             return Result<std::shared_ptr<const Program>>::failure(imported.diagnostics());
                         bytes = Result<std::vector<std::uint8_t>>::success({});
@@ -167,14 +168,6 @@ Result<std::shared_ptr<const Program>> loadNativeCollection(NativeLoadRequest re
             for (auto &job : jobs) {
                 auto result = job.get();
                 if (!result) {
-                    if (std::ranges::all_of(result.diagnostics(), [](const auto &d) {
-                            return d.code == DiagnosticCode::SctSourceTextSelectionRequired;
-                        }) && !result.diagnostics().empty()) {
-                        diagnostics.insert(diagnostics.end(), result.diagnostics().begin(), result.diagnostics().end());
-                        { std::lock_guard lock(observerMutex); ++completed; }
-                        progress({"Source text selection needed"});
-                        continue; // Gather all script choices in one review, without installing a partial program.
-                    }
                     combined.request_stop();
                     diagnostics.insert(diagnostics.end(), result.diagnostics().begin(), result.diagnostics().end());
                     return Result<std::shared_ptr<const Program>>::failure(std::move(diagnostics));
@@ -191,6 +184,9 @@ Result<std::shared_ptr<const Program>> loadNativeCollection(NativeLoadRequest re
         }
         check();
         if (hasErrors(diagnostics)) return Result<std::shared_ptr<const Program>>::failure(std::move(diagnostics));
+        progress({"Resolving dataset text convention"});
+        resolveNativeText(*d,textEvidence,combined.get_token());
+        textEvidence.clear();
         progress({"Building collection postings"});
         auto result = NativeCollection::finish(std::move(d));
         check();
