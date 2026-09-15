@@ -2,12 +2,42 @@
 #include "SalsaCore/Program/NativeImport.h"
 #include "SpiceSCT/SctParser.h"
 #include "SpiceSCT/SctDocumentImporter.h"
+#include "SpiceSCT/SctTextEvidence.h"
 #include <set>
 #include <unordered_map>
 
 namespace salsa::core::program {
 namespace sct = spice::sct;
 namespace {
+// Compare SPICE's decoded values, not bytes or guessed language ranges.
+bool sameSourceText(const sct::SctTextValue &a, const sct::SctTextValue &b) {
+    if (a.index() != b.index()) return false;
+    if (auto text = std::get_if<sct::SctPlainText>(&a)) return text->utf8 == std::get<sct::SctPlainText>(b).utf8;
+    if (std::holds_alternative<sct::SctEmptyIndexedText>(a)) return true;
+    auto left = std::get_if<sct::SctMessage>(&a);
+    auto right = std::get_if<sct::SctMessage>(&b);
+    if (!left || !right || left->headerUtf8 != right->headerUtf8 || left->body.elements.size() != right->body.elements.size()) return false;
+    for (std::size_t i = 0; i < left->body.elements.size(); ++i) {
+        const auto &x = left->body.elements[i], &y = right->body.elements[i];
+        if (x.index() != y.index()) return false;
+        if (auto chunk = std::get_if<sct::SctTextChunk>(&x)) {
+            if (chunk->utf8 != std::get<sct::SctTextChunk>(y).utf8) return false;
+        } else {
+            const auto &command = std::get<sct::SctInlineCommand>(x), &other = std::get<sct::SctInlineCommand>(y);
+            if (command.code != other.code || command.argument != other.argument) return false;
+        }
+    }
+    return true;
+}
+bool equivalentInterpretations(const sct::SctSourceTextRecordAssessment &record) {
+    const sct::SctTextValue *first = nullptr;
+    for (const auto &interpretation : record.interpretations) {
+        if (!interpretation.complete || !interpretation.semanticValue) continue;
+        if (first && !sameSourceText(*first, *interpretation.semanticValue)) return false;
+        first = &*interpretation.semanticValue;
+    }
+    return first != nullptr;
+}
 struct ExpressionScratch { std::vector<ValueId> words, operations; };
 ValueId normalizeExpression(ProgramData& d, const sct::SctCanonicalExpression& expression, ExpressionScratch& scratch) {
     const auto* program = std::get_if<sct::SctTypedScptProgram>(&expression.body);
@@ -178,6 +208,40 @@ Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::u
         if (!selected.declaredSourcePlatform && baseline.recipe.platform)
             selected.declaredSourcePlatform = *baseline.recipe.platform == GamePlatform::GameCube ? sct::SctPlatform::GameCube : sct::SctPlatform::Dreamcast;
         if (!selected.sourceTextEncoding && baseline.textConvention) selected.sourceTextEncoding = sct::sctTextEncodingFor(*baseline.textConvention);
+        if (!selected.sourceTextEncoding) {
+            phase("Assessing source text with SPICE");
+            const auto assessment = sct::SctSourceTextDetector::assess(parsed);
+            auto convention = assessment.recommendation.convention;
+            bool equivalent = false;
+            // An ASCII-only script can have several viable conventions with the
+            // same semantic result. Choose a deterministic decoding recipe, not
+            // a claim about its original region or encoding.
+            if (!convention && !assessment.records.empty()) {
+                for (const auto &candidate : sct::sctKnownTextConventions()) {
+                    if (std::ranges::all_of(assessment.records, [&](const auto &record) {
+                            return equivalentInterpretations(record) && std::ranges::find(record.viableConventions,
+                                candidate.convention) != record.viableConventions.end();
+                        })) {
+                        convention = candidate.convention;
+                        equivalent = true;
+                        break;
+                    }
+                }
+            }
+            if (!convention && !assessment.records.empty())
+                return Result<SctScriptId>::failure({DiagnosticSeverity::Error,
+                    DiagnosticCode::SctSourceTextSelectionRequired,
+                    "SPICE could not select an unambiguous text convention for " + baseline.source.locator.path().generic_string() +
+                    ". Select a source text override to continue; no script has been installed.", baseline.source.locator.path()});
+            if (convention) selected.sourceTextEncoding = sct::sctTextEncodingFor(*convention);
+            baseline.importEvidence.push_back({SctEvidenceKind::SourceObservation,
+                equivalent ? "SPICE found equivalent text interpretations; selected a deterministic decoding recipe. Original convention remains unknown."
+                           : convention ? "Source text convention selected from SPICE's unique indexed-string assessment."
+                                        : "SPICE found no text records requiring a text convention."});
+        } else {
+            baseline.importEvidence.push_back({SctEvidenceKind::UserAssertion,
+                "Source text convention supplied by the import selection or retained baseline recipe."});
+        }
         if (baseline.recipe.trustSelectedTextEncoding) selected.footerTextPromotion = sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding;
         // Persist the recipe actually used, including explicit import overrides.
         if (selected.declaredSourcePlatform) baseline.recipe.platform = *selected.declaredSourcePlatform == sct::SctPlatform::GameCube ? GamePlatform::GameCube : GamePlatform::Dreamcast;
@@ -192,6 +256,9 @@ Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::u
             baseline.importEvidence.push_back({SctEvidenceKind::SourceObservation, item.message});
         } // Imported drafts retain source diagnostics without retaining the native graph.
         const auto& source = imported.context.receipt().source;
+        baseline.importEvidence.push_back({SctEvidenceKind::SourceObservation,
+            std::string("SPICE source layout: ") + (source.byteOrder == sct::SctSourceByteOrder::BigEndian ? "big endian" : "little endian") +
+            (source.wrapper == sct::SctSourceWrapper::Aklz ? ", AKLZ wrapper." : ", raw SCT.")});
         if (!context.outputProfile) context.outputProfile = SctAuthoredOutputProfile{
             source.byteOrder == sct::SctSourceByteOrder::BigEndian, source.wrapper == sct::SctSourceWrapper::Aklz, source.header.values};
         phase("Normalizing program");

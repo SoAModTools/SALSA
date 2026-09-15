@@ -766,6 +766,8 @@ TEST(LegacyFreshImportTest, ImportsV7IntoBinaryProgramWithSupportedMetadata) {
     ASSERT_TRUE(imported) << (imported.diagnostics().empty()?"":imported.diagnostics().front().message);
     auto& project=imported.value().project;
     ASSERT_EQ(project.program->scripts().size(),1u);
+    EXPECT_FALSE(project.program->scripts().front().context.platform);
+    EXPECT_FALSE(project.program->scripts().front().context.region);
     EXPECT_TRUE(project.program->scripts().front().context.legacyOrigin.has_value());
     EXPECT_FALSE(project.program->metadata().meanings.empty());
     EXPECT_FALSE(project.presentation.opcodeColors.empty());

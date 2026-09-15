@@ -54,6 +54,7 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
         });
         if (!dataset)
             return Result<std::shared_ptr<EditorWorkspace>>::failure(dataset.diagnostics());
+        auto diagnostics = dataset.diagnostics();
         out->dataset = std::make_shared<const LocalGameProject>(std::move(dataset).takeValue());
         progress(observer, stop, "Assessing workspace");
         auto assessment = take(LocalSalsaWorkspace::assess(request.workspace, out->dataset->dataset()));
@@ -96,19 +97,25 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
             load.workers = request.nativeWorkers;
             load.progress = observer;
             for (const auto &asset : out->dataset->snapshot().assets) {
+                auto convention = request.textConvention;
+                if (auto found = request.textOverrides.find(asset.locator.path().generic_string());
+                    found != request.textOverrides.end())
+                    convention = found->second;
                 NativeLoadItem item{SctAuthoringBaseline{{},
                                                          out->dataset->dataset().identity.fingerprint,
                                                          asset,
                                                          {uuid()},
-                                                         request.textConvention,
+                                                         convention,
                                                          {},
-                                                         {request.dataset.platform, true}}};
+                                                         {request.dataset.platform, convention.has_value()}}};
                 item.context.name = asset.locator.path().stem().string();
                 item.context.platform = request.dataset.platform;
                 item.context.region = request.dataset.region;
                 item.workingBytes = std::max<std::uint64_t>(1024 * 1024, asset.byteSize * 8);
-                item.options.sourceTextEncoding = spice::sct::sctTextEncodingFor(request.textConvention);
-                item.options.footerTextPromotion = spice::sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding;
+                if (convention) {
+                    item.options.sourceTextEncoding = spice::sct::sctTextEncodingFor(*convention);
+                    item.options.footerTextPromotion = spice::sct::SctFooterTextPromotionPolicy::TrustSelectedEncoding;
+                }
                 item.read = [dataset = out->dataset, workspace = out->workspace,
                              locator = asset.locator](std::stop_token stop) {
                     if (stop.stop_requested())
@@ -126,13 +133,17 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
                 };
                 load.items.push_back(std::move(item));
             }
-            out->status = take(out->service->load(std::move(load), stop).get());
+            auto imported = out->service->load(std::move(load), stop).get();
+            if (!imported)
+                return Result<std::shared_ptr<EditorWorkspace>>::failure(imported.diagnostics());
+            diagnostics.insert(diagnostics.end(), imported.diagnostics().begin(), imported.diagnostics().end());
+            out->status = imported.value();
             out->needsInitialSave = true;
         }
         progress(observer, stop, "Preparing script catalog");
         out->catalog = take(out->service->catalog(out->status.current).get());
         out->openedMicroseconds = elapsed(start);
-        return Result<std::shared_ptr<EditorWorkspace>>::success(std::move(out), dataset.diagnostics());
+        return Result<std::shared_ptr<EditorWorkspace>>::success(std::move(out), std::move(diagnostics));
     } catch (const std::exception &e) {
         return Result<std::shared_ptr<EditorWorkspace>>::failure(failure(e.what()));
     }

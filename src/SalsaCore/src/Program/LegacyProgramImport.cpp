@@ -79,12 +79,11 @@ Result<LegacyProgramResult> LegacyProgramImport::importCapsule(
                 source,
                 {documentId.value()},
                 spice::sct::findSctKnownTextConvention(options.textEncoding),
-                {{SctEvidenceKind::SourceObservation, "Converted official v7 capsule " + capsule.value().capsuleId}},
+                {{SctEvidenceKind::SourceObservation, "Converted official v7 capsule " + capsule.value().capsuleId + "; baseline encoding is a conversion choice, not detected source provenance"}},
                 {platform, true}};
             SctScriptContext context;
             context.name = item.locator.path().stem().string();
-            context.platform = platform;
-            context.region = item.region;
+            // Conversion defaults do not establish a source platform or region.
             context.legacyOrigin = SctLegacyOrigin{capsule.value().capsuleId, summary->key, summary->ordinal};
             context.outputProfile = SctAuthoredOutputProfile{
                 options.byteOrder == spice::sct::SctDocumentOutputByteOrder::BigEndian,

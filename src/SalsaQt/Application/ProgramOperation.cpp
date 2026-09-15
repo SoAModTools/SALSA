@@ -46,21 +46,21 @@ ProgramOperation::ProgramOperation(QString name, Work work, Install install, boo
         }
     });
 }
-ProgramOperation::~ProgramOperation() {
-    stop_.request_stop();
-}
-QString ProgramOperation::title() const {
-    return name_;
-}
+ProgramOperation::~ProgramOperation() { stop_.request_stop(); }
+QString ProgramOperation::title() const { return name_; }
 core::ExclusiveOperationFlowDefinition ProgramOperation::flowDefinition() const {
     using R = core::ExclusiveOperationPageRole;
     using P = core::ExclusiveOperationProgressVisibility;
     using L = core::ExclusiveOperationPageLayout;
-    return {"working",
-            {{"working", R::Processing, P::Visible, L::Compact},
+    return {configurationPage ? "configure" : "working",
+            {{"configure", R::Configuration, P::Hidden, L::Standard},
+             {"working", R::Processing, P::Visible, L::Compact},
              {"review", R::Review, P::Hidden, L::Standard},
              {"summary", R::Summary, P::Hidden, L::Compact}},
-            {{"review", "working", "review", "review"},
+            {{"start", "configure", "start", "working"},
+             {"reconfigure", "working", "configure", "configure"},
+             {"cancel_configure", "configure", "cancelled", "summary"},
+             {"review", "working", "review", "review"},
              {"retry", "review", "retry", "working"},
              {"cancel_review", "review", "cancelled", "summary"},
              {"complete", "working", "complete", "summary"},
@@ -68,10 +68,12 @@ core::ExclusiveOperationFlowDefinition ProgramOperation::flowDefinition() const 
              {"cancelled", "working", "cancelled", "summary"}}};
 }
 QWidget *ProgramOperation::createPage(std::string_view id, QWidget *parent) {
+    if (id == "configure" && configurationPage)
+        return configurationPage(parent);
     auto *page = new QWidget(parent);
     auto *layout = new QVBoxLayout(page);
-    auto *label =
-        new QLabel((id == "summary" || id == "review") ? summary_ : tr("Preparing the requested operation…"), page);
+    auto *label = new QLabel(
+        (id == "summary" || id == "review") ? summary_ : tr("Preparing the requested operation…"), page);
     label->setWordWrap(true);
     layout->addWidget(label);
     if (id == "summary")
@@ -79,6 +81,12 @@ QWidget *ProgramOperation::createPage(std::string_view id, QWidget *parent) {
     return page;
 }
 void ProgramOperation::pageEntered(std::string_view page) {
+    configuring_ = page == "configure";
+    if (configuring_) {
+        setCancellable(true);
+        if (configurationEntered)
+            configurationEntered();
+    }
     if (page != "working" || started_)
         return;
     started_ = true;
@@ -121,9 +129,18 @@ void ProgramOperation::progress(QString phase, quint64 n, quint64 total, QString
     reportProgress(phase, n, total, ExclusiveOperationProgressUnit::Steps, item);
 }
 std::optional<ExclusiveOperationAction> ProgramOperation::actionForEdge(std::string_view edge) const {
+    if (edge == "start")
+        return ExclusiveOperationAction{tr("Open project"), ExclusiveOperationActionRole::Primary};
     if (edge == "retry")
         return ExclusiveOperationAction{tr("Open with selected dataset"), ExclusiveOperationActionRole::Primary};
     return {};
+}
+bool ProgramOperation::edgeEnabled(std::string_view edge) const {
+    return edge != "start" || !configurationReady || configurationReady();
+}
+void ProgramOperation::configureAgain() {
+    started_ = false;
+    raiseEvent("configure");
 }
 void ProgramOperation::offerRetry(QString message, Work work) {
     summary_ = message;
@@ -133,6 +150,8 @@ void ProgramOperation::offerRetry(QString message, Work work) {
     raiseEvent("review");
 }
 void ProgramOperation::handleEvent(std::string_view event) {
+    if (event == "start" && prepareWork)
+        work_ = prepareWork();
     if (event == "retry") {
         reviewing_ = false;
         started_ = false;
@@ -143,7 +162,7 @@ void ProgramOperation::handleEvent(std::string_view event) {
 void ProgramOperation::requestCancel() {
     if (done_ || !cancellable())
         return;
-    if (reviewing_) {
+    if (reviewing_ || configuring_) {
         done_ = true;
         summary_ = tr("Workspace opening cancelled.");
         setCancellable(false);

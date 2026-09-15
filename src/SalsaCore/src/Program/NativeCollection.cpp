@@ -167,6 +167,14 @@ Result<std::shared_ptr<const Program>> loadNativeCollection(NativeLoadRequest re
             for (auto &job : jobs) {
                 auto result = job.get();
                 if (!result) {
+                    if (std::ranges::all_of(result.diagnostics(), [](const auto &d) {
+                            return d.code == DiagnosticCode::SctSourceTextSelectionRequired;
+                        }) && !result.diagnostics().empty()) {
+                        diagnostics.insert(diagnostics.end(), result.diagnostics().begin(), result.diagnostics().end());
+                        { std::lock_guard lock(observerMutex); ++completed; }
+                        progress({"Source text selection needed"});
+                        continue; // Gather all script choices in one review, without installing a partial program.
+                    }
                     combined.request_stop();
                     diagnostics.insert(diagnostics.end(), result.diagnostics().begin(), result.diagnostics().end());
                     return Result<std::shared_ptr<const Program>>::failure(std::move(diagnostics));
@@ -182,6 +190,7 @@ Result<std::shared_ptr<const Program>> loadNativeCollection(NativeLoadRequest re
             }
         }
         check();
+        if (hasErrors(diagnostics)) return Result<std::shared_ptr<const Program>>::failure(std::move(diagnostics));
         progress({"Building collection postings"});
         auto result = NativeCollection::finish(std::move(d));
         check();

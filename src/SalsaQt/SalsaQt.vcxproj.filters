@@ -66,6 +66,7 @@
   <ItemGroup>
     <ClCompile Include="Application\ProgramOperation.cpp" />
     <ClInclude Include="Application\ProgramOperation.h" />
+    <ClInclude Include="Application\ImportOperation.h" />
     <ClCompile Include="Application\ProgramWindow.cpp" />
     <ClInclude Include="Application\ProgramWindow.h" />
     <ClCompile Include="Sct\ProgramValueDialog.cpp" />

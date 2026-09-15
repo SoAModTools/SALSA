@@ -87,9 +87,7 @@ LegacyImportController::~LegacyImportController() {
     if (preparationWatcher_.isRunning()) preparationWatcher_.waitForFinished();
     if (commitWatcher_.isRunning()) commitWatcher_.waitForFinished();
     cleanupTransientArtifacts();
-    if (commit_ && commit_->succeeded() && completion_)
-        completion_(QString::fromStdWString(commit_->dataset->root.wstring()),
-            QString::fromStdWString(commit_->workspaceDirectory.wstring()));
+
 }
 
 QString LegacyImportController::title() const { return tr("Import Legacy SALSA Project"); }
@@ -148,22 +146,16 @@ std::optional<ExclusiveOperationAction> LegacyImportController::actionForEdge(
 
 bool LegacyImportController::edgeEnabled(const std::string_view edgeId) const {
     if (edgeId == "convert") {
-        const bool custom = target_ && target_->currentData().toInt()
-            == static_cast<int>(core::LegacyImportTargetScope::UnknownCustom);
         return source_ && QFileInfo(source_->text()).isFile()
             && sourceDestination_ && !sourceDestination_->text().trimmed().isEmpty()
             && QFileInfo(sourceDestination_->text()).dir().exists()
             && workspaceDestination_ && !workspaceDestination_->text().trimmed().isEmpty()
             && QFileInfo(workspaceDestination_->text()).dir().exists()
             && trusted_ && trusted_->isChecked()
-            && target_ && target_->currentIndex() >= 0
-            && platform_ && platform_->currentIndex() >= 0
-            && region_ && region_->currentIndex() >= 0
             && characterEncoding_ && characterEncoding_->currentIndex() >= 0
             && messageSpace_ && messageSpace_->currentIndex() >= 0
             && byteOrder_ && byteOrder_->currentIndex() >= 0
             && wrapper_ && wrapper_->currentIndex() >= 0
-            && (!custom || (customTarget_ && !customTarget_->text().trimmed().isEmpty()))
             && (!disableLimits_->isChecked() || disableLimitsConfirmed_->isChecked());
     }
     if (edgeId == "prepare") return conversion_ && conversion_->capsule
@@ -208,26 +200,18 @@ QWidget* LegacyImportController::createConfigurationPage(QWidget* parent) {
     form->addRow(tr("New SALSA workspace:"), pathRow(workspaceDestination_,
         tr("Choose Parent…"), page, [this] { chooseWorkspaceDestination(); }));
 
-    target_ = new QComboBox(page);
-    addEnum(target_, tr("GameCube"), core::LegacyImportTargetScope::GameCube);
-    addEnum(target_, tr("Dreamcast Disc 1"), core::LegacyImportTargetScope::DreamcastDisc1);
-    addEnum(target_, tr("Dreamcast Disc 2"), core::LegacyImportTargetScope::DreamcastDisc2);
-    addEnum(target_, tr("Unknown / custom"), core::LegacyImportTargetScope::UnknownCustom);
-    form->addRow(tr("Target scope:"), target_);
-    platform_ = new QComboBox(page);
-    addEnum(platform_, tr("GameCube"), spice::sct::SctPlatform::GameCube);
-    addEnum(platform_, tr("Dreamcast"), spice::sct::SctPlatform::Dreamcast);
-    form->addRow(tr("Platform:"), platform_);
-    customTarget_ = new QLineEdit(page);
-    customTarget_->setPlaceholderText(tr("Required for unknown/custom targets"));
-    form->addRow(tr("Custom target name:"), customTarget_);
-    region_ = new QComboBox(page);
-    addEnum(region_, tr("North America"), core::LegacyImportRegion::NorthAmerica);
-    addEnum(region_, tr("Europe"), core::LegacyImportRegion::Europe);
-    addEnum(region_, tr("Japan"), core::LegacyImportRegion::Japan);
-    addEnum(region_, tr("Unknown"), core::LegacyImportRegion::Unknown);
-    form->addRow(tr("Region:"), region_);
-
+    layout->addLayout(form);
+    auto *advancedToggle = new QCheckBox(tr("Conversion details and overrides"), page);
+    layout->addWidget(advancedToggle);
+    auto *advanced = new QWidget(page);
+    auto *advancedLayout = new QVBoxLayout(advanced);
+    auto *sourceNote = new QLabel(tr("v7 retains decoded text, not a reliable source platform, region, or original text encoding. "
+        "These defaults construct an imported SCT baseline; they do not select a release target. "
+        "Change byte order only for legacy raw overrides that require it."), advanced);
+    sourceNote->setWordWrap(true); advancedLayout->addWidget(sourceNote);
+    form = new QFormLayout; advancedLayout->addLayout(form);
+    layout->addWidget(advanced); advanced->hide();
+    connect(advancedToggle, &QCheckBox::toggled, advanced, &QWidget::setVisible);
     characterEncoding_ = new QComboBox(page);
     addEnum(characterEncoding_, tr("Windows-1252"), spice::sct::SctCharacterEncoding::Windows1252);
     addEnum(characterEncoding_, tr("Shift-JIS"), spice::sct::SctCharacterEncoding::ShiftJis);
@@ -256,7 +240,6 @@ QWidget* LegacyImportController::createConfigurationPage(QWidget* parent) {
     const auto rememberedIndex = scriptWorkers_->findData(remembered);
     scriptWorkers_->setCurrentIndex(rememberedIndex < 0 ? 0 : rememberedIndex);
     form->addRow(tr("Script workers:"), scriptWorkers_);
-    layout->addLayout(form);
 
     trusted_ = new QCheckBox(tr(
         "I trust this project file and understand that legacy project parsing is isolated but not risk-free."), page);
@@ -276,44 +259,13 @@ QWidget* LegacyImportController::createConfigurationPage(QWidget* parent) {
     layout->addStretch();
 
     const auto changed = [this] { emit presentationChanged(); };
-    for (auto* edit : {source_, sourceDestination_, workspaceDestination_, customTarget_})
+    for (auto* edit : {source_, sourceDestination_, workspaceDestination_})
         connect(edit, &QLineEdit::textChanged, this, changed);
-    for (auto* combo : {target_, platform_, region_, characterEncoding_, messageSpace_, byteOrder_, wrapper_, scriptWorkers_})
+    for (auto* combo : {characterEncoding_, messageSpace_, byteOrder_, wrapper_, scriptWorkers_})
         connect(combo, &QComboBox::currentIndexChanged, this, changed);
     for (auto* check : {trusted_, retainOriginal_, disableLimits_, disableLimitsConfirmed_})
         connect(check, &QCheckBox::toggled, this, changed);
     connect(disableLimits_, &QCheckBox::toggled, disableLimitsConfirmed_, &QWidget::setVisible);
-    connect(target_, &QComboBox::currentIndexChanged, this, [this] {
-        const auto scope = static_cast<core::LegacyImportTargetScope>(target_->currentData().toInt());
-        const bool custom = scope == core::LegacyImportTargetScope::UnknownCustom;
-        customTarget_->setEnabled(custom);
-        if (scope == core::LegacyImportTargetScope::GameCube) {
-            platform_->setCurrentIndex(platform_->findData(
-                static_cast<int>(spice::sct::SctPlatform::GameCube)));
-            byteOrder_->setCurrentIndex(byteOrder_->findData(
-                static_cast<int>(spice::sct::SctDocumentOutputByteOrder::BigEndian)));
-        } else if (!custom) {
-            platform_->setCurrentIndex(platform_->findData(
-                static_cast<int>(spice::sct::SctPlatform::Dreamcast)));
-            byteOrder_->setCurrentIndex(byteOrder_->findData(
-                static_cast<int>(spice::sct::SctDocumentOutputByteOrder::LittleEndian)));
-        }
-        platform_->setEnabled(custom);
-    });
-    connect(region_, &QComboBox::currentIndexChanged, this, [this] {
-        const auto region = static_cast<core::LegacyImportRegion>(
-            region_->currentData().toInt());
-        if (region == core::LegacyImportRegion::Europe) {
-            characterEncoding_->setCurrentIndex(characterEncoding_->findData(
-                static_cast<int>(spice::sct::SctCharacterEncoding::Windows1252)));
-        } else if (region == core::LegacyImportRegion::NorthAmerica
-            || region == core::LegacyImportRegion::Japan) {
-            characterEncoding_->setCurrentIndex(characterEncoding_->findData(
-                static_cast<int>(spice::sct::SctCharacterEncoding::ShiftJis)));
-        }
-    });
-    target_->setCurrentIndex(1);
-    region_->setCurrentIndex(-1);
     return page;
 }
 
@@ -334,6 +286,11 @@ QWidget* LegacyImportController::createReviewPage(QWidget* parent) {
     reviewStatus_ = new QLabel(page);
     reviewStatus_->setWordWrap(true);
     layout->addWidget(reviewStatus_);
+    auto *profiles = new QCheckBox(tr("Per-script conversion overrides"), page);
+    layout->addWidget(profiles);
+    connect(profiles, &QCheckBox::toggled, this, [this](bool visible) {
+        for (int column : {5, 6, 7, 8}) scripts_->setColumnHidden(column, !visible);
+    });
     scripts_ = new QTableWidget(page);
     scripts_->setColumnCount(10);
     scripts_->setHorizontalHeaderLabels({tr("Include"), tr("Legacy key"),
@@ -548,6 +505,7 @@ void LegacyImportController::populateReview() {
         for (const int column : {1, 2, 3, 9})
             scripts_->item(row, column)->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     }
+    for (int column : {5, 6, 7, 8}) scripts_->setColumnHidden(column, true);
     reviewStatus_->setText(tr(
         "%1 scripts were found. Every failed or blocked script must be explicitly excluded; "
         "SALSA will not silently omit it. Edit an output stem only when an explicit remap is necessary.")
@@ -559,11 +517,9 @@ core::FreshLegacyImportRequest LegacyImportController::importRequest() const {
     request.capsuleRoot = capsuleStage_;
     request.sourceDirectory = std::filesystem::path(sourceDestination_->text().toStdWString());
     request.workspaceDirectory = std::filesystem::path(workspaceDestination_->text().toStdWString());
-    request.targetScope = static_cast<core::LegacyImportTargetScope>(target_->currentData().toInt());
-    request.region = static_cast<core::LegacyImportRegion>(region_->currentData().toInt());
-    request.customTargetName = customTarget_->text().trimmed().toStdString();
-    request.publication.platform = static_cast<spice::sct::SctPlatform>(
-        platform_->currentData().toInt());
+    request.targetScope = core::LegacyImportTargetScope::UnknownCustom;
+    request.region = core::LegacyImportRegion::Unknown;
+    request.customTargetName = "Imported v7 authoring project";
     request.publication.textEncoding.characters =
         static_cast<spice::sct::SctCharacterEncoding>(characterEncoding_->currentData().toInt());
     request.publication.textEncoding.messageSpace =
@@ -722,6 +678,9 @@ void LegacyImportController::finishCommit() {
     setFinishing(false);
     setCancellable(false);
     if (!commit_->succeeded()) reportDiagnostics(diagnosticText(commit_->diagnostics));
+    if (commit_ && commit_->succeeded() && completion_)
+        completion_(QString::fromStdWString(commit_->dataset->root.wstring()),
+            QString::fromStdWString(commit_->workspaceDirectory.wstring()));
     raiseEvent(commit_->succeeded() ? "complete" : "failed");
 }
 

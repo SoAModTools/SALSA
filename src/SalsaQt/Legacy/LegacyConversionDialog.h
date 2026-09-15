@@ -63,15 +63,11 @@ private:
     QLineEdit* source_ = nullptr;
     QLineEdit* sourceDestination_ = nullptr;
     QLineEdit* workspaceDestination_ = nullptr;
-    QLineEdit* customTarget_ = nullptr;
     QCheckBox* trusted_ = nullptr;
     QCheckBox* retainOriginal_ = nullptr;
     QCheckBox* disableLimits_ = nullptr;
     QCheckBox* disableLimitsConfirmed_ = nullptr;
     QComboBox* scriptWorkers_ = nullptr;
-    QComboBox* target_ = nullptr;
-    QComboBox* platform_ = nullptr;
-    QComboBox* region_ = nullptr;
     QComboBox* characterEncoding_ = nullptr;
     QComboBox* messageSpace_ = nullptr;
     QComboBox* byteOrder_ = nullptr;

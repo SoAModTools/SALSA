@@ -29,7 +29,7 @@ class ProgramWindow final : public QMainWindow {
         core::SctScriptId script;
         std::optional<core::program::EditorSubject> selection;
     };
-    void openDataset(QString root = {}, QString workspace = {});
+    void openDataset(QString root = {}, QString workspace = {}, bool legacy = false);
     void install(std::shared_ptr<core::program::EditorWorkspace>, ProgramOperation &);
     void restoreTabs(QPointer<ProgramOperation>, std::size_t = 0);
     void openScript(core::SctScriptId, std::function<void()> ready = {});

@@ -37,3 +37,15 @@ Activity records workspace preparation time, resident action/value page counts, 
 Validation uses focused synthetic console checks for scoped pages and value decoding, local history and persistence, native lowering, and the v7-to-binary workspace save/reopen/export path. The GUI is built with elevated v145 Release but is not launched or tested through a QApplication, in accordance with the user's instruction. No manual GUI readiness or usability measurement is claimed. No private corpus run is added by this cutover.
 
 The semantic outline also supports [route dispatch](CutsceneRoutes.md#independent-route-requirements): promote a structured shared guard, then edit each route’s complete Condition and body independently. Generated decision branches appear only in materialized output.
+
+## Unified opening and source detection
+
+Open / Import Project keeps extraction-folder selection, workspace selection, source inspection, recovery decisions, and editor presentation inside one exclusive operation. Recent datasets prefill their associated workspace. A new dataset receives an editable sibling-workspace suggestion. The native page can switch to the v7 importer; a successful v7 commit continues into workspace opening in the same operation. File-browser dialogs only select paths.
+
+Native source import asks SPICE to parse byte order and wrapper, then assess text per script using that same parse. A unique indexed-string recommendation supplies the decoding recipe. When all text records have equivalent interpretations under several conventions, SALSA selects a deterministic common recipe and records that the original convention is unknown. Ambiguous or conflicting text without such a recipe returns to per-script source overrides in the operation. The collection is not partially installed. A retry currently repeats native preparation; saved binary projects do not run source detection again.
+
+Source observations and explicit decoding choices remain in baseline evidence. Neither byte order nor a conversion default establishes a project platform or region. Source text choices are not supported-language restrictions or export targets. Footer ambiguities under an otherwise unique indexed-string recommendation retain SPICE's conservative handling and diagnostics.
+
+Version-7 files retain decoded strings and normalized parameter data, not reliable original platform/region/text-encoding provenance. The existing trusted converter and metadata review remain in place. Its baseline-construction settings have defaults and optional conversion overrides, rather than mandatory platform/region questions. Raw legacy overrides may still need an explicit byte-order choice. A conversion profile is labelled as a conversion choice, not detected source identity.
+
+Target availability, conditional platform blocks, and output-opcode suppression remain deferred. Export settings continue to be selected separately.

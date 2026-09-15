@@ -1,5 +1,6 @@
 #include "Application/ProgramWindow.h"
 #include "Application/ProgramOperation.h"
+#include "Application/ImportOperation.h"
 #include "Application/ExclusiveOperationCoordinator.h"
 #include "Legacy/LegacyConversionDialog.h"
 #include "Sct/ProgramValueDialog.h"
@@ -17,6 +18,8 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QHBoxLayout>
+#include <set>
 #include <QFutureWatcher>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -110,7 +113,7 @@ ProgramWindow::ProgramWindow(QWidget *parent) : QMainWindow(parent) {
     status_ = new QLabel(this);
     statusBar()->addWidget(status_, 1);
     auto *file = menuBar()->addMenu(tr("&File"));
-    file->addAction(tr("Open datasetâ€¦"), this, [this] { openDataset(); }, QKeySequence::Open);
+    file->addAction(tr("Open / Import Project..."), this, [this] { openDataset(); }, QKeySequence::Open);
     recent_ = file->addMenu(tr("Recent datasets"));
     file->addAction(tr("Import Python SALSA v7 projectâ€¦"), this, [this] { importLegacy(); });
     file->addAction(tr("Save project"), this, [this] { save(); }, QKeySequence::Save);
@@ -269,70 +272,36 @@ void ProgramWindow::closeEvent(QCloseEvent *e) {
     s.setValue("window/programState", saveState());
     e->accept();
 }
-void ProgramWindow::openDataset(QString root, QString destination) {
-    if (!readyToLeave())
-        return;
-    if (root.isEmpty())
-        root = QFileDialog::getExistingDirectory(this, tr("Choose script dataset"));
-    if (root.isEmpty())
-        return;
-    if (destination.isEmpty())
-        for (int i = 0; i + 1 < associations_.size(); i += 2)
-            if (associations_[i].compare(root, Qt::CaseInsensitive) == 0) {
-                destination = associations_[i + 1];
-                break;
-            }
-    if (destination.isEmpty())
-        destination = QFileDialog::getExistingDirectory(this, tr("Choose authoring workspace"));
-    if (destination.isEmpty())
-        return;
-    ir::EditorOpenRequest request;
-    request.dataset.datasetRoot = std::filesystem::path(root.toStdWString());
-    request.workspace = std::filesystem::path(destination.toStdWString());
-    QSettings settings;
-    auto platform = settings.value("program/datasetPlatforms").toMap().value(root).toString();
-    if (platform.isEmpty()) {
-        bool ok = false;
-        platform = QInputDialog::getItem(this, tr("Import platform"), tr("Platform for native source scripts"),
-                                         {tr("GameCube"), tr("Dreamcast")}, 0, false, &ok);
-        if (!ok)
-            return;
-        auto map = settings.value("program/datasetPlatforms").toMap();
-        map[root] = platform;
-        settings.setValue("program/datasetPlatforms", map);
-    }
-    request.dataset.platform =
-        platform == tr("Dreamcast") ? core::GamePlatform::Dreamcast : core::GamePlatform::GameCube;
-    auto profiles = settings.value("program/datasetTextConventions").toMap();
-    if (!profiles.contains(root)) {
-        bool ok = false;
-        QStringList choices;
-        for (const auto &c : spice::sct::sctKnownTextConventions())
-            choices << q(c.stableName);
-        auto choice =
-            QInputDialog::getItem(this, tr("Source text convention"),
-                                  tr("Text convention when importing native scripts"), choices, 1, false, &ok);
-        if (!ok)
-            return;
-        profiles[root] = choices.indexOf(choice);
-        settings.setValue("program/datasetTextConventions", profiles);
-    }
-    auto convention = profiles.value(root).toInt();
-    if (convention < 0 || convention >= 3)
-        convention = 1;
-    request.textConvention = spice::sct::kSctKnownTextConventions[convention].convention;
+void ProgramWindow::openDataset(QString root, QString destination, bool legacy) {
+    if (!readyToLeave()) return;
+    struct Choice {
+        ir::EditorOpenRequest request;
+        QLabel *status = nullptr;
+        QFormLayout *overrides = nullptr;
+        std::vector<core::Diagnostic> pending;
+        std::set<std::string> unresolved;
+    };
+    auto choice = std::make_shared<Choice>();
+    auto suggestedWorkspace = [associations = associations_](const QString &path) {
+        for (int i = 0; i + 1 < associations.size(); i += 2)
+            if (associations[i].compare(path, Qt::CaseInsensitive) == 0) return associations[i + 1];
+        auto source = std::filesystem::path(path.toStdWString());
+        return path.isEmpty() ? QString{} : QString::fromStdWString(
+            (source.parent_path() / (source.filename().wstring() + L".salsa-workspace")).wstring());
+    };
+    if (destination.isEmpty()) destination = suggestedWorkspace(root);
+    choice->request.dataset.datasetRoot = std::filesystem::path(root.toStdWString());
+    choice->request.workspace = std::filesystem::path(destination.toStdWString());
     const auto generation = workspaceGeneration_;
-    auto operation = std::make_unique<ProgramOperation>(
-        tr("Open dataset and workspace"),
-        [request](auto stop, const auto &observer) {
-            return boxed(ir::EditorWorkspaceIO::open(request, stop, observer));
-        },
-        [this, generation, root, destination](std::any value, ProgramOperation &op) {
+    auto operation = std::make_unique<ProgramOperation>(tr("Open / Import Project"), ProgramOperation::Work{},
+        [this, generation](std::any value, ProgramOperation &op) {
             if (closing_ || generation != workspaceGeneration_) {
                 op.fail(tr("Workspace changed before opening finished."));
                 return;
             }
             auto prepared = std::any_cast<std::shared_ptr<ir::EditorWorkspace>>(std::move(value));
+            auto root = QString::fromStdWString(prepared->dataset->dataset().root.wstring());
+            auto destination = QString::fromStdWString(prepared->workspace->descriptor().root.wstring());
             for (int i = associations_.size() - 2; i >= 0; i -= 2)
                 if (associations_[i].compare(root, Qt::CaseInsensitive) == 0) {
                     associations_.removeAt(i + 1);
@@ -351,21 +320,105 @@ void ProgramWindow::openDataset(QString root, QString destination) {
             install(std::move(prepared), op);
         },
         true);
-    operation->recoverFailure = [this, request](const auto &diagnostics, ProgramOperation &op) {
+    auto *native = operation.get();
+    operation->prepareWork = [choice] {
+        return [request = choice->request](auto stop, const auto &observer) {
+            return boxed(ir::EditorWorkspaceIO::open(request, stop, observer));
+        };
+    };
+    operation->configurationReady = [choice] {
+        return !choice->request.dataset.datasetRoot.empty() && !choice->request.workspace.empty() && choice->unresolved.empty();
+    };
+    operation->configurationPage = [this, choice, root, destination, suggestedWorkspace, native](QWidget *parent) {
+        auto *page = new QWidget(parent);
+        auto *layout = new QVBoxLayout(page);
+        auto *description = new QLabel(tr("Open an extraction folder or import a legacy v7 project. "
+            "SPICE detects native byte order and assesses text per script. "
+            "The authoring project is independent of platform and region."), page);
+        description->setWordWrap(true); layout->addWidget(description);
+        auto *form = new QFormLayout;
+        auto pathRow = [&](QString initial, QString title, auto changed) {
+            auto *row = new QWidget(page); auto *line = new QHBoxLayout(row); line->setContentsMargins(0,0,0,0);
+            auto *edit = new QLineEdit(initial, row); auto *browse = new QPushButton(tr("Browse…"), row);
+            line->addWidget(edit); line->addWidget(browse);
+            connect(browse, &QPushButton::clicked, row, [edit, title, row] {
+                auto path = QFileDialog::getExistingDirectory(row, title, edit->text());
+                if (!path.isEmpty()) edit->setText(path);
+            });
+            connect(edit, &QLineEdit::textChanged, native, changed);
+            form->addRow(title, row); return edit;
+        };
+        auto *source = pathRow(root, tr("Extraction folder:"), [choice, native](const QString &path) {
+            choice->request.dataset.datasetRoot = std::filesystem::path(path.toStdWString());
+            choice->request.textOverrides.clear(); choice->unresolved.clear(); choice->pending.clear();
+            choice->request.acceptance = core::WorkspaceDatasetAcceptance::ExactOnly;
+            if (choice->status) choice->status->clear();
+            if (choice->overrides) while (choice->overrides->rowCount()) choice->overrides->removeRow(0);
+            emit native->presentationChanged();
+        });
+        auto *workspace = pathRow(destination, tr("Authoring workspace:"), [choice, native](const QString &path) {
+            choice->request.workspace = std::filesystem::path(path.toStdWString());
+            choice->request.acceptance = core::WorkspaceDatasetAcceptance::ExactOnly; emit native->presentationChanged();
+        });
+        connect(source, &QLineEdit::textChanged, native, [workspace, suggestedWorkspace](const QString &path) {
+            workspace->setText(suggestedWorkspace(path));
+        });
+        layout->addLayout(form);
+        auto *advanced = new QCheckBox(tr("Override native source text detection"), page);
+        auto *convention = new QComboBox(page);
+        convention->addItem(tr("Automatic (SPICE assessment per script)"), -1);
+        for (const auto &c : spice::sct::sctKnownTextConventions()) convention->addItem(q(c.stableName), static_cast<int>(c.convention));
+        layout->addWidget(advanced); layout->addWidget(convention); convention->hide();
+        connect(advanced, &QCheckBox::toggled, convention, &QWidget::setVisible);
+        connect(advanced, &QCheckBox::toggled, native, [convention](bool enabled) { if (!enabled) convention->setCurrentIndex(0); });
+        connect(convention, &QComboBox::currentIndexChanged, native, [choice, convention] {
+            choice->request.textConvention.reset();
+            if (convention->currentData().toInt() >= 0)
+                choice->request.textConvention = static_cast<spice::sct::SctKnownTextConvention>(convention->currentData().toInt());
+        });
+        choice->status = new QLabel(page); choice->status->setWordWrap(true); layout->addWidget(choice->status);
+        choice->overrides = new QFormLayout; layout->addLayout(choice->overrides);
+        layout->addStretch(); return page;
+    };
+    operation->configurationEntered = [choice, native] {
+        if (choice->pending.empty()) return;
+        QStringList messages;
+        for (const auto &d : choice->pending) {
+            messages << q(d.message);
+            if (!d.path) continue;
+            auto key = d.path->generic_string();
+            if (!choice->unresolved.insert(key).second) continue;
+            auto *combo = new QComboBox;
+            combo->addItem(tr("Choose source text convention…"), -1);
+            for (const auto &c : spice::sct::sctKnownTextConventions()) combo->addItem(q(c.stableName), static_cast<int>(c.convention));
+            choice->overrides->addRow(q(key), combo);
+            connect(combo, &QComboBox::currentIndexChanged, native, [choice, native, combo, key] {
+                if (combo->currentData().toInt() < 0) choice->unresolved.insert(key);
+                else { choice->request.textOverrides[key] = static_cast<spice::sct::SctKnownTextConvention>(combo->currentData().toInt()); choice->unresolved.erase(key); }
+                emit native->presentationChanged();
+            });
+        }
+        choice->status->setText(messages.join('\n')); choice->pending.clear(); emit native->presentationChanged();
+    };
+    operation->recoverFailure = [choice](const auto &diagnostics, ProgramOperation &op) {
+        for (const auto &d : diagnostics)
+            if (d.code == core::DiagnosticCode::SctSourceTextSelectionRequired) choice->pending.push_back(d);
+        if (!choice->pending.empty()) { op.configureAgain(); return true; }
         if (std::ranges::none_of(diagnostics, [](const auto &d) {
                 return d.message.find("Explicit reassociation is required") != std::string::npos;
-            }))
-            return false;
-        auto accepted = request;
-        accepted.acceptance = core::WorkspaceDatasetAcceptance::UserConfirmedReassociation;
-        op.offerRetry(tr("This workspace was associated with a different dataset fingerprint. Open it with the dataset "
-                         "you selected? Existing authored content and import identities will be retained."),
-                      [accepted](auto stop, const auto &observer) {
-                          return boxed(ir::EditorWorkspaceIO::open(accepted, stop, observer));
-                      });
+            })) return false;
+        choice->request.acceptance = core::WorkspaceDatasetAcceptance::UserConfirmedReassociation;
+        op.offerRetry(tr("This workspace was associated with a different dataset fingerprint. Open it with the selected dataset? "
+                         "Existing authored content and import identities will be retained."), op.prepareWork());
         return true;
     };
-    (void)operations_->open(std::move(operation), this);
+    auto converted = [choice, native](QString source, QString workspace) {
+        choice->request = {};
+        choice->request.dataset.datasetRoot = std::filesystem::path(source.toStdWString());
+        choice->request.workspace = std::filesystem::path(workspace.toStdWString());
+        native->prepareOpening();
+    };
+    (void)operations_->open(std::make_unique<ImportOperation>(std::move(operation), std::move(converted), legacy), this);
 }
 void ProgramWindow::install(std::shared_ptr<ir::EditorWorkspace> prepared, ProgramOperation &op) {
     ++workspaceGeneration_;
@@ -811,14 +864,7 @@ void ProgramWindow::publish() {
         });
     (void)operations_->open(std::move(op), this);
 }
-void ProgramWindow::importLegacy() {
-    if (!readyToLeave())
-        return;
-    auto op = std::make_unique<LegacyImportController>([this](QString source, QString workspace) {
-        QTimer::singleShot(0, this, [this, source, workspace] { openDataset(source, workspace); });
-    });
-    (void)operations_->open(std::move(op), this);
-}
+void ProgramWindow::importLegacy() { openDataset({}, {}, true); }
 namespace {
 std::optional<std::pair<core::SctSequenceId, std::size_t>> insertion(const ir::ReadScope &scope,
                                                                      const ir::EditorSubject &subject) {

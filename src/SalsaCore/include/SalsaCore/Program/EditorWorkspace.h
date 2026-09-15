@@ -1,4 +1,5 @@
 #pragma once
+#include <map>
 #include "SalsaCore/Program/ProgramPersistence.h"
 #include "SalsaCore/Program/ProgramMaterializer.h"
 #include "SalsaCore/Project/LocalGameProject.h"
@@ -22,7 +23,9 @@ struct EditorOpenRequest {
     LocalGameProjectOptions dataset;
     std::filesystem::path workspace;
     WorkspaceDatasetAcceptance acceptance = WorkspaceDatasetAcceptance::ExactOnly;
-    spice::sct::SctKnownTextConvention textConvention = spice::sct::SctKnownTextConvention::ShiftJisByte7F;
+    // Empty means SPICE source assessment, independently for each script.
+    std::optional<spice::sct::SctKnownTextConvention> textConvention;
+    std::map<std::string, spice::sct::SctKnownTextConvention> textOverrides;
     std::size_t nativeWorkers = 2;
 };
 struct EditorSaveResult {

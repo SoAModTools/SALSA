@@ -81,6 +81,7 @@ enum class DiagnosticCode {
     EvaluationVerificationFailed,
     EvaluationOperationRejected,
     EvaluationReportFailed,
+    SctSourceTextSelectionRequired,
 };
 
 [[nodiscard]] constexpr bool isCurrentDiagnosticSeverity(
@@ -103,6 +104,7 @@ enum class DiagnosticCode {
     case DiagnosticCode::AssetReadFailed: return "AssetReadFailed";
     case DiagnosticCode::SourceChanged: return "SourceChanged";
     case DiagnosticCode::SctParseFailed: return "SctParseFailed";
+    case DiagnosticCode::SctSourceTextSelectionRequired: return "SctSourceTextSelectionRequired";
     case DiagnosticCode::SctImportFailed: return "SctImportFailed";
     case DiagnosticCode::ReparsePointSkipped: return "ReparsePointSkipped";
     case DiagnosticCode::HashInitializationFailed: return "HashInitializationFailed";

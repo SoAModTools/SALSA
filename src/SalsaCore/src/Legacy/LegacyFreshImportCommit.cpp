@@ -174,8 +174,7 @@ void report(const FreshLegacyImportObserver& observer,
     if (request.targetScope == LegacyImportTargetScope::DreamcastDisc1
         || request.targetScope == LegacyImportTargetScope::DreamcastDisc2)
         return GamePlatform::Dreamcast;
-    return request.publication.platform == spice::sct::SctPlatform::GameCube
-        ? GamePlatform::GameCube : GamePlatform::Dreamcast;
+    return std::nullopt; // A conversion output profile is not source-platform evidence.
 }
 
 [[nodiscard]] std::optional<GameRegion> regionFor(const LegacyImportRegion region) {

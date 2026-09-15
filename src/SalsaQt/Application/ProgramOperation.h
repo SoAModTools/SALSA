@@ -21,6 +21,17 @@ class ProgramOperation final : public ExclusiveOperationController {
     std::optional<ExclusiveOperationAction> actionForEdge(std::string_view) const override;
     void handleEvent(std::string_view) override;
     void offerRetry(QString, Work);
+    // Optional selection stage, inside the same exclusive operation.
+    std::function<QWidget *(QWidget *)> configurationPage;
+    std::function<Work()> prepareWork;
+    std::function<bool()> configurationReady;
+    std::function<void()> configurationEntered;
+    bool edgeEnabled(std::string_view) const override;
+    void configureAgain();
+    void prepareOpening() {
+        if (prepareWork)
+            work_ = prepareWork();
+    }
     std::function<bool(const std::vector<core::Diagnostic> &, ProgramOperation &)> recoverFailure;
     void finish(QString message = {});
     void fail(QString);
@@ -43,6 +54,7 @@ class ProgramOperation final : public ExclusiveOperationController {
     std::shared_ptr<Pending> pending_ = std::make_shared<Pending>();
     QFutureWatcher<core::Result<std::any>> watcher_;
     QTimer timer_;
-    bool started_ = false, done_ = false, discardCancelled_ = false, preparing_ = false, reviewing_ = false;
+    bool started_ = false, done_ = false, discardCancelled_ = false, preparing_ = false, reviewing_ = false,
+         configuring_ = false;
 };
 } // namespace salsa::qt

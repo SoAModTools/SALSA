@@ -121,15 +121,21 @@ TEST(WholeProgramTest, NativeBoundaryParsesBothByteOrdersAndReleasesSource) {
     for (auto platform : {sct::SctPlatform::GameCube, sct::SctPlatform::Dreamcast}) {
         sct::SctDocument d;
         for (auto name : {"init", "loop"}) d.sections.push_back({d.allocateSectionId(), name, sct::SctScriptSectionContent{{{d.allocateInstructionId(), 12}}}});
+        sct::SctMessage text; text.body.elements = {sct::SctTextChunk{"Hello"}};
+        d.sections.push_back({d.allocateSectionId(), "line_en", sct::SctStringSectionContent{{d.allocateStringId(), text, sct::SctTextKind::SctString}}});
         sct::SctDocumentExportOptions options{platform, sct::kSctShiftJisByte7FEncoding};
         options.byteOrder = platform == sct::SctPlatform::GameCube ? sct::SctDocumentOutputByteOrder::BigEndian : sct::SctDocumentOutputByteOrder::LittleEndian;
         options.header = {sct::SctHeaderExportMode::ExplicitValues, {2001,1,2,7}};
         auto bytes = sct::SctDocumentExporter::exportDocument(d, options); ASSERT_TRUE(bytes.success);
         auto base = baseline(); base.source.byteSize = bytes.bytes.size(); base.source.revision.digest = sha256(std::as_bytes(std::span(bytes.bytes))).value();
-        sct::SctDocumentImportOptions importOptions; importOptions.declaredSourcePlatform = platform; importOptions.sourceTextEncoding = options.textEncoding;
+        base.textConvention.reset(); // No platform or encoding supplied.
+        sct::SctDocumentImportOptions importOptions;
         ir::ProgramBuilder builder({Project}); auto result = ir::appendNative(builder, bytes.bytes, base, {}, importOptions);
         ASSERT_TRUE(result) << messages(result.diagnostics()); bytes.bytes.clear(); d = {};
         auto program = builder.finish(); ASSERT_TRUE(program) << messages(program.diagnostics());
+        EXPECT_FALSE(program.value()->scripts()[0].context.platform);
+        EXPECT_FALSE(program.value()->scripts()[0].context.region);
+        EXPECT_EQ(program.value()->texts().size(), 1);
         EXPECT_EQ(program.value()->metadata().entrypoints.size(), 2); EXPECT_EQ(program.value()->statistics().actions, 2);
         EXPECT_EQ(program.value()->scripts()[0].context.outputProfile->bigEndian, platform == sct::SctPlatform::GameCube);
     }
@@ -236,4 +242,27 @@ TEST(WholeProgramTest, RejectsInvalidStructuredScopesAndSwitchCases) {
     }
 }
 
+}
+
+TEST(WholeProgramTest, AmbiguousNativeTextRequiresExplicitSelection) {
+    sct::SctDocument d;
+    for (auto name : {"init", "loop"}) d.sections.push_back({d.allocateSectionId(), name, sct::SctScriptSectionContent{{{d.allocateInstructionId(), 12}}}});
+    sct::SctMessage text; text.body.elements = {sct::SctTextChunk{"\xe3\x81\x82"}};
+    d.sections.push_back({d.allocateSectionId(), "line", sct::SctStringSectionContent{{d.allocateStringId(), text, sct::SctTextKind::SctString}}});
+    auto encoded = sct::SctDocumentExporter::exportDocument(d, sct::SctDocumentExportOptions{sct::SctPlatform::GameCube, sct::kSctShiftJisByte7FEncoding});
+    ASSERT_TRUE(encoded.success);
+    auto base = baseline(); base.textConvention.reset(); base.source.byteSize = encoded.bytes.size();
+    base.source.revision.digest = sha256(std::as_bytes(std::span(encoded.bytes))).value();
+    ir::ProgramBuilder builder({Project});
+    auto ambiguous = ir::appendNative(builder, encoded.bytes, base, {}, {});
+    ASSERT_FALSE(ambiguous);
+    ASSERT_FALSE(ambiguous.diagnostics().empty());
+    EXPECT_EQ(ambiguous.diagnostics()[0].code, DiagnosticCode::SctSourceTextSelectionRequired);
+    EXPECT_EQ(ambiguous.diagnostics()[0].path, base.source.locator.path());
+    sct::SctDocumentImportOptions selected; selected.sourceTextEncoding = sct::kSctShiftJisByte7FEncoding;
+    auto accepted = ir::appendNative(builder, encoded.bytes, base, {}, selected);
+    ASSERT_TRUE(accepted) << messages(accepted.diagnostics());
+    auto built = builder.finish(); ASSERT_TRUE(built);
+    EXPECT_EQ(built.value()->texts().size(), 1);
+    EXPECT_FALSE(built.value()->scripts()[0].context.platform);
 }
