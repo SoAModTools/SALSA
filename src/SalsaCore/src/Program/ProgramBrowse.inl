@@ -1,15 +1,21 @@
 // Included by ProgramService.cpp within the program namespace.
-std::future<Result<std::optional<SctActionId>>> ProgramService::recognizedContinuation(Revision r, SctActionId id,
-                                                                                       std::stop_token stop) {
-    return control_->submit<std::optional<SctActionId>>([r, id, stop](auto &o) -> std::optional<SctActionId> {
-        o.match(r, stop);
-        require(o.data != nullptr, "No project");
-        const auto *a = o.data->action(id);
-        require(a, "Missing action");
-        for (const auto &f : o.flows(a->owner, stop))
-            if (f.header == id)
-                return f.continuation;
-        return {};
+std::future<Result<FlowAssessment>> ProgramService::assessFlow(Revision r, SctActionId id, std::stop_token stop) {
+    return control_->submit<FlowAssessment>([r, id, stop](auto& owner) {
+        owner.match(r, stop);
+        require(owner.data != nullptr, "No project");
+        auto* action = owner.data->action(id); require(action, "Missing action");
+        const auto& grouping = owner.flows(action->owner, stop);
+        FlowAssessment result;
+        if (auto issue = grouping.issues.find(id); issue != grouping.issues.end()) result.issue = issue->second;
+        // Promotion rewrites authored instructions. Its narrower safety checks do
+        // not control browsing, and a non-promotable group is not a grouping failure.
+        if (auto join = grouping.joins.find(id); join != grouping.joins.end()) {
+            try {
+                (void)recognizeExplicit(*owner.data, id, join->second, program::incoming);
+                result.promotableContinuation = join->second;
+            } catch (const std::exception&) {}
+        }
+        return result;
     });
 }
 std::future<Result<editor::BrowsePage>> ProgramService::browse(Revision r, editor::BrowseRequest request,

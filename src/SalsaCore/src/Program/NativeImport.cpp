@@ -158,11 +158,13 @@ public:
         for (const auto& value : document.supplementaryText)
             require(value.id.value() != 0 && supplementary.emplace(value.id.value(), SctTextResourceId{d.allocate()}).second, "Duplicate/zero native supplementary text ID");
         std::set<std::uint64_t> sourceSections;
+        std::map<std::uint64_t, SctSequenceId> groupedSections;
         for (const auto& source : document.sections) {
             require(source.id.value() != 0 && sourceSections.insert(source.id.value()).second, "Duplicate/zero native section ID");
             Section section{SectionId{d.claim(0, EntityKind::Section, count32(d.sections.size()))}, script, source.nameBytes, {}, {}, source.id.value()};
             if (const auto* code = std::get_if<sct::SctScriptSectionContent>(&source.content)) {
                 section.body = d.makeSequence(script);
+                groupedSections.emplace(source.id.value(), section.body);
                 std::vector<ValueId> parameters, items;
                 for (const auto& instruction : code->instructions) {
                     parameters.clear();
@@ -201,6 +203,8 @@ public:
             output.supplementaryText.push_back(id);
         }
         for (const auto& attachment : document.opaqueAttachments) d.stats.excludedSourceBytes += attachment.bytes.size();
+        auto grouping = importFlowGroups(document, actions, groupedSections);
+        d.initialGrouping.merge(grouping);
         return script;
     }
 };

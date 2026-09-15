@@ -55,8 +55,8 @@ struct NativeCollection {
             d.claim(text.id.value, EntityKind::Text, count32(d.texts.size()));
             d.texts.push_back(std::move(text));
         }
-        // Native normalization produces instruction leaves; structured recognition
-        // remains WP3. Do not silently merge unknown construct-index layouts.
+        // Native normalization produces instruction leaves and a separate SPICE
+        // grouping cache. Do not silently merge authored construct-index layouts.
         require(s.arms.empty() && s.conditions.empty() && s.loops.empty() && s.switches.empty() && s.transfers.empty(),
                 "Unexpected structured native worker output");
         for (std::uint32_t i = 0; i < s.actions.size(); ++i) {
@@ -79,6 +79,7 @@ struct NativeCollection {
         }
         d.targetUses.insert(d.targetUses.end(), s.targetUses.begin(), s.targetUses.end());
         d.successors.insert(d.successors.end(), s.successors.begin(), s.successors.end());
+        d.initialGrouping.merge(s.initialGrouping);
         d.highWater = std::max(d.highWater, s.highWater);
         d.stats.excludedSourceBytes += s.stats.excludedSourceBytes;
         d.stats.unavailableItems += s.stats.unavailableItems;

@@ -1,3 +1,5 @@
+#include <QApplication>
+#include <QStyle>
 #include "Sct/ProgramOutlineModel.h"
 #include <QFutureWatcher>
 #include <QPointer>
@@ -38,6 +40,10 @@ QVariant ProgramOutlineModel::data(const QModelIndex &i, int role) const {
     const auto *r = row(i);
     if (!r)
         return {};
+    if (i.column() == 0 && !r->groupingIssue.empty()) {
+        if (role == Qt::ToolTipRole) return QString::fromStdString(r->label + "\n" + r->groupingIssue);
+        if (role == Qt::DecorationRole) return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+    }
     if (role == Qt::DisplayRole || role == Qt::ToolTipRole) {
         if (i.column() == 0)
             return QString::fromStdString(r->label);

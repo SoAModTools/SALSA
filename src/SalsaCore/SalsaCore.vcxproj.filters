@@ -220,4 +220,8 @@
     <ClInclude Include="include\SalsaCore\Project\CapturedSource.h" />
     <ClCompile Include="src\Project\CapturedSource.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Program\ProgramGrouping.cpp" />
+    <ClInclude Include="src\Program\ProgramGrouping.h" />
+  </ItemGroup>
 </Project>

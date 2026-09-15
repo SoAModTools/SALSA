@@ -7,7 +7,9 @@ namespace salsa::core::editor {
 enum class ViewMode { Instructions, Semantic };
 struct FlowOccurrence {
     SctActionId header;
-    bool alternate = false;
+    std::uint32_t arm = 0;
+    bool container = false;
+    std::uint32_t region = 0;
     auto operator<=>(const FlowOccurrence &) const = default;
 };
 enum class RowKind { Instruction, Construct };
@@ -18,6 +20,7 @@ struct OutlineRow {
     bool expandable = false;
     std::optional<RowKind> kind;
     std::optional<FlowOccurrence> occurrence;
+    std::string groupingIssue;
 };
 struct OutlineRequest {
     Subject parent;

@@ -114,4 +114,5 @@
   <ItemGroup><ClCompile Include="test_program_materializer.cpp" /></ItemGroup>
   <ItemGroup><ClCompile Include="test_cutscene_routes.cpp" /></ItemGroup>
   <ItemGroup><ClCompile Include="test_program_dispatch.cpp" /></ItemGroup>
+  <ItemGroup><ClCompile Include="test_program_grouping.cpp" /></ItemGroup>
 </Project>

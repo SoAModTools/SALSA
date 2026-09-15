@@ -245,6 +245,7 @@ struct OutlineRow {
     bool expandable = false;
     std::optional<ActionKind> kind;
     std::optional<editor::FlowOccurrence> occurrence;
+    std::string groupingIssue;
 };
 struct OutlinePage {
     ServiceStatus status;
@@ -253,6 +254,10 @@ struct OutlinePage {
     std::size_t offset = 0, total = 0;
     std::vector<OutlineRow> rows;
     std::uint64_t elapsedMicroseconds = 0;
+};
+struct FlowAssessment {
+    std::optional<SctActionId> promotableContinuation;
+    std::string issue;
 };
 struct NavigationPath { ServiceStatus status; SctScriptId script; std::vector<EditorSubject> subjects; std::vector<std::optional<editor::FlowOccurrence>> occurrences; };
 // Owns only the selected closure. Safe across edits, maintenance and shutdown.
@@ -440,7 +445,7 @@ class ProgramService final {
     std::future<Result<NavigationPath>> locate(Revision, EditorSubject, bool semantic = false);
     std::future<Result<OutlinePage>> outline(Revision, OutlineRequest, std::stop_token = {});
     std::future<Result<editor::BrowsePage>> browse(Revision, editor::BrowseRequest, std::stop_token = {});
-    std::future<Result<std::optional<SctActionId>>> recognizedContinuation(Revision, SctActionId, std::stop_token = {});
+    std::future<Result<FlowAssessment>> assessFlow(Revision, SctActionId, std::stop_token = {});
     std::future<Result<VariableQuery>> uses(Revision, Variable);
     std::future<Result<TargetQuery>> incoming(Revision, SctActionId);
     std::future<Result<SummaryQuery>> summarize(Revision, SctModuleId, std::stop_token = {});

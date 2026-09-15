@@ -627,7 +627,7 @@ TEST(ProgramSemanticTest, PromotesPlainFlowAndPreservesSourceIdentity) {
     std::array parameters{operand(0, check), operand(1, reference({105}))};
     auto header =
         builder.instruction(seq, builder.value(ir::ValueKind::Instruction, 0, 0, parameters).value(), {101}).value();
-    auto empty = builder.value(ir::ValueKind::Instruction, 12).value();
+    auto empty = builder.value(ir::ValueKind::Instruction, 125).value();
     builder.instruction(seq, empty, {102});
     auto jump = operand(0, reference({106}));
     builder.instruction(seq, builder.value(ir::ValueKind::Instruction, 10, 0, std::span(&jump, 1)).value(), {104});
@@ -643,11 +643,11 @@ TEST(ProgramSemanticTest, PromotesPlainFlowAndPreservesSourceIdentity) {
     auto physical=adapter.outline(revision,{section,0,128});ASSERT_TRUE(physical);EXPECT_EQ(physical.value().total,5u);
     auto semanticPage=adapter.outline(revision,{section,0,128,editor::ViewMode::Semantic});ASSERT_TRUE(semanticPage);
     ASSERT_EQ(semanticPage.value().rows.size(),3u);EXPECT_EQ(semanticPage.value().rows[0].subject,editor::Subject{header});
-    ASSERT_TRUE(semanticPage.value().rows[1].occurrence);EXPECT_TRUE(semanticPage.value().rows[1].occurrence->alternate);
+    ASSERT_TRUE(semanticPage.value().rows[1].occurrence);EXPECT_EQ(semanticPage.value().rows[1].occurrence->arm,1u);
     auto body=adapter.outline(revision,{header,0,128,editor::ViewMode::Semantic,semanticPage.value().rows[0].occurrence});ASSERT_TRUE(body);
     ASSERT_EQ(body.value().rows.size(),1u);EXPECT_EQ(body.value().rows[0].subject,editor::Subject{SctActionId{102}});
     auto path=adapter.locate(revision,SctActionId{105},editor::ViewMode::Semantic);ASSERT_TRUE(path);
-    ASSERT_EQ(path.value().subjects.size(),4u);ASSERT_TRUE(path.value().occurrences[2]);EXPECT_TRUE(path.value().occurrences[2]->alternate);
+    ASSERT_EQ(path.value().subjects.size(),4u);ASSERT_TRUE(path.value().occurrences[2]);EXPECT_EQ(path.value().occurrences[2]->arm,1u);
     EXPECT_EQ(service.status().get().value().current,revision);
     auto edit = service.edit({adopted.value().current, {semantic(ir::PromoteFlow{header, {106}})}}).get();
     ASSERT_TRUE(edit) << messages(edit.diagnostics());
@@ -667,7 +667,10 @@ TEST(ProgramSemanticTest, PromotesPlainFlowAndPreservesSourceIdentity) {
     auto scheduled=adapter.execute(undo.value().status.current,editor::SetTiming{SctActionId{102},true,{}});ASSERT_TRUE(scheduled);
     EXPECT_EQ(scheduled.value().projectionSequences,std::vector<SctSequenceId>{seq});
     auto explicitAgain=adapter.outline(scheduled.value().status.current,{section,0,128,editor::ViewMode::Semantic});ASSERT_TRUE(explicitAgain);
-    EXPECT_EQ(explicitAgain.value().total,5u); // Changing timing invalidates only the owning projection.
+    EXPECT_EQ(explicitAgain.value().total,3u); // Timing changes preserve SPICE topology; promotion remains stricter.
+    auto inspection=adapter.inspect(scheduled.value().status.current,header,{});ASSERT_TRUE(inspection);
+    EXPECT_FALSE(inspection.value().promotableContinuation);
+    EXPECT_TRUE(inspection.value().evidence.empty());
     service.shutdown().get();
 }
 

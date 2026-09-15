@@ -81,7 +81,7 @@ Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest re
         std::optional<RowKind> kind;
         if (r.kind)
             kind = *r.kind == ir::ActionKind::Instruction ? RowKind::Instruction : RowKind::Construct;
-        out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind, r.occurrence});
+        out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind, r.occurrence, std::move(r.groupingIssue)});
     }
     return Result<OutlinePage>::success(std::move(out));
 }
@@ -158,15 +158,10 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
             if (schedule)
                 out.schedule = schedule.value();
         }
-        if (v.data == 0) {
-            auto recognized = service_->recognizedContinuation(revision, a.id, stop).get();
-            if (recognized)
-                out.promotableContinuation = recognized.value();
-            out.evidence =
-                out.promotableContinuation
-                    ? "Recognized plain control-flow region; browsing does not change the program."
-                    : "Explicit control flow: topology, incoming callers or timing prevent conservative grouping.";
-        }
+        auto grouping = service_->assessFlow(revision, a.id, stop).get();
+        if (!grouping) return Result<Inspection>::failure(grouping.diagnostics());
+        out.promotableContinuation = grouping.value().promotableContinuation;
+        out.evidence = std::move(grouping.value().issue);
         const auto *schema = spice::sct::findSctOpcodeSchema(static_cast<std::uint16_t>(v.data));
         out.title += " — " + (schema ? std::string(schema->semantic.mnemonic) : "Opcode " + std::to_string(v.data));
         out.description = std::string("Refresh: ") + (v.detail & 1 ? "skipped" : "normal") +

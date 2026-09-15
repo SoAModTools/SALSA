@@ -260,37 +260,11 @@ struct ServiceOwner {
     std::map<std::uint64_t, std::uint64_t> checkpointTokens;
     std::uint64_t savedRevision = 0;
     std::vector<std::uint32_t> freeActions, freeSequences, freeSections;
-    std::map<SctSequenceId, std::vector<ExplicitFlow>> outlineFlows;
-    const std::vector<ExplicitFlow> &flows(SctSequenceId sequence, std::stop_token stop) {
-        if (auto found = outlineFlows.find(sequence); found != outlineFlows.end()) return found->second;
-        std::vector<ExplicitFlow> result;
-        const auto &order = *data->sequence(sequence)->order;
-        auto parameterTarget = [&](const Action *a, unsigned index) -> SctActionId {
-            if (!a || a->kind != ActionKind::Instruction) return {};
-            for (auto id : data->child(a->value)) {
-                const auto *p = data->values.find(id.value);
-                if (p->kind == ValueKind::Parameter && p->data == index && p->count == 1) {
-                    const auto *v = data->values.find(data->child(id).front().value);
-                    if (v->kind == ValueKind::ActionReference) return SctActionId{v->data};
-                }
-            }
-            return {};
-        };
-        std::map<SctActionId, std::size_t> positions;
-        for (std::size_t n=0;n<order.size();++n) positions[order[n]]=n;
-        for (std::size_t n=0;n<order.size();++n) {
-            stopped(stop);
-            const auto *a = data->action(order[n]);
-            if (!a || a->kind != ActionKind::Instruction || data->values.find(a->value.value)->data != 0) continue;
-            auto falseTarget=parameterTarget(a,1); auto at=positions.find(falseTarget);
-            if (at==positions.end() || at->second<=n+1) continue;
-            auto exitTarget=parameterTarget(data->action(order[at->second-1]),0);
-            auto continuation=exitTarget==a->id ? falseTarget : exitTarget;
-            if (!continuation.valid() || !positions.contains(continuation)) continue;
-            try { auto shape=recognizeExplicit(*data,a->id,continuation, incoming); result.push_back(shape); n=shape.end-1; }
-            catch (const std::exception &) { /* Irregular flow stays explicit and editable. */ }
-        }
-        return outlineFlows.emplace(sequence,std::move(result)).first->second;
+    FlowGroups outlineFlows;
+    const FlowGrouping& flows(SctSequenceId sequence, std::stop_token stop) {
+        if (auto found = outlineFlows.find(sequence); found != outlineFlows.end()) return *found->second;
+        auto grouping = analyzeFlowGroup(*data, sequence, stop);
+        return *outlineFlows.emplace(sequence, std::move(grouping)).first->second;
     }
     void invalidateOutline(const ChangeReceipt &receipt) {
         for (auto seq:receipt.sequences) outlineFlows.erase(seq);
@@ -298,7 +272,14 @@ struct ServiceOwner {
         // A new caller can invalidate recognition in a different sequence.
         for(auto id:receipt.oldTargets) if(auto *a=data->action(id)) outlineFlows.erase(a->owner);
         for(auto id:receipt.newTargets) if(auto *a=data->action(id)) outlineFlows.erase(a->owner);
-        if(!receipt.scriptLayouts.empty()) outlineFlows.clear();
+        if (!receipt.scriptLayouts.empty()) {
+            for (auto it = outlineFlows.begin(); it != outlineFlows.end();) {
+                auto* sequence = data->sequence(it->first);
+                if (!sequence || std::ranges::find(receipt.scriptLayouts, sequence->script) != receipt.scriptLayouts.end())
+                    it = outlineFlows.erase(it);
+                else ++it;
+            }
+        }
     }
     std::uint64_t generation = 0, state = 0, nextState = 0, saved = 0;
     std::vector<std::shared_ptr<PreparedData>> history;
@@ -389,6 +370,7 @@ struct ServiceOwner {
         stopped(shutdown);
         require(!current || current(), "Native load was superseded before installation");
         data = std::move(next.data);
+        outlineFlows = std::move(data->initialGrouping);
         protectedIds = std::move(next.protectedIds);
         history.clear();
         summaries.clear();
