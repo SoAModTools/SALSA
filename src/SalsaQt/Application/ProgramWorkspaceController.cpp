@@ -6,6 +6,7 @@
 #include "Editor/ScriptEditingActions.h"
 #include "Editor/ProductivityActions.h"
 #include "Editor/OrganizationComponent.h"
+#include "Editor/AuthoringTools.h"
 #include "Editor/EditorQueryWidget.h"
 #include "Editor/ScriptOutlineComponent.h"
 #include "SalsaCore/Editor/ProgramBackend.h"
@@ -185,7 +186,10 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     editMenu->addSeparator();
     for(auto *action:organization->actions())editMenu->addAction(action);
     auto *authoring = shell_->menuBar()->addMenu(tr("&Authoring"));
-    authoring->addAction(tr("Modules, entrypoints and language groupsâ€¦"), this, [this] { tools(); });
+    auto* modules=new ModuleTools(editor_,shell_);for(auto* a:modules->actions)authoring->addAction(a);
+    auto* languages=new LanguageTools(editor_,shell_);authoring->addAction(languages->action);
+    auto* entries=new EntryResourceTools(editor_,shell_);for(auto* a:entries->actions)authoring->addAction(a);
+    auto* selectors=new SelectorTools(editor_,shell_);authoring->addAction(selectors->action);
     authoring->addAction(tr("Find variable usesâ€¦"), this, [this] { variableUses(); });
     authoring->addAction(tr("Edit selected textâ€¦"), this, [this,textDock] { textDock->show(); textDock->raise(); textEditor_->setFocus(); });
     authoring->addAction(tr("Inspect generated instructionsâ€¦"), this, [this] { inspectLowered(); });
@@ -469,7 +473,14 @@ void ProgramWorkspaceController::install(std::shared_ptr<ir::EditorWorkspace> pr
     tabs_->clear();
     scripts_->clear();
     workspace_ = std::move(prepared);
-    editor_->bind(std::make_shared<core::editor::ProgramBackend>(workspace_->service), workspace_->status.current);
+    auto backend=std::make_shared<core::editor::ProgramBackend>(workspace_->service);
+    backend->setResourceLoader([dataset=workspace_->dataset](std::string asset,smores::script::ResourceRole role,std::stop_token stop){
+        auto locator=core::AssetLocator::fromRelativePath(asset);
+        if(!locator)return core::Result<smores::script::Resource>::failure(locator.diagnostics());
+        ir::EditorWorkspace context;context.dataset=dataset;
+        return ir::EditorWorkspaceIO::inspectResource(context,locator.value(),role,stop);
+    });
+    editor_->bind(backend, workspace_->status.current);
     updateTitle();
     log(tr("Workspace prepared in %1 ms; %2 resident scripts. Views request pages of at most 128 rows.")
             .arg(workspace_->openedMicroseconds / 1000.0, 0, 'f', 1)

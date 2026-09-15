@@ -129,6 +129,9 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                         }
                     }
                     out.total = total;
+                } else if constexpr (std::is_same_v<T, SctModuleId>) {
+                    auto *m=d.lookup(id.value,EntityKind::Module,d.metadata.modules);require(m,"Missing module");out.script=m->script;
+                    for(auto body:m->sequences){std::string label="Body "+std::to_string(body.value);for(const auto& sec:d.sections)if(sec.body==body){label=sec.name;break;}bodyRow(body,label.c_str());}
                 } else if constexpr (std::is_same_v<T, SectionId>) {
                     const auto *s = d.lookup(id.value, EntityKind::Section, d.sections);
                     require(s != nullptr, "Missing outline section");

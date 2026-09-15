@@ -422,6 +422,8 @@ struct SemanticTransaction {
             p.receipt.modules.push_back(id);
         p.receipt.presentationChanged = true;
     }
+    void feature(const editor::FeatureEdit&);
+    void featureReplace(editor::FeatureSite, ValueId);
     void moveMany(const MoveActions &);
     void paste(const PasteFragment &);
     void organize(const Organize &);
@@ -436,7 +438,8 @@ struct SemanticTransaction {
         std::visit(
             [&](const auto &e) {
                 using T = std::decay_t<decltype(e)>;
-                if constexpr (std::is_same_v<T, MoveActions>) moveMany(e);
+                if constexpr (std::is_same_v<T, editor::FeatureEdit>) feature(e);
+                else if constexpr (std::is_same_v<T, MoveActions>) moveMany(e);
                 else if constexpr (std::is_same_v<T, SetNote>) {
                     auto found=std::ranges::find(d.metadata.annotations,e.value.subject,&Annotation::subject);
                     Annotation note;if(found!=d.metadata.annotations.end())note=*found;

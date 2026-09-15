@@ -4,6 +4,9 @@
 #include "ProgramInternal.h"
 #include "ExplicitFlow.h"
 #include "SalsaCore/Program/ProgramPersistence.h"
+#include "SalsaCore/Program/ProgramValues.h"
+#include "SalsaCore/Authoring/SctTextAuthoring.h"
+#include "SpiceSCT/SctScptEncoding.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include <algorithm>
 #include <chrono>
@@ -250,8 +253,10 @@ struct PreparedData {
 // Definitions below depend on this inclusion order.
 // clang-format off
 #include "CutsceneInternal.inl"
+#include "FeatureHelpers.inl"
 #include "SemanticEdits.inl"
 #include "FragmentEdits.inl"
+#include "FeatureEdits.inl"
 #include "CutsceneEdits.inl"
 #include "DispatchEdits.inl"
 // clang-format on
@@ -1456,6 +1461,7 @@ std::future<Result<std::shared_ptr<const ReadScope>>> ProgramService::read(Revis
 #include "ProgramEditor.inl"
 #include "ProgramBrowse.inl"
 #include "ProgramProductivity.inl"
+#include "FeatureQueries.inl"
 std::future<Result<VariableQuery>> ProgramService::uses(Revision r, Variable key) {
     return control_->submit<VariableQuery>([r, key](auto &o) {
         o.match(r);

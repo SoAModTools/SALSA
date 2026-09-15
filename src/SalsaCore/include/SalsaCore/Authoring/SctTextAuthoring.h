@@ -36,6 +36,7 @@ struct SctTextInsertion final {
 };
 class SctTextAuthoring final {
   public:
+    [[nodiscard]] static std::vector<SctTextObservation> observeNames(std::vector<SctTextObservation>);
     [[nodiscard]] static std::vector<SctTextObservation> observe(const spice::sct::SctDocument &);
     [[nodiscard]] static Result<SctAuthoringState> discover(const SctAuthoringState &, SctScriptId);
     [[nodiscard]] static Result<SctAuthoringState> createLanguage(const SctAuthoringState &, std::string name);

@@ -93,6 +93,7 @@ Result<StructureDraft> ProgramBackend::structure(Revision r, SctActionId id, std
     return Result<StructureDraft>::success(std::move(out));
 }
 Result<Change> ProgramBackend::execute(Revision r, EditIntent intent, std::stop_token stop) {
+    if(auto *feature=std::get_if<FeatureEdit>(&intent)) return featureEdit(r,std::move(*feature),stop);
     if (std::holds_alternative<PasteSelection>(intent) || std::holds_alternative<MoveSelection>(intent) ||
         std::holds_alternative<DeleteSelection>(intent) || std::holds_alternative<WriteNote>(intent) ||
         std::holds_alternative<WriteOrganization>(intent) || std::holds_alternative<WriteOpcode>(intent) ||

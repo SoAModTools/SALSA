@@ -89,7 +89,7 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     tree_->setColumnHidden(1, true);
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this] {
-        if (isVisible() && !restoring_ && selectionChanged)
+        if (isVisible() && window()->isActiveWindow() && !restoring_ && selectionChanged)
             selectionChanged();
     });
     connect(tree_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this] {
@@ -139,7 +139,12 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
 void ScriptOutlineComponent::setSemantic(bool semantic) { modes_->setCurrentIndex(semantic ? 1 : 0); }
 void ScriptOutlineComponent::bind(core::SctScriptId script) {
     script_ = script;
-    model_->bind(session_->backend(), session_->revision(), script);
+    model_->bind(session_->backend(), session_->revision(),
+                 module_ ? ed::Subject{*module_} : ed::Subject{script});
+}
+void ScriptOutlineComponent::bindModule(core::SctScriptId script, core::SctModuleId module) {
+    module_ = module;
+    bind(script);
 }
 QModelIndex ScriptOutlineComponent::currentIndex() const { return tree_->currentIndex(); }
 void ScriptOutlineComponent::setCurrentIndex(const QModelIndex &i) { tree_->setCurrentIndex(i); }
@@ -153,7 +158,7 @@ std::vector<ed::Subject> ScriptOutlineComponent::selectedItems() const {
     return items;
 }
 void ScriptOutlineComponent::activate() {
-    if (restoring_ || !isVisible())
+    if (restoring_ || !isVisible() || !window()->isActiveWindow())
         return;
     auto *row = model_->row(currentIndex());
     session_->selectMany(selectedItems(), row ? std::optional(row->subject) : std::nullopt);
@@ -267,7 +272,42 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
                         });
                 timer->start();
             });
-    watcher->setFuture(QtConcurrent::run(
-        [backend, revision, subject, mode] { return backend->locate(revision, subject, mode); }));
+    watcher->setFuture(QtConcurrent::run([backend, revision, subject, mode, module = module_] {
+        auto located = backend->locate(revision, subject, mode);
+        if (!located || !module)
+            return located;
+        auto detail = backend->module(revision, *module);
+        if (!detail)
+            return core::Result<ed::NavigationPath>::failure(detail.diagnostics());
+        // Module roots show their existing body identities directly, omitting
+        // the containing script/section/construct ancestors in the full outline.
+        auto path = located.value();
+        std::optional<ed::NavigationPath> scoped;
+        std::size_t longest = 0;
+        for (auto body : detail.value().module.bodies) {
+            auto ancestry = backend->locate(revision, body, mode);
+            if (!ancestry)
+                return core::Result<ed::NavigationPath>::failure(ancestry.diagnostics());
+            auto prefix = ancestry.value().subjects;
+            prefix.pop_back();
+            if (prefix.size() < longest || prefix.size() > path.subjects.size() ||
+                !std::equal(prefix.begin(), prefix.end(), path.subjects.begin()))
+                continue;
+            auto start = prefix.size();
+            if (start < path.subjects.size() && path.subjects[start] == ed::Subject(body))
+                ++start;
+            auto projected = path;
+            projected.subjects = {ed::Subject(*module), ed::Subject(body)};
+            projected.subjects.insert(projected.subjects.end(), path.subjects.begin() + start,
+                                      path.subjects.end());
+            longest = prefix.size();
+            scoped = std::move(projected);
+        }
+        if (scoped)
+            return core::Result<ed::NavigationPath>::success(std::move(*scoped));
+        return core::Result<ed::NavigationPath>::failure(
+            {{core::DiagnosticSeverity::Info, core::DiagnosticCode::InvalidSctAuthoringProject,
+              "This target is outside the module; open it from the script outline."}});
+    }));
 }
 } // namespace salsa::qt

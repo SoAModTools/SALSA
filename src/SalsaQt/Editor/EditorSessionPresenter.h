@@ -13,6 +13,7 @@ class EditorSessionPresenter final : public QObject {
   public:
     EditorSessionPresenter(ExclusiveOperationCoordinator *, QWidget *operationHost);
     ~EditorSessionPresenter() override;
+    EditorSessionPresenter *createViewSession(QWidget *owner);
     void bind(std::shared_ptr<core::editor::Backend>, core::editor::Revision);
     void select(std::optional<core::editor::Subject>);
     void selectMany(std::vector<core::editor::Subject>, std::optional<core::editor::Subject>);
@@ -44,6 +45,7 @@ class EditorSessionPresenter final : public QObject {
     void submit(QString, std::function<core::Result<core::editor::Change>(std::stop_token)>);
     ExclusiveOperationCoordinator *operations_;
     QPointer<QWidget> host_;
+    QPointer<EditorSessionPresenter> changeSink_;
     std::shared_ptr<core::editor::Backend> backend_;
     core::editor::Revision revision_, requestRevision_;
     bool reading_ = false;

@@ -79,7 +79,7 @@ bool ProgramOutlineModel::pending(const QModelIndex &i) const {
     return n < nodes_.size() && nodes_[n].loading;
 }
 void ProgramOutlineModel::bind(std::shared_ptr<ir::Backend> service, ir::Revision revision,
-                               core::SctScriptId script) {
+                               core::editor::Subject script) {
     beginResetModel();
     ++generation_;
     service_ = std::move(service);
@@ -192,6 +192,7 @@ void ProgramOutlineModel::resetChildren(std::size_t n) {
 }
 void ProgramOutlineModel::apply(const ir::Change &change) {
     revision_ = change.status.current;
+    if(!nodes_.empty() && std::holds_alternative<core::SctModuleId>(nodes_[0].row.subject) && change.presentationChanged){resetChildren(0);return;}
     if (!nodes_.empty())
         if (auto *script = std::get_if<core::SctScriptId>(&nodes_[0].row.subject))
             if (std::ranges::find(change.scriptLayouts, *script) != change.scriptLayouts.end()) {

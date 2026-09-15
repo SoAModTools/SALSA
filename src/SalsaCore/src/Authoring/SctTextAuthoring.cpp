@@ -94,6 +94,17 @@ std::vector<SctTextObservation> SctTextAuthoring::observe(const sct::SctDocument
         else
             group.clear();
     }
+    observations=observeNames(std::move(observations));
+    for (const auto &text : doc.supplementaryText)
+        observations.push_back({text.id,
+                                "Footer " + std::to_string(text.id.value()),
+                                {},
+                                {},
+                                {},
+                                "Footer text has no indexed-name language evidence."});
+    return observations;
+}
+std::vector<SctTextObservation> SctTextAuthoring::observeNames(std::vector<SctTextObservation> observations) {
     std::vector<std::set<std::pair<std::string, std::string>>> proposals(observations.size());
     for (std::size_t i = 0; i < observations.size(); ++i) {
         auto &o = observations[i];
@@ -156,13 +167,6 @@ std::vector<SctTextObservation> SctTextAuthoring::observe(const sct::SctDocument
             o.languageKey.reset();
             o.explanation = "Multiple strings match the same proposed language and correspondence key.";
         }
-    for (const auto &text : doc.supplementaryText)
-        observations.push_back({text.id,
-                                "Footer " + std::to_string(text.id.value()),
-                                {},
-                                {},
-                                {},
-                                "Footer text has no indexed-name language evidence."});
     return observations;
 }
 Result<SctAuthoringState> SctTextAuthoring::discover(const SctAuthoringState &state, SctScriptId script) {

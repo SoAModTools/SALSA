@@ -229,4 +229,11 @@
     <ClInclude Include="src\Program\ProgramProductivity.inl" />
     <ClInclude Include="src\Program\FragmentEdits.inl" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Editor\AuthoringFeatures.h" />
+    <ClCompile Include="src\Editor\ProgramFeatures.cpp" />
+    <ClInclude Include="src\Program\FeatureHelpers.inl" />
+    <ClInclude Include="src\Program\FeatureQueries.inl" />
+    <ClInclude Include="src\Program\FeatureEdits.inl" />
+  </ItemGroup>
 </Project>

@@ -42,6 +42,29 @@ EditorSessionPresenter::EditorSessionPresenter(ExclusiveOperationCoordinator *op
     });
 }
 EditorSessionPresenter::~EditorSessionPresenter() { readStop_.request_stop(); }
+EditorSessionPresenter *EditorSessionPresenter::createViewSession(QWidget *owner) {
+    auto *view = new EditorSessionPresenter(operations_, host_);
+    view->setParent(owner);
+    view->changeSink_ = this;
+    view->bind(backend_, revision_);
+    // Share revision notifications without moving another view's selection.
+    auto forward = [](EditorSessionPresenter *target, const ed::Change &change) {
+        if (target->revision() == change.status.current)
+            return;
+        auto notification = change;
+        notification.selected.clear();
+        notification.suggestedSelection.reset();
+        target->accept(notification);
+    };
+    connect(view, &EditorSessionPresenter::changed, this,
+            [this, forward](const ed::Change &change) { forward(this, change); });
+    connect(this, &EditorSessionPresenter::changed, view,
+            [view, forward](const ed::Change &change) { forward(view, change); });
+    connect(view, &EditorSessionPresenter::diagnostic, this, &EditorSessionPresenter::diagnostic);
+    connect(this, &EditorSessionPresenter::sessionChanged, owner, &QWidget::close);
+    return view;
+}
+
 bool EditorSessionPresenter::busy() const { return operations_->active(); }
 void EditorSessionPresenter::bind(std::shared_ptr<ed::Backend> backend, ed::Revision revision) {
     ++sessionGeneration_;
@@ -148,12 +171,22 @@ void EditorSessionPresenter::submit(QString title,
                 return core::Result<std::any>::failure(result.diagnostics());
             return core::Result<std::any>::success(std::any(std::move(result).takeValue()));
         },
-        [this, generation](std::any value, ProgramOperation &op) {
-            if (generation != sessionGeneration_) {
+        [self = QPointer(this), sink = changeSink_, generation](std::any value, ProgramOperation &op) {
+            auto change = std::any_cast<ed::Change>(std::move(value));
+            if (!self) {
+                if (sink) {
+                    change.selected.clear();
+                    change.suggestedSelection.reset();
+                    sink->accept(change);
+                }
+                op.finish();
+                return;
+            }
+            if (generation != self->sessionGeneration_) {
                 op.fail(tr("The editor session changed."));
                 return;
             }
-            accept(std::any_cast<ed::Change>(std::move(value)));
+            self->accept(change);
             op.finish();
         });
     (void)operations_->open(std::move(operation), host_);

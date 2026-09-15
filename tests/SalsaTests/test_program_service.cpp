@@ -1096,3 +1096,68 @@ TEST(EditorProductivityTest, NotesFoldersAndCatalogPersistWithoutReindexingExecu
     ASSERT_TRUE(page);
     EXPECT_TRUE(page.value().rows.front().bookmarked);
 }
+
+TEST(EditorAuthoringToolsTest, ModulesActivationAndResourceSelectionShareHistory) {
+    Fixture f; editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service,[](auto*){}));
+    auto edit=[&](editor::FeatureEdit op){auto result=backend.execute(f.revision,std::move(op));if(result)f.revision=result.value().status.current;return result;};
+    auto module=edit(editor::WriteModule{{{},f.script,"Standalone",{}},true});ASSERT_TRUE(module)<<messages(module.diagnostics());
+    auto inventory=backend.features(f.revision,f.script);ASSERT_TRUE(inventory);ASSERT_EQ(inventory.value().modules.size(),1u);auto m=inventory.value().modules.front();ASSERT_EQ(m.bodies.size(),1u);
+    auto outline=backend.outline(f.revision,{m.id});ASSERT_TRUE(outline);ASSERT_EQ(outline.value().rows.size(),1u);EXPECT_EQ(outline.value().rows.front().subject,editor::Subject(m.bodies.front()));
+    auto body=backend.outline(f.revision,{m.bodies.front()});ASSERT_TRUE(body);EXPECT_TRUE(body.value().rows.empty());
+    m.bodies.push_back(f.sequence);ASSERT_TRUE(edit(editor::WriteModule{m}));
+    auto detail=backend.module(f.revision,m.id);ASSERT_TRUE(detail)<<messages(detail.diagnostics());
+    editor::EntryItem entry;entry.script=f.script;entry.name="M00001";entry.body=f.sequence;entry.activation=SctNamedActivation{"scene",f.writer};
+    ASSERT_TRUE(edit(editor::WriteEntry{entry}));inventory=backend.features(f.revision,f.script);ASSERT_TRUE(inventory);entry=inventory.value().entries.front();auto entryId=entry.id;entry.enabled=false;
+    ASSERT_TRUE(edit(editor::WriteEntry{entry}));auto oldRevision=f.revision;
+    smores::script::Resource resource{{"synthetic","field/context.mld","revision-one","document-one"},smores::script::ResourceRole::Base,{}};
+    resource.entries.push_back({resource.identity,7,spice::mld::MldEntryId{2},3,1,"GRND",{}});
+    backend.setResourceLoader([resource](auto,auto,auto){return Result<smores::script::Resource>::success(resource);});
+    EXPECT_FALSE(edit(editor::SelectResourceEntry{entry.id,resource,7}));
+    ASSERT_TRUE(backend.inspectResource(f.revision,"field/context.mld",resource.role));
+    ASSERT_TRUE(edit(editor::SelectResourceEntry{entry.id,resource,7}));inventory=backend.features(f.revision,f.script);ASSERT_TRUE(inventory);EXPECT_EQ(inventory.value().entries.front().id,entryId);EXPECT_FALSE(inventory.value().entries.front().enabled);EXPECT_TRUE(inventory.value().entries.front().provider);
+    EXPECT_FALSE(backend.execute(oldRevision,editor::FeatureEdit{editor::WriteEntry{entry}}));
+    auto undo=backend.history(f.revision,false);ASSERT_TRUE(undo);f.revision=undo.value().status.current;
+    inventory=backend.features(f.revision,f.script);ASSERT_TRUE(inventory);EXPECT_FALSE(inventory.value().entries.front().provider);
+    entry.enabled=true;
+    auto response=edit(editor::WriteEntry{entry,editor::FeatureSite{f.branch,{2,0}},f.sequence});ASSERT_TRUE(response)<<messages(response.diagnostics());
+    auto initial=backend.execute(f.revision,editor::SetExpression{f.condition,{},*SctExpressionLanguage::parse("Low16IntVar[15] == 1").expression});ASSERT_TRUE(initial);f.revision=initial.value().status.current;
+    ASSERT_TRUE(edit(editor::SetArrival{f.condition,"me033b",{}}));
+    auto inspection=backend.inspect(f.revision,f.condition);ASSERT_TRUE(inspection);ASSERT_TRUE(inspection.value().condition);EXPECT_NE(SctExpressionLanguage::project(*inspection.value().condition).text.find("331"),std::string::npos);
+    auto saved=f.service.checkpoint(f.revision).get();ASSERT_TRUE(saved);auto encoded=ir::ProgramPersistence::encode(*saved.value().program);ASSERT_TRUE(encoded);auto reopened=ir::ProgramPersistence::decode(encoded.value());ASSERT_TRUE(reopened);EXPECT_EQ(reopened.value().program->metadata().modules.front().id,m.id);
+}
+TEST(EditorAuthoringToolsTest, LanguageBatchesPreserveExplicitAssignmentsAndUndo) {
+    Fixture f;editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service,[](auto*){}));
+    auto create=[&](std::string name){auto result=backend.execute(f.revision,editor::CreateText{f.script,name,false,sct::SctTextKind::PlainString,sct::SctPlainText{"Initial"}});if(!result)throw std::runtime_error(messages(result.diagnostics()));f.revision=result.value().status.current;return std::get<SctTextResourceId>(*result.value().suggestedSelection);};
+    auto base=create("ahello"),french=create("aFhello");auto suggestions=backend.suggestLanguages(f.revision,f.script);ASSERT_TRUE(suggestions);ASSERT_EQ(suggestions.value().size(),2u);
+    auto apply=backend.execute(f.revision,editor::FeatureEdit{editor::ApplyLanguageSuggestions{f.script,{base,french}}});ASSERT_TRUE(apply)<<messages(apply.diagnostics());f.revision=apply.value().status.current;
+    auto inventory=backend.features(f.revision,f.script);ASSERT_TRUE(inventory);ASSERT_EQ(inventory.value().languages.size(),2u);auto group=inventory.value().languages.front().id;
+    auto assigned=backend.execute(f.revision,editor::FeatureEdit{editor::AssignTextGroups{{base,french},{group}}});ASSERT_TRUE(assigned);f.revision=assigned.value().status.current;
+    auto rescan=backend.execute(f.revision,editor::FeatureEdit{editor::ApplyLanguageSuggestions{f.script,{base,french}}});ASSERT_TRUE(rescan);f.revision=rescan.value().status.current;
+    inventory=backend.features(f.revision,f.script);ASSERT_TRUE(inventory);for(const auto& t:inventory.value().texts)if(t.id==base || t.id==french)EXPECT_EQ(t.languages,(std::vector<SctLanguageGroupId>{group}));
+    auto link=backend.execute(f.revision,editor::FeatureEdit{editor::WriteLogicalText{{{},f.script,"Greeting",{base,french},{}}}});ASSERT_TRUE(link);f.revision=link.value().status.current;
+    auto batch=backend.execute(f.revision,editor::FeatureEdit{editor::WriteTextBatch{{{base,sct::SctPlainText{"One"}},{french,sct::SctPlainText{"Deux"}}}}});ASSERT_TRUE(batch)<<messages(batch.diagnostics());f.revision=batch.value().status.current;
+    auto value=backend.text(f.revision,base);ASSERT_TRUE(value);EXPECT_EQ(std::get<sct::SctPlainText>(value.value().value).utf8,"One");
+    auto undo=backend.history(f.revision,false);ASSERT_TRUE(undo);value=backend.text(undo.value().status.current,french);ASSERT_TRUE(value);EXPECT_EQ(std::get<sct::SctPlainText>(value.value().value).utf8,"Initial");
+    f.revision=undo.value().status.current;
+    auto inserted=backend.execute(f.revision,editor::InsertOpcode{f.other,144});ASSERT_TRUE(inserted)<<messages(inserted.diagnostics());f.revision=inserted.value().status.current;
+    auto checkpoint=f.service.checkpoint(f.revision).get();ASSERT_TRUE(checkpoint);auto dialogAction=(*checkpoint.value().program->find(f.sequence)->order)[2];
+    auto parameter=sct::findSctOpcodeSchema(144)->textReferences[0].parameterIndex;
+    auto bound=backend.execute(f.revision,editor::BindReference{dialogAction,{parameter,{}},base});ASSERT_TRUE(bound)<<messages(bound.diagnostics());f.revision=bound.value().status.current;
+    auto split=backend.execute(f.revision,editor::FeatureEdit{editor::SplitText{base,group,"separate",{{dialogAction,{parameter,{}}}}}});ASSERT_TRUE(split)<<messages(split.diagnostics());f.revision=split.value().status.current;
+    auto splitText=std::get<SctTextResourceId>(split.value().selected.front());auto uses=backend.textUses(f.revision,splitText);ASSERT_TRUE(uses);EXPECT_EQ(uses.value().size(),1u);
+    auto insertion=backend.execute(f.revision,editor::FeatureEdit{editor::InsertTextUses{{{{dialogAction,{parameter,{}}},f.branch,french,{}}}}});ASSERT_TRUE(insertion)<<messages(insertion.diagnostics());f.revision=insertion.value().status.current;
+    uses=backend.textUses(f.revision,french);ASSERT_TRUE(uses);EXPECT_EQ(uses.value().size(),1u);
+    auto rewind=backend.history(f.revision,false);ASSERT_TRUE(rewind);uses=backend.textUses(rewind.value().status.current,french);ASSERT_TRUE(uses);EXPECT_TRUE(uses.value().empty());
+
+}
+TEST(EditorAuthoringToolsTest, SelectorBatchPropagatesKnownCopiesAndRejectsBranchPreview) {
+    Fixture f;editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service,[](auto*){}));
+    auto literal=SctExpressionLanguage::parse("2"),copy=SctExpressionLanguage::parse("ByteVar[8]");ASSERT_TRUE(literal.succeeded());ASSERT_TRUE(copy.succeeded());
+    auto result=backend.execute(f.revision,editor::FeatureEdit{editor::WriteSelectors{f.other,{{{},8,*literal.expression},{},}}});
+    // The invalid second edit leaves the first uninstalled.
+    EXPECT_FALSE(result);
+    result=backend.execute(f.revision,editor::FeatureEdit{editor::WriteSelectors{f.other,{{{},8,*literal.expression},{{},9,*copy.expression}}}});ASSERT_TRUE(result)<<messages(result.diagnostics());f.revision=result.value().status.current;
+    ASSERT_EQ(result.value().selected.size(),2u);auto first=std::get<SctActionId>(result.value().selected.front()),last=std::get<SctActionId>(result.value().selected.back());
+    auto preview=backend.previewSelectors(f.revision,first,last,{{6,1}});ASSERT_TRUE(preview)<<messages(preview.diagnostics());EXPECT_EQ(preview.value().values[8],2);EXPECT_EQ(preview.value().values[9],2);EXPECT_EQ(preview.value().values[6],1);EXPECT_EQ(preview.value().tiles.size(),42u);
+    EXPECT_FALSE(backend.previewSelectors(f.revision,f.writer,f.branch,{}));auto undo=backend.history(f.revision,false);ASSERT_TRUE(undo);auto checkpoint=f.service.checkpoint(undo.value().status.current).get();ASSERT_TRUE(checkpoint);EXPECT_EQ(checkpoint.value().program->find(f.sequence)->order->size(),4u);
+}

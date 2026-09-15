@@ -9,7 +9,7 @@ namespace salsa::qt {
 class ProgramOutlineModel final : public QAbstractItemModel {
   public:
     explicit ProgramOutlineModel(QObject *parent = nullptr);
-    void bind(std::shared_ptr<core::editor::Backend>, core::editor::Revision, core::SctScriptId);
+    void bind(std::shared_ptr<core::editor::Backend>, core::editor::Revision, core::editor::Subject);
     void setMode(core::editor::ViewMode mode) { mode_ = mode; }
     core::editor::ViewMode mode() const { return mode_; }
     bool pending(const QModelIndex &index) const;

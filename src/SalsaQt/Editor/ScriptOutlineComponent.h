@@ -10,6 +10,7 @@ class ScriptOutlineComponent final : public QWidget {
     explicit ScriptOutlineComponent(EditorSessionPresenter *, QWidget *parent = nullptr);
     ProgramOutlineModel *outlineModel() const { return model_; }
     void bind(core::SctScriptId);
+    void bindModule(core::SctScriptId, core::SctModuleId);
     std::vector<core::editor::Subject> selectedItems() const;
     void activate();
     void setSemantic(bool);
@@ -26,6 +27,7 @@ class ScriptOutlineComponent final : public QWidget {
     QTreeView *tree_;
     QTabBar *modes_;
     core::SctScriptId script_;
+    std::optional<core::SctModuleId> module_;
     std::uint64_t navigationGeneration_ = 0;
     bool restoring_ = false;
     std::vector<core::editor::Subject> restoreSelection_, restoreExpanded_;
