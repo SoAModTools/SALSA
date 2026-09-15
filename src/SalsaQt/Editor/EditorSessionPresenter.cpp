@@ -209,6 +209,13 @@ void EditorSessionPresenter::execute(QString title, ed::EditIntent intent,
         return backend->execute(revision, intent, stop);
     });
 }
+void EditorSessionPresenter::runOperation(QString title, std::function<core::Result<std::string>(std::stop_token,const core::SctLoadingObserver &)> work) {
+    if(!backend_ || busy() || !host_)return;
+    auto operation=std::make_unique<ProgramOperation>(std::move(title),
+        [work=std::move(work)](auto stop,const auto &progress){auto result=work(stop,progress);if(!result)return core::Result<std::any>::failure(result.diagnostics());return core::Result<std::any>::success(std::any(std::move(result).takeValue()));},
+        [self=QPointer(this)](std::any value,ProgramOperation &op){auto text=QString::fromStdString(std::any_cast<std::string>(std::move(value)));if(self)emit self->diagnostic(text);op.finish(text);});
+    (void)operations_->open(std::move(operation),host_);
+}
 void EditorSessionPresenter::history(bool redo) {
     auto backend = backend_;
     auto revision = revision_;

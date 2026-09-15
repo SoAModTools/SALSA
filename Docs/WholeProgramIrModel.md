@@ -109,3 +109,7 @@ The [binary project codec](WholeProgramIrPersistence.md) writes live content dir
 ## Authoritative imported and new groups
 
 Imported and user-created groups share the same Action/Arm/ConditionRegion/Sequence storage. SPICE regions are transient normalization input only. Empty owned body sequences are first-class, persistent insertion targets; deleting all their items does not remove the construct. There are no view-local group identities to use in editing commands. `ConditionRegion::skipRefresh` and `Transfer::skipRefresh` retain control-instruction timing during import and lowering (binary schema 4). A scoped Break may exit a conditional, loop or switch.
+
+## G5 presentation and meaning records
+
+`VariableMeaning::storyState` classifies user-defined variables/values for default story display. `Metadata::narrative` is an ordered list of stable module IDs; `Metadata::interpretations` stores item subject, captured revision, decision, explanation and evidence. These are journaled metadata, with no second executable condition or stored whole-program relationship graph. Meaning/narrative edits retain executable summary caches. Private binary schema 6 persists these fields; older development schemas are rejected. See the G5 section of [the editor guide](WholeProgramIrEditor.md).

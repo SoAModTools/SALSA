@@ -93,6 +93,11 @@ Result<StructureDraft> ProgramBackend::structure(Revision r, SctActionId id, std
     return Result<StructureDraft>::success(std::move(out));
 }
 Result<Change> ProgramBackend::execute(Revision r, EditIntent intent, std::stop_token stop) {
+    if(auto *story=std::get_if<StoryEdit>(&intent)) {
+        auto result=service_->edit({r,{program::SemanticOperation{std::move(*story)}}},stop).get();
+        if(!result)return Result<Change>::failure(result.diagnostics());
+        return Result<Change>::success(describe(result.value()));
+    }
     if(auto *feature=std::get_if<FeatureEdit>(&intent)) return featureEdit(r,std::move(*feature),stop);
     if (std::holds_alternative<PasteSelection>(intent) || std::holds_alternative<MoveSelection>(intent) ||
         std::holds_alternative<DeleteSelection>(intent) || std::holds_alternative<WriteNote>(intent) ||

@@ -427,10 +427,16 @@ void finishMetadata(ProgramData &d, std::vector<Diagnostic> &diagnostics, bool a
         for (auto id : l.variants) { const auto* t = d.lookup(id.value, EntityKind::Text, d.texts); require(t && t->script == l.script, "Dangling logical text variant"); }
         if (l.module) { const auto* m = d.lookup(l.module->value, EntityKind::Module, d.metadata.modules); require(m && m->script == l.script, "Dangling logical text module"); }
     }
+    std::set<std::tuple<SctScriptId,SctVariableKey,std::optional<std::int64_t>>> meaningKeys;
     for(std::uint32_t i=0;i<d.metadata.meanings.size();++i) {
         auto& meaning=d.metadata.meanings[i];meaning.id=SctMeaningId{claim(meaning.id.value,EntityKind::Meaning,i)};
         if(meaning.script.valid())script(meaning.script);
+        require(static_cast<unsigned>(meaning.variable.kind)<=3 && !meaning.name.empty(),"Invalid variable meaning");
+        require(meaningKeys.emplace(meaning.script,meaning.variable,meaning.value).second,"Duplicate variable meaning scope and value");
     }
+    std::set<SctModuleId> narrative;
+    for(auto id:d.metadata.narrative) require(d.lookup(id.value,EntityKind::Module,d.metadata.modules) && narrative.insert(id).second,"Invalid narrative module");
+    for(const auto &record:d.metadata.interpretations) require(static_cast<unsigned>(record.decision)<=2 && !record.explanation.empty(),"Invalid interpretation record");
     if (checkDispatches)
         for (const auto &region : d.dispatches)
             if (region.owner.valid())

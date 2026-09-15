@@ -397,7 +397,7 @@ struct SemanticTransaction {
         } else
             row.id = decltype(row.id){d.allocate()};
         locate(row.id.value, {kind<T>(), index});
-        p.receipt.metadata.push_back(row.id.value);
+        if constexpr (!std::is_same_v<T, VariableMeaning>) p.receipt.metadata.push_back(row.id.value);
         if constexpr (std::is_same_v<T, Module>)
             if (index == rows.size() || rows[index].sequences != row.sequences)
                 p.receipt.modules.push_back(row.id);
@@ -417,11 +417,12 @@ struct SemanticTransaction {
         locate(id.value, {});
         for (std::uint32_t i = index; i < rows.size(); ++i)
             locate(rows[i].id.value, {kind<T>(), i});
-        p.receipt.metadata.push_back(id.value);
+        if constexpr (!std::is_same_v<T, VariableMeaning>) p.receipt.metadata.push_back(id.value);
         if constexpr (std::is_same_v<T, Module>)
             p.receipt.modules.push_back(id);
         p.receipt.presentationChanged = true;
     }
+    void storyEdit(const editor::StoryEdit&);
     void feature(const editor::FeatureEdit&);
     void featureReplace(editor::FeatureSite, ValueId);
     void moveMany(const MoveActions &);
@@ -438,7 +439,8 @@ struct SemanticTransaction {
         std::visit(
             [&](const auto &e) {
                 using T = std::decay_t<decltype(e)>;
-                if constexpr (std::is_same_v<T, editor::FeatureEdit>) feature(e);
+                if constexpr (std::is_same_v<T, editor::StoryEdit>) storyEdit(e);
+                else if constexpr (std::is_same_v<T, editor::FeatureEdit>) feature(e);
                 else if constexpr (std::is_same_v<T, MoveActions>) moveMany(e);
                 else if constexpr (std::is_same_v<T, SetNote>) {
                     auto found=std::ranges::find(d.metadata.annotations,e.value.subject,&Annotation::subject);

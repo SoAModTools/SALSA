@@ -1,6 +1,7 @@
 #pragma once
 #include "SalsaCore/Editor/EditorIdentity.h"
 #include "SalsaCore/Editor/AuthoringFeatures.h"
+#include "SalsaCore/Editor/StoryFeatures.h"
 #include "SalsaCore/Foundation/Result.h"
 #include "SpiceSCT/SctDocument.h"
 #include <stop_token>
@@ -219,7 +220,7 @@ struct RenameCodeSection { program::SectionId section; std::string name; };
 struct WriteNote { ItemNote note; };
 struct WriteOrganization { SctScriptId script; std::vector<program::SectionId> order; std::vector<SectionFolder> folders; };
 struct WriteOpcode { OpcodeCustomization opcode; };
-using EditIntent = std::variant<FeatureEdit,SetExpression, BindReference, SetTiming, WriteText, CreateText, DeleteItem,
+using EditIntent = std::variant<StoryEdit,FeatureEdit,SetExpression, BindReference, SetTiming, WriteText, CreateText, DeleteItem,
                                 InsertOpcode, InsertStructure, InsertTransfer, WriteArms, PromoteFlow, PasteSelection, MoveSelection, DeleteSelection, WriteNote, WriteOrganization, WriteOpcode, NewSection, RenameCodeSection>;
 // Blocking operations run on workers. Each result is qualified by the captured
 // revision and owns selected values only, never a live document or storage view.
@@ -245,6 +246,13 @@ class Backend {
     virtual Result<std::vector<SctLocalActivation>> activationSuggestions(Revision, SctScriptId, std::stop_token = {}) = 0;
     virtual Result<SelectorPreview> previewSelectors(Revision, SctActionId, SctActionId, smores::script::KnownBytes, std::stop_token = {}) = 0;
     virtual Result<smores::script::Resource> inspectResource(Revision, std::string, smores::script::ResourceRole, std::stop_token = {}) = 0;
+    virtual Result<StoryCatalog> storyCatalog(Revision, std::stop_token = {}) = 0;
+    virtual Result<StoryView> story(Revision, StoryRequest, std::stop_token = {}) = 0;
+    virtual Result<InteractionView> interaction(Revision, SctScriptId, std::stop_token = {}) = 0;
+    virtual Result<ItemExplanation> explanation(Revision, Subject, std::stop_token = {}) = 0;
+    virtual Result<RouteDetail> routes(Revision, SctModuleId, std::stop_token = {}) = 0;
+    virtual Result<OutputReview> reviewOutput(Revision, std::vector<SctScriptId>, std::stop_token = {}) = 0;
+    virtual Result<OutputResult> publishOutput(OutputRequest, std::stop_token = {}, const SctLoadingObserver & = {}) = 0;
     virtual Result<Change> history(Revision, bool redo, std::stop_token = {}) = 0;
 };
 } // namespace salsa::core::editor

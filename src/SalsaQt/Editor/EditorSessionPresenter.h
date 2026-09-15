@@ -29,6 +29,8 @@ class EditorSessionPresenter final : public QObject {
     const std::optional<core::editor::Subject> &selection() const { return selection_; }
     void execute(QString, core::editor::EditIntent, std::optional<core::editor::Revision> = {});
     void navigate(core::editor::Subject);
+    void runOperation(QString, std::function<core::Result<std::string>(std::stop_token, const core::SctLoadingObserver &)>);
+
     QAction *backAction() const { return back_; }
     QAction *forwardAction() const { return forward_; }
 

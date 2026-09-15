@@ -33,6 +33,13 @@ class ProgramBackend final : public Backend {
     Result<std::vector<SctLocalActivation>> activationSuggestions(Revision, SctScriptId, std::stop_token = {}) override;
     Result<SelectorPreview> previewSelectors(Revision, SctActionId, SctActionId, smores::script::KnownBytes, std::stop_token = {}) override;
     Result<smores::script::Resource> inspectResource(Revision, std::string, smores::script::ResourceRole, std::stop_token = {}) override;
+    Result<StoryCatalog> storyCatalog(Revision, std::stop_token = {}) override;
+    Result<StoryView> story(Revision, StoryRequest, std::stop_token = {}) override;
+    Result<InteractionView> interaction(Revision, SctScriptId, std::stop_token = {}) override;
+    Result<ItemExplanation> explanation(Revision, Subject, std::stop_token = {}) override;
+    Result<RouteDetail> routes(Revision, SctModuleId, std::stop_token = {}) override;
+    Result<OutputReview> reviewOutput(Revision, std::vector<SctScriptId>, std::stop_token = {}) override;
+    Result<OutputResult> publishOutput(OutputRequest, std::stop_token = {}, const SctLoadingObserver & = {}) override;
     // Migration seam for tools not yet moved behind editor contracts.
     static Change describe(const program::ChangeReceipt &);
 

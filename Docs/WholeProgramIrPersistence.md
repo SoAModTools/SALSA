@@ -4,7 +4,7 @@ WP4 supplies binary persistence for the production paged IR through `ProgramPers
 
 ## Binary contract
 
-New project files use the eight-byte `SALSAPRJ` magic followed by three little-endian u32 fields: framing version **2**, codec **1** (Zstandard), and program binary schema **5**. Earlier containers are unsupported. Unknown versions/codecs/schemas fail with a diagnostic; loading does not write or replace the original file. There is no development-schema converter. Python SALSA v7 import is the only supported legacy compatibility path. This current-schema-only policy also applies to workspace manifests, saved sessions, SCT patches, reconciliation decisions, and copied fragments/snippets: retired schema versions and field-name aliases are rejected rather than upgraded. Normal recovery of interrupted current-format transactions remains available.
+New project files use the eight-byte `SALSAPRJ` magic followed by three little-endian u32 fields: framing version **2**, codec **1** (Zstandard), and program binary schema **6**. Earlier containers are unsupported. Unknown versions/codecs/schemas fail with a diagnostic; loading does not write or replace the original file. There is no development-schema converter. Python SALSA v7 import is the only supported legacy compatibility path. This current-schema-only policy also applies to workspace manifests, saved sessions, SCT patches, reconciliation decisions, and copied fragments/snippets: retired schema versions and field-name aliases are rejected rather than upgraded. Normal recovery of interrupted current-format transactions remains available.
 
 After the header, each independent record has a u32 decoded length, u32 compressed length and one complete zstd frame. A zero/zero record terminates the file; trailing bytes are rejected. Decoded records are at most 1 MiB. Frame checksums are enabled. Compression uses the pinned Zstandard 1.5.7 library at level 1, with one context, no dictionary and no worker threads. Encoder and decoder reuse bounded scratch buffers; they do not retain a worst-case compressed buffer for every record. The encoded file itself is held in memory for the existing transaction API. This framing is an integrity/container contract, not authentication or encryption.
 
@@ -17,7 +17,7 @@ Stream order:
 3. Live bottom-up values with inline child-index lists and text bytes.
 4. Live section and text records, followed by sequence identities, ownership, roles and action orders.
 5. Live actions; structured actions include their arms/shared labels and kind-specific loop/switch/transfer/dispatch records.
-6. Live condition regions and authored metadata: modules, entrypoints/activation, ports, connections/routes, language groups, logical text, annotations and variable meanings, section folders and opcode customizations.
+6. Live condition regions and authored metadata: modules, entrypoints/activation, ports, connections/routes, language groups, logical text, annotations and variable meanings, section folders and opcode customizations, narrative module order, and item-attached interpretation records.
 7. Separate presentation/session content: positions, selection, ordered tabs with view/selection, active tab.
 
 The encoder flushes the semantic record before presentation starts. Presentation changes therefore leave preceding semantic records unchanged. Authored order is retained. Dead actions, obsolete arm ranges and unreachable prior value versions are omitted. Values and range indices may change on reopen; authored identities do not. The allocator includes consumed IDs even when their entities were deleted. Derived postings, module summaries, service generation, saved-history tokens and undo history are not persisted. Baseline descriptors qualify source identities; baseline bytes remain outside executable state and outside this file.
@@ -26,7 +26,7 @@ The decoder checks framing and configured bounds, constructs unpublished tables,
 
 Default limits are 1 GiB encoded, 4 GiB decoded and 64 million items in one collection. These are admission limits, not a measured process-memory ceiling: owned tables, ID directories, derived indexes, captured checkpoints and encoded input also occupy memory. Saving explicitly captures a complete checkpoint; ordinary view refresh still uses scoped readers.
 
-Schema 3 adds independent route-dispatch predicates, evaluation-phase samples and arm bindings on cutscene connections. Schema 2 introduced slots and connection observations. Derived cutscene queries and generated dispatch instructions are not persisted. Earlier development schemas are rejected without modifying their files; Python SALSA v7 import remains supported.
+Schema 6 adds explicit story-state classification to variable meanings, narrative order and revision-qualified interpretation decisions. These records share normal history and stable IDs; they are not a second execution model. Schema 5 introduced organization/catalog metadata. Schema 3 adds independent route-dispatch predicates, evaluation-phase samples and arm bindings on cutscene connections. Schema 2 introduced slots and connection observations. Derived cutscene queries and generated dispatch instructions are not persisted. Earlier development schemas are rejected without modifying their files; Python SALSA v7 import remains supported.
 
 ## Save, recovery and background open
 

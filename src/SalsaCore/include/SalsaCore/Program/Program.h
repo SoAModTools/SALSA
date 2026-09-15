@@ -154,8 +154,8 @@ struct Entrypoint {
     bool required() const noexcept { return kind == SctEntrypointKind::Lifecycle && (name == "init" || name == "loop"); }
 };
 // Slots describe a cutscene interface without owning a second copy of its code.
-enum class SlotRole : std::uint8_t { Generic, Entry, Exit };
-enum class SlotBoundary : std::uint8_t { Operand, Fallthrough, Terminal, SequenceEnd };
+using SlotRole = editor::SlotRole;
+using SlotBoundary = editor::SlotBoundary;
 struct Port {
     SctPortId id;
     SctPortOwner owner;
@@ -167,8 +167,8 @@ struct Port {
     std::optional<spice::sct::SctParameterAddress> operand;
 };
 
-enum class EntryMethod : std::uint8_t { Unknown, InternalCall, Arrival, BattleReturn, Handler, Signal, NamedEntry };
-enum class RouteOutcome : std::uint8_t { Observe, LocalTransfer, ReturnToCaller, ResumeLoop, ScriptTransition, ScheduledCall };
+using EntryMethod = editor::EntryMethod;
+using RouteOutcome = editor::RouteOutcome;
 enum class RequirementMatch : std::uint8_t { True, False, Case, Default };
 struct RouteRequirement {
     Site site;
@@ -208,14 +208,7 @@ struct Annotation {
     std::string note, bookmark;
     std::optional<std::uint32_t> color;
 };
-struct VariableMeaning {
-    SctMeaningId id;
-    SctScriptId script; // zero: project-wide; script-specific definitions override display
-    SctVariableKey variable;
-    std::optional<std::int64_t> value;
-    std::string name;
-    std::vector<SctAuthoringEvidence> evidence;
-};
+using VariableMeaning = editor::Meaning;
 struct Metadata {
     std::vector<editor::SectionFolder> folders;
     std::vector<editor::OpcodeCustomization> opcodes;
@@ -227,6 +220,8 @@ struct Metadata {
     std::vector<SctLogicalText> logicalTexts;
     std::vector<Annotation> annotations;
     std::vector<VariableMeaning> meanings;
+    std::vector<SctModuleId> narrative;
+    std::vector<editor::InterpretationRecord> interpretations;
 };
 enum class Bank : std::uint8_t { Bit, Byte, Integer, Float };
 struct Variable {

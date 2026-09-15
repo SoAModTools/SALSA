@@ -24,8 +24,9 @@ F(Module, v.id, v.script, v.name, v.sequences, v.evidence)
 F(Entrypoint, v.id, v.script, v.name, v.kind, v.body, v.enabled, v.activation, v.response, v.responseSite, v.predicate,
   v.provider, v.evidence)
 F(Annotation, v.subject, v.alias, v.evidence, v.note, v.bookmark, v.color)
-F(VariableMeaning, v.id, v.script, v.variable, v.value, v.name, v.evidence)
-F(Metadata, v.modules, v.entrypoints, v.ports, v.languages, v.connections, v.logicalTexts, v.annotations, v.meanings, v.folders, v.opcodes)
+F(VariableMeaning, v.id, v.script, v.variable, v.value, v.name, v.evidence, v.storyState)
+F(editor::InterpretationRecord, v.subject, v.revision, v.decision, v.explanation, v.evidence)
+F(Metadata, v.modules, v.entrypoints, v.ports, v.languages, v.connections, v.logicalTexts, v.annotations, v.meanings, v.folders, v.opcodes, v.narrative, v.interpretations)
 F(SctAuthoringEvidence, v.kind, v.description)
 F(SctUnresolvedBinding, v.originalEvidence, v.explanation, v.evidence)
 F(SctLegacyOrigin, v.capsuleId, v.scriptKey, v.scriptOrdinal)
@@ -75,6 +76,7 @@ template <class T> constexpr std::uint32_t enumMax();
     template <> constexpr std::uint32_t enumMax<T>() {                                                                 \
         return static_cast<std::uint32_t>(T::L);                                                                       \
     }
+E(editor::InterpretationDecision, Superseded)
 E(ValueKind, StringGroup)
 E(ActionKind, Dispatch)
 E(DispatchMode, FirstMatch) E(CaseExit, Fallthrough) E(LoopKind, For) E(TransferKind, Continue)

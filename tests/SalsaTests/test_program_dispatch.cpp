@@ -1,4 +1,5 @@
 #include "SalsaCore/Program/ProgramMaterializer.h"
+#include "SalsaCore/Editor/ProgramBackend.h"
 #include "SalsaCore/Program/ProgramPersistence.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include <array>
@@ -202,7 +203,11 @@ TEST(ProgramDispatchTest, IndependentRequirementsPreserveEarlierSharedReads) {
     auto checkpoint = f.checkpoint();
     auto bCondition = checkpoint.program->find(f.b)->condition;
     auto bValue = checkpoint.program->find(bCondition)->result;
-    auto receipt = f.edit(ir::SemanticOperation{ir::SetRouteRequirement{f.a, buffer("BitVar[1]")}});
+    editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service, [](auto*){}));
+    auto changedRequirement = backend.execute(f.revision, editor::StoryEdit{editor::WriteRouteRequirement{f.a, expression("BitVar[1]")}});
+    ASSERT_TRUE(changedRequirement) << messages(changedRequirement.diagnostics());
+    auto receipt = changedRequirement.value();
+    f.revision = receipt.status.current;
     EXPECT_EQ(f.checkpoint().program->find(bCondition)->result, bValue);
     EXPECT_EQ(receipt.actions.size(), 1u);
     auto query = f.service.cutscene(f.revision, SctModuleId{1002}).get();

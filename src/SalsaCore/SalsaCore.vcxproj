@@ -295,4 +295,10 @@
     <ClInclude Include="src\Program\FeatureQueries.inl" />
     <ClInclude Include="src\Program\FeatureEdits.inl" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Editor\StoryFeatures.h" />
+    <ClCompile Include="src\Editor\ProgramStory.cpp" />
+    <ClInclude Include="src\Program\StoryQueries.inl" />
+    <ClInclude Include="src\Program\StoryEdits.inl" />
+  </ItemGroup>
 </Project>

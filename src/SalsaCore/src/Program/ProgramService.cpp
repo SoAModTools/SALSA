@@ -174,6 +174,8 @@ struct PreparedData {
     std::optional<std::vector<Connection>> connections;
     std::optional<std::vector<SctLogicalText>> logicalTexts;
     std::optional<std::vector<VariableMeaning>> meanings;
+    std::optional<std::vector<SctModuleId>> narrative;
+    std::optional<std::vector<editor::InterpretationRecord>> interpretations;
     std::optional<std::vector<Annotation>> annotationTable;
     std::optional<std::vector<editor::SectionFolder>> folders;
     std::optional<std::vector<editor::OpcodeCustomization>> opcodes;
@@ -210,6 +212,8 @@ struct PreparedData {
             connections->swap(d.metadata.connections);
         if (logicalTexts)
             logicalTexts->swap(d.metadata.logicalTexts);
+        if (narrative) narrative->swap(d.metadata.narrative);
+        if (interpretations) interpretations->swap(d.metadata.interpretations);
         if (meanings)
             meanings->swap(d.metadata.meanings);
         if (folders) folders->swap(d.metadata.folders);
@@ -257,6 +261,7 @@ struct PreparedData {
 #include "SemanticEdits.inl"
 #include "FragmentEdits.inl"
 #include "FeatureEdits.inl"
+#include "StoryEdits.inl"
 #include "CutsceneEdits.inl"
 #include "DispatchEdits.inl"
 // clang-format on
@@ -1462,6 +1467,7 @@ std::future<Result<std::shared_ptr<const ReadScope>>> ProgramService::read(Revis
 #include "ProgramBrowse.inl"
 #include "ProgramProductivity.inl"
 #include "FeatureQueries.inl"
+#include "StoryQueries.inl"
 std::future<Result<VariableQuery>> ProgramService::uses(Revision r, Variable key) {
     return control_->submit<VariableQuery>([r, key](auto &o) {
         o.match(r);

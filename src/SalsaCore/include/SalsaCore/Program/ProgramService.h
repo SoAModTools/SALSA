@@ -191,7 +191,7 @@ struct PasteFragment {
 struct Organize { editor::WriteOrganization value; };
 struct CustomizeOpcode { editor::OpcodeCustomization value; };
 using SemanticOperation =
-    std::variant<editor::FeatureEdit, InsertConstruct, ReplaceArms, InsertTransfer, MoveAction, EraseAction, RetargetTransfer,
+    std::variant<editor::StoryEdit,editor::FeatureEdit, InsertConstruct, ReplaceArms, InsertTransfer, MoveAction, EraseAction, RetargetTransfer,
                  PromoteFlow, PutMetadata, EraseMetadata, PutAnnotation, AssignLanguages, BindLifecycle,
                  ScriptSettings, ConnectSlots, PromoteDispatch, SetRouteRequirement, PasteFragment, Organize, CustomizeOpcode, SetNote, MoveActions>;
 using Primitive = std::variant<ReplaceParameter, ReplaceInstruction, ReplaceCondition, ReplaceText, InsertInstruction,
@@ -477,6 +477,11 @@ class ProgramService final {
     std::future<Result<std::vector<editor::FeatureSite>>> textUses(Revision, SctTextResourceId, std::stop_token = {});
     std::future<Result<std::vector<editor::LanguageSuggestion>>> suggestLanguages(Revision, SctScriptId, std::stop_token = {});
     std::future<Result<editor::SelectorPreview>> previewSelectors(Revision, SctActionId, SctActionId, smores::script::KnownBytes, std::stop_token = {});
+    std::future<Result<editor::StoryCatalog>> storyCatalog(Revision, std::stop_token = {});
+    std::future<Result<editor::StoryView>> story(Revision, editor::StoryRequest, std::stop_token = {});
+    std::future<Result<editor::InteractionView>> storyInteraction(Revision, SctScriptId, std::stop_token = {});
+    std::future<Result<editor::ItemExplanation>> storyExplanation(Revision, editor::Subject, std::stop_token = {});
+    std::future<Result<editor::OutputReview>> reviewOutput(Revision, std::vector<SctScriptId>, std::stop_token = {});
     std::future<Result<InteractionQuery>> interactions(Revision, SctScriptId);
     std::future<Result<ExplanationQuery>> explain(Revision, decltype(Annotation::subject));
     std::future<Result<Checkpoint>> checkpoint(Revision, std::stop_token = {});

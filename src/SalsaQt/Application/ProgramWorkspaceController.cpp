@@ -7,6 +7,7 @@
 #include "Editor/ProductivityActions.h"
 #include "Editor/OrganizationComponent.h"
 #include "Editor/AuthoringTools.h"
+#include "Editor/StoryTools.h"
 #include "Editor/EditorQueryWidget.h"
 #include "Editor/ScriptOutlineComponent.h"
 #include "SalsaCore/Editor/ProgramBackend.h"
@@ -190,6 +191,10 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     auto* languages=new LanguageTools(editor_,shell_);authoring->addAction(languages->action);
     auto* entries=new EntryResourceTools(editor_,shell_);for(auto* a:entries->actions)authoring->addAction(a);
     auto* selectors=new SelectorTools(editor_,shell_);authoring->addAction(selectors->action);
+    auto *story=new StoryTools(editor_,shell_);for(auto *a:story->actions)authoring->addAction(a);
+    auto *interactions=new InteractionTools(editor_,shell_);authoring->addAction(interactions->action);
+    auto *routes=new RouteTools(editor_,shell_);for(auto *a:routes->actions)authoring->addAction(a);
+
     authoring->addAction(tr("Find variable usesâ€¦"), this, [this] { variableUses(); });
     authoring->addAction(tr("Edit selected textâ€¦"), this, [this,textDock] { textDock->show(); textDock->raise(); textEditor_->setFocus(); });
     authoring->addAction(tr("Inspect generated instructionsâ€¦"), this, [this] { inspectLowered(); });
