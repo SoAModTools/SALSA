@@ -43,6 +43,20 @@ std::future<Result<editor::BrowsePage>> ProgramService::browse(Revision r, edito
                 name = "Dispatch";
             return script->context.name + " — " + name + " (action " + std::to_string(id.value) + ")";
         };
+        if(request.kind==editor::BrowseKind::Containers) {
+            for(const auto &seq:d.sequences)if(seq.id.valid() && (!request.script.valid() || seq.script==request.script)) {
+                std::string name="Body "+std::to_string(seq.id.value);
+                if(!seq.owner)for(const auto &section:d.sections)if(section.body==seq.id){name=section.name;break;}
+                // Nested bodies remain selectable even when empty.
+                if(seq.owner)name+=" ("+std::string(seq.role==SequenceRole::ConditionPreparation?"condition preparation":seq.role==SequenceRole::LoopBody?"loop body":seq.role==SequenceRole::LoopUpdate?"loop update":seq.role==SequenceRole::LoopInitialize?"loop initialization":"branch body")+")";
+                append(seq.id,[&]{return name;});
+            }
+            return out;
+        }
+        if(request.kind==editor::BrowseKind::Sections) {
+            auto *script=d.lookup(request.script.value,EntityKind::Script,d.scripts);require(script,"Choose a script");
+            for(auto id:script->sections)append(id,[&]{return d.sections[d.directory.find(id.value).index].name;});return out;
+        }
         if (request.kind == editor::BrowseKind::Texts) {
             for (const auto &t : d.texts)
                 if (t.id.valid() && (!request.script.valid() || t.script == request.script))

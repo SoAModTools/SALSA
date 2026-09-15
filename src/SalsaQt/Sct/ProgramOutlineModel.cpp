@@ -1,18 +1,16 @@
-#include <QApplication>
-#include <QStyle>
 #include "Sct/ProgramOutlineModel.h"
+#include <QApplication>
+#include <QBrush>
+#include <QColor>
 #include <QFutureWatcher>
 #include <QPointer>
+#include <QStyle>
 #include <QtConcurrent/QtConcurrentRun>
 #include <algorithm>
 namespace salsa::qt {
 namespace ir = core::editor;
-ProgramOutlineModel::ProgramOutlineModel(QObject *parent) : QAbstractItemModel(parent) {
-    nodes_.resize(1);
-}
-std::size_t ProgramOutlineModel::slot(const QModelIndex &i) const {
-    return i.isValid() ? i.internalId() : 0;
-}
+ProgramOutlineModel::ProgramOutlineModel(QObject *parent) : QAbstractItemModel(parent) { nodes_.resize(1); }
+std::size_t ProgramOutlineModel::slot(const QModelIndex &i) const { return i.isValid() ? i.internalId() : 0; }
 QModelIndex ProgramOutlineModel::indexFor(std::size_t n) const {
     return n && n < nodes_.size() && nodes_[n].live ? createIndex(static_cast<int>(nodes_[n].ordinal), 0, n)
                                                     : QModelIndex{};
@@ -30,7 +28,8 @@ QModelIndex ProgramOutlineModel::parent(const QModelIndex &i) const {
 }
 int ProgramOutlineModel::rowCount(const QModelIndex &p) const {
     auto n = slot(p);
-    return n < nodes_.size() && (!p.isValid() || !p.column()) ? static_cast<int>(nodes_[n].children.size()) : 0;
+    return n < nodes_.size() && (!p.isValid() || !p.column()) ? static_cast<int>(nodes_[n].children.size())
+                                                              : 0;
 }
 const ir::OutlineRow *ProgramOutlineModel::row(const QModelIndex &i) const {
     auto n = slot(i);
@@ -40,9 +39,15 @@ QVariant ProgramOutlineModel::data(const QModelIndex &i, int role) const {
     const auto *r = row(i);
     if (!r)
         return {};
+    if (role == Qt::ForegroundRole && r->color)
+        return QBrush(QColor::fromRgb(*r->color));
+    if (role == Qt::DecorationRole && r->bookmarked)
+        return QApplication::style()->standardIcon(QStyle::SP_DialogApplyButton);
     if (i.column() == 0 && !r->groupingIssue.empty()) {
-        if (role == Qt::ToolTipRole) return QString::fromStdString(r->label + "\n" + r->groupingIssue);
-        if (role == Qt::DecorationRole) return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+        if (role == Qt::ToolTipRole)
+            return QString::fromStdString(r->label + "\n" + r->groupingIssue);
+        if (role == Qt::DecorationRole)
+            return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
     }
     if (role == Qt::DisplayRole || role == Qt::ToolTipRole) {
         if (i.column() == 0)
@@ -52,15 +57,17 @@ QVariant ProgramOutlineModel::data(const QModelIndex &i, int role) const {
     return {};
 }
 QVariant ProgramOutlineModel::headerData(int n, Qt::Orientation o, int role) const {
-    return o == Qt::Horizontal && role == Qt::DisplayRole ? QVariant(n ? tr("Identity") : tr("Script content"))
-                                                          : QVariant{};
+    return o == Qt::Horizontal && role == Qt::DisplayRole
+               ? QVariant(n ? tr("Identity") : tr("Script content"))
+               : QVariant{};
 }
 bool ProgramOutlineModel::canFetchMore(const QModelIndex &p) const {
     auto n = slot(p);
     if (!service_ || n >= nodes_.size() || (p.isValid() && p.column()))
         return false;
     const auto &node = nodes_[n];
-    return node.live && node.row.expandable && !node.loading && (!node.fetched || node.children.size() < node.total);
+    return node.live && node.row.expandable && !node.loading &&
+           (!node.fetched || node.children.size() < node.total);
 }
 bool ProgramOutlineModel::hasChildren(const QModelIndex &p) const {
     auto n = slot(p);
@@ -99,7 +106,8 @@ void ProgramOutlineModel::fetchMore(const QModelIndex &parent) {
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, n, generation, revision, request] {
         auto result = watcher->result();
         watcher->deleteLater();
-        if (generation != generation_ || n >= nodes_.size() || !nodes_[n].live || nodes_[n].request != request)
+        if (generation != generation_ || n >= nodes_.size() || !nodes_[n].live ||
+            nodes_[n].request != request)
             return;
         nodes_[n].loading = false;
         if (revision != revision_) {
@@ -114,12 +122,15 @@ void ProgramOutlineModel::fetchMore(const QModelIndex &parent) {
                     diagnostic(QString::fromStdString(d.message));
             if (!n && ready)
                 ready();
+            if (pageReady)
+                pageReady();
             return;
         }
         const auto &page = result.value();
         auto count = nodes_[n].children.size();
         if (!page.rows.empty())
-            beginInsertRows(indexFor(n), static_cast<int>(count), static_cast<int>(count + page.rows.size() - 1));
+            beginInsertRows(indexFor(n), static_cast<int>(count),
+                            static_cast<int>(count + page.rows.size() - 1));
         for (const auto &row : page.rows) {
             Node added;
             added.row = row;
@@ -140,6 +151,8 @@ void ProgramOutlineModel::fetchMore(const QModelIndex &parent) {
         nodes_[n].total = page.total;
         if (!page.rows.empty())
             endInsertRows();
+        if (pageReady)
+            pageReady();
         if (measured)
             measured(page.elapsedMicroseconds, page.rows.size());
         if (!n && ready) {
@@ -185,12 +198,17 @@ void ProgramOutlineModel::apply(const ir::Change &change) {
                 resetChildren(0);
                 return;
             }
-    if(mode_==ir::ViewMode::Semantic && !change.projectionSequences.empty()) {
+    if (mode_ == ir::ViewMode::Semantic && !change.projectionSequences.empty()) {
         std::vector<std::size_t> affected;
-        for(std::size_t n=1;n<nodes_.size();++n) if(nodes_[n].live && nodes_[n].fetched &&
-            !std::holds_alternative<core::SctActionId>(nodes_[n].row.subject) &&
-            std::ranges::find(change.projectionSequences,nodes_[n].row.sequence)!=change.projectionSequences.end())affected.push_back(n);
-        for(auto n:affected)if(nodes_[n].live)resetChildren(n);
+        for (std::size_t n = 1; n < nodes_.size(); ++n)
+            if (nodes_[n].live && nodes_[n].fetched &&
+                !std::holds_alternative<core::SctActionId>(nodes_[n].row.subject) &&
+                std::ranges::find(change.projectionSequences, nodes_[n].row.sequence) !=
+                    change.projectionSequences.end())
+                affected.push_back(n);
+        for (auto n : affected)
+            if (nodes_[n].live)
+                resetChildren(n);
     }
     std::vector<std::size_t> orders, labels;
     for (std::size_t n = 1; n < nodes_.size(); ++n) {
@@ -228,23 +246,27 @@ void ProgramOutlineModel::apply(const ir::Change &change) {
             auto service = service_;
             auto *watcher = new QFutureWatcher<core::Result<ir::OutlinePage>>(this);
             ir::OutlineRequest request{nodes_[parent].row.subject, nodes_[n].ordinal, 1, mode_};
-            connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, n, expected, generation, revision] {
-                auto result = watcher->result();
-                watcher->deleteLater();
-                if (generation != generation_ || revision != revision_ || n >= nodes_.size() || !nodes_[n].live ||
-                    nodes_[n].row.subject != expected)
-                    return;
-                if (!result || result.value().rows.empty() || result.value().rows.front().subject != expected)
-                    return;
-                const auto oldKind = nodes_[n].row.kind;
-                nodes_[n].row = result.value().rows.front();
-                emit dataChanged(indexFor(n), indexFor(n));
-                if (nodes_[n].fetched && (oldKind != nodes_[n].row.kind ||
-                                          (nodes_[n].row.kind && *nodes_[n].row.kind != ir::RowKind::Instruction)))
-                    resetChildren(n);
-            });
-            watcher->setFuture(
-                QtConcurrent::run([service, revision, request] { return service->outline(revision, request); }));
+            connect(watcher, &QFutureWatcherBase::finished, this,
+                    [this, watcher, n, expected, generation, revision,
+                     changePresentation = change.presentationChanged] {
+                        auto result = watcher->result();
+                        watcher->deleteLater();
+                        if (generation != generation_ || revision != revision_ || n >= nodes_.size() ||
+                            !nodes_[n].live || nodes_[n].row.subject != expected)
+                            return;
+                        if (!result || result.value().rows.empty() ||
+                            result.value().rows.front().subject != expected)
+                            return;
+                        const auto oldKind = nodes_[n].row.kind;
+                        nodes_[n].row = result.value().rows.front();
+                        emit dataChanged(indexFor(n), indexFor(n));
+                        if (!changePresentation && nodes_[n].fetched &&
+                            (oldKind != nodes_[n].row.kind ||
+                             (nodes_[n].row.kind && *nodes_[n].row.kind != ir::RowKind::Instruction)))
+                            resetChildren(n);
+                    });
+            watcher->setFuture(QtConcurrent::run(
+                [service, revision, request] { return service->outline(revision, request); }));
         }
 }
 } // namespace salsa::qt

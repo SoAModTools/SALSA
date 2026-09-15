@@ -1,6 +1,6 @@
 #pragma once
 
-#include "SalsaCore/Editor/EditorIdentity.h"
+#include "SalsaCore/Editor/EditorBackend.h"
 #include "SalsaCore/Authoring/SctAuthoringProject.h"
 #include <memory>
 #include <span>
@@ -205,6 +205,8 @@ struct Annotation {
     editor::Subject subject;
     std::string alias;
     std::vector<SctAuthoringEvidence> evidence;
+    std::string note, bookmark;
+    std::optional<std::uint32_t> color;
 };
 struct VariableMeaning {
     SctMeaningId id;
@@ -215,6 +217,8 @@ struct VariableMeaning {
     std::vector<SctAuthoringEvidence> evidence;
 };
 struct Metadata {
+    std::vector<editor::SectionFolder> folders;
+    std::vector<editor::OpcodeCustomization> opcodes;
     std::vector<Module> modules;
     std::vector<Entrypoint> entrypoints;
     std::vector<Port> ports;

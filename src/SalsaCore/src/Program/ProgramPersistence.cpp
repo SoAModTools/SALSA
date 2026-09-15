@@ -37,7 +37,7 @@ struct Frames {
         w.raw("SALSAPRJ", 8);
         w.put(std::uint32_t{2});
         w.put(std::uint32_t{1});
-        w.put(std::uint32_t{4});
+        w.put(std::uint32_t{5});
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_compressionLevel, 1));
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_checksumFlag, 1));
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_nbWorkers, 0));
@@ -101,7 +101,7 @@ struct Unframes {
         require(std::memcmp(magic, "SALSAPRJ", 8) == 0, "Not a SALSA project container");
         require(r.get<std::uint32_t>() == 2, "Unsupported project container version; original file is unchanged");
         require(r.get<std::uint32_t>() == 1, "Unsupported project compression codec");
-        require(r.get<std::uint32_t>() == 4, "Unsupported program binary schema");
+        require(r.get<std::uint32_t>() == 5, "Unsupported program binary schema");
         for (;;) {
             checkStop(stop);
             auto n = r.get<std::uint32_t>(), c = r.get<std::uint32_t>();
@@ -392,16 +392,6 @@ void presentationShape(const ProgramData &d, const Presentation &p) {
             },
             s);
     };
-    for (std::size_t i = 0; i < p.folders.size(); ++i) {
-        auto &f = p.folders[i];
-        require(live(d, f.script.value, EntityKind::Script), "Missing folder script");
-        if (f.parent)
-            require(*f.parent < i && p.folders[*f.parent].script == f.script, "Invalid folder parent");
-        for (auto id : f.sections) {
-            auto *section = d.lookup(id.value, EntityKind::Section, d.sections);
-            require(section && section->script == f.script, "Missing folder section");
-        }
-    }
     for (auto &x : p.placements) {
         subject(x.subject);
         require(std::isfinite(x.x) && std::isfinite(x.y), "Invalid position");
@@ -718,5 +708,29 @@ Result<WorkspaceArtifactMutation> ProgramPersistence::mutation(
         return Result<WorkspaceArtifactMutation>::failure(encoded.diagnostics());
     return Result<WorkspaceArtifactMutation>::success(
         {std::move(relativePath), expected.has_value(), std::move(expected), std::move(encoded).takeValue()});
+}
+
+Result<std::vector<std::byte>> ProgramPersistence::encodeFragment(const ProgramFragment &f) {
+    try {
+        std::vector<std::byte> bytes;
+        binary::Writer w{[&](auto b){require(bytes.size()+b.size()<=64u*1024u*1024u,"Fragment exceeds 64 MiB");bytes.insert(bytes.end(),b.begin(),b.end());}};
+        w.raw("SALSAFRG",8);w.put(std::uint32_t{1});w.put(f.project);w.put(f.script);w.put(f.roots);
+        const auto &s=f.content;w.put(s.actions);w.put(s.sections);w.put(s.arms);w.put(s.caseLabels);w.put(s.conditions);w.put(s.loops);w.put(s.switches);w.put(s.dispatches);w.put(s.transfers);w.put(s.payload);w.put(f.annotations);
+        w.put(count32(s.sequences.size()));for(auto &seq:s.sequences){w.put(seq.id);w.put(seq.script);w.put(seq.owner);w.put(seq.role);require(bool(seq.order),"Missing fragment body");w.put(*seq.order);}
+        return Result<std::vector<std::byte>>::success(std::move(bytes));
+    } catch(const std::exception &e){return Result<std::vector<std::byte>>::failure(failure(e.what()));}
+}
+Result<std::shared_ptr<const ProgramFragment>> ProgramPersistence::decodeFragment(std::span<const std::byte> bytes) {
+    try {
+        require(bytes.size()<=64u*1024u*1024u,"Fragment exceeds 64 MiB");std::size_t offset=0;
+        binary::Reader r{[&](auto out){std::memcpy(out.data(),bytes.data()+offset,out.size());offset+=out.size();},bytes.size(),1000000};
+        char magic[8];r.raw(magic,8);require(std::memcmp(magic,"SALSAFRG",8)==0 && r.get<std::uint32_t>()==1,"Unsupported SALSA fragment");
+        auto f=std::make_shared<ProgramFragment>();f->project=r.get<SctAuthoringProjectId>();f->script=r.get<SctScriptId>();f->roots=r.get<std::vector<SctActionId>>();auto &s=f->content;
+        s.actions=r.get<std::vector<Action>>();s.sections=r.get<std::vector<Section>>();s.arms=r.get<std::vector<Arm>>();s.caseLabels=r.get<std::vector<std::int32_t>>();s.conditions=r.get<std::vector<ConditionRegion>>();s.loops=r.get<std::vector<Loop>>();s.switches=r.get<std::vector<Switch>>();s.dispatches=r.get<std::vector<Dispatch>>();s.transfers=r.get<std::vector<Transfer>>();s.payload=r.get<ValueBuffer>();f->annotations=r.get<std::vector<Annotation>>();
+        auto count=r.get<std::uint32_t>();require(count<=r.maxItems && count<=r.remaining,"Invalid fragment sequence count");
+        for(std::uint32_t i=0;i<count;++i){Sequence seq;seq.id=r.get<SctSequenceId>();seq.script=r.get<SctScriptId>();seq.owner=r.get<std::optional<SequenceOwner>>();seq.role=r.get<SequenceRole>();seq.order=std::make_shared<const std::vector<SctActionId>>(r.get<std::vector<SctActionId>>());s.sequences.push_back(std::move(seq));}
+        require(!r.remaining && (!f->roots.empty() != !s.sections.empty()),"Malformed fragment roots or trailing data");
+        return Result<std::shared_ptr<const ProgramFragment>>::success(std::move(f));
+    } catch(const std::exception &e){return Result<std::shared_ptr<const ProgramFragment>>::failure(failure(e.what()));}
 }
 } // namespace salsa::core::program

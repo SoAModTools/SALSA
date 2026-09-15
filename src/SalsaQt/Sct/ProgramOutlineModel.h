@@ -10,13 +10,14 @@ class ProgramOutlineModel final : public QAbstractItemModel {
   public:
     explicit ProgramOutlineModel(QObject *parent = nullptr);
     void bind(std::shared_ptr<core::editor::Backend>, core::editor::Revision, core::SctScriptId);
-    void setMode(core::editor::ViewMode mode) { mode_=mode; }
+    void setMode(core::editor::ViewMode mode) { mode_ = mode; }
     core::editor::ViewMode mode() const { return mode_; }
     bool pending(const QModelIndex &index) const;
     void apply(const core::editor::Change &);
     const core::editor::OutlineRow *row(const QModelIndex &) const;
     QModelIndex find(const core::editor::Subject &) const;
     std::function<void()> ready;
+    std::function<void()> pageReady;
     std::function<void(QString)> diagnostic;
     std::function<void(std::uint64_t, std::size_t)> measured;
     QModelIndex index(int, int, const QModelIndex & = {}) const override;
@@ -24,6 +25,9 @@ class ProgramOutlineModel final : public QAbstractItemModel {
     int rowCount(const QModelIndex & = {}) const override;
     int columnCount(const QModelIndex & = {}) const override { return 2; }
     QVariant data(const QModelIndex &, int = Qt::DisplayRole) const override;
+    Qt::ItemFlags flags(const QModelIndex &i) const override {
+        return QAbstractItemModel::flags(i) | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled;
+    }
     QVariant headerData(int, Qt::Orientation, int) const override;
     bool canFetchMore(const QModelIndex &) const override;
     void fetchMore(const QModelIndex &) override;

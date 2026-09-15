@@ -63,6 +63,7 @@ struct SemanticTransaction {
         std::visit(
             [&](auto &edit) {
                 using T = std::decay_t<decltype(edit)>;
+                if constexpr (std::is_same_v<T, MoveActions>) for(auto id:edit.actions) captureTree(id);
                 if constexpr (std::is_same_v<T, PromoteDispatch>)
                     captureTree(edit.header);
                 if constexpr (std::is_same_v<T, SetRouteRequirement>) {
@@ -421,6 +422,10 @@ struct SemanticTransaction {
             p.receipt.modules.push_back(id);
         p.receipt.presentationChanged = true;
     }
+    void moveMany(const MoveActions &);
+    void paste(const PasteFragment &);
+    void organize(const Organize &);
+    void customize(const CustomizeOpcode &);
     void promote(const PromoteFlow &);
     void promoteDispatch(const PromoteDispatch &);
     void routeRequirement(const SetRouteRequirement &);
@@ -431,7 +436,17 @@ struct SemanticTransaction {
         std::visit(
             [&](const auto &e) {
                 using T = std::decay_t<decltype(e)>;
-                if constexpr (std::is_same_v<T, PromoteDispatch>)
+                if constexpr (std::is_same_v<T, MoveActions>) moveMany(e);
+                else if constexpr (std::is_same_v<T, SetNote>) {
+                    auto found=std::ranges::find(d.metadata.annotations,e.value.subject,&Annotation::subject);
+                    Annotation note;if(found!=d.metadata.annotations.end())note=*found;
+                    note.subject=e.value.subject;note.alias=e.value.alias;note.note=e.value.note;note.bookmark=e.value.bookmark;note.color=e.value.color;
+                    apply(SemanticOperation{PutAnnotation{std::move(note)}});
+                }
+                else if constexpr (std::is_same_v<T, PasteFragment>) paste(e);
+                else if constexpr (std::is_same_v<T, Organize>) organize(e);
+                else if constexpr (std::is_same_v<T, CustomizeOpcode>) customize(e);
+                else if constexpr (std::is_same_v<T, PromoteDispatch>)
                     promoteDispatch(e);
                 else if constexpr (std::is_same_v<T, SetRouteRequirement>)
                     routeRequirement(e);
@@ -543,6 +558,15 @@ struct SemanticTransaction {
             op);
     }
     void finish() {
+        std::set<std::uint64_t> removed;
+        for(auto [id,prior]:p.locations) if(prior.kind!=EntityKind::None && d.directory.find(id).kind==EntityKind::None) removed.insert(id);
+        if(!removed.empty()) {
+            if(!p.annotationTable)p.annotationTable=d.metadata.annotations;
+            std::erase_if(d.metadata.annotations,[&](const auto &a){return removed.contains(std::visit([](auto id){return id.value;},a.subject));});
+            if(!p.folders)p.folders=d.metadata.folders;
+            for(auto &f:d.metadata.folders)std::erase_if(f.sections,[&](auto id){return removed.contains(id.value);});
+            p.receipt.presentationChanged=true;
+        }
         for (auto use : removedIncoming)
             if (d.action(use.site.action))
                 require(std::ranges::any_of(p.actions,

@@ -4,6 +4,7 @@
 #include <QAction>
 #include <QWidget>
 #include <QtConcurrent/QtConcurrentRun>
+#include <algorithm>
 namespace salsa::qt {
 namespace ed = core::editor;
 EditorSessionPresenter::EditorSessionPresenter(ExclusiveOperationCoordinator *operations, QWidget *host)
@@ -58,7 +59,16 @@ void EditorSessionPresenter::bind(std::shared_ptr<ed::Backend> backend, ed::Revi
     undo_->setEnabled(backend_ && !busy());
     redo_->setEnabled(backend_ && !busy());
 }
+void EditorSessionPresenter::selectMany(std::vector<ed::Subject> items, std::optional<ed::Subject> current) {
+    selectionSet_ = std::move(items);
+    select(current);
+    emit availabilityChanged();
+}
 void EditorSessionPresenter::select(std::optional<ed::Subject> subject) {
+    if (!subject)
+        selectionSet_.clear();
+    else if (std::ranges::find(selectionSet_, *subject) == selectionSet_.end())
+        selectionSet_ = {*subject};
     if (subject == selection_ && requestRevision_ == revision_ && (inspection_ || reading_))
         return;
     readStop_.request_stop();
@@ -110,15 +120,23 @@ void EditorSessionPresenter::select(std::optional<ed::Subject> subject) {
 }
 void EditorSessionPresenter::accept(const ed::Change &change) {
     if (change.status.current.project != revision_.project ||
-        change.status.current.generation != revision_.generation || change.status.current.revision < revision_.revision)
+        change.status.current.generation != revision_.generation ||
+        change.status.current.revision < revision_.revision)
         return;
     revision_ = change.status.current;
+    if (!change.selected.empty()) {
+        selectionSet_ = change.selected;
+        selection_ = change.selected.front();
+    }
     emit changed(change);
     select(selection_);
-    if (change.suggestedSelection)
+    if (!change.selected.empty())
+        navigate(change.selected.front());
+    else if (change.suggestedSelection)
         navigate(*change.suggestedSelection);
 }
-void EditorSessionPresenter::submit(QString title, std::function<core::Result<ed::Change>(std::stop_token)> work) {
+void EditorSessionPresenter::submit(QString title,
+                                    std::function<core::Result<ed::Change>(std::stop_token)> work) {
     if (!backend_ || busy() || !host_)
         return;
     auto generation = sessionGeneration_;
@@ -150,7 +168,8 @@ void EditorSessionPresenter::replaceParameter(ed::ParameterKey key, std::string 
            [backend, revision, edit](auto stop) { return backend->replaceParameter(revision, edit, stop); });
 }
 void EditorSessionPresenter::navigate(ed::Subject subject) { emit navigationRequested(subject); }
-void EditorSessionPresenter::execute(QString title, ed::EditIntent intent, std::optional<ed::Revision> expected) {
+void EditorSessionPresenter::execute(QString title, ed::EditIntent intent,
+                                     std::optional<ed::Revision> expected) {
     auto backend = backend_;
     auto revision = expected.value_or(revision_);
     submit(std::move(title), [backend, revision, intent = std::move(intent)](auto stop) {

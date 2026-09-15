@@ -4,6 +4,8 @@
 #include "Editor/InstructionInspector.h"
 #include "Editor/TextEditorComponent.h"
 #include "Editor/ScriptEditingActions.h"
+#include "Editor/ProductivityActions.h"
+#include "Editor/OrganizationComponent.h"
 #include "Editor/EditorQueryWidget.h"
 #include "Editor/ScriptOutlineComponent.h"
 #include "SalsaCore/Editor/ProgramBackend.h"
@@ -116,6 +118,10 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     connect(editor_, &EditorSessionPresenter::changed, this, &ProgramWorkspaceController::refreshChanged);
     connect(editor_, &EditorSessionPresenter::diagnostic, this, &ProgramWorkspaceController::log);
     editing_=new ScriptEditingActions(editor_,shell_);
+    auto *productivity=new ProductivityActions(editor_,shell_);
+    auto *organization=new OrganizationComponent(editor_,shell_);
+    auto *organizationDock=dock(tr("Notes and bookmarks"),"programOrganization",organization,Qt::RightDockWidgetArea);
+    organizationDock->hide();organization->showRequested=[organizationDock]{organizationDock->show();organizationDock->raise();};
     textEditor_=new TextEditorComponent(editor_,shell_);
     auto *textDock=dock(tr("Text editor and preview"),"programTextEditor",textEditor_,Qt::BottomDockWidgetArea);
     auto *navigator=new NavigatorComponent(editor_,shell_);
@@ -168,9 +174,7 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     editMenu->addSeparator();
     editMenu->addAction(tr("Edit selected itemâ€¦"), this, [this] { editSelected(); }, QKeySequence(Qt::Key_Return));
     editMenu->addAction(editing_->insertAction());
-    editMenu->addAction(tr("Delete selected action"), this, [this] { remove(); }, QKeySequence::Delete);
-    editMenu->addAction(tr("Move up"), this, [this] { move(-1); });
-    editMenu->addAction(tr("Move down"), this, [this] { move(1); });
+    for(auto *action:productivity->actions())editMenu->addAction(action);
     editMenu->addAction(tr("Promote explicit If / While flow…"), this, [this] { promoteFlow(); });
     editMenu->addAction(tr("Promote shared guards to route dispatch"), this, [this] {
         if (!selectedSubject_ || operations_->active())
@@ -179,9 +183,7 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
             edit({ir::SemanticOperation{ir::PromoteDispatch{*header, {}}}});
     });
     editMenu->addSeparator();
-    editMenu->addAction(tr("Add sectionâ€¦"), this, [this] { addSection(); });
-    editMenu->addAction(tr("Rename sectionâ€¦"), this, [this] { renameSection(); });
-    editMenu->addAction(tr("Alias and abstraction notesâ€¦"), this, [this] { annotate(); });
+    for(auto *action:organization->actions())editMenu->addAction(action);
     auto *authoring = shell_->menuBar()->addMenu(tr("&Authoring"));
     authoring->addAction(tr("Modules, entrypoints and language groupsâ€¦"), this, [this] { tools(); });
     authoring->addAction(tr("Find variable usesâ€¦"), this, [this] { variableUses(); });

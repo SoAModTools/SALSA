@@ -770,8 +770,8 @@ TEST(LegacyFreshImportTest, ImportsV7IntoBinaryProgramWithSupportedMetadata) {
     EXPECT_FALSE(project.program->scripts().front().context.region);
     EXPECT_TRUE(project.program->scripts().front().context.legacyOrigin.has_value());
     EXPECT_FALSE(project.program->metadata().meanings.empty());
-    EXPECT_FALSE(project.presentation.opcodeColors.empty());
-    EXPECT_FALSE(project.presentation.folders.empty());
+    EXPECT_FALSE(project.program->metadata().opcodes.empty());
+    EXPECT_FALSE(project.program->metadata().folders.empty());
     EXPECT_TRUE(project.program->metadata().modules.empty());
     ASSERT_EQ(imported.value().baselines.size(),1u);
     EXPECT_EQ(sha256(imported.value().baselines.front().bytes).value(),project.program->baselines().front().source.revision.digest);
@@ -779,7 +779,7 @@ TEST(LegacyFreshImportTest, ImportsV7IntoBinaryProgramWithSupportedMetadata) {
     auto reloaded=ir::ProgramPersistence::decode(encoded.value());ASSERT_TRUE(reloaded) << (reloaded.diagnostics().empty()?"":reloaded.diagnostics().front().message);
     EXPECT_EQ(reloaded.value().program->scripts().front().context.legacyOrigin->capsuleId,project.program->scripts().front().context.legacyOrigin->capsuleId);
     EXPECT_EQ(reloaded.value().program->metadata().meanings.size(),project.program->metadata().meanings.size());
-    EXPECT_EQ(reloaded.value().presentation.folders.front().sections,project.presentation.folders.front().sections);
+    EXPECT_EQ(reloaded.value().program->metadata().folders.front().sections,project.program->metadata().folders.front().sections);
     // Legacy drafts may omit the engine roots. Repair explicitly before native
     // export; no importer or materializer silently invents lifecycle bodies.
     ir::ProgramService service;
@@ -917,7 +917,8 @@ TEST(LegacyFreshImportTest, V7AuthoringProjectPreservesPromotedMetadataAndCanReo
     EXPECT_TRUE(session->catalog.modules.empty());
     auto metadata=session->service->interactions(session->status.current,script).get();ASSERT_TRUE(metadata);
     EXPECT_EQ(metadata.value().meanings.size(),2u);
-    EXPECT_EQ(session->presentation.opcodeColors.size(),1u);EXPECT_FALSE(session->presentation.folders.empty());
+    auto organization=session->service->organization(session->status.current,script).get();ASSERT_TRUE(organization);
+    EXPECT_EQ(organization.value().opcodes.size(),1u);EXPECT_FALSE(organization.value().folders.empty());
     auto outline=session->service->outline(session->status.current,{script,0,128}).get();ASSERT_TRUE(outline);
     const auto section=std::get<ir::SectionId>(outline.value().rows.front().subject);
     auto renamed=session->service->edit({session->status.current,{ir::RenameSection{section,"RENAMED"}}}).get();ASSERT_TRUE(renamed);session->status=renamed.value().status;

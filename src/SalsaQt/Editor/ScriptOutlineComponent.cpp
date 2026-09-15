@@ -1,14 +1,77 @@
 #include "Editor/ScriptOutlineComponent.h"
 #include "Editor/EditorSessionPresenter.h"
+#include <QDrag>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFutureWatcher>
 #include <QHeaderView>
+#include <QMimeData>
+#include <QSignalBlocker>
 #include <QTabBar>
 #include <QTimer>
 #include <QTreeView>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
+#include <algorithm>
 namespace salsa::qt {
 namespace ed = core::editor;
+namespace {
+class SelectionTree final : public QTreeView {
+  public:
+    EditorSessionPresenter *session;
+    std::function<std::vector<ed::Subject>()> selected;
+    std::vector<ed::Subject> dragging;
+    ed::Revision dragRevision;
+    SelectionTree(EditorSessionPresenter *s, QWidget *p) : QTreeView(p), session(s) {
+        setSelectionMode(QAbstractItemView::ExtendedSelection);
+        setDragEnabled(true);
+        setAcceptDrops(true);
+        setDropIndicatorShown(true);
+        setDefaultDropAction(Qt::MoveAction);
+    }
+
+  protected:
+    void startDrag(Qt::DropActions) override {
+        if (session->busy())
+            return;
+        dragging = selected();
+        if (dragging.empty())
+            return;
+        dragRevision = session->revision();
+        auto *drag = new QDrag(this);
+        auto *mime = new QMimeData;
+        mime->setData("application/x-salsa-selection", "move");
+        drag->setMimeData(mime);
+        drag->exec(Qt::MoveAction);
+        dragging.clear();
+        drag->deleteLater();
+    }
+    void dragEnterEvent(QDragEnterEvent *e) override {
+        if (e->mimeData()->hasFormat("application/x-salsa-selection"))
+            e->acceptProposedAction();
+    }
+    void dragMoveEvent(QDragMoveEvent *e) override {
+        if (e->mimeData()->hasFormat("application/x-salsa-selection") &&
+            indexAt(e->position().toPoint()).isValid())
+            e->acceptProposedAction();
+        else
+            e->ignore();
+    }
+    void dropEvent(QDropEvent *e) override {
+        auto *source = dynamic_cast<SelectionTree *>(e->source());
+        auto *m = static_cast<ProgramOutlineModel *>(model());
+        auto *row = m->row(indexAt(e->position().toPoint()));
+        if (!source || !row || source->session != session || source->dragRevision != session->revision() ||
+            session->busy()) {
+            e->ignore();
+            return;
+        }
+        session->execute(tr("Move selection"), ed::MoveSelection{source->dragging, row->subject},
+                         source->dragRevision);
+        e->acceptProposedAction();
+    }
+};
+} // namespace
 ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, QWidget *parent)
     : QWidget(parent), session_(session), model_(new ProgramOutlineModel(this)) {
     auto *layout = new QVBoxLayout(this);
@@ -17,21 +80,50 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
     modes_->addTab(tr("Instructions"));
     modes_->addTab(tr("Semantic"));
     layout->addWidget(modes_);
-    tree_ = new QTreeView(this);
+    auto *selectionTree = new SelectionTree(session, this);
+    tree_ = selectionTree;
+    selectionTree->selected = [this] { return selectedItems(); };
     layout->addWidget(tree_);
     tree_->setModel(model_);
     tree_->setUniformRowHeights(true);
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     tree_->setColumnHidden(1, true);
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this] {
-        if (selectionChanged)
+        if (isVisible() && !restoring_ && selectionChanged)
             selectionChanged();
+    });
+    connect(tree_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this] {
+        if (!restoring_)
+            activate();
     });
     connect(tree_, &QTreeView::doubleClicked, this, [this] {
         if (editRequested)
             editRequested();
     });
-    connect(session_, &EditorSessionPresenter::changed, model_, &ProgramOutlineModel::apply);
+    connect(session_, &EditorSessionPresenter::changed, this, [this](const ed::Change &change) {
+        restoreSelection_ = change.selected.empty() || !isVisible() ? selectedItems() : change.selected;
+        auto *row = model_->row(currentIndex());
+        restoreCurrent_ = !change.selected.empty() && isVisible() ? std::optional(change.selected.front())
+                          : row                                   ? std::optional(row->subject)
+                                                                  : std::nullopt;
+        restoreExpanded_.clear();
+        std::function<void(QModelIndex)> collect = [&](QModelIndex parent) {
+            for (int i = 0; i < model_->rowCount(parent); ++i) {
+                auto index = model_->index(i, 0, parent);
+                if (tree_->isExpanded(index)) {
+                    if (auto *r = model_->row(index))
+                        restoreExpanded_.push_back(r->subject);
+                    collect(index);
+                }
+            }
+        };
+        collect({});
+        restoring_ = true;
+        model_->apply(change);
+        restoreVisible();
+    });
+    model_->pageReady = [this] { restoreVisible(); };
+
     connect(modes_, &QTabBar::currentChanged, this, [this](int mode) {
         auto selected = session_->selection();
         model_->setMode(mode ? ed::ViewMode::Semantic : ed::ViewMode::Instructions);
@@ -53,9 +145,54 @@ QModelIndex ScriptOutlineComponent::currentIndex() const { return tree_->current
 void ScriptOutlineComponent::setCurrentIndex(const QModelIndex &i) { tree_->setCurrentIndex(i); }
 void ScriptOutlineComponent::scrollTo(const QModelIndex &i) { tree_->scrollTo(i); }
 void ScriptOutlineComponent::expand(const QModelIndex &i) { tree_->expand(i); }
+std::vector<ed::Subject> ScriptOutlineComponent::selectedItems() const {
+    std::vector<ed::Subject> items;
+    for (const auto &i : tree_->selectionModel()->selectedRows())
+        if (auto *row = model_->row(i))
+            items.push_back(row->subject);
+    return items;
+}
 void ScriptOutlineComponent::activate() {
+    if (restoring_ || !isVisible())
+        return;
     auto *row = model_->row(currentIndex());
-    session_->select(row ? std::optional(row->subject) : std::nullopt);
+    session_->selectMany(selectedItems(), row ? std::optional(row->subject) : std::nullopt);
+}
+void ScriptOutlineComponent::restoreVisible() {
+    if (!restoring_)
+        return;
+    for (auto subject : restoreExpanded_) {
+        auto i = model_->find(subject);
+        if (i.isValid())
+            tree_->expand(i);
+    }
+    QSignalBlocker block(tree_->selectionModel());
+    for (auto subject : restoreSelection_) {
+        auto i = model_->find(subject);
+        if (i.isValid())
+            tree_->selectionModel()->select(i, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    }
+    if (restoreCurrent_) {
+        auto i = model_->find(*restoreCurrent_);
+        if (i.isValid())
+            tree_->selectionModel()->setCurrentIndex(i, QItemSelectionModel::NoUpdate);
+    }
+    // User selection resumes after all loaded parents have finished their local refresh.
+    bool pending = model_->pending({});
+    std::function<void(QModelIndex)> check = [&](QModelIndex parent) {
+        for (int n = 0; n < model_->rowCount(parent); ++n) {
+            auto i = model_->index(n, 0, parent);
+            pending |= model_->pending(i);
+            if (model_->rowCount(i))
+                check(i);
+        }
+    };
+    check({});
+    if (!pending) {
+        restoring_ = false;
+        block.unblock();
+        activate();
+    }
 }
 void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> complete) {
     const auto revision = session_->revision();
@@ -97,8 +234,17 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
                                 return;
                             }
                             if (at >= path.subjects.size()) {
+                                QSignalBlocker selectionBlock(tree_->selectionModel());
+                                auto desiredSelection = session_->selectionSet();
                                 setCurrentIndex(parent);
+                                for (auto subject : desiredSelection) {
+                                    auto i = model_->find(subject);
+                                    if (i.isValid())
+                                        tree_->selectionModel()->select(i, QItemSelectionModel::Select |
+                                                                               QItemSelectionModel::Rows);
+                                }
                                 scrollTo(parent);
+                                selectionBlock.unblock();
                                 activate();
                                 finish();
                                 return;
@@ -114,13 +260,14 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
                             if (model_->canFetchMore(parent))
                                 model_->fetchMore(parent);
                             else if (!model_->pending(parent)) {
-                                emit session_->diagnostic(tr("The selected item is no longer present in this view."));
+                                emit session_->diagnostic(
+                                    tr("The selected item is no longer present in this view."));
                                 finish();
                             }
                         });
                 timer->start();
             });
-    watcher->setFuture(
-        QtConcurrent::run([backend, revision, subject, mode] { return backend->locate(revision, subject, mode); }));
+    watcher->setFuture(QtConcurrent::run(
+        [backend, revision, subject, mode] { return backend->locate(revision, subject, mode); }));
 }
 } // namespace salsa::qt

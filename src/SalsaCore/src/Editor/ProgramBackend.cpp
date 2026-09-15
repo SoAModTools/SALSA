@@ -63,7 +63,7 @@ Change ProgramBackend::describe(const ir::ChangeReceipt &c) {
             c.diagnostics,
             c.texts,
             {},
-            c.projectionSequences};
+            c.projectionSequences, c.selected};
 }
 Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest request, std::stop_token stop) {
     auto result = service_
@@ -80,7 +80,7 @@ Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest re
         std::optional<RowKind> kind;
         if (r.kind)
             kind = *r.kind == ir::ActionKind::Instruction ? RowKind::Instruction : RowKind::Construct;
-        out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind, std::move(r.groupingIssue)});
+        out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind, std::move(r.groupingIssue), r.color, r.bookmarked});
     }
     return Result<OutlinePage>::success(std::move(out));
 }
@@ -162,8 +162,12 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
         out.evidence = std::move(grouping.value().issue);
         const auto *schema = spice::sct::findSctOpcodeSchema(static_cast<std::uint16_t>(v.data));
         out.title += " — " + (schema ? std::string(schema->semantic.mnemonic) : "Opcode " + std::to_string(v.data));
+        auto custom=std::ranges::find(s.catalog,static_cast<std::uint16_t>(v.data),&OpcodeCustomization::opcode);
+        if(custom!=s.catalog.end() && !custom->name.empty())out.title=custom->name+" (action "+std::to_string(a.id.value)+")";
         out.description = std::string("Refresh: ") + (v.detail & 1 ? "skipped" : "normal") +
                           "; scheduled: " + (v.detail & 2 ? "yes" : "no");
+        if(custom!=s.catalog.end() && !custom->description.empty())out.description=custom->description+"\n"+out.description;
+        if(custom!=s.catalog.end() && !custom->note.empty())out.description+="\n"+custom->note;
         auto add = [&](ir::ValueId p, std::optional<std::uint32_t> group) {
             const auto &value = s.payload.values.at(p.value);
             if (value.kind == ir::ValueKind::Parameter && value.count == 1) {
@@ -187,6 +191,7 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                         }
                     }
                 }
+                if(custom!=s.catalog.end())for(auto &[index,name]:custom->parameters)if(index==row.key.index)row.name=name;
                 out.parameters.push_back(std::move(row));
             }
         };
@@ -256,6 +261,8 @@ Result<Change> ProgramBackend::history(Revision revision, bool redo, std::stop_t
     auto changed = redo ? service_->redo(revision, stop).get() : service_->undo(revision, stop).get();
     if (!changed)
         return Result<Change>::failure(changed.diagnostics());
-    return Result<Change>::success(describe(changed.value()));
+    auto result=describe(changed.value());
+    if(!redo)result.selected.clear();
+    return Result<Change>::success(std::move(result));
 }
 } // namespace salsa::core::editor

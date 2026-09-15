@@ -914,3 +914,185 @@ TEST(EditorBackendTest, CreatesAndEditsStructuredArmsWithoutWidgetStorageTypes) 
     auto current=backend.structure(edited.value().status.current,action);ASSERT_TRUE(current);EXPECT_EQ(current.value().arms.size(),3u);EXPECT_EQ(current.value().arms[0].id,originalArm);
     EXPECT_FALSE(backend.execute(edited.value().status.current,editor::WriteArms{draft.value()}));
 }
+
+TEST(EditorProductivityTest, FragmentsRemapSelectedReferencesAndRetainEmptyGroups) {
+    Fixture f;
+    editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service, [](auto *) {}));
+    auto original = f.service.checkpoint(f.revision).get();
+    ASSERT_TRUE(original);
+    auto bytes = backend.copy(f.revision, {{f.writer, f.branch, f.loop}});
+    ASSERT_TRUE(bytes) << messages(bytes.diagnostics());
+    auto again = backend.copy(f.revision, {{f.loop, f.branch, f.writer}});
+    ASSERT_TRUE(again);
+    EXPECT_EQ(bytes.value(), again.value());
+    auto review = backend.reviewPaste(f.revision, f.other, bytes.value());
+    ASSERT_TRUE(review);
+    EXPECT_TRUE(review.value().bindings.empty());
+    auto pasted = backend.execute(f.revision, editor::PasteSelection{f.other, bytes.value(), {}});
+    ASSERT_TRUE(pasted) << messages(pasted.diagnostics());
+    auto revision = pasted.value().status.current;
+    auto checkpoint = f.service.checkpoint(revision).get();
+    ASSERT_TRUE(checkpoint);
+    auto &program = *checkpoint.value().program;
+    const auto &order = *program.find(f.sequence)->order;
+    ASSERT_EQ(order.size(), 7u);
+    auto copiedWriter = order[2], copiedBranch = order[3], copiedLoop = order[4];
+    EXPECT_NE(copiedWriter, f.writer);
+    EXPECT_EQ(program.find(copiedLoop)->kind, ir::ActionKind::Loop);
+    EXPECT_NE(program.loop(copiedLoop)->body, program.loop(f.loop)->body);
+    ASSERT_FALSE(program.incoming(copiedWriter).empty());
+    EXPECT_EQ(program.incoming(copiedWriter).front().site.action, copiedBranch);
+    EXPECT_EQ(program.incoming(f.writer).front().site.action, f.branch);
+    auto saved = ir::ProgramPersistence::encode(program);
+    ASSERT_TRUE(saved);
+    auto reopened = ir::ProgramPersistence::decode(saved.value());
+    ASSERT_TRUE(reopened) << messages(reopened.diagnostics());
+    EXPECT_NE(reopened.value().program->find(copiedLoop), nullptr);
+    auto undo = backend.history(revision, false);
+    ASSERT_TRUE(undo);
+    auto afterUndo = f.service.checkpoint(undo.value().status.current).get();
+    ASSERT_TRUE(afterUndo);
+    EXPECT_EQ(*afterUndo.value().program->find(f.sequence)->order,
+              *original.value().program->find(f.sequence)->order);
+    auto redo = backend.history(undo.value().status.current, true);
+    ASSERT_TRUE(redo);
+    revision = redo.value().status.current;
+    auto condition = *sct::SctExpressionFactory::bitVariable(122).expression;
+    auto inserted = backend.execute(revision, editor::InsertStructure{f.other, "If", condition});
+    ASSERT_TRUE(inserted);
+    revision = inserted.value().status.current;
+    auto scope = f.service.checkpoint(revision).get();
+    ASSERT_TRUE(scope);
+    auto id = (*scope.value().program->find(f.sequence)->order)[2];
+    auto fragment = backend.copy(revision, {{id}});
+    ASSERT_TRUE(fragment);
+    auto empty = backend.execute(revision, editor::PasteSelection{f.other, fragment.value(), {}});
+    ASSERT_TRUE(empty) << messages(empty.diagnostics());
+    scope = f.service.checkpoint(empty.value().status.current).get();
+    ASSERT_TRUE(scope);
+    auto cloned = (*scope.value().program->find(f.sequence)->order)[2];
+    EXPECT_NE(cloned, id);
+    ASSERT_EQ(scope.value().program->arms(cloned).size(), 2u);
+    for (auto arm : scope.value().program->arms(cloned))
+        EXPECT_TRUE(scope.value().program->find(arm.body)->order->empty());
+    auto external = backend.copy(empty.value().status.current, {{f.branch}});
+    ASSERT_TRUE(external);
+    ir::ProgramBuilder second({"c44499b5-dcf0-449a-9815-5bdf558eface"});
+    auto script = second.importedScript(baseline(true), {}).value();
+    auto section = second.section({{}, script, "receiver"}).value();
+    auto ret =
+        second.instruction(second.sectionBody(section), second.value(ir::ValueKind::Instruction, 12).value())
+            .value();
+    auto built = second.finish();
+    ASSERT_TRUE(built);
+    auto service = std::make_shared<ir::ProgramService>();
+    auto adopted = service->adopt({}, std::move(built).takeValue()).get();
+    ASSERT_TRUE(adopted) << messages(adopted.diagnostics());
+    editor::ProgramBackend other(service);
+    auto reviewed = other.reviewPaste(adopted.value().current, ret, external.value());
+    ASSERT_TRUE(reviewed);
+    ASSERT_EQ(reviewed.value().bindings.size(), 1u);
+    EXPECT_FALSE(reviewed.value().bindings.front().target);
+    EXPECT_FALSE(other.execute(adopted.value().current, editor::PasteSelection{ret, external.value(), {}}));
+    reviewed.value().bindings.front().target = ret;
+    auto bound = other.execute(adopted.value().current,
+                               editor::PasteSelection{ret, external.value(), reviewed.value().bindings});
+    ASSERT_TRUE(bound) << messages(bound.diagnostics());
+    auto imported = service->checkpoint(bound.value().status.current).get();
+    ASSERT_TRUE(imported);
+    ASSERT_FALSE(imported.value().program->incoming(ret).empty());
+    service->shutdown().get();
+    auto malformed = fragment.value();
+    malformed[8] = std::byte{9};
+    EXPECT_FALSE(
+        backend.execute(empty.value().status.current, editor::PasteSelection{f.other, malformed, {}}));
+}
+TEST(EditorProductivityTest, MultiItemMovesDeletesAndSectionCopiesAreAtomic) {
+    Fixture f;
+    editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service, [](auto *) {}));
+    auto section = f.service.edit({f.revision, {ir::AddSection{f.script, "destination", 1}}}).get();
+    ASSERT_TRUE(section);
+    auto revision = section.value().status.current;
+    auto checkpoint = f.service.checkpoint(revision).get();
+    auto newSection = checkpoint.value().program->scripts().front().sections.back();
+    auto newBody = checkpoint.value().program->find(newSection)->body;
+    auto moved = backend.execute(revision, editor::MoveSelection{{f.other, f.loop}, newBody});
+    ASSERT_TRUE(moved) << messages(moved.diagnostics());
+    revision = moved.value().status.current;
+    checkpoint = f.service.checkpoint(revision).get();
+    ASSERT_TRUE(checkpoint);
+    EXPECT_EQ(*checkpoint.value().program->find(newBody)->order, (std::vector<SctActionId>{f.other, f.loop}));
+    EXPECT_EQ(checkpoint.value().program->find(f.loop)->owner, newBody);
+    auto body = checkpoint.value().program->loop(f.loop)->body;
+    EXPECT_FALSE(backend.execute(revision, editor::MoveSelection{{f.loop}, body}));
+    EXPECT_FALSE(backend.execute(revision, editor::DeleteSelection{{f.writer}}));
+    auto fragment = backend.copy(revision, {{newSection}});
+    ASSERT_TRUE(fragment);
+    auto pasted = backend.execute(revision, editor::PasteSelection{newSection, fragment.value(), {}});
+    ASSERT_TRUE(pasted) << messages(pasted.diagnostics());
+    revision = pasted.value().status.current;
+    checkpoint = f.service.checkpoint(revision).get();
+    ASSERT_TRUE(checkpoint);
+    auto copy = checkpoint.value().program->scripts().front().sections.back();
+    EXPECT_NE(copy, newSection);
+    EXPECT_EQ(checkpoint.value().program->find(copy)->name, "destination_copy1");
+    auto erased = backend.execute(revision, editor::DeleteSelection{{copy}});
+    ASSERT_TRUE(erased) << messages(erased.diagnostics());
+    auto undo = backend.history(erased.value().status.current, false);
+    ASSERT_TRUE(undo);
+    checkpoint = f.service.checkpoint(undo.value().status.current).get();
+    EXPECT_NE(checkpoint.value().program->find(copy), nullptr);
+    EXPECT_FALSE(backend.execute(revision, editor::DeleteSelection{{copy}})); // stale, not another deletion
+}
+TEST(EditorProductivityTest, NotesFoldersAndCatalogPersistWithoutReindexingExecution) {
+    Fixture f;
+    editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service, [](auto *) {}));
+    auto note = backend.execute(
+        f.revision,
+        editor::WriteNote{{f.writer, "Story flag", "Set by the opening scene", "Opening", 0xaabbcc}});
+    ASSERT_TRUE(note) << messages(note.diagnostics());
+    auto revision = note.value().status.current;
+    EXPECT_TRUE(note.value().actions.empty());
+    auto page = backend.outline(revision, {f.section});
+    ASSERT_TRUE(page);
+    EXPECT_EQ(page.value().rows.front().label, "Story flag");
+    EXPECT_EQ(page.value().rows.front().color, 0xaabbcc);
+    EXPECT_TRUE(page.value().rows.front().bookmarked);
+    auto folders = backend.execute(
+        revision,
+        editor::WriteOrganization{
+            f.script, {f.section}, {{f.script, "Scenes", {}, {}}, {f.script, "Opening", {f.section}, 0}}});
+    ASSERT_TRUE(folders) << messages(folders.diagnostics());
+    revision = folders.value().status.current;
+    auto custom = backend.execute(
+        revision,
+        editor::WriteOpcode{{17, "Set story bit", "Sets the selected bit", 0x99bbdd, {{0, "Flag"}}}});
+    ASSERT_TRUE(custom) << messages(custom.diagnostics());
+    revision = custom.value().status.current;
+    auto inspection = backend.inspect(revision, f.writer);
+    ASSERT_TRUE(inspection);
+    EXPECT_EQ(inspection.value().parameters.front().name, "Flag");
+    auto checkpoint = f.service.checkpoint(revision).get();
+    auto saved = ir::ProgramPersistence::encode(*checkpoint.value().program);
+    ASSERT_TRUE(saved);
+    auto reopened = ir::ProgramPersistence::decode(saved.value());
+    ASSERT_TRUE(reopened) << messages(reopened.diagnostics());
+    EXPECT_EQ(reopened.value().program->metadata().folders.size(), 2u);
+    EXPECT_EQ(reopened.value().program->metadata().opcodes.front().name, "Set story bit");
+    auto undo = backend.history(revision, false);
+    ASSERT_TRUE(undo);
+    auto org = backend.organization(undo.value().status.current, f.script);
+    ASSERT_TRUE(org);
+    EXPECT_TRUE(org.value().opcodes.empty());
+    EXPECT_EQ(org.value().folders.size(), 2u);
+    auto redo = backend.history(undo.value().status.current, true);
+    ASSERT_TRUE(redo);
+    auto deleted =
+        backend.execute(redo.value().status.current, editor::DeleteSelection{{f.writer, f.branch}});
+    ASSERT_TRUE(deleted) << messages(deleted.diagnostics());
+    auto restored = backend.history(deleted.value().status.current, false);
+    ASSERT_TRUE(restored);
+    page = backend.outline(restored.value().status.current, {f.section});
+    ASSERT_TRUE(page);
+    EXPECT_TRUE(page.value().rows.front().bookmarked);
+}

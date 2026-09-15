@@ -23,9 +23,9 @@ F(Site, v.action, v.parameter, v.arm, v.operation, v.condition)
 F(Module, v.id, v.script, v.name, v.sequences, v.evidence)
 F(Entrypoint, v.id, v.script, v.name, v.kind, v.body, v.enabled, v.activation, v.response, v.responseSite, v.predicate,
   v.provider, v.evidence)
-F(Annotation, v.subject, v.alias, v.evidence)
+F(Annotation, v.subject, v.alias, v.evidence, v.note, v.bookmark, v.color)
 F(VariableMeaning, v.id, v.script, v.variable, v.value, v.name, v.evidence)
-F(Metadata, v.modules, v.entrypoints, v.ports, v.languages, v.connections, v.logicalTexts, v.annotations, v.meanings)
+F(Metadata, v.modules, v.entrypoints, v.ports, v.languages, v.connections, v.logicalTexts, v.annotations, v.meanings, v.folders, v.opcodes)
 F(SctAuthoringEvidence, v.kind, v.description)
 F(SctUnresolvedBinding, v.originalEvidence, v.explanation, v.evidence)
 F(SctLegacyOrigin, v.capsuleId, v.scriptKey, v.scriptOrdinal)
@@ -60,8 +60,14 @@ F(smores::script::ResourceIdentity, v.dataset, v.asset, v.revision, v.document)
 F(smores::script::Entry, v.resource, v.tableIndex, v.localId, v.entryId, v.tableId, v.function, v.parameters)
 F(Placement, v.subject, v.x, v.y, v.collapsed)
 F(DocumentTab, v.script, v.semanticView, v.selection)
-F(PresentationFolder, v.script, v.name, v.sections, v.parent)
-F(Presentation, v.placements, v.selection, v.tabs, v.activeTab, v.opcodeColors, v.folders)
+F(editor::SectionFolder, v.script, v.name, v.sections, v.parent)
+using ParameterName = std::pair<std::uint32_t, std::string>;
+F(ParameterName, v.first, v.second)
+using ParameterDefault = std::pair<std::uint32_t, std::uint32_t>;
+F(ParameterDefault, v.first, v.second)
+F(editor::OpcodeCustomization, v.opcode, v.name, v.description, v.color, v.parameters, v.note, v.category, v.defaults)
+F(ValueBuffer, v.values, v.children, v.characters, v.root)
+F(Presentation, v.placements, v.selection, v.tabs, v.activeTab)
 #undef F
 // Enum ordinals are explicit binary schema contracts, independent of enum width.
 template <class T> constexpr std::uint32_t enumMax();

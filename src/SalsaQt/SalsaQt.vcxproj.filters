@@ -94,4 +94,10 @@
     <ClInclude Include="Application\PerformanceSettings.h" />
     <ClCompile Include="Application\PerformanceSettings.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Editor\ProductivityActions.cpp" />
+    <ClCompile Include="Editor\OrganizationComponent.cpp" />
+    <ClInclude Include="Editor\ProductivityActions.h" />
+    <ClInclude Include="Editor\OrganizationComponent.h" />
+  </ItemGroup>
 </Project>

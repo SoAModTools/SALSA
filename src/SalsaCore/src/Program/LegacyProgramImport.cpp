@@ -29,7 +29,7 @@ Result<LegacyProgramResult> LegacyProgramImport::importCapsule(
         std::set<std::uint32_t> ordinals;
         std::set<AssetLocator> locators;
         if (projectMetadata && policy.opcodeColors)
-            result.project.presentation.opcodeColors = std::move(projectMetadata.value().opcodeColors);
+            for (auto c : projectMetadata.value().opcodeColors) builder.metadata().opcodes.push_back({c.opcode, {}, {}, c.colorRgb});
         auto aliases = [&](SctScriptId script, const auto &rows) {
             for (auto &row : rows) {
                 auto id = builder.allocate<SctMeaningId>();
@@ -96,9 +96,9 @@ Result<LegacyProgramResult> LegacyProgramImport::importCapsule(
             for (auto &section : builder.data_->sections)
                 if (section.script == id.value())
                     sections[section.sourceSection] = section.id;
-            auto offset = count32(result.project.presentation.folders.size());
+            auto offset = count32(builder.metadata().folders.size());
             if (item.retainFolders) for (auto &folder : script.value().metadata.folders) {
-                PresentationFolder out{id.value(), folder.name};
+                editor::SectionFolder out{id.value(), folder.name};
                 for (auto section : folder.sections) {
                     auto found = sections.find(section.value());
                     require(found != sections.end(), "Legacy folder section has no program mapping");
@@ -106,7 +106,7 @@ Result<LegacyProgramResult> LegacyProgramImport::importCapsule(
                 }
                 if (folder.parent)
                     out.parent = offset + count32(*folder.parent);
-                result.project.presentation.folders.push_back(std::move(out));
+                builder.metadata().folders.push_back(std::move(out));
             }
             builder.metadata().annotations.push_back(
                 {id.value(),

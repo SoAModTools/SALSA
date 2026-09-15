@@ -283,4 +283,9 @@
     <ClCompile Include="src\Program\ProgramGrouping.cpp" />
     <ClInclude Include="src\Program\ProgramGrouping.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Editor\ProgramProductivity.cpp" />
+    <ClInclude Include="src\Program\ProgramProductivity.inl" />
+    <ClInclude Include="src\Program\FragmentEdits.inl" />
+  </ItemGroup>
 </Project>

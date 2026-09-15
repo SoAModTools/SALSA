@@ -9,6 +9,8 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
         auto &d = *owner.data;
         if (owner.outlineAliasesDirty) {
             owner.outlineAliases.clear();
+            owner.outlineStyles.clear();
+            for(const auto &a:d.metadata.annotations)owner.outlineStyles[a.subject]={a.color,!a.bookmark.empty()};
             for (const auto &annotation : d.metadata.annotations)
                 if (!annotation.alias.empty())
                     owner.outlineAliases[annotation.subject] = annotation.alias;
@@ -25,6 +27,12 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     if (auto at = grouping.issues.find(*id); at != grouping.issues.end()) row.groupingIssue = at->second;
                 }
             }
+            if(auto *id=std::get_if<SctActionId>(&row.subject))if(auto *a=d.action(*id);a && a->kind==ActionKind::Instruction) {
+                auto opcode=d.values.find(a->value.value)->data;
+                auto c=std::ranges::find(d.metadata.opcodes,opcode,&editor::OpcodeCustomization::opcode);
+                if(c!=d.metadata.opcodes.end()){if(!c->name.empty())row.label=c->name;row.color=c->color;}
+            }
+            if(auto style=owner.outlineStyles.find(row.subject);style!=owner.outlineStyles.end()){if(style->second.first)row.color=style->second.first;row.bookmarked=style->second.second;}
             if (auto alias = owner.outlineAliases.find(row.subject); alias != owner.outlineAliases.end())
                 row.label = alias->second;
             const auto ordinal = out.total++;

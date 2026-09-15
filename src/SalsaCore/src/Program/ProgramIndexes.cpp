@@ -435,6 +435,23 @@ void finishMetadata(ProgramData &d, std::vector<Diagnostic> &diagnostics, bool a
         for (const auto &region : d.dispatches)
             if (region.owner.valid())
                 validateDispatch(d, region);
+    std::set<SectionId> folderSections;
+    for (std::size_t i = 0; i < d.metadata.folders.size(); ++i) {
+        const auto &f = d.metadata.folders[i];
+        require(d.lookup(f.script.value, EntityKind::Script, d.scripts) && !f.name.empty(), "Invalid folder script or name");
+        if (f.parent) require(*f.parent < i && d.metadata.folders[*f.parent].script == f.script, "Invalid folder parent");
+        for (auto id : f.sections) {
+            auto *section = d.lookup(id.value, EntityKind::Section, d.sections);
+            require(section && section->script == f.script && folderSections.insert(id).second, "Invalid or repeated folder section");
+        }
+    }
+    std::set<std::uint16_t> customized;
+    for (const auto &c : d.metadata.opcodes) {
+        require(spice::sct::findSctOpcodeSchema(c.opcode) && customized.insert(c.opcode).second, "Invalid or duplicate catalog opcode");
+        require(!c.color || *c.color <= 0xffffff, "Invalid opcode color");
+    }
+    for (const auto &a : d.metadata.annotations)
+        require(!a.color || *a.color <= 0xffffff, "Invalid item color");
     for (const auto& a : d.metadata.annotations) std::visit([&](auto id) {
         using T = decltype(id); auto actual = d.directory.find(id.value).kind;
         auto expected = [] {

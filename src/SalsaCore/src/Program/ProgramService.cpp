@@ -172,6 +172,8 @@ struct PreparedData {
     std::optional<std::vector<SctLogicalText>> logicalTexts;
     std::optional<std::vector<VariableMeaning>> meanings;
     std::optional<std::vector<Annotation>> annotationTable;
+    std::optional<std::vector<editor::SectionFolder>> folders;
+    std::optional<std::vector<editor::OpcodeCustomization>> opcodes;
     std::optional<std::set<std::uint64_t>> protection;
     std::vector<std::pair<std::uint64_t, Location>> locations;
     std::vector<std::pair<Variable, std::shared_ptr<const std::vector<VariableUse>>>> variables;
@@ -207,6 +209,8 @@ struct PreparedData {
             logicalTexts->swap(d.metadata.logicalTexts);
         if (meanings)
             meanings->swap(d.metadata.meanings);
+        if (folders) folders->swap(d.metadata.folders);
+        if (opcodes) opcodes->swap(d.metadata.opcodes);
         if (annotationTable)
             annotationTable->swap(d.metadata.annotations);
         swapRows(texts, d.texts);
@@ -247,12 +251,14 @@ struct PreparedData {
 // clang-format off
 #include "CutsceneInternal.inl"
 #include "SemanticEdits.inl"
+#include "FragmentEdits.inl"
 #include "CutsceneEdits.inl"
 #include "DispatchEdits.inl"
 // clang-format on
 
 struct ServiceOwner {
     std::map<EditorSubject,std::string> outlineAliases;
+    std::map<EditorSubject,std::pair<std::optional<std::uint32_t>,bool>> outlineStyles;
     bool outlineAliasesDirty = true;
     std::unique_ptr<ProgramData> data;
     std::shared_ptr<const unsigned char> token = std::make_shared<const unsigned char>(0);
@@ -1081,6 +1087,8 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
     for (const auto& section : out->sections) owners.insert(section.script);
     for (auto id : owners)
         out->scripts.push_back(d.scripts[d.directory.find(id.value).index]);
+    for(const auto &custom : d.metadata.opcodes)
+        if(std::ranges::any_of(out->actions,[&](const auto &a){return a.kind==ActionKind::Instruction && out->payload.values.at(a.value.value).data==custom.opcode;}))out->catalog.push_back(custom);
     std::sort(out->actions.begin(), out->actions.end(), [](auto &a, auto &b) { return a.id < b.id; });
     return out;
 }
@@ -1447,6 +1455,7 @@ std::future<Result<std::shared_ptr<const ReadScope>>> ProgramService::read(Revis
 }
 #include "ProgramEditor.inl"
 #include "ProgramBrowse.inl"
+#include "ProgramProductivity.inl"
 std::future<Result<VariableQuery>> ProgramService::uses(Revision r, Variable key) {
     return control_->submit<VariableQuery>([r, key](auto &o) {
         o.match(r);

@@ -10,6 +10,7 @@ class ScriptOutlineComponent final : public QWidget {
     explicit ScriptOutlineComponent(EditorSessionPresenter *, QWidget *parent = nullptr);
     ProgramOutlineModel *outlineModel() const { return model_; }
     void bind(core::SctScriptId);
+    std::vector<core::editor::Subject> selectedItems() const;
     void activate();
     void setSemantic(bool);
     void reveal(core::editor::Subject, std::function<void()> = {});
@@ -26,5 +27,9 @@ class ScriptOutlineComponent final : public QWidget {
     QTabBar *modes_;
     core::SctScriptId script_;
     std::uint64_t navigationGeneration_ = 0;
+    bool restoring_ = false;
+    std::vector<core::editor::Subject> restoreSelection_, restoreExpanded_;
+    std::optional<core::editor::Subject> restoreCurrent_;
+    void restoreVisible();
 };
 } // namespace salsa::qt

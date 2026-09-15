@@ -180,10 +180,20 @@ struct ConnectSlots {
     RouteOutcome outcome = RouteOutcome::LocalTransfer;
     std::optional<ValueBuffer> schedule;
 };
+struct SetNote { editor::ItemNote value; };
+struct MoveActions { std::vector<SctActionId> actions; SctSequenceId destination; std::size_t position = 0; };
+struct ProgramFragment;
+struct PasteFragment {
+    std::shared_ptr<const ProgramFragment> fragment;
+    editor::Subject anchor;
+    std::vector<editor::FragmentBinding> bindings;
+};
+struct Organize { editor::WriteOrganization value; };
+struct CustomizeOpcode { editor::OpcodeCustomization value; };
 using SemanticOperation =
     std::variant<InsertConstruct, ReplaceArms, InsertTransfer, MoveAction, EraseAction, RetargetTransfer,
                  PromoteFlow, PutMetadata, EraseMetadata, PutAnnotation, AssignLanguages, BindLifecycle,
-                 ScriptSettings, ConnectSlots, PromoteDispatch, SetRouteRequirement>;
+                 ScriptSettings, ConnectSlots, PromoteDispatch, SetRouteRequirement, PasteFragment, Organize, CustomizeOpcode, SetNote, MoveActions>;
 using Primitive = std::variant<ReplaceParameter, ReplaceInstruction, ReplaceCondition, ReplaceText, InsertInstruction,
                                EraseInstruction, MoveInstruction, RenameSection, ReorderSections, AddSection,
                                EraseEmptySection, EditAnnotation, CreateText, RemoveText, SemanticOperation>;
@@ -208,6 +218,7 @@ struct ChangeReceipt {
     std::vector<SctActionId> oldTargets, newTargets;
     std::vector<std::size_t> annotations;
     std::uint64_t examinedActions = 0, copiedOrderItems = 0;
+    std::vector<editor::Subject> selected;
     std::vector<Diagnostic> diagnostics;
 };
 struct PreparedData;
@@ -244,6 +255,8 @@ struct OutlineRow {
     bool expandable = false;
     std::optional<ActionKind> kind;
     std::string groupingIssue;
+    std::optional<std::uint32_t> color;
+    bool bookmarked = false;
 };
 struct OutlinePage {
     ServiceStatus status;
@@ -274,6 +287,14 @@ struct ReadScope {
     std::vector<Dispatch> dispatches;
     std::vector<Transfer> transfers;
     ValueBuffer payload;
+    std::vector<editor::OpcodeCustomization> catalog;
+};
+struct ProgramFragment {
+    SctAuthoringProjectId project;
+    SctScriptId script;
+    std::vector<SctActionId> roots;
+    ReadScope content;
+    std::vector<Annotation> annotations;
 };
 struct VariableQuery {
     ServiceStatus status;
@@ -429,6 +450,9 @@ class ProgramService final {
     ProgramService(const ProgramService &) = delete;
     std::future<Result<ServiceStatus>> status();
     std::future<Result<Catalog>> catalog(Revision);
+    std::future<Result<std::shared_ptr<const ProgramFragment>>> copy(Revision, editor::CopySelection, std::stop_token = {});
+    std::future<Result<editor::FragmentReview>> reviewPaste(Revision, editor::Subject, std::shared_ptr<const ProgramFragment>, std::stop_token = {});
+    std::future<Result<editor::Organization>> organization(Revision, SctScriptId, std::stop_token = {});
     // Consumes exclusive ownership, avoiding a full-program copy on adoption.
     std::future<Result<ServiceStatus>> adopt(Revision, std::shared_ptr<const Program>, std::stop_token = {});
     std::future<Result<ServiceStatus>> load(NativeLoadRequest, std::stop_token = {});

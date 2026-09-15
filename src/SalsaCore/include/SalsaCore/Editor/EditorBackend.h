@@ -3,6 +3,7 @@
 #include "SalsaCore/Foundation/Result.h"
 #include "SpiceSCT/SctDocument.h"
 #include <stop_token>
+#include <span>
 namespace salsa::core::editor {
 enum class ViewMode { Instructions, Semantic };
 enum class RowKind { Instruction, Construct };
@@ -13,6 +14,8 @@ struct OutlineRow {
     bool expandable = false;
     std::optional<RowKind> kind;
     std::string groupingIssue;
+    std::optional<std::uint32_t> color;
+    bool bookmarked = false;
 };
 struct OutlineRequest {
     Subject parent;
@@ -69,6 +72,7 @@ struct Change {
     std::vector<SctTextResourceId> texts;
     std::optional<Subject> suggestedSelection;
     std::vector<SctSequenceId> projectionSequences;
+    std::vector<Subject> selected;
 };
 struct NavigationPath {
     Revision revision;
@@ -88,7 +92,7 @@ struct Opcode {
     std::uint16_t code;
     std::string name;
 };
-enum class BrowseKind { Opcodes, Variable, Incoming, Texts, Incomplete, Actions };
+enum class BrowseKind { Opcodes, Variable, Incoming, Texts, Incomplete, Actions, Containers, Sections };
 struct BrowseRequest {
     BrowseKind kind = BrowseKind::Opcodes;
     SctScriptId script;
@@ -165,8 +169,57 @@ struct WriteArms {
 struct PromoteFlow {
     SctActionId header, continuation;
 };
+struct ItemNote {
+    Subject subject;
+    std::string alias, note, bookmark;
+    std::optional<std::uint32_t> color;
+};
+struct SectionFolder {
+    SctScriptId script;
+    std::string name;
+    std::vector<program::SectionId> sections;
+    std::optional<std::uint32_t> parent;
+};
+struct OpcodeCustomization {
+    std::uint16_t opcode = 0;
+    std::string name, description;
+    std::optional<std::uint32_t> color;
+    std::vector<std::pair<std::uint32_t, std::string>> parameters;
+    std::string note, category;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> defaults;
+};
+struct Organization {
+    Revision revision;
+    SctScriptId script;
+    std::vector<BrowseRow> sections;
+    std::vector<SectionFolder> folders;
+    std::vector<ItemNote> notes;
+    std::vector<OpcodeCustomization> opcodes;
+};
+struct FragmentBinding {
+    Subject source;
+    std::string label;
+    std::optional<Subject> target;
+};
+struct FragmentReview {
+    Revision revision;
+    std::vector<FragmentBinding> bindings;
+};
+struct CopySelection { std::vector<Subject> items; };
+struct PasteSelection {
+    Subject anchor;
+    std::vector<std::byte> bytes;
+    std::vector<FragmentBinding> bindings;
+};
+struct MoveSelection { std::vector<Subject> items; Subject anchor; };
+struct DeleteSelection { std::vector<Subject> items; };
+struct NewSection { SctScriptId script; std::string name; };
+struct RenameCodeSection { program::SectionId section; std::string name; };
+struct WriteNote { ItemNote note; };
+struct WriteOrganization { SctScriptId script; std::vector<program::SectionId> order; std::vector<SectionFolder> folders; };
+struct WriteOpcode { OpcodeCustomization opcode; };
 using EditIntent = std::variant<SetExpression, BindReference, SetTiming, WriteText, CreateText, DeleteItem,
-                                InsertOpcode, InsertStructure, InsertTransfer, WriteArms, PromoteFlow>;
+                                InsertOpcode, InsertStructure, InsertTransfer, WriteArms, PromoteFlow, PasteSelection, MoveSelection, DeleteSelection, WriteNote, WriteOrganization, WriteOpcode, NewSection, RenameCodeSection>;
 // Blocking operations run on workers. Each result is qualified by the captured
 // revision and owns selected values only, never a live document or storage view.
 class Backend {
@@ -181,6 +234,9 @@ class Backend {
     virtual Result<BrowsePage> browse(Revision, BrowseRequest, std::stop_token = {}) = 0;
     virtual std::vector<Opcode> opcodes() const = 0;
     virtual Result<Change> execute(Revision, EditIntent, std::stop_token = {}) = 0;
+    virtual Result<std::vector<std::byte>> copy(Revision, CopySelection, std::stop_token = {}) = 0;
+    virtual Result<FragmentReview> reviewPaste(Revision, Subject, std::span<const std::byte>, std::stop_token = {}) = 0;
+    virtual Result<Organization> organization(Revision, SctScriptId, std::stop_token = {}) = 0;
     virtual Result<Change> history(Revision, bool redo, std::stop_token = {}) = 0;
 };
 } // namespace salsa::core::editor

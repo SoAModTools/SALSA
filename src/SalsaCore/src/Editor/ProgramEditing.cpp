@@ -93,6 +93,11 @@ Result<StructureDraft> ProgramBackend::structure(Revision r, SctActionId id, std
     return Result<StructureDraft>::success(std::move(out));
 }
 Result<Change> ProgramBackend::execute(Revision r, EditIntent intent, std::stop_token stop) {
+    if (std::holds_alternative<PasteSelection>(intent) || std::holds_alternative<MoveSelection>(intent) ||
+        std::holds_alternative<DeleteSelection>(intent) || std::holds_alternative<WriteNote>(intent) ||
+        std::holds_alternative<WriteOrganization>(intent) || std::holds_alternative<WriteOpcode>(intent) ||
+        std::holds_alternative<NewSection>(intent) || std::holds_alternative<RenameCodeSection>(intent))
+        return productivity(r, std::move(intent), stop);
     try {
         std::vector<ir::Primitive> edits;
         std::optional<Subject> focus;
@@ -190,8 +195,11 @@ Result<Change> ProgramBackend::execute(Revision r, EditIntent intent, std::stop_
                         throw std::runtime_error("Select text or an authored action to delete");
                 } else if constexpr (std::is_same_v<T, InsertOpcode>) {
                     auto [sequence, position] = insertion(e.anchor);
-                    edits.push_back(
-                        ir::InsertInstruction{sequence, position, take(ir::ProgramValues::instruction({e.opcode}))});
+                    spice::sct::SctInstructionFactoryRequest request{e.opcode};
+                    auto catalog=take(organization(r,{},stop));
+                    if(auto custom=std::ranges::find(catalog.opcodes,e.opcode,&OpcodeCustomization::opcode);custom!=catalog.opcodes.end())
+                        for(auto [index,value]:custom->defaults)request.parameterOverrides.push_back({{index,{}},spice::sct::SctEncodedWordValue{value}});
+                    edits.push_back(ir::InsertInstruction{sequence, position, take(ir::ProgramValues::instruction(request))});
                 } else if constexpr (std::is_same_v<T, InsertStructure>) {
                     auto [sequence, position] = insertion(e.anchor);
                     ir::InsertConstruct c;
