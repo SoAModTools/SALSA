@@ -130,7 +130,6 @@ class SalsaScriptPatchCodec final {
 public:
     static constexpr std::string_view PayloadType = "jahorta.salsa.sct-script-patch";
     static constexpr std::uint32_t SchemaVersion = 6;
-    static constexpr std::uint32_t LegacySchemaVersion = 5;
 
     [[nodiscard]] static Result<std::vector<std::byte>> serialize(
         const SalsaScriptPatch& patch);

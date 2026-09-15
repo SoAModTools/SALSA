@@ -503,7 +503,7 @@ TEST(SctReconciliationDecisionCodecTest, IsStrictCanonicalAndRoundTrips) {
     EXPECT_FALSE(SctReconciliationDecisionCodec::deserialize(unknown));
 }
 
-TEST(SctReconciliationDecisionCodecTest, MigratesSchemaOneFooterEntityTargets) {
+TEST(SctReconciliationDecisionCodecTest, RejectsOlderSchemaAndRetiredTargetNames) {
     const auto baseline = document();
     const auto incoming = document(1);
     auto sourceRequest = request(baseline, incoming);
@@ -538,22 +538,10 @@ TEST(SctReconciliationDecisionCodecTest, MigratesSchemaOneFooterEntityTargets) {
     }
 
     const auto decoded = SctReconciliationDecisionCodec::deserialize(legacy);
-    ASSERT_TRUE(decoded);
-    ASSERT_EQ(decoded.value().assets.size(), 1u);
-    const auto& decisions = decoded.value().assets.front().decisions;
-    const auto migrated = std::ranges::find(decisions, "supplementary-pair",
-        &SctReconciliationDecision::id);
-    ASSERT_NE(migrated, decisions.end());
-    EXPECT_EQ(migrated->baselineEntity,
-        std::optional<SctReconciliationEntityId>{SctSupplementaryTextId{41u}});
-    EXPECT_EQ(migrated->incomingEntity,
-        std::optional<SctReconciliationEntityId>{SctSupplementaryTextId{73u}});
-
-    const auto upgraded = SctReconciliationDecisionCodec::serialize(decoded.value());
-    ASSERT_TRUE(upgraded);
-    EXPECT_NE(upgraded.value().find("\"schemaVersion\": 2"), std::string::npos);
-    EXPECT_NE(upgraded.value().find("\"supplementary-text\""), std::string::npos);
-    EXPECT_EQ(upgraded.value().find("\"footer\""), std::string::npos);
+    ASSERT_FALSE(decoded);
+    legacy.replace(version, std::string("\"schemaVersion\": 1").size(),
+        "\"schemaVersion\": 2");
+    EXPECT_FALSE(SctReconciliationDecisionCodec::deserialize(legacy));
 }
 
 TEST(SctReconciliationDecisionStoreTest, CheckpointsAndLoadsByScope) {

@@ -130,7 +130,7 @@ Use an explicit consistent checkpoint capture and the existing workspace transac
 
 Supported Python SALSA v7 import remains mandatory. Translate its supported program content and promote supported metadata into the new aggregate, retaining the migration capsule/script origin where needed. Do not reconstruct Python objects as execution state or infer modules from legacy folders. Existing interpreter/converter boundaries can remain at the import edge.
 
-Development-schema backward compatibility is not required. Default handling of unsupported old authoring schemas is a visible diagnostic with the file left untouched; do not silently resave it or silently discard metadata. An optional one-time converter is a separate decision, not a reason to keep two live models. Existing native files and supported Python v7 projects remain import paths.
+Development-schema backward compatibility is unsupported. Accept only the current schema of each SALSA persistence format; report unsupported schemas with a visible diagnostic and leave the file untouched. Do not add converters, renamed-field aliases, or upgrade/recovery paths for retired schemas. Existing native files and supported Python SALSA v7 projects remain import paths.
 
 Integrate the pinned zstd dependency for the actual production target with BSD selection, notices, license texts and release corresponding-source packaging. The experiment's optional generated props are not the production dependency/release mechanism. Persist current authored state; cross-session undo history is not added by this migration.
 

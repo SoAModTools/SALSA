@@ -158,7 +158,7 @@ TEST(SctFragment, RoundTripsDeterministicallyAndRejectsUnsupportedSchemas) {
         DiagnosticCode::UnsupportedSctFragmentSchema);
 }
 
-TEST(SctFragment, MigratesSchemaTwoFooterDependencies) {
+TEST(SctFragment, RejectsSchemaTwoAndRetiredDependencyNames) {
     const auto source = makeFragmentDocument();
     SctWorkingState state(source.document);
     const SctStructuredAuthoringState authoring;
@@ -192,22 +192,15 @@ TEST(SctFragment, MigratesSchemaTwoFooterDependencies) {
 
     const auto legacyBytes = std::as_bytes(std::span{legacy.data(), legacy.size()});
     const auto decoded = SctFragmentCodec::deserialize(legacyBytes);
-    ASSERT_TRUE(decoded);
-    ASSERT_EQ(decoded.value().dependencies.size(), 1u);
-    EXPECT_EQ(decoded.value().dependencies.front().target,
-        SctDocumentReferenceTarget{SctSupplementaryTextId{77u}});
-    EXPECT_EQ(decoded.value().dependencies.front().targetNameBytes,
-        std::optional<std::string>{"legacy footer"});
-    const auto migrated = SctFragmentCodec::serialize(decoded.value());
-    ASSERT_TRUE(migrated);
-    const std::string migratedText(
-        reinterpret_cast<const char*>(migrated.value().data()), migrated.value().size());
-    EXPECT_NE(migratedText.find("\"schemaVersion\": 4"), std::string::npos);
-    EXPECT_NE(migratedText.find("\"supplementary-text\""), std::string::npos);
-    EXPECT_EQ(migratedText.find("\"footer\""), std::string::npos);
+    ASSERT_FALSE(decoded);
+    EXPECT_EQ(decoded.diagnostics().front().code, DiagnosticCode::UnsupportedSctFragmentSchema);
+    encoded["schemaVersion"] = SctFragmentCodec::SchemaVersion;
+    encoded["semanticUnits"] = nlohmann::ordered_json::array();
+    encoded["dependencies"][0]["target"]["kind"] = "footer";
+    EXPECT_FALSE(SctFragmentCodec::deserialize(jsonBytes(encoded)));
 }
 
-TEST(SctFragment, ReadsSchemaThreeAndUpgradesItToSchemaFour) {
+TEST(SctFragment, RejectsSchemaThree) {
     const auto source = makeFragmentDocument();
     const SctWorkingState state(source.document);
     const SctStructuredAuthoringState authoring;
@@ -224,14 +217,9 @@ TEST(SctFragment, ReadsSchemaThreeAndUpgradesItToSchemaFour) {
     encoded.erase("semanticUnits");
 
     const auto decoded = SctFragmentCodec::deserialize(jsonBytes(encoded));
-    ASSERT_TRUE(decoded);
-    EXPECT_EQ(decoded.value().kind, SctFragmentKind::InstructionRange);
-    const auto upgraded = SctFragmentCodec::serialize(decoded.value());
-    ASSERT_TRUE(upgraded);
-    const std::string upgradedText(
-        reinterpret_cast<const char*>(upgraded.value().data()), upgraded.value().size());
-    EXPECT_NE(upgradedText.find("\"schemaVersion\": 4"), std::string::npos);
-    EXPECT_NE(upgradedText.find("\"semanticUnits\": []"), std::string::npos);
+    ASSERT_FALSE(decoded);
+    EXPECT_EQ(decoded.diagnostics().front().code, DiagnosticCode::UnsupportedSctFragmentSchema);
+
 }
 
 TEST(SctFragment, RoundTripsSchemaFourSemanticHierarchyAndRejectsMalformedUnits) {

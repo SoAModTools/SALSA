@@ -266,7 +266,7 @@ template<typename Id>
     const auto kind = value.at("kind").get<std::string>();
     if (kind == "instruction") return id<spice::sct::SctInstructionId>(value.at("id"));
     if (kind == "string") return id<spice::sct::SctStringId>(value.at("id"));
-    if (kind == "supplementary-text" || kind == "footer")
+    if (kind == "supplementary-text")
         return id<spice::sct::SctSupplementaryTextId>(value.at("id"));
     throw std::runtime_error("reference target kind invalid");
 }
@@ -473,7 +473,7 @@ template<typename Id>
         requireObject(value, {"kind", "target"});
         return spice::sct::SctStringReference{id<spice::sct::SctStringId>(value.at("target"))};
     }
-    if (kind == "supplementaryTextReference" || kind == "footerReference") {
+    if (kind == "supplementaryTextReference") {
         requireObject(value, {"kind", "target"});
         return spice::sct::SctSupplementaryTextReference{id<spice::sct::SctSupplementaryTextId>(value.at("target"))};
     }
@@ -714,7 +714,7 @@ template<typename Id>
     requireObject(value, {"kind", "id"});
     const auto kind = value.at("kind").get<std::string>();
     if (kind == "indexed") return id<spice::sct::SctStringId>(value.at("id"));
-    if (kind == "supplementary" || kind == "footer")
+    if (kind == "supplementary")
         return id<spice::sct::SctSupplementaryTextId>(value.at("id"));
     throw std::runtime_error("text target kind invalid");
 }
@@ -796,15 +796,14 @@ template<typename Id>
 
 [[nodiscard]] SctPatchedAllocatorState parseAllocatorState(const Json& value) {
     if (!value.is_object()) throw std::runtime_error("allocator state is not an object");
-    const bool legacy = value.contains("nextFooterEntryId");
     requireObject(value, {"nextSectionId", "nextInstructionId", "nextStringId",
-        legacy ? "nextFooterEntryId" : "nextSupplementaryTextId",
+        "nextSupplementaryTextId",
         "nextOpaqueAttachmentId"});
     SctPatchedAllocatorState result{
         value.at("nextSectionId").get<std::uint64_t>(),
         value.at("nextInstructionId").get<std::uint64_t>(),
         value.at("nextStringId").get<std::uint64_t>(),
-        value.at(legacy ? "nextFooterEntryId" : "nextSupplementaryTextId")
+        value.at("nextSupplementaryTextId")
             .get<std::uint64_t>(),
         value.at("nextOpaqueAttachmentId").get<std::uint64_t>(),
     };
@@ -1502,19 +1501,14 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
         if (!document.at("schemaVersion").is_number_unsigned())
             throw std::runtime_error("patch schema version is malformed");
         const auto schemaVersion = document.at("schemaVersion").get<std::uint32_t>();
-        if (schemaVersion != SchemaVersion && schemaVersion != LegacySchemaVersion) {
+        if (schemaVersion != SchemaVersion) {
             return Result<SalsaScriptPatch>::failure(patchError(
                 "The SCT patch schema version is unsupported.",
                 DiagnosticCode::UnsupportedSctPatchSchema));
         }
-        const bool legacy = schemaVersion == LegacySchemaVersion;
-        const std::string supplementaryTextOrderKey =
-            legacy ? "footerOrder" : "supplementaryTextOrder";
-        const std::string supplementaryTextKey =
-            legacy ? "footerEntries" : "supplementaryText";
         requireObject(document, {"formatId", "schemaVersion", "sourceTextConvention",
             "allocatorState", "sectionOrder", "sections", "scriptSections",
-            "textValues", supplementaryTextOrderKey, supplementaryTextKey,
+            "textValues", "supplementaryTextOrder", "supplementaryText",
             "authoredArms", "textRepairs", "unboundReferences", "aliases",
             "annotations", "folders"});
         SalsaScriptPatch patch;
@@ -1577,14 +1571,14 @@ Result<SalsaScriptPatch> SalsaScriptPatchCodec::deserialize(
             patch.textValues.push_back({parseTarget(value.at("target")),
                 parseText(value.at("before")), parseText(value.at("after"))});
         }
-        if (!document.at(supplementaryTextOrderKey).is_null()) {
-            const auto& value = document.at(supplementaryTextOrderKey);
+        if (!document.at("supplementaryTextOrder").is_null()) {
+            const auto& value = document.at("supplementaryTextOrder");
             requireObject(value, {"before", "after"});
             patch.supplementaryTextOrder = SctOrderDelta<spice::sct::SctSupplementaryTextId>{
                 parseIds<spice::sct::SctSupplementaryTextId>(value.at("before")),
                 parseIds<spice::sct::SctSupplementaryTextId>(value.at("after"))};
         }
-        for (const auto& entry : document.at(supplementaryTextKey)) {
+        for (const auto& entry : document.at("supplementaryText")) {
             requireObject(entry, {"before", "after"});
             SctValueDelta<spice::sct::SctDocumentSupplementaryText> delta;
             if (!entry.at("before").is_null()) delta.before = parseSupplementaryText(entry.at("before"));
@@ -2124,9 +2118,7 @@ SctPatchedLoadResult SctPatchCheckpointService::load(
         return result;
     }
     if (envelope.payload.type != SalsaScriptPatchCodec::PayloadType
-        || (envelope.payload.schemaVersion != SalsaScriptPatchCodec::SchemaVersion
-            && envelope.payload.schemaVersion
-                != SalsaScriptPatchCodec::LegacySchemaVersion)) {
+        || envelope.payload.schemaVersion != SalsaScriptPatchCodec::SchemaVersion) {
         result.patchConflict = true;
         result.load.infrastructureDiagnostics.push_back(patchError(
             "The saved SCT patch payload type or schema is unsupported.",

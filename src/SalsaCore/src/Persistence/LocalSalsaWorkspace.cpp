@@ -25,9 +25,7 @@ namespace {
 using Json = nlohmann::ordered_json;
 
 constexpr std::string_view FormatId = "jahorta.salsa.workspace";
-constexpr std::uint32_t SchemaOne = 1;
 constexpr std::wstring_view ManifestName = L"project.json";
-constexpr std::wstring_view RollbackName = L"project.json.schema1.rollback";
 
 struct ParsedManifest final {
     std::string workspaceId;
@@ -185,9 +183,8 @@ struct ParsedManifest final {
     std::ranges::transform(sessionIdentity, sessionIdentity.begin(), towlower);
     identities.push_back(std::move(sessionIdentity));
     for (std::size_t left = 0; left < identities.size(); ++left) {
-        if (identities[left] == ManifestName || identities[left] == RollbackName
-            || identities[left].starts_with(std::wstring(ManifestName) + L"/")
-            || identities[left].starts_with(std::wstring(RollbackName) + L"/"))
+        if (identities[left] == ManifestName
+            || identities[left].starts_with(std::wstring(ManifestName) + L"/"))
             return Result<void>::failure(workspaceError(
                 "A workspace component collides with a workspace manifest.", manifest));
         for (std::size_t right = left + 1u; right < identities.size(); ++right) {
@@ -300,28 +297,7 @@ struct ParsedManifest final {
     }
 }
 
-[[nodiscard]] Result<std::filesystem::path> parseSchemaOne(
-    const std::string_view text, const std::filesystem::path& path) {
-    try {
-        const auto json = Json::parse(text);
-        if (!hasExactKeys(json, {"formatId", "schemaVersion", "datasetRoot"})
-            || json.at("formatId").get<std::string>() != FormatId
-            || json.at("schemaVersion").get<std::uint32_t>() != SchemaOne
-            || !json.at("datasetRoot").is_string())
-            return Result<std::filesystem::path>::failure(workspaceError(
-                "The schema-one SALSA workspace manifest is invalid.", path));
-        const auto dataset = pathFromUtf8(json.at("datasetRoot").get<std::string>());
-        if (dataset.empty() || !dataset.is_absolute())
-            return Result<std::filesystem::path>::failure(workspaceError(
-                "The schema-one dataset root is invalid.", path));
-        return Result<std::filesystem::path>::success(normalized(dataset));
-    } catch (const std::exception&) {
-        return Result<std::filesystem::path>::failure(workspaceError(
-            "The schema-one SALSA workspace manifest is malformed.", path));
-    }
-}
-
-[[nodiscard]] Result<ParsedManifest> parseSchemaTwo(
+[[nodiscard]] Result<ParsedManifest> parseManifest(
     const std::string_view text, const std::filesystem::path& path) {
     try {
         const auto root = Json::parse(text);
@@ -480,29 +456,6 @@ struct ParsedManifest final {
     return Result<void>::success();
 }
 
-[[nodiscard]] Result<void> preflightSchemaOne(
-    const std::filesystem::path& root, const SalsaWorkspaceComponents& components) {
-    const auto patches = root / components.patches;
-    std::error_code error;
-    if (!std::filesystem::exists(patches, error)) return error
-        ? Result<void>::failure(workspaceError(
-            "The schema-one patch directory could not be inspected.", patches))
-        : Result<void>::success();
-    if (!std::filesystem::is_directory(patches, error) || error)
-        return Result<void>::failure(workspaceError(
-            "The schema-one patch path is not a directory.", patches));
-    PatchEnvelopeFileStore store;
-    for (const auto& entry : std::filesystem::directory_iterator(patches, error)) {
-        if (error || !entry.is_regular_file(error) || error)
-            return Result<void>::failure(workspaceError(
-                "The schema-one patch directory contains an unsupported entry.", patches));
-        auto loaded = store.load(entry.path());
-        if (!loaded || !loaded.value()) return Result<void>::failure(workspaceError(
-            "A schema-one patch envelope failed upgrade preflight.", entry.path()));
-    }
-    return Result<void>::success();
-}
-
 [[nodiscard]] SalsaWorkspaceDescriptor descriptorFrom(
     const std::filesystem::path& root, ParsedManifest manifest) {
     return {std::move(manifest.workspaceId), root, std::move(manifest.dataset),
@@ -535,7 +488,7 @@ Result<std::optional<SalsaWorkspaceDescriptor>> LocalSalsaWorkspace::inspectLayo
     }
     auto text = readText(manifest);
     if (!text) return Layout::failure(text.diagnostics());
-    auto parsed = parseSchemaTwo(text.value(), manifest);
+    auto parsed = parseManifest(text.value(), manifest);
     if (!parsed) return Layout::failure(parsed.diagnostics());
     return Layout::success(descriptorFrom(root, std::move(parsed).takeValue()));
 }
@@ -551,67 +504,29 @@ Result<WorkspaceOpenAssessment> LocalSalsaWorkspace::assess(
         ? Result<WorkspaceOpenAssessment>::failure(workspaceError(
             "The SALSA workspace path could not be inspected.", root))
         : Result<WorkspaceOpenAssessment>::success({WorkspaceOpenDisposition::Create,
-            root, std::nullopt, "A new schema-two workspace will be created."});
+            root, std::nullopt, "A new workspace will be created."});
     if (!std::filesystem::is_directory(root, error) || error)
         return Result<WorkspaceOpenAssessment>::failure(workspaceError(
             "The selected SALSA workspace is not an accessible directory.", root));
     const auto manifestPath = root / ManifestName;
-    const auto rollbackPath = root / RollbackName;
     if (!std::filesystem::exists(manifestPath, error)) {
         if (error) return Result<WorkspaceOpenAssessment>::failure(workspaceError(
             "The workspace manifest path could not be inspected.", manifestPath));
-        if (std::filesystem::exists(rollbackPath, error) && !error) {
-            auto rollback = readText(rollbackPath);
-            if (!rollback) return Result<WorkspaceOpenAssessment>::failure(rollback.diagnostics());
-            auto oldRoot = parseSchemaOne(rollback.value(), rollbackPath);
-            if (!oldRoot) return Result<WorkspaceOpenAssessment>::failure(oldRoot.diagnostics());
-            return Result<WorkspaceOpenAssessment>::success({
-                samePath(oldRoot.value(), dataset.root)
-                    ? WorkspaceOpenDisposition::RecoverSchemaOne
-                    : WorkspaceOpenDisposition::RequiresReassociation,
-                root, oldRoot.value(), "An interrupted schema-one upgrade can be recovered."});
-        }
         if (!isEmptyStagedLayout(root))
             return Result<WorkspaceOpenAssessment>::failure(workspaceError(
                 "A new SALSA workspace must use an empty directory.", root));
         return Result<WorkspaceOpenAssessment>::success({WorkspaceOpenDisposition::Create,
-            root, std::nullopt, "A new schema-two workspace will be created."});
+            root, std::nullopt, "A new workspace will be created."});
     }
     auto text = readText(manifestPath);
     if (!text) return Result<WorkspaceOpenAssessment>::failure(text.diagnostics());
     auto version = manifestSchema(text.value(), manifestPath);
-    if (!version) {
-        if (std::filesystem::exists(rollbackPath, error) && !error) {
-            auto rollback = readText(rollbackPath);
-            auto oldRoot = rollback
-                ? parseSchemaOne(rollback.value(), rollbackPath)
-                : Result<std::filesystem::path>::failure(rollback.diagnostics());
-            if (oldRoot)
-                return Result<WorkspaceOpenAssessment>::success({
-                    samePath(oldRoot.value(), dataset.root)
-                        ? WorkspaceOpenDisposition::RecoverSchemaOne
-                        : WorkspaceOpenDisposition::RequiresReassociation,
-                    root, oldRoot.value(),
-                    "The invalid upgrade manifest can be rolled back and retried."});
-        }
-        return Result<WorkspaceOpenAssessment>::failure(version.diagnostics());
-    }
-    if (version.value() > SchemaVersion)
+    if (!version) return Result<WorkspaceOpenAssessment>::failure(version.diagnostics());
+    if (version.value() != SchemaVersion)
         return Result<WorkspaceOpenAssessment>::failure(workspaceError(
-            "This workspace was created by a newer unsupported SALSA schema.", manifestPath,
+            "This workspace uses an unsupported SALSA schema.", manifestPath,
             DiagnosticCode::UnsupportedPersistenceSchemaVersion));
-    if (version.value() == SchemaOne) {
-        auto oldRoot = parseSchemaOne(text.value(), manifestPath);
-        if (!oldRoot) return Result<WorkspaceOpenAssessment>::failure(oldRoot.diagnostics());
-        return Result<WorkspaceOpenAssessment>::success({
-            samePath(oldRoot.value(), dataset.root)
-                ? WorkspaceOpenDisposition::UpgradeSchemaOne
-                : WorkspaceOpenDisposition::RequiresReassociation,
-            root, oldRoot.value(), samePath(oldRoot.value(), dataset.root)
-                ? "The schema-one workspace will be upgraded."
-                : "The schema-one workspace is associated with another dataset location."});
-    }
-    auto parsed = parseSchemaTwo(text.value(), manifestPath);
+    auto parsed = parseManifest(text.value(), manifestPath);
     if (!parsed) return Result<WorkspaceOpenAssessment>::failure(parsed.diagnostics());
     const bool identity = identityMatches(parsed.value().dataset.identity, dataset.identity);
     if (identity && samePath(parsed.value().lastKnownDatasetRoot, dataset.root))
@@ -648,51 +563,20 @@ Result<LocalSalsaWorkspace> LocalSalsaWorkspace::openOrCreate(
         return Result<LocalSalsaWorkspace>::failure(workspaceError(
             "The SALSA workspace directory could not be created.", root));
     const auto manifestPath = root / ManifestName;
-    const auto rollbackPath = root / RollbackName;
     auto disposition = assessment.value().disposition;
-    if (disposition == WorkspaceOpenDisposition::RequiresReassociation
-        && std::filesystem::exists(rollbackPath, error) && !error) {
-        bool currentIsSchemaTwo = false;
-        if (std::filesystem::exists(manifestPath, error) && !error) {
-            auto current = readText(manifestPath);
-            auto version = current ? manifestSchema(current.value(), manifestPath)
-                                   : Result<std::uint32_t>::failure(current.diagnostics());
-            currentIsSchemaTwo = version && version.value() == SchemaVersion;
-        }
-        if (!currentIsSchemaTwo) disposition = WorkspaceOpenDisposition::RecoverSchemaOne;
-    }
-    if (disposition == WorkspaceOpenDisposition::RecoverSchemaOne) {
-        auto rollback = readText(rollbackPath);
-        if (!rollback) return Result<LocalSalsaWorkspace>::failure(rollback.diagnostics());
-        auto restored = replaceFileAtomically(manifestPath, bytesOf(rollback.value()));
-        if (!restored) return Result<LocalSalsaWorkspace>::failure(restored.diagnostics());
-        disposition = WorkspaceOpenDisposition::UpgradeSchemaOne;
-    }
-
     ParsedManifest finalManifest = manifestFor("00000000-0000-4000-8000-000000000000",
         root, dataset, defaultComponents());
     bool writeManifest = false;
-    bool upgrading = disposition == WorkspaceOpenDisposition::UpgradeSchemaOne;
-    if (disposition == WorkspaceOpenDisposition::Create || upgrading) {
+    if (disposition == WorkspaceOpenDisposition::Create) {
         auto id = makeUuid();
         if (!id) return Result<LocalSalsaWorkspace>::failure(id.diagnostics());
         finalManifest = manifestFor(std::move(id).takeValue(), root, dataset,
             defaultComponents());
         writeManifest = true;
-        if (upgrading) {
-            auto old = readText(manifestPath);
-            if (!old) return Result<LocalSalsaWorkspace>::failure(old.diagnostics());
-            auto parsedOld = parseSchemaOne(old.value(), manifestPath);
-            if (!parsedOld) return Result<LocalSalsaWorkspace>::failure(parsedOld.diagnostics());
-            auto preflight = preflightSchemaOne(root, finalManifest.components);
-            if (!preflight) return Result<LocalSalsaWorkspace>::failure(preflight.diagnostics());
-            auto backup = replaceFileAtomically(rollbackPath, bytesOf(old.value()));
-            if (!backup) return Result<LocalSalsaWorkspace>::failure(backup.diagnostics());
-        }
     } else {
         auto current = readText(manifestPath);
         if (!current) return Result<LocalSalsaWorkspace>::failure(current.diagnostics());
-        auto parsed = parseSchemaTwo(current.value(), manifestPath);
+        auto parsed = parseManifest(current.value(), manifestPath);
         if (!parsed) return Result<LocalSalsaWorkspace>::failure(parsed.diagnostics());
         finalManifest = std::move(parsed).takeValue();
         if (disposition == WorkspaceOpenDisposition::RebindRelative
@@ -716,18 +600,8 @@ Result<LocalSalsaWorkspace> LocalSalsaWorkspace::openOrCreate(
     }
     auto verifiedText = readText(manifestPath);
     if (!verifiedText) return Result<LocalSalsaWorkspace>::failure(verifiedText.diagnostics());
-    auto verified = parseSchemaTwo(verifiedText.value(), manifestPath);
-    if (!verified) {
-        if (upgrading) {
-            auto rollback = readText(rollbackPath);
-            if (rollback) (void)replaceFileAtomically(manifestPath, bytesOf(rollback.value()));
-        }
-        return Result<LocalSalsaWorkspace>::failure(verified.diagnostics());
-    }
-    if (std::filesystem::exists(rollbackPath, error) && !error)
-        std::filesystem::remove(rollbackPath, error);
-    if (error) return Result<LocalSalsaWorkspace>::failure(workspaceError(
-        "The verified schema-one rollback manifest could not be removed.", rollbackPath));
+    auto verified = parseManifest(verifiedText.value(), manifestPath);
+    if (!verified) return Result<LocalSalsaWorkspace>::failure(verified.diagnostics());
     auto descriptor = descriptorFrom(root, std::move(verified).takeValue());
     const auto recoveries = WorkspaceTransactionService::recoverAll(
         descriptor.root, descriptor.components.transactions);

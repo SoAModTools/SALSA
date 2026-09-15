@@ -67,8 +67,6 @@ class SctFragmentCodec final {
 public:
     static constexpr std::string_view FormatId = "jahorta.salsa.sct-fragment";
     static constexpr std::uint32_t SchemaVersion = 4;
-    static constexpr std::uint32_t PreviousSchemaVersion = 3;
-    static constexpr std::uint32_t LegacySchemaVersion = 2;
     static constexpr std::size_t MaximumBytes = 64u * 1024u * 1024u;
     static constexpr std::string_view MimeType =
         "application/vnd.jahorta.salsa.sct-fragment+json";

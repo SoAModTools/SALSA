@@ -92,7 +92,7 @@ using Json = nlohmann::ordered_json;
     if (value == "section") return SctNavigationKind::Section;
     if (value == "instruction") return SctNavigationKind::Instruction;
     if (value == "string") return SctNavigationKind::String;
-    if (value == "supplementary-text" || value == "footer-entry")
+    if (value == "supplementary-text")
         return SctNavigationKind::SupplementaryText;
     if (value == "opaque-attachment") return SctNavigationKind::OpaqueAttachment;
     if (value == "footer-group") return SctNavigationKind::FooterGroup;
@@ -234,7 +234,7 @@ Result<WorkspaceSessionState> WorkspaceSessionCodec::deserialize(
                 "The workspace session header is invalid."));
         }
         const auto schemaVersion = root.at("schemaVersion").get<std::uint64_t>();
-        if (schemaVersion != SchemaVersion && schemaVersion != LegacySchemaVersion)
+        if (schemaVersion != SchemaVersion)
             return Result<WorkspaceSessionState>::failure(sessionError(
                 "The workspace session schema is unsupported.", std::nullopt,
                 DiagnosticCode::UnsupportedPersistenceSchemaVersion));

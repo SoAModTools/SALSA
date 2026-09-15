@@ -460,7 +460,7 @@ void collectDependencies(SctSemanticFragment& fragment, const SctWorkingState& s
     if (id == 0u) throw std::runtime_error("reference ID zero is invalid");
     if (kind == "instruction") return spice::sct::SctInstructionId{id};
     if (kind == "string") return spice::sct::SctStringId{id};
-    if (kind == "supplementary-text" || kind == "footer")
+    if (kind == "supplementary-text")
         return spice::sct::SctSupplementaryTextId{id};
     throw std::runtime_error("reference kind is invalid");
 }
@@ -943,26 +943,19 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
         const auto document = Json::parse(
             reinterpret_cast<const char*>(bytes.data()),
             reinterpret_cast<const char*>(bytes.data()) + bytes.size());
-        static const std::array legacyFields{"formatId", "schemaVersion", "kind",
-            "sourceAssetIdentity", "payloadEncoding", "payload", "dependencies"};
         static const std::array currentFields{"formatId", "schemaVersion", "kind",
             "sourceAssetIdentity", "payloadEncoding", "payload", "dependencies",
             "semanticUnits"};
         if (!document.is_object() || !document.contains("schemaVersion"))
             throw std::runtime_error("fragment has missing or unknown fields");
         const auto schemaVersion = document.at("schemaVersion").get<std::uint32_t>();
-        if (schemaVersion != SchemaVersion && schemaVersion != PreviousSchemaVersion
-            && schemaVersion != LegacySchemaVersion)
+        if (schemaVersion != SchemaVersion)
             return Result<SctSemanticFragment>::failure(fragmentError(
                 "The semantic fragment schema version is unsupported.",
                 DiagnosticCode::UnsupportedSctFragmentSchema));
-        const bool fieldsAreValid = schemaVersion == SchemaVersion
-            ? document.size() == currentFields.size()
-                && std::ranges::all_of(currentFields,
-                    [&](const auto field) { return document.contains(field); })
-            : document.size() == legacyFields.size()
-                && std::ranges::all_of(legacyFields,
-                    [&](const auto field) { return document.contains(field); });
+        const bool fieldsAreValid = document.size() == currentFields.size()
+            && std::ranges::all_of(currentFields,
+                [&](const auto field) { return document.contains(field); });
         if (!fieldsAreValid)
             throw std::runtime_error("fragment has missing or unknown fields");
         if (document.at("formatId").get<std::string>() != FormatId)
@@ -988,8 +981,6 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
             throw std::runtime_error("fragment source asset identity is empty");
         const auto kind = document.at("kind").get<std::string>();
         if (kind == "instructionRange" || kind == "semanticUnits") {
-            if (kind == "semanticUnits" && schemaVersion != SchemaVersion)
-                throw std::runtime_error("semantic units require fragment schema 4");
             fragment.kind = kind == "instructionRange"
                 ? SctFragmentKind::InstructionRange : SctFragmentKind::SemanticUnits;
             if (decodedPatch.sections.size() != 1u
@@ -1060,12 +1051,10 @@ Result<SctSemanticFragment> SctFragmentCodec::deserialize(
             dependency.targetNameBytes = decodeByteString(encoded.at("targetNameBytes"));
             fragment.dependencies.push_back(std::move(dependency));
         }
-        if (schemaVersion == SchemaVersion) {
-            if (!document.at("semanticUnits").is_array())
-                throw std::runtime_error("fragment semantic units are not an array");
-            for (const auto& encoded : document.at("semanticUnits"))
-                fragment.semanticUnits.push_back(decodeSemanticUnit(encoded));
-        }
+        if (!document.at("semanticUnits").is_array())
+            throw std::runtime_error("fragment semantic units are not an array");
+        for (const auto& encoded : document.at("semanticUnits"))
+            fragment.semanticUnits.push_back(decodeSemanticUnit(encoded));
         if ((fragment.kind == SctFragmentKind::SemanticUnits)
             != !fragment.semanticUnits.empty())
             throw std::runtime_error("fragment semantic unit shape is invalid");

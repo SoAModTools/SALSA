@@ -38,8 +38,6 @@ enum class WorkspaceOpenDisposition {
     Create,
     OpenCompatible,
     RebindRelative,
-    UpgradeSchemaOne,
-    RecoverSchemaOne,
     RequiresReassociation,
 };
 

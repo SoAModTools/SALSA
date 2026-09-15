@@ -441,7 +441,7 @@ TEST(SalsaScriptPatchTest, RoundTripsV6ScptProgramsAndStringGroupMarkers) {
     EXPECT_EQ(origin.sourceTargetNameBytes, expectedTargetName);
 }
 
-TEST(SalsaScriptPatchTest, MigratesSchemaFiveFooterDataToSchemaSixSupplementaryText) {
+TEST(SalsaScriptPatchTest, RejectsOlderSchemaAndRetiredFieldNames) {
     SalsaScriptPatch patch;
     patch.allocatorState = SctValueDelta<SctPatchedAllocatorState>{
         SctPatchedAllocatorState{2u, 3u, 4u, 12u, 5u},
@@ -485,40 +485,10 @@ TEST(SalsaScriptPatchTest, MigratesSchemaFiveFooterDataToSchemaSixSupplementaryT
     replaceAll("\"supplementary\"", "\"footer\"");
 
     const auto decoded = SalsaScriptPatchCodec::deserialize(patchBytes(legacy));
-    ASSERT_TRUE(decoded) << decoded.diagnostics().front().message;
-    ASSERT_TRUE(decoded.value().allocatorState.has_value());
-    EXPECT_EQ(decoded.value().allocatorState->after->nextSupplementaryTextId, 13u);
-    ASSERT_TRUE(decoded.value().supplementaryTextOrder.has_value());
-    EXPECT_EQ(decoded.value().supplementaryTextOrder->after,
-        (std::vector<SctSupplementaryTextId>{
-            SctSupplementaryTextId{11u}, SctSupplementaryTextId{12u}}));
-    ASSERT_EQ(decoded.value().supplementaryText.size(), 1u);
-    ASSERT_TRUE(decoded.value().supplementaryText.front().after.has_value());
-    EXPECT_EQ(decoded.value().supplementaryText.front().after->id,
-        SctSupplementaryTextId{12u});
-    EXPECT_EQ(std::get<SctPlainText>(
-        decoded.value().supplementaryText.front().after->value).utf8,
-        "migrated footer text");
-    EXPECT_EQ(decoded.value().textValues.front().target,
-        SctTextTarget{SctSupplementaryTextId{11u}});
-    const auto& decodedReference = std::get<SctScriptSectionContent>(
-        decoded.value().sections.front().after->content).instructions.front();
-    EXPECT_EQ(std::get<SctSupplementaryTextReference>(
-        decodedReference.fixedParameters.front().value).target,
-        SctSupplementaryTextId{11u});
-    ASSERT_EQ(decoded.value().annotations.size(), 1u);
-    EXPECT_EQ(decoded.value().annotations.front().after->target.kind,
-        SctAuthoringTargetKind::SupplementaryText);
-
-    const auto migrated = SalsaScriptPatchCodec::serialize(decoded.value());
-    ASSERT_TRUE(migrated);
-    const std::string migratedText(
-        reinterpret_cast<const char*>(migrated.value().data()), migrated.value().size());
-    EXPECT_NE(migratedText.find("\"schemaVersion\": 6"), std::string::npos);
-    EXPECT_NE(migratedText.find("\"supplementaryTextOrder\""), std::string::npos);
-    EXPECT_NE(migratedText.find("\"supplementaryText\""), std::string::npos);
-    EXPECT_EQ(migratedText.find("\"footerOrder\""), std::string::npos);
-    EXPECT_EQ(migratedText.find("\"footerEntries\""), std::string::npos);
+    ASSERT_FALSE(decoded);
+    EXPECT_EQ(decoded.diagnostics().front().code, DiagnosticCode::UnsupportedSctPatchSchema);
+    replaceAll("\"schemaVersion\": 5", "\"schemaVersion\": 6");
+    EXPECT_FALSE(SalsaScriptPatchCodec::deserialize(patchBytes(legacy)));
 }
 
 TEST(SalsaScriptPatchTest, RejectsUnknownFieldsVersionsAndInvalidTargets) {

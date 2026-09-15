@@ -129,7 +129,7 @@ TEST(WorkspacePersistenceTest, RebindsMovedSiblingLayoutOnlyWithExactFingerprint
         std::filesystem::weakly_canonical(moved / L"dataset"));
 }
 
-TEST(WorkspacePersistenceTest, UpgradesSchemaOneAndRemovesRollbackAfterVerification) {
+TEST(WorkspacePersistenceTest, RejectsOlderWorkspaceWithoutChangingIt) {
     WorkspaceTemporaryDirectory temporary;
     const auto dataset = temporary.path() / L"dataset";
     const auto workspace = temporary.path() / L"workspace";
@@ -142,17 +142,22 @@ TEST(WorkspacePersistenceTest, UpgradesSchemaOneAndRemovesRollbackAfterVerificat
         + dataset.generic_string() + "\"\n}\n");
 
     auto assessment = LocalSalsaWorkspace::assess(workspace, testDataset(dataset));
-    ASSERT_TRUE(assessment);
-    EXPECT_EQ(assessment.value().disposition,
-        WorkspaceOpenDisposition::UpgradeSchemaOne);
+    ASSERT_FALSE(assessment);
+    EXPECT_EQ(assessment.diagnostics().front().code,
+        DiagnosticCode::UnsupportedPersistenceSchemaVersion);
+    std::ifstream beforeStream(workspace / L"project.json", std::ios::binary);
+    const std::string before((std::istreambuf_iterator<char>(beforeStream)), {});
+    beforeStream.close();
     auto opened = LocalSalsaWorkspace::openOrCreate(workspace, testDataset(dataset));
-    ASSERT_TRUE(opened);
-    EXPECT_FALSE(std::filesystem::exists(
-        workspace / L"project.json.schema1.rollback"));
-    EXPECT_TRUE(std::filesystem::is_directory(workspace / L"transactions"));
+    ASSERT_FALSE(opened);
+    EXPECT_EQ(opened.diagnostics().front().code,
+        DiagnosticCode::UnsupportedPersistenceSchemaVersion);
+    EXPECT_FALSE(std::filesystem::exists(workspace / L"transactions"));
+    std::ifstream afterStream(workspace / L"project.json", std::ios::binary);
+    EXPECT_EQ(std::string((std::istreambuf_iterator<char>(afterStream)), {}), before);
 }
 
-TEST(WorkspacePersistenceTest, RecoversRollbackOnlySchemaOneUpgradeState) {
+TEST(WorkspacePersistenceTest, RejectsRetiredUpgradeArtifactsWithoutChangingThem) {
     WorkspaceTemporaryDirectory temporary;
     const auto dataset = temporary.path() / L"dataset";
     const auto workspace = temporary.path() / L"workspace";
@@ -165,14 +170,11 @@ TEST(WorkspacePersistenceTest, RecoversRollbackOnlySchemaOneUpgradeState) {
     writeText(workspace / L"project.json.schema1.rollback", schemaOne);
 
     auto assessment = LocalSalsaWorkspace::assess(workspace, testDataset(dataset));
-    ASSERT_TRUE(assessment);
-    EXPECT_EQ(assessment.value().disposition,
-        WorkspaceOpenDisposition::RecoverSchemaOne);
-    auto opened = LocalSalsaWorkspace::openOrCreate(workspace, testDataset(dataset));
-    ASSERT_TRUE(opened);
-    EXPECT_TRUE(std::filesystem::exists(workspace / L"project.json"));
-    EXPECT_FALSE(std::filesystem::exists(
-        workspace / L"project.json.schema1.rollback"));
+    EXPECT_FALSE(assessment);
+    EXPECT_FALSE(LocalSalsaWorkspace::openOrCreate(workspace, testDataset(dataset)));
+    EXPECT_FALSE(std::filesystem::exists(workspace / L"project.json"));
+    std::ifstream stream(workspace / L"project.json.schema1.rollback", std::ios::binary);
+    EXPECT_EQ(std::string((std::istreambuf_iterator<char>(stream)), {}), schemaOne);
 }
 
 TEST(WorkspacePersistenceTest, RejectsFutureWorkspaceWithoutChangingIt) {
@@ -221,7 +223,7 @@ TEST(WorkspaceSessionTest, RoundTripsTypedCheckpointContext) {
     EXPECT_EQ(WorkspaceSessionCodec::serialize(decoded.value()).value(), encoded.value());
 }
 
-TEST(WorkspaceSessionTest, MigratesSchemaOneFooterEntryTargets) {
+TEST(WorkspaceSessionTest, RejectsOlderSchemaAndRetiredTargetNames) {
     WorkspaceSessionState state;
     state.workspaceId = "12345678-1234-4234-9234-123456789abc";
     const auto locator = testLocator(L"scripts/A.sct");
@@ -246,13 +248,10 @@ TEST(WorkspaceSessionTest, MigratesSchemaOneFooterEntryTargets) {
     }
 
     const auto decoded = WorkspaceSessionCodec::deserialize(legacy);
-    ASSERT_TRUE(decoded);
-    EXPECT_EQ(decoded.value(), state);
-    const auto migrated = WorkspaceSessionCodec::serialize(decoded.value());
-    ASSERT_TRUE(migrated);
-    EXPECT_NE(migrated.value().find("\"schemaVersion\": 2"), std::string::npos);
-    EXPECT_NE(migrated.value().find("supplementary-text"), std::string::npos);
-    EXPECT_EQ(migrated.value().find("footer-entry"), std::string::npos);
+    ASSERT_FALSE(decoded);
+    legacy.replace(version, std::string("\"schemaVersion\": 1").size(),
+        "\"schemaVersion\": 2");
+    EXPECT_FALSE(WorkspaceSessionCodec::deserialize(legacy));
 }
 
 TEST(WorkspaceSessionTest, RejectsInconsistentAndMismatchedState) {
