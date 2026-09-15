@@ -1,6 +1,29 @@
 # Production whole-program IR implementation plan
 
-Status: WP1 through WP5 implemented; subsequent production slices remain planned, following the user's explicit architecture decision on 2026-09-13. This document authorizes no production implementation by itself. Branch: whole_program_ir. The storage/compression decision is settled; individual implementation details may evolve as work proceeds.
+Status: WP1 through WP6 implementation has landed, including the production editor cutover. GUI feature parity remains incomplete. The next planned workstream is backend-independent GUI contracts and restoration of the previous C++/Qt editor's capabilities. This document does not authorize implementation by itself. Branch: whole_program_ir. Paged storage and zstd level 1 remain the current production choices; future backend changes must not require replacing the GUI.
+
+## Next workstream — GUI/backend separation and capability restoration
+
+Agreed 2026-09-15; planning only. The previous C++/Qt GUI at `1602c39` is the capability baseline, compared with `80e79c6`. WP6 replaced the application shell and its document widgets before restoring feature parity. Some operations exist only in the engine or in unreachable functions. Reuse the previous shell/widgets and useful workflows while replacing their document-specific bindings; do not preserve full-document copying or eager view construction as part of GUI parity.
+
+The intended boundary is **widgets/shell -> presentation models/controllers -> editor-facing contracts -> backend adapter -> authoring engine/storage**. Keep domain contracts Qt-free and independent of both SCT snapshots and paged-IR storage. They expose stable authoring references, paged outlines, selected-item inspection, detached text/expression drafts, reference navigation, editing intents, operation availability and targeted change notifications. Qt models translate those into roles and local row updates. The initial adapter uses ProgramService; no runtime backend picker or maintained legacy backend is required.
+
+A change to storage or indexing should primarily affect the adapter and engine. New authoring concepts may extend the interface. Existing durable IDs should remain authoring identity; do not create another numbering system for widgets. Distinguish view occurrences and generated-native locations from editable authored entities. Story, instruction, semantic and text views use one session, one committed authority and one undo history.
+
+Keep reads scoped and asynchronous, discard stale results, and update only affected values/containers/relationships. Do not introduce full-project view snapshots or whole-SctDocument reconstruction as the compatibility adapter. Shared-guard restructuring and instruction lowering remain engine responsibilities. Preserve exclusive-operation progress and current binary persistence.
+
+Planned implementation groups:
+
+1. **G1: boundary and first vertical slice.** Establish minimal contracts and the current adapter; reuse the shell and connect outline selection, instruction inspection and a real parameter edit end to end.
+2. **G2: everyday editing.** Restore paired instruction/semantic views, imported-flow presentation, inspectors, docked text editing/preview, text creation, reference navigation/history and the complete instruction picker.
+3. **G3: editing productivity.** Restore clipboard/snippets, multi-selection/movement, section folders/order, bookmarks, metadata/colors and catalog customization.
+4. **G4: authoring tools.** Restore standalone modules, named sequences/conditions, complete language/logical-text workflows, entrypoint/resource selection and tile-selector editing/preview.
+5. **G5: story and routes.** Restore variable meanings, story/interaction workspaces, item explanations, path/narrative editing, route endpoint controls and coordinated output using the newer route-owned semantics.
+6. **G6: workspace parity and cleanup.** Restore overview/status/diagnostics/help/layout/session conveniences; explicitly decide replacements for old patch/rebase/maintenance workflows; finish a capability and action-wiring audit.
+
+Track each capability as restored, reduced, disconnected, backend-needed or intentionally retired. Backend support or an old widget file alone does not close a capability. Do not omit previously available behavior without an explicit decision. The detailed local plan and restoration ledger are retained in the ignored whole-program planning folder.
+
+Use a few focused synthetic console checks for risky adapter/edit/invalidation behavior and build changed C++ targets with elevated v145 Release. Do not launch the GUI or GUI-loading tests under the current user instruction. Record live usability as unverified until there is actual user review. No broad corpus campaign, new-script creation, platform-target availability, pruning, SALT integration or new parallel document authority is included. Each subsequently authorized implementation group ends in a scoped commit; this plan itself does not authorize implementation or push.
 
 ## Locked decisions
 
@@ -10,7 +33,7 @@ Status: WP1 through WP5 implemented; subsequent production slices remain planned
 - Use zstd level 1 for new production authoring project payloads. Start with independent bounded records, one compression worker and no dictionary. Page size (initially 256 rows), record chunk size (initially up to 64 MiB) and physical table layout remain implementation details, not authored identity or native SCT requirements.
 - Keep portable explicit binary tables, shared section-order buffers, pooled variable-length values and indexes, scoped immutable reads, incremental dependency updates and one live authority.
 - Use zstd under its BSD 3-Clause option. Preserve copyright/license/disclaimer, package third-party notices and the dependency sources required for GPLv3 corresponding-source distribution. No SALSA license change or exception is needed.
-- Full-corpus and compression experiments are complete; they are no longer pre-decision gates. The user selected this combination after reviewing those results. The editor has not yet been migrated.
+- Full-corpus and compression experiments are complete; they are no longer pre-decision gates. The user selected this combination after reviewing those results. The editor has since been migrated; that cutover did not restore full GUI capability parity.
 
 ## What the evidence establishes
 
@@ -65,7 +88,7 @@ Completion: load multiple scripts into the production model, perform direct look
 
 ## WP2 — Core service, edits, history and lifetimes
 
-Implemented in `SalsaCore/Program/ProgramService.h`. See [service contracts and boundaries](WholeProgramIrService.md) for request types, scoped readers, primitive edits, history/reclamation and bounded native ingestion. The editor cutover remains WP6.
+Implemented in `SalsaCore/Program/ProgramService.h`. See [service contracts and boundaries](WholeProgramIrService.md) for request types, scoped readers, primitive edits, history/reclamation and bounded native ingestion. WP6 supplies the editor cutover; GUI capability restoration is the next workstream.
 
 Put the mutable program behind one serialized owner executor. Public operations are typed load/query/edit/undo/redo/read-scope requests using project identity and expected revision. Qt invokes this service; workers never mutate live authority. Scoped reader handles expose a coherent selected script/module/action range, with explicit lifetime. A full-project checkpoint is an explicit save operation, never the default view capture.
 
@@ -95,7 +118,7 @@ Completion: changing a cutscene guard, a late bit write, a shared helper or an o
 
 ## WP4 — Binary project persistence and legacy import
 
-Implemented in the production persistence/service and legacy import boundaries. See [binary format, loading and legacy contracts](WholeProgramIrPersistence.md). The editor cutover remains WP6.
+Implemented in the production persistence/service and legacy import boundaries. See [binary format, loading and legacy contracts](WholeProgramIrPersistence.md). WP6 supplies the editor cutover; GUI capability restoration is the next workstream.
 
 Define a versioned production binary table schema for executable content and authored metadata, independent of page layout and C++ ABI. Keep 64-bit authored identities, checked fixed-width internal indices and explicit meaningful order. Separate presentation/session data and retained source evidence from hot execution tables; no intermediate JSON tree or SPICE document is needed to reopen executable content.
 
