@@ -268,14 +268,21 @@ Result<SctScriptId> ProgramBuilder::appendImported(const sct::SctDocument& docum
         return Result<SctScriptId>::failure(diagnostics_.back());
     }
 }
-Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::uint8_t> bytes,
-    SctAuthoringBaseline baseline, SctScriptContext context, const sct::SctDocumentImportOptions& options, std::stop_token stop, SctLoadingObserver progress, NativeTextEvidence* collectionEvidence) {
+static Result<SctScriptId> appendNativeImpl(ProgramBuilder& builder, std::span<const std::uint8_t> bytes,
+    SctAuthoringBaseline baseline, SctScriptContext context, const sct::SctDocumentImportOptions& options, std::stop_token stop, SctLoadingObserver progress, NativeTextEvidence* collectionEvidence, const CapturedSource* capture) {
     try {
         auto phase = [&](const char* name) { require(!stop.stop_requested(), "Native load cancelled"); if (progress) progress({name, 0, 0, context.name}); };
         phase("Checking source baseline");
-        auto digest = sha256(std::as_bytes(bytes));
-        if (!digest) return Result<SctScriptId>::failure(digest.diagnostics());
-        require(bytes.size() == baseline.source.byteSize && digest.value() == baseline.source.revision.digest, "Native input differs from its imported baseline");
+        if (capture) {
+            const auto& source = capture->descriptor();
+            require(source.locator == baseline.source.locator && source.byteSize == baseline.source.byteSize &&
+                    source.revision == baseline.source.revision, "Native capture differs from its imported baseline");
+        } else {
+            auto digest = sha256(std::as_bytes(bytes));
+            if (!digest) return Result<SctScriptId>::failure(digest.diagnostics());
+            require(bytes.size() == baseline.source.byteSize && digest.value() == baseline.source.revision.digest,
+                    "Native input differs from its imported baseline");
+        }
         phase("Parsing SCT");
         auto parsed = sct::SctParser{}.parse(bytes, {}, sct::SctParseOptions{true});
         require(parsed.parseOk, "SPICE could not parse native SCT");
@@ -358,5 +365,18 @@ Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::u
     } catch (const std::exception& e) {
         return Result<SctScriptId>::failure({DiagnosticSeverity::Error, DiagnosticCode::SctImportFailed, e.what()});
     }
+}
+Result<SctScriptId> appendNative(ProgramBuilder& builder, std::span<const std::uint8_t> bytes,
+    SctAuthoringBaseline baseline, SctScriptContext context, const sct::SctDocumentImportOptions& options,
+    std::stop_token stop, SctLoadingObserver progress, NativeTextEvidence* evidence) {
+    return appendNativeImpl(builder, bytes, std::move(baseline), std::move(context), options, stop,
+                            std::move(progress), evidence, nullptr);
+}
+Result<SctScriptId> appendNative(ProgramBuilder& builder, const CapturedSource& source,
+    SctAuthoringBaseline baseline, SctScriptContext context, const sct::SctDocumentImportOptions& options,
+    std::stop_token stop, SctLoadingObserver progress, NativeTextEvidence* evidence) {
+    const auto bytes = source.bytes();
+    return appendNativeImpl(builder, {reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()},
+                            std::move(baseline), std::move(context), options, stop, std::move(progress), evidence, &source);
 }
 } // namespace salsa::core::program

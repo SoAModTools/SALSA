@@ -2,6 +2,8 @@
 #include "ProgramInternal.h"
 #include <algorithm>
 #include <mutex>
+#include <condition_variable>
+#include <thread>
 
 namespace salsa::core::program {
 struct NativeCollection {
@@ -86,21 +88,89 @@ struct NativeCollection {
         return std::shared_ptr<const Program>(new Program(std::move(d)));
     }
 };
+Result<void> NativeDatasetPreparation::append(std::size_t ordinal, const CapturedSource &source,
+                                              SctScriptContext context,
+                                              SctImportedDocumentId importedDocument,
+                                              std::optional<spice::sct::SctKnownTextConvention> convention,
+                                              const spice::sct::SctDocumentImportOptions &options,
+                                              std::stop_token stop, SctLoadingObserver observer) {
+    try {
+        require(ordinal < UINT32_MAX, "Native manifest exceeds identity partition range");
+        const auto first = static_cast<std::uint64_t>(ordinal) << 32;
+        ProgramBuilder builder(project_, 0, first);
+        // The fingerprint is deliberately pending inside this detached preparation.
+        SctAuthoringBaseline baseline{
+            {}, {Sha256Digest({})},       source.descriptor(), std::move(importedDocument), convention,
+            {}, {context.platform, false}};
+        NativeTextEvidence evidence;
+        auto imported = appendNative(builder, source, std::move(baseline), std::move(context), options, stop,
+                                     std::move(observer), &evidence);
+        if (!imported)
+            return Result<void>::failure(imported.diagnostics());
+        auto built = builder.finish();
+        if (!built)
+            return Result<void>::failure(built.diagnostics());
+        require(built.value()->highWater() - first < UINT32_MAX, "Script exceeds its authored-ID partition");
+        auto diagnostics = imported.diagnostics();
+        diagnostics.insert(diagnostics.end(), built.diagnostics().begin(), built.diagnostics().end());
+        std::lock_guard lock(mutex_);
+        require(!parts_.contains(ordinal), "Duplicate script ordinal in dataset preparation");
+        parts_.emplace(ordinal,
+                       Part{std::move(built).takeValue(), std::move(evidence), std::move(diagnostics)});
+        return Result<void>::success();
+    } catch (const std::exception &e) {
+        return Result<void>::failure(failure(e.what()));
+    }
+}
+Result<std::shared_ptr<const Program>> NativeDatasetPreparation::finish(const DatasetFingerprint &fingerprint,
+                                                                        std::stop_token stop,
+                                                                        SctLoadingObserver observer) {
+    try {
+        auto d = std::make_unique<ProgramData>();
+        d->id = project_;
+        std::vector<NativeTextEvidence> evidence;
+        std::vector<Diagnostic> diagnostics;
+        std::lock_guard lock(mutex_);
+        std::size_t ordinal = 0;
+        for (auto &[index, part] : parts_) {
+            require(!stop.stop_requested(), "Dataset import cancelled");
+            require(index == ordinal++, "Incomplete dataset preparation");
+            NativeCollection::append(*d, std::move(part.program));
+            evidence.push_back(std::move(part.text));
+            diagnostics.insert(diagnostics.end(), part.diagnostics.begin(), part.diagnostics.end());
+        }
+        parts_.clear();
+        for (auto &baseline : d->baselines)
+            baseline.datasetFingerprint = fingerprint;
+        if (observer)
+            observer({"Resolving dataset text convention"});
+        resolveNativeText(*d, evidence, stop);
+        if (observer)
+            observer({"Building collection postings"});
+        auto program = NativeCollection::finish(std::move(d));
+        require(!stop.stop_requested(), "Dataset import cancelled");
+        return Result<std::shared_ptr<const Program>>::success(std::move(program), std::move(diagnostics));
+    } catch (const std::exception &e) {
+        return Result<std::shared_ptr<const Program>>::failure(failure(e.what()));
+    }
+}
 Result<std::shared_ptr<const Program>> loadNativeCollection(NativeLoadRequest request, std::stop_token stop,
-                                                            std::stop_token shutdown, std::function<bool()> current) {
+                                                            std::stop_token shutdown,
+                                                            std::function<bool()> current) {
     std::vector<Diagnostic> diagnostics;
     try {
         require(request.project.valid() && !request.items.empty(),
                 "Native loading needs a project identity and an imported manifest");
-        require(request.workers > 0 && request.workers <= 64 && request.workingByteBudget > 0,
-                "Invalid native worker limits");
+        require(request.workingByteBudget > 0, "Invalid native worker limits");
         require(request.items.size() < UINT32_MAX, "Native manifest exceeds identity partition range");
         std::stop_source combined;
         std::stop_callback cancel(stop, [&] { combined.request_stop(); });
         std::stop_callback close(shutdown, [&] { combined.request_stop(); });
         std::mutex observerMutex;
         std::uint64_t completed = 0;
-        auto check = [&] { require(!combined.stop_requested() && current(), "Native load cancelled or superseded"); };
+        auto check = [&] {
+            require(!combined.stop_requested() && current(), "Native load cancelled or superseded");
+        };
         auto progress = [&](SctLoadingProgress p) {
             std::lock_guard lock(observerMutex);
             p.completed = completed;
@@ -111,81 +181,137 @@ Result<std::shared_ptr<const Program>> loadNativeCollection(NativeLoadRequest re
         auto d = std::make_unique<ProgramData>();
         d->id = request.project;
         std::vector<NativeTextEvidence> textEvidence(request.items.size());
-        std::size_t next = 0;
-        while (next < request.items.size()) {
-            check();
-            std::uint64_t reserved = 0;
-            std::vector<std::future<Result<std::shared_ptr<const Program>>>> jobs;
-            // A bounded wave reserves memory before invoking any source reader.
-            // Completed jobs retain normalized IR, never a waiting SPICE graph.
-            while (next < request.items.size() && jobs.size() < request.workers) {
-                auto &item = request.items[next];
-                require(item.read && item.workingBytes >= item.baseline.source.byteSize && item.workingBytes > 0 &&
-                            item.workingBytes <= request.workingByteBudget,
-                        "Missing reader or invalid per-script working-memory reservation");
-                if (item.workingBytes > request.workingByteBudget - reserved)
-                    break;
-                require(!item.baseline.id.valid() && !item.context.id.valid() && !item.context.baseline.valid(),
-                        "Native manifest identities are assigned by its ordinal");
-                reserved += item.workingBytes;
-                auto ordinal = next++;
-                auto moved = std::move(item);
-                jobs.push_back(std::async(std::launch::async, [&, ordinal, item = std::move(moved)]() mutable {
-                    try {
-                        check();
-                        progress({"Reading SCT", 0, 0, item.context.name});
-                        auto bytes = item.read(combined.get_token());
-                        if (!bytes)
-                            return Result<std::shared_ptr<const Program>>::failure(bytes.diagnostics());
-                        check();
-                        require(bytes.value().size() == item.baseline.source.byteSize,
-                                "Source reader returned a different byte count");
-                        const auto first = static_cast<std::uint64_t>(ordinal) << 32;
-                        ProgramBuilder builder(request.project, 0, first);
-                        auto imported =
-                            appendNative(builder, bytes.value(), std::move(item.baseline), std::move(item.context),
-                                         item.options, combined.get_token(), progress, &textEvidence[ordinal]);
-                        if (!imported)
-                            return Result<std::shared_ptr<const Program>>::failure(imported.diagnostics());
-                        bytes = Result<std::vector<std::uint8_t>>::success({});
-                        check();
-                        auto built = builder.finish();
-                        if (!built)
-                            return built;
-                        require(built.value()->highWater() - first < UINT32_MAX,
-                                "Script exceeds its authored-ID partition");
-                        auto ds = imported.diagnostics();
-                        ds.insert(ds.end(), built.diagnostics().begin(), built.diagnostics().end());
-                        check();
-                        return Result<std::shared_ptr<const Program>>::success(std::move(built).takeValue(),
-                                                                               std::move(ds));
-                    } catch (const std::exception &e) {
-                        combined.request_stop();
-                        return Result<std::shared_ptr<const Program>>::failure(failure(e.what()));
-                    }
-                }));
-            }
-            for (auto &job : jobs) {
-                auto result = job.get();
-                if (!result) {
-                    combined.request_stop();
-                    diagnostics.insert(diagnostics.end(), result.diagnostics().begin(), result.diagnostics().end());
-                    return Result<std::shared_ptr<const Program>>::failure(std::move(diagnostics));
-                }
-                check();
-                diagnostics.insert(diagnostics.end(), result.diagnostics().begin(), result.diagnostics().end());
-                NativeCollection::append(*d, std::move(result).takeValue());
-                {
-                    std::lock_guard lock(observerMutex);
-                    ++completed;
-                }
-                progress({"Script ready"});
-            }
+        for (const auto &item : request.items) {
+            require(item.read && item.workingBytes >= item.baseline.source.byteSize &&
+                        item.workingBytes > 0 && item.workingBytes <= request.workingByteBudget,
+                    "Missing reader or invalid per-script working-memory reservation");
+            require(!item.baseline.id.valid() && !item.context.id.valid() && !item.context.baseline.valid(),
+                    "Native manifest identities are assigned by its ordinal");
         }
+        auto budget = request.concurrency ? request.concurrency : backgroundConcurrency();
+        const auto workerCount =
+            std::min(request.items.size(),
+                     request.workers ? std::min(request.workers, static_cast<std::size_t>(budget->limit()))
+                                     : static_cast<std::size_t>(budget->limit()));
+        using ScriptResult = Result<std::shared_ptr<const Program>>;
+        std::vector<std::optional<ScriptResult>> ready(request.items.size());
+        std::mutex queueMutex;
+        std::condition_variable_any changed;
+        std::size_t next = 0;
+        std::uint64_t reserved = 0;
+        std::optional<std::vector<Diagnostic>> failed;
+        auto run = [&](std::size_t ordinal) -> ScriptResult {
+            auto &item = request.items[ordinal];
+            try {
+                check();
+                progress({"Reading SCT", 0, 0, item.context.name});
+                const auto first = static_cast<std::uint64_t>(ordinal) << 32;
+                ProgramBuilder builder(request.project, 0, first);
+                auto imported = [&]() -> Result<SctScriptId> {
+                    auto bytes = item.read(combined.get_token());
+                    if (!bytes)
+                        return Result<SctScriptId>::failure(bytes.diagnostics());
+                    check();
+                    return appendNative(builder, bytes.value(), std::move(item.baseline),
+                                        std::move(item.context), item.options, combined.get_token(), progress,
+                                        &textEvidence[ordinal]);
+                }();
+                if (!imported)
+                    return ScriptResult::failure(imported.diagnostics());
+                check();
+                auto built = builder.finish();
+                if (!built)
+                    return built;
+                require(built.value()->highWater() - first < UINT32_MAX,
+                        "Script exceeds its authored-ID partition");
+                auto ds = imported.diagnostics();
+                ds.insert(ds.end(), built.diagnostics().begin(), built.diagnostics().end());
+                return ScriptResult::success(std::move(built).takeValue(), std::move(ds));
+            } catch (const std::exception &e) {
+                return ScriptResult::failure(failure(e.what()));
+            }
+        };
+        // The stop guard runs before joining threads on every exit, including exceptions.
+        // Jobs retain only normalized IR after releasing their source and SPICE graphs.
+        std::vector<std::jthread> workers;
+        struct StopOnExit {
+            std::stop_source &stop;
+            ~StopOnExit() { stop.request_stop(); }
+        } stopOnExit{combined};
+        for (std::size_t worker = 0; worker < workerCount; ++worker)
+            workers.emplace_back([&] {
+                try {
+                    for (;;) {
+                        std::size_t ordinal;
+                        std::uint64_t weight;
+                        {
+                            std::unique_lock lock(queueMutex);
+                            changed.wait(lock, combined.get_token(), [&] {
+                                return next == request.items.size() ||
+                                       request.items[next].workingBytes <=
+                                           request.workingByteBudget - reserved;
+                            });
+                            if (combined.stop_requested() || next == request.items.size())
+                                return;
+                            ordinal = next++;
+                            weight = request.items[ordinal].workingBytes;
+                            reserved += weight;
+                        }
+                        auto permit = budget->acquire(combined.get_token());
+                        if (!permit)
+                            return;
+                        auto result = run(ordinal);
+                        permit.reset();
+                        const bool ok = static_cast<bool>(result);
+                        {
+                            std::lock_guard lock(queueMutex);
+                            reserved -= weight;
+                            if (!ok && !failed)
+                                failed = result.diagnostics();
+                            ready[ordinal].emplace(std::move(result));
+                        }
+                        if (!ok)
+                            combined.request_stop();
+                        changed.notify_all();
+                        if (!ok)
+                            return;
+                        {
+                            std::lock_guard lock(observerMutex);
+                            ++completed;
+                        }
+                        progress({"Script ready"});
+                    }
+                } catch (const std::exception &e) {
+                    {
+                        std::lock_guard lock(queueMutex);
+                        if (!failed)
+                            failed = std::vector<Diagnostic>{failure(e.what())};
+                    }
+                    combined.request_stop();
+                    changed.notify_all();
+                }
+            });
+        for (std::size_t ordinal = 0; ordinal < request.items.size(); ++ordinal) {
+            std::unique_lock lock(queueMutex);
+            changed.wait(lock, combined.get_token(),
+                         [&] { return ready[ordinal].has_value() || failed.has_value(); });
+            if (failed) {
+                diagnostics.insert(diagnostics.end(), failed->begin(), failed->end());
+                return ScriptResult::failure(std::move(diagnostics));
+            }
+            check();
+            auto result = std::move(*ready[ordinal]);
+            ready[ordinal].reset();
+            lock.unlock();
+            diagnostics.insert(diagnostics.end(), result.diagnostics().begin(), result.diagnostics().end());
+            NativeCollection::append(*d, std::move(result).takeValue());
+        }
+        workers.clear();
         check();
-        if (hasErrors(diagnostics)) return Result<std::shared_ptr<const Program>>::failure(std::move(diagnostics));
+        if (hasErrors(diagnostics))
+            return Result<std::shared_ptr<const Program>>::failure(std::move(diagnostics));
         progress({"Resolving dataset text convention"});
-        resolveNativeText(*d,textEvidence,combined.get_token());
+        resolveNativeText(*d, textEvidence, combined.get_token());
         textEvidence.clear();
         progress({"Building collection postings"});
         auto result = NativeCollection::finish(std::move(d));

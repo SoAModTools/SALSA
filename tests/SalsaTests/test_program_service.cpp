@@ -1,4 +1,5 @@
 #include "SalsaCore/Program/ProgramPersistence.h"
+#include "SalsaCore/Program/EditorWorkspace.h"
 #include "SalsaCore/Editor/ProgramBackend.h"
 #include "SalsaCore/Persistence/AtomicFile.h"
 #include "SalsaCore/Program/ProgramService.h"
@@ -319,6 +320,80 @@ TEST(ProgramServiceTest, BoundedLoadingIsResponsiveAndManifestDeterministic) {
     EXPECT_FALSE(parallel.edit({loaded.value().current, {ir::RenameSection{init, "changed"}}}).get());
     parallel.shutdown().get();
     sequential.shutdown().get();
+}
+TEST(ProgramServiceTest, WorkersReplenishBeforeAnEarlierScriptFinishes) {
+    auto request = nativeRequest({}, 2);
+    request.concurrency = std::make_shared<BackgroundConcurrency>(2);
+    auto third = request.items.back();
+    third.baseline.importedDocument = {"c44499b5-dcf0-449a-9815-5bdf558eface"};
+    third.baseline.source.locator = AssetLocator::fromRelativePath("field/c.sct").value();
+    third.context.name = "c";
+    std::promise<void> entered, release;
+    auto gate = release.get_future().share();
+    auto reader = request.items.front().read;
+    request.items.front().read = [gate, reader](auto token) { gate.wait(); return reader(token); };
+    third.read = [&](auto token) { entered.set_value(); return reader(token); };
+    request.items.push_back(std::move(third));
+    ir::ProgramService service;
+    auto loaded = service.load(std::move(request));
+    auto ready = entered.get_future().wait_for(std::chrono::seconds(5));
+    release.set_value(); // Always release, including a regression to wave scheduling.
+    EXPECT_EQ(ready, std::future_status::ready);
+    auto result = loaded.get(); ASSERT_TRUE(result) << messages(result.diagnostics());
+    auto catalog = service.catalog(result.value().current).get(); ASSERT_TRUE(catalog);
+    ASSERT_EQ(catalog.value().scripts.size(), 3u);
+    EXPECT_EQ(catalog.value().scripts[0].name, "a");
+    EXPECT_EQ(catalog.value().scripts[2].name, "c");
+}
+TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpointWithoutParsing) {
+    const auto root = std::filesystem::temp_directory_path() / generateSctAuthoringUuid().value();
+    struct Cleanup { std::filesystem::path root; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(root, ec); } } cleanup{root};
+    auto bytes = nativeBytes();
+    auto writeSources = [&] {
+        std::filesystem::create_directories(root / "source");
+        for (const auto* name : {"a.sct", "b.sct", "c.sct"})
+            ASSERT_TRUE(replaceFileAtomically(root / "source" / name, std::as_bytes(std::span(bytes))));
+    };
+    writeSources();
+    const auto original = LocalGameProject::inspect({root / "source"}); ASSERT_TRUE(original);
+    ir::EditorOpenRequest request{{root / "source"}, root / "workspace"};
+    std::atomic<unsigned> parsed = 0;
+    auto opened = ir::EditorWorkspaceIO::open(request, {}, [&](const auto& p) {
+        if (p.phase == "Parsing SCT") {
+            ++parsed;
+            // The scan has already captured this file. Nothing downstream may reopen it.
+            EXPECT_TRUE(std::filesystem::remove(root / "source" / (p.item + ".sct")));
+        }
+    });
+    ASSERT_TRUE(opened) << messages(opened.diagnostics());
+    EXPECT_EQ(parsed, 3u);
+    auto session = opened.value();
+    ASSERT_EQ(session->catalog.scripts.size(), 3u);
+    EXPECT_EQ(session->dataset->snapshot().fingerprint, original.value().snapshot().fingerprint);
+    auto cp = session->service->checkpoint(session->status.current).get(); ASSERT_TRUE(cp);
+    for (const auto& base : cp.value().program->baselines()) {
+        EXPECT_EQ(base.datasetFingerprint, original.value().snapshot().fingerprint);
+        auto retained = session->workspace->loadBaseline(base.source.revision); ASSERT_TRUE(retained);
+        ASSERT_TRUE(retained.value());
+        EXPECT_EQ(*retained.value(), (std::vector<std::byte>(std::as_bytes(std::span(bytes)).begin(), std::as_bytes(std::span(bytes)).end())));
+    }
+    writeSources();
+    auto saved = ir::EditorWorkspaceIO::save(*session, session->status.current, {}); ASSERT_TRUE(saved);
+    parsed = 0;
+    auto reopened = ir::EditorWorkspaceIO::open(request, {}, [&](const auto& p) { if (p.phase == "Parsing SCT") ++parsed; });
+    ASSERT_TRUE(reopened) << messages(reopened.diagnostics());
+    EXPECT_EQ(parsed, 0u);
+    for (std::size_t i = 0; i < session->catalog.scripts.size(); ++i)
+        EXPECT_EQ(session->catalog.scripts[i].id, reopened.value()->catalog.scripts[i].id);
+    std::stop_source cancelled;
+    request.workspace = root / "cancelled";
+    auto stopped = ir::EditorWorkspaceIO::open(request, cancelled.get_token(), [&](const auto& p) {
+        if (p.phase == "Parsing SCT") cancelled.request_stop();
+    });
+    EXPECT_FALSE(stopped);
+    EXPECT_FALSE(std::filesystem::exists(request.workspace));
+    for (const auto& entry : std::filesystem::directory_iterator(root))
+        EXPECT_FALSE(entry.path().filename().string().starts_with(".salsa-import-"));
 }
 TEST(ProgramServiceTest, DatasetMainConventionResolvesEarlierAmbiguousTextWithoutRereading) {
     auto request=nativeRequest({},2);std::array<unsigned,2> reads{};

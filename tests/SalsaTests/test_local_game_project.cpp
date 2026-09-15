@@ -3,7 +3,9 @@
 #include <Windows.h>
 #include <gtest/gtest.h>
 
+#include "SalsaCore/Foundation/BackgroundConcurrency.h"
 #include <atomic>
+#include <future>
 #include <filesystem>
 #include <fstream>
 #include <stop_token>
@@ -54,6 +56,45 @@ private:
     return std::ranges::any_of(diagnostics, [code](const Diagnostic& diagnostic) {
         return diagnostic.code == code;
     });
+}
+
+TEST(LocalGameProjectTest, SharedWorkerBudgetHasAutomaticMinimumAndCancellableAdmission) {
+    EXPECT_EQ(automaticBackgroundWorkers(0), 1u);
+    EXPECT_EQ(automaticBackgroundWorkers(3), 1u);
+    EXPECT_EQ(automaticBackgroundWorkers(16), 8u);
+    auto budget = std::make_shared<BackgroundConcurrency>(1);
+    auto held = budget->acquire({}); ASSERT_TRUE(held);
+    std::stop_source stop;
+    auto waiting = std::async(std::launch::async, [&] { return budget->acquire(stop.get_token()).has_value(); });
+    stop.request_stop();
+    EXPECT_FALSE(waiting.get());
+    budget->setLimit(2);
+    auto second = budget->acquire({}); EXPECT_TRUE(second);
+    EXPECT_FALSE(budget->acquire(stop.get_token()));
+}
+
+TEST(LocalGameProjectTest, ScanPipelineReplenishesWithinItsMemoryReservation) {
+    TemporaryDataset dataset;
+    for (const auto* name : {"a.sct", "b.sct", "c.sct"}) dataset.write(name, "synthetic");
+    auto budget = backgroundConcurrency();
+    struct Restore { std::shared_ptr<BackgroundConcurrency> budget; unsigned count; ~Restore() { budget->setLimit(count); } } restore{budget, budget->limit()};
+    budget->setLimit(2);
+    std::promise<void> release, third;
+    auto gate = release.get_future().share();
+    DatasetScanPipeline pipeline;
+    pipeline.workingByteBudget = 2 * 1024 * 1024;
+    pipeline.consume = [&](std::size_t ordinal, const CapturedSource&, std::stop_token) {
+        if (ordinal == 0) gate.wait();
+        if (ordinal == 2) third.set_value();
+        return Result<void>::success();
+    };
+    auto scan = std::async(std::launch::async, [&] { return LocalGameProject::inspect({dataset.root()}, {}, {}, pipeline); });
+    const auto ready = third.get_future().wait_for(std::chrono::seconds(5));
+    release.set_value();
+    EXPECT_EQ(ready, std::future_status::ready);
+    auto result = scan.get(); ASSERT_TRUE(result);
+    ASSERT_EQ(result.value().snapshot().assets.size(), 3u);
+    EXPECT_EQ(result.value().snapshot().assets.front().locator.identityKey(), "a.sct");
 }
 
 TEST(LocalGameProjectTest, CatalogsOnlySctFilesRecursivelyInStableOrder) {

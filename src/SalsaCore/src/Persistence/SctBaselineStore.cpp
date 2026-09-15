@@ -1,6 +1,7 @@
 #include "SalsaCore/Persistence/SctBaselineStore.h"
 
 #include "SalsaCore/Foundation/Hashing.h"
+#include "SalsaCore/Project/CapturedSource.h"
 #include "SalsaCore/Persistence/AtomicFile.h"
 
 #include <fstream>
@@ -83,6 +84,14 @@ Result<void> DirectorySctBaselineStore::retainBaseline(
     if (!existing) return Result<void>::failure(existing.diagnostics());
     if (existing.value()) return Result<void>::success();
     return replaceFileAtomically(sourcePath, bytes);
+}
+
+Result<void> DirectorySctBaselineStore::retainBaseline(const CapturedSource& source) const {
+    const auto& revision = source.descriptor().revision;
+    auto existing = loadBaseline(revision);
+    if (!existing) return Result<void>::failure(existing.diagnostics());
+    if (existing.value()) return Result<void>::success();
+    return replaceFileAtomically(path(revision), source.bytes());
 }
 
 }  // namespace salsa::core

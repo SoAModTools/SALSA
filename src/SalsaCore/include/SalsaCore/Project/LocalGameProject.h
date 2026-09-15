@@ -1,17 +1,28 @@
 #pragma once
 
 #include "SalsaCore/Project/GameProjectContext.h"
+#include "SalsaCore/Project/CapturedSource.h"
 
 #include <stop_token>
 
 namespace salsa::core {
+
+// Optional per-file work runs while its immutable capture is resident. The scan
+// retains only descriptors after the consumer returns, then finalizes identity.
+struct DatasetScanPipeline {
+    std::size_t workers = 0;
+    std::uint64_t workingByteBudget = 256ull * 1024 * 1024;
+    std::uint64_t sourceExpansionFactor = 1;
+    std::function<Result<void>(std::size_t, const CapturedSource&, std::stop_token)> consume;
+};
 
 class LocalGameProject final : public GameProjectContext, public AssetCatalog {
 public:
     [[nodiscard]] static Result<LocalGameProject> inspect(
         const LocalGameProjectOptions& options,
         std::stop_token stopToken = {},
-        const DatasetScanObserver& observer = {});
+        const DatasetScanObserver& observer = {},
+        const DatasetScanPipeline& pipeline = {});
 
     [[nodiscard]] Result<LocalGameProject> rescan(
         std::stop_token stopToken = {},

@@ -1,6 +1,9 @@
 #include "SalsaCore/Program/EditorWorkspace.h"
 #include "SalsaCore/Persistence/AtomicFile.h"
 #include "ProgramInternal.h"
+#include "NativeCollection.h"
+#include <set>
+#include <mutex>
 #include "SpiceMLD/MldDocumentImporter.h"
 #include <chrono>
 #include <cstring>
@@ -38,6 +41,45 @@ std::filesystem::path projectPath(const LocalSalsaWorkspace &w) {
 std::uint64_t elapsed(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
 }
+// Baselines are staged on the destination volume, then moved after the scan's
+// final identity is accepted. The stage owns only its freshly created directory.
+class ImportBaselines {
+public:
+    explicit ImportBaselines(const std::filesystem::path& workspace)
+        : root_(std::filesystem::absolute(workspace).lexically_normal().parent_path() / (".salsa-import-" + uuid())),
+          store_(root_) {
+        std::filesystem::create_directories(root_.parent_path());
+        require(std::filesystem::create_directory(root_), "Could not create import baseline stage");
+    }
+    ~ImportBaselines() { std::error_code ignored; std::filesystem::remove_all(root_, ignored); }
+    Result<void> retain(const CapturedSource& source) {
+        auto result = store_.retainBaseline(source);
+        if (result) { std::lock_guard lock(mutex_); revisions_.insert(source.descriptor().revision); }
+        return result;
+    }
+    void publish(const LocalSalsaWorkspace& workspace) {
+        DirectorySctBaselineStore destination(workspace.componentPath(workspace.descriptor().components.baselines));
+        for (const auto& revision : revisions_) {
+            auto existing = take(destination.loadBaseline(revision));
+            if (existing) continue;
+            // Both directories normally share a volume. A custom component on a
+            // different volume uses a file copy; the original SCT is never reread.
+            std::error_code ec;
+            std::filesystem::rename(store_.path(revision), destination.path(revision), ec);
+            if (ec) {
+                ec.clear();
+                std::filesystem::copy_file(store_.path(revision), destination.path(revision),
+                                           std::filesystem::copy_options::none, ec);
+                if (ec) throw std::runtime_error("Could not publish an imported source baseline: " + ec.message());
+            }
+        }
+    }
+private:
+    std::filesystem::path root_;
+    DirectorySctBaselineStore store_;
+    std::mutex mutex_;
+    std::set<SourceRevision> revisions_;
+};
 } // namespace
 Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpenRequest &request, std::stop_token stop,
                                                                  const SctLoadingObserver &observer) {
@@ -45,98 +87,96 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
         const auto start = std::chrono::steady_clock::now();
         auto out = std::make_shared<EditorWorkspace>();
         out->service = std::make_shared<ProgramService>();
-        progress(observer, stop, "Inspecting dataset inventory");
-        auto dataset = LocalGameProject::inspect(request.dataset, stop, [&](const DatasetScanProgress &p) {
-            if (observer)
-                observer({p.phase == DatasetScanPhase::Discovering ? "Discovering dataset assets"
-                                                                   : "Reading dataset fingerprints",
-                          p.completed, p.total.value_or(0), p.currentPath.generic_string()});
-        });
-        if (!dataset)
-            return Result<std::shared_ptr<EditorWorkspace>>::failure(dataset.diagnostics());
+        progress(observer, stop, "Inspecting workspace layout");
+        const auto layout = take(LocalSalsaWorkspace::inspectLayout(request.workspace));
+        bool hasCheckpoint = false;
+        if (layout) {
+            progress(observer, stop, "Recovering workspace transactions", false);
+            for (const auto& recovered : WorkspaceTransactionService::recoverAll(layout->root, layout->components.transactions))
+                require(recovered.status == WorkspaceTransactionStatus::Verified ||
+                        recovered.status == WorkspaceTransactionStatus::RolledBack, "Workspace recovery is blocked");
+            hasCheckpoint = std::filesystem::exists(layout->root / layout->components.authoring / L"project.salsaproject");
+            if (!hasCheckpoint) {
+                const auto patches = layout->root / layout->components.patches;
+                require(!std::filesystem::exists(patches) || std::filesystem::is_empty(patches),
+                    "This workspace has retired patch authoring without a binary project. Choose a fresh workspace; "
+                    "existing files were not replaced.");
+            }
+        }
+        std::unique_ptr<ImportBaselines> baselines;
+        std::unique_ptr<NativeDatasetPreparation> native;
+        DatasetScanPipeline pipeline;
+        pipeline.workers = request.nativeWorkers;
+        std::mutex progressMutex;
+        auto report = [&](const SctLoadingProgress& p) {
+            std::lock_guard lock(progressMutex);
+            if (observer) observer(p);
+        };
+        if (!hasCheckpoint) {
+            baselines = std::make_unique<ImportBaselines>(request.workspace);
+            native = std::make_unique<NativeDatasetPreparation>(SctAuthoringProjectId{uuid()});
+            pipeline.sourceExpansionFactor = 8;
+            pipeline.consume = [&](std::size_t ordinal, const CapturedSource& source, std::stop_token token) {
+                auto retained = baselines->retain(source);
+                if (!retained) return retained;
+                auto convention = request.textConvention;
+                if (auto found = request.textOverrides.find(source.descriptor().locator.path().generic_string());
+                    found != request.textOverrides.end()) convention = found->second;
+                SctScriptContext context;
+                context.name = source.descriptor().locator.path().stem().string();
+                context.platform = request.dataset.platform;
+                context.region = request.dataset.region;
+                spice::sct::SctDocumentImportOptions options;
+                if (convention) options.sourceTextEncoding = spice::sct::sctTextEncodingFor(*convention);
+                return native->append(ordinal, source, std::move(context), {uuid()}, convention, options, token, report);
+            };
+        }
+        progress(observer, stop, hasCheckpoint ? "Inspecting dataset inventory" : "Scanning and importing scripts");
+        auto dataset = LocalGameProject::inspect(request.dataset, stop, [&](const DatasetScanProgress& p) {
+            report({p.phase == DatasetScanPhase::Discovering ? "Discovering dataset assets"
+                : hasCheckpoint ? "Reading dataset fingerprints" : "Script ready",
+                p.completed, p.total.value_or(0), p.currentPath.generic_string()});
+        }, pipeline);
+        if (!dataset) return Result<std::shared_ptr<EditorWorkspace>>::failure(dataset.diagnostics());
         auto diagnostics = dataset.diagnostics();
         out->dataset = std::make_shared<const LocalGameProject>(std::move(dataset).takeValue());
+        std::shared_ptr<const Program> prepared;
+        if (native) {
+            auto finished = native->finish(out->dataset->dataset().identity.fingerprint, stop, report);
+            if (!finished) return Result<std::shared_ptr<EditorWorkspace>>::failure(finished.diagnostics());
+            diagnostics.insert(diagnostics.end(), finished.diagnostics().begin(), finished.diagnostics().end());
+            prepared = std::move(finished).takeValue();
+            native.reset();
+        }
         progress(observer, stop, "Assessing workspace");
         auto assessment = take(LocalSalsaWorkspace::assess(request.workspace, out->dataset->dataset()));
         require(!assessment.requiresReassociation() ||
                     request.acceptance == WorkspaceDatasetAcceptance::UserConfirmedReassociation,
                 "Workspace belongs to another dataset. Explicit reassociation is required before opening it.");
+        progress(observer, stop, "Opening workspace", false);
         out->workspace = std::make_shared<const LocalSalsaWorkspace>(
             take(LocalSalsaWorkspace::openOrCreate(request.workspace, out->dataset->dataset(), request.acceptance)));
-        const auto &w = *out->workspace;
+        const auto& w = *out->workspace;
         const auto path = w.componentPath(projectPath(w));
-        progress(observer, stop, "Recovering workspace transactions", false);
-        for (const auto &recovered :
-             WorkspaceTransactionService::recoverAll(w.descriptor().root, w.descriptor().components.transactions))
-            require(recovered.status == WorkspaceTransactionStatus::Verified ||
-                        recovered.status == WorkspaceTransactionStatus::RolledBack,
-                    "Workspace recovery is blocked");
-        progress(observer, stop, "Reading authoring checkpoint");
-        // Existing unsupported authoring containers fail in the binary decoder.
-        // Never silently replace them with a newly imported native collection.
-        if (std::filesystem::exists(path)) {
+        if (hasCheckpoint) {
+            progress(observer, stop, "Reading authoring checkpoint");
             ProgramOpenRequest open;
             open.path = path;
             open.progress = observer;
             auto loaded = out->service->openProject(std::move(open), stop).get();
-            if (!loaded)
-                return Result<std::shared_ptr<EditorWorkspace>>::failure(loaded.diagnostics());
+            if (!loaded) return Result<std::shared_ptr<EditorWorkspace>>::failure(loaded.diagnostics());
             out->status = loaded.value().status;
             out->presentation = std::move(loaded.value().presentation);
-            if (loaded.value().encodedDigest)
-                out->checkpointDigest = loaded.value().encodedDigest->toHex();
+            if (loaded.value().encodedDigest) out->checkpointDigest = loaded.value().encodedDigest->toHex();
         } else {
-            const auto patches = w.componentPath(w.descriptor().components.patches);
-            require(!std::filesystem::exists(patches) ||
-                        std::filesystem::directory_iterator(patches) == std::filesystem::directory_iterator{},
-                    "This workspace has retired patch authoring without a binary project. Choose a fresh workspace; "
-                    "existing files were not replaced.");
-            progress(observer, stop, "Importing script collection");
-            NativeLoadRequest load;
-            load.project = {uuid()};
-            load.workers = request.nativeWorkers;
-            load.progress = observer;
-            for (const auto &asset : out->dataset->snapshot().assets) {
-                auto convention = request.textConvention;
-                if (auto found = request.textOverrides.find(asset.locator.path().generic_string());
-                    found != request.textOverrides.end())
-                    convention = found->second;
-                NativeLoadItem item{SctAuthoringBaseline{{},
-                                                         out->dataset->dataset().identity.fingerprint,
-                                                         asset,
-                                                         {uuid()},
-                                                         convention,
-                                                         {},
-                                                         {request.dataset.platform, false}}};
-                item.context.name = asset.locator.path().stem().string();
-                item.context.platform = request.dataset.platform;
-                item.context.region = request.dataset.region;
-                item.workingBytes = std::max<std::uint64_t>(1024 * 1024, asset.byteSize * 8);
-                if (convention) {
-                    item.options.sourceTextEncoding = spice::sct::sctTextEncodingFor(*convention);
-                }
-                item.read = [dataset = out->dataset, workspace = out->workspace,
-                             locator = asset.locator](std::stop_token stop) {
-                    if (stop.stop_requested())
-                        return Result<std::vector<std::uint8_t>>::failure(failure("Script import cancelled"));
-                    auto source = dataset->loadAsset(locator);
-                    if (!source)
-                        return Result<std::vector<std::uint8_t>>::failure(source.diagnostics());
-                    auto retained = workspace->retainBaseline(source.value().descriptor.revision, source.value().bytes);
-                    if (!retained)
-                        return Result<std::vector<std::uint8_t>>::failure(retained.diagnostics());
-                    const auto bytes = std::as_bytes(std::span(source.value().bytes));
-                    std::vector<std::uint8_t> native(bytes.size());
-                    std::memcpy(native.data(), bytes.data(), bytes.size());
-                    return Result<std::vector<std::uint8_t>>::success(std::move(native));
-                };
-                load.items.push_back(std::move(item));
-            }
-            auto imported = out->service->load(std::move(load), stop).get();
-            if (!imported)
-                return Result<std::shared_ptr<EditorWorkspace>>::failure(imported.diagnostics());
-            diagnostics.insert(diagnostics.end(), imported.diagnostics().begin(), imported.diagnostics().end());
-            out->status = imported.value();
+            require(!std::filesystem::exists(path), "Workspace checkpoint appeared during import; reopen the workspace");
+            progress(observer, stop, "Publishing imported baselines", false);
+            baselines->publish(w);
+            baselines.reset();
+            progress(observer, stop, "Installing script collection");
+            auto installed = out->service->adopt({}, std::move(prepared), stop).get();
+            if (!installed) return Result<std::shared_ptr<EditorWorkspace>>::failure(installed.diagnostics());
+            out->status = installed.value();
             out->needsInitialSave = true;
         }
         progress(observer, stop, "Preparing script catalog");

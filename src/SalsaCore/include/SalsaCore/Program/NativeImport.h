@@ -1,5 +1,6 @@
 #pragma once
 #include "SalsaCore/Program/Program.h"
+#include "SalsaCore/Project/CapturedSource.h"
 #include "SpiceSCT/SctDocumentImporter.h"
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
 
@@ -23,6 +24,10 @@ spice::sct::SctKnownTextConvention selectNativeConvention(std::span<const Native
 // Parse once, import once, normalize, and release native graphs before returning.
 // Caller owns baseline bytes/evidence storage. No filesystem IO or global cache.
 Result<SctScriptId> appendNative(ProgramBuilder&, std::span<const std::uint8_t>,
+    SctAuthoringBaseline, SctScriptContext, const spice::sct::SctDocumentImportOptions& = {},
+    std::stop_token = {}, SctLoadingObserver = {}, NativeTextEvidence* = nullptr);
+// The immutable capture already binds its bytes to their source digest.
+Result<SctScriptId> appendNative(ProgramBuilder&, const CapturedSource&,
     SctAuthoringBaseline, SctScriptContext, const spice::sct::SctDocumentImportOptions& = {},
     std::stop_token = {}, SctLoadingObserver = {}, NativeTextEvidence* = nullptr);
 }

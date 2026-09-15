@@ -10,6 +10,8 @@
 
 namespace salsa::core {
 
+class CapturedSource;
+
 class SctBaselineStore {
 public:
     virtual ~SctBaselineStore() = default;
@@ -28,6 +30,8 @@ public:
         const SourceRevision& revision) const override;
     [[nodiscard]] Result<void> retainBaseline(
         const SourceRevision& revision, std::span<const std::byte> bytes) const override;
+
+    [[nodiscard]] Result<void> retainBaseline(const CapturedSource&) const;
 
 private:
     std::filesystem::path root_;

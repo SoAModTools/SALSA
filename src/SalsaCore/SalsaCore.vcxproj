@@ -273,4 +273,10 @@
     <ClInclude Include="src\Program\ExplicitFlow.h" />
     <ClInclude Include="src\Program\ProgramBrowse.inl" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\SalsaCore\Foundation\BackgroundConcurrency.h" />
+    <ClCompile Include="src\Foundation\BackgroundConcurrency.cpp" />
+    <ClInclude Include="include\SalsaCore\Project\CapturedSource.h" />
+    <ClCompile Include="src\Project\CapturedSource.cpp" />
+  </ItemGroup>
 </Project>

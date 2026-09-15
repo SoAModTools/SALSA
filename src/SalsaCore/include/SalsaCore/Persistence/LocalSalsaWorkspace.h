@@ -74,6 +74,10 @@ class LocalSalsaWorkspace final : public SctPatchStore,
 public:
     static constexpr std::uint32_t SchemaVersion = 2;
 
+    // Read the current layout without requiring a completed dataset fingerprint.
+    // An absent manifest is accepted only for a fresh, empty workspace.
+    [[nodiscard]] static Result<std::optional<SalsaWorkspaceDescriptor>> inspectLayout(
+        const std::filesystem::path& workspaceRoot);
     [[nodiscard]] static Result<WorkspaceOpenAssessment> assess(
         const std::filesystem::path& workspaceRoot,
         const DatasetContext& dataset);

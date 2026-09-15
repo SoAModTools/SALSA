@@ -515,6 +515,31 @@ struct ParsedManifest final {
 LocalSalsaWorkspace::LocalSalsaWorkspace(SalsaWorkspaceDescriptor descriptor)
     : descriptor_(std::move(descriptor)) {}
 
+Result<std::optional<SalsaWorkspaceDescriptor>> LocalSalsaWorkspace::inspectLayout(
+    const std::filesystem::path& workspaceRoot) {
+    using Layout = Result<std::optional<SalsaWorkspaceDescriptor>>;
+    if (workspaceRoot.empty()) return Layout::failure(workspaceError("A workspace path is required.", workspaceRoot));
+    const auto root = normalized(workspaceRoot);
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) {
+        if (ec) return Layout::failure(workspaceError("The workspace could not be inspected.", root));
+        return Layout::success(std::nullopt);
+    }
+    if (!std::filesystem::is_directory(root, ec) || ec)
+        return Layout::failure(workspaceError("The workspace is not an accessible directory.", root));
+    const auto manifest = root / ManifestName;
+    if (!std::filesystem::exists(manifest, ec)) {
+        if (ec || !isEmptyStagedLayout(root))
+            return Layout::failure(workspaceError("A new SALSA workspace must use an empty directory.", root));
+        return Layout::success(std::nullopt);
+    }
+    auto text = readText(manifest);
+    if (!text) return Layout::failure(text.diagnostics());
+    auto parsed = parseSchemaTwo(text.value(), manifest);
+    if (!parsed) return Layout::failure(parsed.diagnostics());
+    return Layout::success(descriptorFrom(root, std::move(parsed).takeValue()));
+}
+
 Result<WorkspaceOpenAssessment> LocalSalsaWorkspace::assess(
     const std::filesystem::path& workspaceRoot, const DatasetContext& dataset) {
     if (workspaceRoot.empty() || dataset.root.empty())

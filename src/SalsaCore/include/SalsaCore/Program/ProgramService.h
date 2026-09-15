@@ -2,6 +2,7 @@
 #include "SalsaCore/Program/NativeImport.h"
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
 #include <future>
+#include "SalsaCore/Foundation/BackgroundConcurrency.h"
 #include "SalsaCore/Editor/EditorBackend.h"
 #include <stop_token>
 
@@ -408,9 +409,10 @@ struct NativeLoadRequest {
     Revision expected;
     SctAuthoringProjectId project;
     std::vector<NativeLoadItem> items;
-    std::size_t workers = 2;
+    std::size_t workers = 0; // Automatic uses the shared background budget.
     std::uint64_t workingByteBudget = 256ull * 1024 * 1024;
     SctLoadingObserver progress;
+    std::shared_ptr<BackgroundConcurrency> concurrency; // Null uses the application budget.
 };
 
 // One serialized owner; no live model pointers escape. Callbacks run off the UI

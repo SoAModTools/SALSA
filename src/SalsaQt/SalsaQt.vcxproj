@@ -150,4 +150,8 @@
     <ClInclude Include="Editor\EditorQueryWidget.h" />
     <ClCompile Include="Editor\EditorQueryWidget.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Application\PerformanceSettings.h" />
+    <ClCompile Include="Application\PerformanceSettings.cpp" />
+  </ItemGroup>
 </Project>

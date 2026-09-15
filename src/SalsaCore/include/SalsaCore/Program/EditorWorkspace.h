@@ -26,7 +26,7 @@ struct EditorOpenRequest {
     // Empty means SPICE source assessment, independently for each script.
     std::optional<spice::sct::SctKnownTextConvention> textConvention;
     std::map<std::string, spice::sct::SctKnownTextConvention> textOverrides;
-    std::size_t nativeWorkers = 2;
+    std::size_t nativeWorkers = 0;
 };
 struct EditorSaveResult {
     ServiceStatus status;

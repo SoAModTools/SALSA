@@ -1,3 +1,4 @@
+#include "Application/PerformanceSettings.h"
 #include "Application/ProgramWorkspaceController.h"
 #include "Editor/EditorSessionPresenter.h"
 #include "Editor/InstructionInspector.h"
@@ -186,6 +187,8 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     authoring->addAction(tr("Find variable usesâ€¦"), this, [this] { variableUses(); });
     authoring->addAction(tr("Edit selected textâ€¦"), this, [this,textDock] { textDock->show(); textDock->raise(); textEditor_->setFocus(); });
     authoring->addAction(tr("Inspect generated instructionsâ€¦"), this, [this] { inspectLowered(); });
+    auto *settingsMenu = shell_->menuBar()->addMenu(tr("&Settings"));
+    settingsMenu->addAction((new PerformanceSettings(shell_))->action());
     auto *view = shell_->menuBar()->addMenu(tr("&View"));
     view->addAction(editor_->backAction());view->addAction(editor_->forwardAction());
     for (auto *d : shell_->findChildren<QDockWidget *>())

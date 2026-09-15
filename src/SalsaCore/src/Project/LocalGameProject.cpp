@@ -1,6 +1,9 @@
 #include "SalsaCore/Project/LocalGameProject.h"
 
 #include <Windows.h>
+#include "SalsaCore/Foundation/BackgroundConcurrency.h"
+#include <condition_variable>
+#include <thread>
 
 #include <algorithm>
 #include <array>
@@ -91,7 +94,7 @@ namespace {
 }
 
 [[nodiscard]] Result<std::vector<std::byte>> readFile(
-    const std::filesystem::path& path) {
+    const std::filesystem::path& path, std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max()) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) {
         return Result<std::vector<std::byte>>::failure(error(
@@ -101,7 +104,7 @@ namespace {
     }
 
     const auto end = input.tellg();
-    if (end < 0 || static_cast<std::uintmax_t>(end) >
+    if (end < 0 || static_cast<std::uintmax_t>(end) > maximum || static_cast<std::uintmax_t>(end) >
             static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max()) ||
         static_cast<std::uintmax_t>(end) >
             static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
@@ -191,7 +194,7 @@ struct ScannedCatalog final {
 [[nodiscard]] Result<ScannedCatalog> scanDataset(
     const std::filesystem::path& root,
     const std::stop_token stopToken,
-    const DatasetScanObserver& observer) {
+    const DatasetScanObserver& observer, const DatasetScanPipeline& pipeline) {
     std::vector<Diagnostic> diagnostics{};
     std::vector<std::filesystem::path> candidates{};
     std::error_code iteratorError{};
@@ -286,36 +289,95 @@ struct ScannedCatalog final {
             root));
     }
 
-    std::vector<AssetDescriptor> assets{};
-    assets.reserve(located.size());
-    for (auto& [locator, path] : located) {
-        if (stopToken.stop_requested()) {
-            return Result<ScannedCatalog>::failure(cancelled());
-        }
-        auto bytes = readFile(path);
-        if (!bytes) {
-            return Result<ScannedCatalog>::failure(bytes.diagnostics());
-        }
-        auto revision = sha256(bytes.value());
-        if (!revision) {
-            return Result<ScannedCatalog>::failure(revision.diagnostics());
-        }
-        assets.push_back(AssetDescriptor{
-            std::move(locator),
-            static_cast<std::uint64_t>(bytes.value().size()),
-            SourceRevision{ std::move(revision).takeValue() },
+    if (!pipeline.workingByteBudget || !pipeline.sourceExpansionFactor)
+        return Result<ScannedCatalog>::failure(error(DiagnosticCode::AssetReadFailed, "Invalid scan working-memory budget."));
+    std::vector<std::uint64_t> reservations;
+    for (const auto& [locator, path] : located) {
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(path, ec);
+        if (ec || size > pipeline.workingByteBudget / pipeline.sourceExpansionFactor)
+            return Result<ScannedCatalog>::failure(error(DiagnosticCode::AssetReadFailed,
+                "The source cannot fit the scan working-memory budget.", path));
+        reservations.push_back(std::min(pipeline.workingByteBudget,
+            std::max<std::uint64_t>(1024 * 1024, size * pipeline.sourceExpansionFactor)));
+    }
+    std::vector<std::optional<AssetDescriptor>> descriptors(located.size());
+    std::stop_source combined;
+    std::stop_callback cancel(stopToken, [&] { combined.request_stop(); });
+    std::mutex queueMutex, observerMutex;
+    std::condition_variable_any changed;
+    std::size_t next = 0, completed = 0;
+    std::uint64_t reserved = 0;
+    std::optional<std::vector<Diagnostic>> failed;
+    auto budget = backgroundConcurrency();
+    const auto count = std::min(located.size(), pipeline.workers
+        ? std::min(pipeline.workers, static_cast<std::size_t>(budget->limit()))
+        : static_cast<std::size_t>(budget->limit()));
+    {
+        std::vector<std::jthread> workers;
+        struct StopOnExit { std::stop_source& stop; ~StopOnExit() { stop.request_stop(); } } stopOnExit{combined};
+        for (std::size_t worker = 0; worker < count; ++worker) workers.emplace_back([&] {
+            try {
+                for (;;) {
+                    std::size_t ordinal;
+                    {
+                        std::unique_lock lock(queueMutex);
+                        changed.wait(lock, combined.get_token(), [&] {
+                            return next == located.size() || reservations[next] <= pipeline.workingByteBudget - reserved;
+                        });
+                        if (combined.stop_requested() || next == located.size()) return;
+                        ordinal = next++;
+                        reserved += reservations[ordinal];
+                    }
+                    auto permit = budget->acquire(combined.get_token());
+                    if (!permit) return;
+                    auto process = [&]() -> Result<void> {
+                        const auto& [locator, path] = located[ordinal];
+                        auto safe = rejectReparseComponents(root, locator);
+                        if (!safe) return safe;
+                        // Check growth before allocation, so a changing input cannot evade the reservation.
+                        auto bytes = readFile(path, reservations[ordinal] / pipeline.sourceExpansionFactor);
+                        if (!bytes) return Result<void>::failure(bytes.diagnostics());
+                        if (combined.stop_requested()) return Result<void>::failure(cancelled());
+                        auto source = CapturedSource::capture(locator, std::move(bytes).takeValue());
+                        if (!source) return Result<void>::failure(source.diagnostics());
+                        if (pipeline.consume) {
+                            auto consumed = pipeline.consume(ordinal, source.value(), combined.get_token());
+                            if (!consumed) return consumed;
+                        }
+                        descriptors[ordinal] = source.value().descriptor();
+                        return Result<void>::success();
+                    }(); // Source bytes and parser graphs are released before the next job.
+                    permit.reset();
+                    {
+                        std::lock_guard lock(queueMutex);
+                        reserved -= reservations[ordinal];
+                        if (!process && !failed) failed = process.diagnostics();
+                    }
+                    if (!process) combined.request_stop();
+                    changed.notify_all();
+                    if (!process) return;
+                    std::lock_guard lock(observerMutex);
+                    if (observer) observer({DatasetScanPhase::Hashing, ++completed, located.size(), located[ordinal].second});
+                }
+            } catch (const std::exception& e) {
+                {
+                    std::lock_guard lock(queueMutex);
+                    if (!failed) failed = std::vector<Diagnostic>{error(DiagnosticCode::AssetReadFailed, e.what())};
+                }
+                combined.request_stop(); changed.notify_all();
+            }
         });
-        if (observer) {
-            observer(DatasetScanProgress{
-                DatasetScanPhase::Hashing,
-                assets.size(),
-                located.size(),
-                path,
-            });
-        }
-        if (stopToken.stop_requested()) {
-            return Result<ScannedCatalog>::failure(cancelled());
-        }
+        // Join here without requesting stop during a successful scan.
+        for (auto& worker : workers) worker.join();
+    }
+    if (failed) return Result<ScannedCatalog>::failure(std::move(*failed));
+    if (stopToken.stop_requested()) return Result<ScannedCatalog>::failure(cancelled());
+    std::vector<AssetDescriptor> assets;
+    assets.reserve(descriptors.size());
+    for (auto& descriptor : descriptors) {
+        if (!descriptor) return Result<ScannedCatalog>::failure(cancelled());
+        assets.push_back(std::move(*descriptor));
     }
 
     auto fingerprint = fingerprintCatalog(assets);
@@ -341,7 +403,7 @@ LocalGameProject::LocalGameProject(
 Result<LocalGameProject> LocalGameProject::inspect(
     const LocalGameProjectOptions& options,
     const std::stop_token stopToken,
-    const DatasetScanObserver& observer) {
+    const DatasetScanObserver& observer, const DatasetScanPipeline& pipeline) {
     if (stopToken.stop_requested()) {
         return Result<LocalGameProject>::failure(cancelled());
     }
@@ -375,7 +437,7 @@ Result<LocalGameProject> LocalGameProject::inspect(
             options.datasetRoot));
     }
 
-    auto scanned = scanDataset(root, stopToken, observer);
+    auto scanned = scanDataset(root, stopToken, observer, pipeline);
     if (!scanned) {
         return Result<LocalGameProject>::failure(scanned.diagnostics());
     }
