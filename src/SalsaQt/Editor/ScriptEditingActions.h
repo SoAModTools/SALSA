@@ -12,7 +12,6 @@ class ScriptEditingActions final : public QObject {
     QAction *structureAction() const { return structure_; }
     QAction *editAction() const { return edit_; }
     QAction *timingAction() const { return timing_; }
-    QAction *promoteAction() const { return promote_; }
 
   private:
     void insert();
@@ -22,6 +21,6 @@ class ScriptEditingActions final : public QObject {
     void arms(core::editor::StructureDraft);
     EditorSessionPresenter *session_;
     QWidget *host_;
-    QAction *insert_, *structure_, *edit_, *timing_, *promote_;
+    QAction *insert_, *structure_, *edit_, *timing_;
 };
 } // namespace salsa::qt

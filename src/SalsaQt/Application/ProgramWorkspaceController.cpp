@@ -163,7 +163,7 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     editMenu->addAction(editor_->redoAction());
     editMenu->addAction(inspector_->editParameterAction());
     editMenu->addAction(editing_->editAction());editMenu->addAction(editing_->timingAction());
-    editMenu->addAction(editing_->structureAction());editMenu->addAction(editing_->promoteAction());
+    editMenu->addAction(editing_->structureAction());
     editMenu->addAction(textEditor_->createAction());editMenu->addAction(textEditor_->deleteAction());
     editMenu->addSeparator();
     editMenu->addAction(tr("Edit selected itemâ€¦"), this, [this] { editSelected(); }, QKeySequence(Qt::Key_Return));

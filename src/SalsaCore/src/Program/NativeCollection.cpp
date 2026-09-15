@@ -55,13 +55,22 @@ struct NativeCollection {
             d.claim(text.id.value, EntityKind::Text, count32(d.texts.size()));
             d.texts.push_back(std::move(text));
         }
-        // Native normalization produces instruction leaves and a separate SPICE
-        // grouping cache. Do not silently merge authored construct-index layouts.
-        require(s.arms.empty() && s.conditions.empty() && s.loops.empty() && s.switches.empty() && s.transfers.empty(),
-                "Unexpected structured native worker output");
+        const auto armBase=count32(d.arms.size()), labelBase=count32(d.caseLabels.size()),
+            loopBase=count32(d.loops.size()), switchBase=count32(d.switches.size()), transferBase=count32(d.transfers.size());
+        for(auto arm:s.arms) { arm.firstLabel+=labelBase; d.claim(arm.id.value,EntityKind::Arm,count32(d.arms.size())); d.arms.push_back(arm); }
+        d.caseLabels.insert(d.caseLabels.end(),s.caseLabels.begin(),s.caseLabels.end());
+        for(auto condition:s.conditions) { condition.result=remap(condition.result); d.claim(condition.id.value,EntityKind::Condition,count32(d.conditions.size())); d.conditions.push_back(condition); }
+        d.loops.insert(d.loops.end(),s.loops.begin(),s.loops.end());
+        d.switches.insert(d.switches.end(),s.switches.begin(),s.switches.end());
+        d.transfers.insert(d.transfers.end(),s.transfers.begin(),s.transfers.end());
+        require(s.dispatches.empty(), "Native import does not infer route dispatch semantics");
         for (std::uint32_t i = 0; i < s.actions.size(); ++i) {
             auto a = *s.actions.find(i);
             a.value = remap(a.value);
+            if(a.armCount) a.firstArm+=armBase;
+            if(a.kind==ActionKind::Loop) a.detail+=loopBase;
+            if(a.kind==ActionKind::Switch) a.detail+=switchBase;
+            if(a.kind==ActionKind::Transfer) a.detail+=transferBase;
             d.claim(a.id.value, EntityKind::Action, d.actions.size());
             d.actions.append(a);
         }
@@ -79,7 +88,7 @@ struct NativeCollection {
         }
         d.targetUses.insert(d.targetUses.end(), s.targetUses.begin(), s.targetUses.end());
         d.successors.insert(d.successors.end(), s.successors.begin(), s.successors.end());
-        d.initialGrouping.merge(s.initialGrouping);
+        d.initialFlowIssues.merge(s.initialFlowIssues);
         d.highWater = std::max(d.highWater, s.highWater);
         d.stats.excludedSourceBytes += s.stats.excludedSourceBytes;
         d.stats.unavailableItems += s.stats.unavailableItems;

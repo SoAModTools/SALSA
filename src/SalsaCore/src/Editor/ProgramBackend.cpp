@@ -68,8 +68,7 @@ Change ProgramBackend::describe(const ir::ChangeReceipt &c) {
 Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest request, std::stop_token stop) {
     auto result = service_
                       ->outline(revision,
-                                {request.parent, request.offset, request.limit, request.mode == ViewMode::Semantic,
-                                 request.occurrence},
+                                {request.parent, request.offset, request.limit, request.mode == ViewMode::Semantic},
                                 stop)
                       .get();
     if (!result)
@@ -81,7 +80,7 @@ Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest re
         std::optional<RowKind> kind;
         if (r.kind)
             kind = *r.kind == ir::ActionKind::Instruction ? RowKind::Instruction : RowKind::Construct;
-        out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind, r.occurrence, std::move(r.groupingIssue)});
+        out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind, std::move(r.groupingIssue)});
     }
     return Result<OutlinePage>::success(std::move(out));
 }
@@ -160,7 +159,6 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
         }
         auto grouping = service_->assessFlow(revision, a.id, stop).get();
         if (!grouping) return Result<Inspection>::failure(grouping.diagnostics());
-        out.promotableContinuation = grouping.value().promotableContinuation;
         out.evidence = std::move(grouping.value().issue);
         const auto *schema = spice::sct::findSctOpcodeSchema(static_cast<std::uint16_t>(v.data));
         out.title += " — " + (schema ? std::string(schema->semantic.mnemonic) : "Opcode " + std::to_string(v.data));

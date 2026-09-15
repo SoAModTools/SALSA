@@ -1,3 +1,4 @@
+#include <condition_variable>
 #include "SalsaCore/Program/EditorWorkspace.h"
 #include "SalsaCore/Persistence/AtomicFile.h"
 #include "ProgramInternal.h"
@@ -53,9 +54,26 @@ public:
     }
     ~ImportBaselines() { std::error_code ignored; std::filesystem::remove_all(root_, ignored); }
     Result<void> retain(const CapturedSource& source) {
-        auto result = store_.retainBaseline(source);
-        if (result) { std::lock_guard lock(mutex_); revisions_.insert(source.descriptor().revision); }
-        return result;
+        const auto revision=source.descriptor().revision;
+        std::unique_lock lock(mutex_);
+        ready_.wait(lock,[&]{return !retaining_.contains(revision);});
+        if(revisions_.contains(revision)) return Result<void>::success();
+        retaining_.insert(revision);
+        lock.unlock();
+        // Coordinate only identical content. Distinct source files retain in parallel.
+        try {
+            auto result=store_.retainBaseline(source);
+            lock.lock();
+            retaining_.erase(revision);
+            if(result) revisions_.insert(revision);
+            lock.unlock(); ready_.notify_all();
+            return result;
+        } catch(...) {
+            if(!lock.owns_lock()) lock.lock();
+            retaining_.erase(revision);
+            lock.unlock(); ready_.notify_all();
+            throw;
+        }
     }
     void publish(const LocalSalsaWorkspace& workspace) {
         DirectorySctBaselineStore destination(workspace.componentPath(workspace.descriptor().components.baselines));
@@ -78,7 +96,8 @@ private:
     std::filesystem::path root_;
     DirectorySctBaselineStore store_;
     std::mutex mutex_;
-    std::set<SourceRevision> revisions_;
+    std::set<SourceRevision> revisions_, retaining_;
+    std::condition_variable ready_;
 };
 } // namespace
 Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpenRequest &request, std::stop_token stop,

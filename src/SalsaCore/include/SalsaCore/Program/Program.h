@@ -53,6 +53,7 @@ struct ConditionRegion {
     std::optional<ArmId> arm;
     SctSequenceId preparation;
     ValueId result;
+    bool skipRefresh = true; // Timing of the lowered controller, independent of its origin.
 };
 enum class LoopKind : std::uint8_t { While, DoWhile, For };
 struct Loop {
@@ -86,7 +87,7 @@ struct Case {
     CaseExit exit = CaseExit::ExitSwitch;
 };
 enum class TransferKind : std::uint8_t { Break, Continue };
-struct Transfer { SctActionId owner, target; TransferKind kind = TransferKind::Break; };
+struct Transfer { SctActionId owner, target; TransferKind kind = TransferKind::Break; bool skipRefresh = true; };
 struct TransferDestination {
     SctActionId construct;
     SctSequenceId sequence; // Absent means after the target construct (Break).

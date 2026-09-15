@@ -103,8 +103,7 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
                                 finish();
                                 return;
                             }
-                            auto occurrence = at < path.occurrences.size() ? path.occurrences[at] : std::nullopt;
-                            auto next = model_->find(path.subjects[at], occurrence);
+                            auto next = model_->find(path.subjects[at]);
                             if (next.isValid()) {
                                 parent = next;
                                 ++at;

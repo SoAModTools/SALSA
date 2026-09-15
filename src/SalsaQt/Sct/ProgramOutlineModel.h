@@ -15,7 +15,7 @@ class ProgramOutlineModel final : public QAbstractItemModel {
     bool pending(const QModelIndex &index) const;
     void apply(const core::editor::Change &);
     const core::editor::OutlineRow *row(const QModelIndex &) const;
-    QModelIndex find(const core::editor::Subject &, std::optional<core::editor::FlowOccurrence> = {}) const;
+    QModelIndex find(const core::editor::Subject &) const;
     std::function<void()> ready;
     std::function<void(QString)> diagnostic;
     std::function<void(std::uint64_t, std::size_t)> measured;

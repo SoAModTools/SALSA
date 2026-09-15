@@ -253,6 +253,11 @@ std::vector<std::uint8_t> nativeBytes() {
     for (auto name : {"init", "loop"})
         d.sections.push_back(
             {d.allocateSectionId(), name, sct::SctScriptSectionContent{{{d.allocateInstructionId(), 12}}}});
+    auto header=d.allocateInstructionId(), body=d.allocateInstructionId(), exit=d.allocateInstructionId(), done=d.allocateInstructionId();
+    sct::SctDocumentInstruction check{header,0};
+    check.fixedParameters={{0,sct::SctExpressionFactory::encodedDecimalLiteral(0)},{1,sct::SctInstructionReference{done}}};
+    sct::SctDocumentInstruction jump{exit,10};jump.fixedParameters={{0,sct::SctInstructionReference{done}}};
+    d.sections.push_back({d.allocateSectionId(),"group",sct::SctScriptSectionContent{{check,{body,125},jump,{done,12}}}});
     sct::SctDocumentExportOptions options{sct::SctPlatform::GameCube, sct::kSctShiftJisByte7FEncoding};
     options.byteOrder = sct::SctDocumentOutputByteOrder::BigEndian;
     options.header = {sct::SctHeaderExportMode::ExplicitValues, {2001, 1, 2, 7}};
@@ -315,7 +320,16 @@ TEST(ProgramServiceTest, BoundedLoadingIsResponsiveAndManifestDeterministic) {
     for (std::size_t i = 0; i < 2; ++i) {
         EXPECT_EQ(a->scripts()[i].context.id, b->scripts()[i].context.id);
         EXPECT_EQ(a->scripts()[i].sections, b->scripts()[i].sections);
+        const auto* root=a->find(a->scripts()[i].sections.back());
+        auto header=a->find(root->body)->order->front();
+        ASSERT_EQ(a->find(header)->kind,ir::ActionKind::Conditional);
+        const auto& arm=a->arms(header).front();
+        EXPECT_EQ(a->find(arm.body)->script,a->scripts()[i].context.id);
+        EXPECT_FALSE(a->find(arm.condition)->skipRefresh);
+
     }
+    auto encoded=ir::ProgramPersistence::encode(*a);ASSERT_TRUE(encoded);
+    auto decoded=ir::ProgramPersistence::decode(encoded.value());ASSERT_TRUE(decoded)<<messages(decoded.diagnostics());
     auto init = a->scripts()[0].sections[0];
     EXPECT_FALSE(parallel.edit({loaded.value().current, {ir::RenameSection{init, "changed"}}}).get());
     parallel.shutdown().get();
@@ -642,12 +656,9 @@ TEST(ProgramSemanticTest, PromotesPlainFlowAndPreservesSourceIdentity) {
     auto revision=adopted.value().current;
     auto physical=adapter.outline(revision,{section,0,128});ASSERT_TRUE(physical);EXPECT_EQ(physical.value().total,5u);
     auto semanticPage=adapter.outline(revision,{section,0,128,editor::ViewMode::Semantic});ASSERT_TRUE(semanticPage);
-    ASSERT_EQ(semanticPage.value().rows.size(),3u);EXPECT_EQ(semanticPage.value().rows[0].subject,editor::Subject{header});
-    ASSERT_TRUE(semanticPage.value().rows[1].occurrence);EXPECT_EQ(semanticPage.value().rows[1].occurrence->arm,1u);
-    auto body=adapter.outline(revision,{header,0,128,editor::ViewMode::Semantic,semanticPage.value().rows[0].occurrence});ASSERT_TRUE(body);
-    ASSERT_EQ(body.value().rows.size(),1u);EXPECT_EQ(body.value().rows[0].subject,editor::Subject{SctActionId{102}});
+    ASSERT_EQ(semanticPage.value().rows.size(),5u); // Explicit instructions are not display-only groups.
     auto path=adapter.locate(revision,SctActionId{105},editor::ViewMode::Semantic);ASSERT_TRUE(path);
-    ASSERT_EQ(path.value().subjects.size(),4u);ASSERT_TRUE(path.value().occurrences[2]);EXPECT_EQ(path.value().occurrences[2]->arm,1u);
+    EXPECT_EQ(path.value().subjects.back(),editor::Subject{SctActionId{105}});
     EXPECT_EQ(service.status().get().value().current,revision);
     auto edit = service.edit({adopted.value().current, {semantic(ir::PromoteFlow{header, {106}})}}).get();
     ASSERT_TRUE(edit) << messages(edit.diagnostics());
@@ -667,9 +678,8 @@ TEST(ProgramSemanticTest, PromotesPlainFlowAndPreservesSourceIdentity) {
     auto scheduled=adapter.execute(undo.value().status.current,editor::SetTiming{SctActionId{102},true,{}});ASSERT_TRUE(scheduled);
     EXPECT_EQ(scheduled.value().projectionSequences,std::vector<SctSequenceId>{seq});
     auto explicitAgain=adapter.outline(scheduled.value().status.current,{section,0,128,editor::ViewMode::Semantic});ASSERT_TRUE(explicitAgain);
-    EXPECT_EQ(explicitAgain.value().total,3u); // Timing changes preserve SPICE topology; promotion remains stricter.
+    EXPECT_EQ(explicitAgain.value().total,5u);
     auto inspection=adapter.inspect(scheduled.value().status.current,header,{});ASSERT_TRUE(inspection);
-    EXPECT_FALSE(inspection.value().promotableContinuation);
     EXPECT_TRUE(inspection.value().evidence.empty());
     service.shutdown().get();
 }

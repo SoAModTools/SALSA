@@ -260,23 +260,23 @@ struct ServiceOwner {
     std::map<std::uint64_t, std::uint64_t> checkpointTokens;
     std::uint64_t savedRevision = 0;
     std::vector<std::uint32_t> freeActions, freeSequences, freeSections;
-    FlowGroups outlineFlows;
-    const FlowGrouping& flows(SctSequenceId sequence, std::stop_token stop) {
-        if (auto found = outlineFlows.find(sequence); found != outlineFlows.end()) return *found->second;
-        auto grouping = analyzeFlowGroup(*data, sequence, stop);
-        return *outlineFlows.emplace(sequence, std::move(grouping)).first->second;
+    ControlFlowIssues flowIssues;
+    const ControlFlowDiagnostics& flows(SctSequenceId sequence, std::stop_token stop) {
+        if (auto found = flowIssues.find(sequence); found != flowIssues.end()) return *found->second;
+        auto grouping = analyzeFlowIssues(*data, sequence, stop);
+        return *flowIssues.emplace(sequence, std::move(grouping)).first->second;
     }
     void invalidateOutline(const ChangeReceipt &receipt) {
-        for (auto seq:receipt.sequences) outlineFlows.erase(seq);
-        for (auto id:receipt.actions) if(auto *a=data->action(id)) outlineFlows.erase(a->owner);
+        for (auto seq:receipt.sequences) flowIssues.erase(seq);
+        for (auto id:receipt.actions) if(auto *a=data->action(id)) flowIssues.erase(a->owner);
         // A new caller can invalidate recognition in a different sequence.
-        for(auto id:receipt.oldTargets) if(auto *a=data->action(id)) outlineFlows.erase(a->owner);
-        for(auto id:receipt.newTargets) if(auto *a=data->action(id)) outlineFlows.erase(a->owner);
+        for(auto id:receipt.oldTargets) if(auto *a=data->action(id)) flowIssues.erase(a->owner);
+        for(auto id:receipt.newTargets) if(auto *a=data->action(id)) flowIssues.erase(a->owner);
         if (!receipt.scriptLayouts.empty()) {
-            for (auto it = outlineFlows.begin(); it != outlineFlows.end();) {
+            for (auto it = flowIssues.begin(); it != flowIssues.end();) {
                 auto* sequence = data->sequence(it->first);
                 if (!sequence || std::ranges::find(receipt.scriptLayouts, sequence->script) != receipt.scriptLayouts.end())
-                    it = outlineFlows.erase(it);
+                    it = flowIssues.erase(it);
                 else ++it;
             }
         }
@@ -361,7 +361,7 @@ struct ServiceOwner {
         ServiceOwner next;
         next.data = std::move(const_cast<Program *>(p.get())->data_);
         next.protectMetadata();
-        outlineAliases.clear();outlineAliasesDirty=true;outlineFlows.clear();
+        outlineAliases.clear();outlineAliasesDirty=true;flowIssues.clear();
         stopped(stop);
         stopped(shutdown);
         require(generation < UINT64_MAX && nextState < UINT64_MAX, "Program generation/history state exhausted");
@@ -370,7 +370,7 @@ struct ServiceOwner {
         stopped(shutdown);
         require(!current || current(), "Native load was superseded before installation");
         data = std::move(next.data);
-        outlineFlows = std::move(data->initialGrouping);
+        flowIssues = std::move(data->initialFlowIssues);
         protectedIds = std::move(next.protectedIds);
         history.clear();
         summaries.clear();

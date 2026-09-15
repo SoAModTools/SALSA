@@ -7,20 +7,12 @@ std::future<Result<FlowAssessment>> ProgramService::assessFlow(Revision r, SctAc
         const auto& grouping = owner.flows(action->owner, stop);
         FlowAssessment result;
         if (auto issue = grouping.issues.find(id); issue != grouping.issues.end()) result.issue = issue->second;
-        // Promotion rewrites authored instructions. Its narrower safety checks do
-        // not control browsing, and a non-promotable group is not a grouping failure.
-        if (auto join = grouping.joins.find(id); join != grouping.joins.end()) {
-            try {
-                (void)recognizeExplicit(*owner.data, id, join->second, program::incoming);
-                result.promotableContinuation = join->second;
-            } catch (const std::exception&) {}
-        }
         return result;
     });
 }
 std::future<Result<editor::BrowsePage>> ProgramService::browse(Revision r, editor::BrowseRequest request,
                                                                std::stop_token stop) {
-    return control_->submit<editor::BrowsePage>([r, request, stop](auto &o) {
+    return control_->submit<editor::BrowsePage>([r, request, stop](ServiceOwner &o) -> editor::BrowsePage {
         o.match(r, stop);
         require(o.data != nullptr, "No project");
         auto &d = *o.data;

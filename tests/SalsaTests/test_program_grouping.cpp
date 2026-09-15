@@ -1,5 +1,6 @@
 #include "SalsaCore/Editor/ProgramBackend.h"
 #include "SalsaCore/Program/NativeImport.h"
+#include "SalsaCore/Program/ProgramMaterializer.h"
 #include "SalsaCore/Program/ProgramPersistence.h"
 #include "SpiceSCT/SctInstructionFactory.h"
 #include <algorithm>
@@ -32,8 +33,10 @@ sct::SctDocument document() {
     select.fixedParameters = {{0, sct::SctExpressionFactory::encodedDecimalLiteral(0)}};
     select.repeatedParameterGroups = {
         {{{2, sct::SctEncodedWordValue{1}}, {3, sct::SctInstructionReference{sct::SctInstructionId{2}}}}},
-        {{{2, sct::SctEncodedWordValue{2}}, {3, sct::SctInstructionReference{sct::SctInstructionId{6}}}}}};
-    d.sections.push_back({sct::SctSectionId{1}, "main",
+        {{{2, sct::SctEncodedWordValue{2}}, {3, sct::SctInstructionReference{sct::SctInstructionId{6}}}}},
+        {{{2, sct::SctEncodedWordValue{UINT32_MAX}},
+          {3, sct::SctInstructionReference{sct::SctInstructionId{6}}}}}};
+    d.sections.push_back({sct::SctSectionId{1}, "init",
                           sct::SctScriptSectionContent{{select,
                                                         branch(2, 5),
                                                         {sct::SctInstructionId{3}, 125},
@@ -50,6 +53,8 @@ sct::SctDocument document() {
         sct::SctUnresolvedReferenceValue{{sct::SctReferenceTargetStorage::Instruction, {}}, {0x100}};
     d.sections.push_back({sct::SctSectionId{3}, "incomplete",
                           sct::SctScriptSectionContent{{broken, {sct::SctInstructionId{12}, 12}}}});
+    d.sections.push_back(
+        {sct::SctSectionId{4}, "loop", sct::SctScriptSectionContent{{{sct::SctInstructionId{13}, 12}}}});
     return d;
 }
 struct Fixture {
@@ -72,41 +77,60 @@ struct Fixture {
             throw std::runtime_error(messages(program.diagnostics()));
         main = program.value()->scripts().front().sections[0];
         incomplete = program.value()->scripts().front().sections[2];
+        std::function<void(SctSequenceId)> collect = [&](auto sequence) {
+            for (auto id : *program.value()->find(sequence)->order) {
+                ids.emplace(program.value()->find(id)->sourceInstruction, id);
+                for (const auto &arm : program.value()->arms(id))
+                    collect(arm.body);
+                if (auto *loop = program.value()->loop(id))
+                    collect(loop->body);
+            }
+        };
         for (const auto &section : program.value()->sections())
             if (section.body.valid())
-                for (auto id : *program.value()->find(section.body)->order)
-                    ids.emplace(program.value()->find(id)->sourceInstruction, id);
+                collect(section.body);
         auto adopted = service->adopt({}, std::move(program).takeValue()).get();
         if (!adopted)
             throw std::runtime_error(messages(adopted.diagnostics()));
         revision = adopted.value().current;
     }
-    std::vector<std::string> tree(ir::EditorSubject parent,
-                                  std::optional<editor::FlowOccurrence> occurrence = {}, unsigned depth = 0) {
+    std::vector<std::string> tree(ir::EditorSubject parent, unsigned depth = 0) {
         if (depth > 20)
             throw std::runtime_error("Unexpected grouping cycle");
-        auto page = service->outline(revision, {parent, 0, 128, true, occurrence}).get();
+        auto page = service->outline(revision, {parent, 0, 128, true}).get();
         if (!page)
             throw std::runtime_error(messages(page.diagnostics()));
         std::vector<std::string> labels;
         for (const auto &row : page.value().rows) {
             labels.push_back(row.label);
             if (row.expandable) {
-                auto child = tree(row.subject, row.occurrence, depth + 1);
+                auto child = tree(row.subject, depth + 1);
                 labels.insert(labels.end(), child.begin(), child.end());
             }
         }
         return labels;
     }
 };
-TEST(ProgramGroupingTest, SpiceNestedSwitchIfAndLoopSurviveCheckpointWithoutChangingInstructions) {
+TEST(ProgramGroupingTest, ImportedGroupsArePersistentConstructsAndShareBothViews) {
     Fixture f;
     auto checkpoint = f.service->checkpoint(f.revision).get();
     ASSERT_TRUE(checkpoint);
     auto bytes = ir::ProgramPersistence::encode(*checkpoint.value().program);
     ASSERT_TRUE(bytes);
+    const auto &program = *checkpoint.value().program;
+    EXPECT_EQ(program.find(f.ids.at(1))->kind, ir::ActionKind::Switch)
+        << f.service->assessFlow(f.revision, f.ids.at(1), {}).get().value().issue;
+    EXPECT_EQ(program.find(f.ids.at(2))->kind, ir::ActionKind::Conditional);
+    EXPECT_EQ(program.find(f.ids.at(6))->kind, ir::ActionKind::Loop);
+    auto physical = f.service->outline(f.revision, {f.main, 0, 128, false}).get();
+    auto semantic = f.service->outline(f.revision, {f.main, 0, 128, true}).get();
+    ASSERT_TRUE(physical);
+    ASSERT_TRUE(semantic);
+    ASSERT_EQ(physical.value().rows.size(), semantic.value().rows.size());
+    for (std::size_t n = 0; n < physical.value().rows.size(); ++n)
+        EXPECT_EQ(physical.value().rows[n].subject, semantic.value().rows[n].subject);
     auto labels = f.tree(f.main);
-    for (const auto *label : {"Switch", "Case 1", "Case 2", "If", "While"})
+    for (const auto *label : {"Switch", "Case 1", "Case 2 Default", "If", "While"})
         EXPECT_NE(std::ranges::find(labels, label), labels.end()) << label;
     for (const auto &label : labels)
         EXPECT_EQ(label.find("recognized"), std::string::npos);
@@ -116,20 +140,24 @@ TEST(ProgramGroupingTest, SpiceNestedSwitchIfAndLoopSurviveCheckpointWithoutChan
     EXPECT_TRUE(inspected.value().evidence.empty());
     auto path = backend.locate(f.revision, f.ids.at(3), editor::ViewMode::Semantic);
     ASSERT_TRUE(path);
-    EXPECT_GE(path.value().occurrences.size(), 5u);
+    EXPECT_GE(path.value().subjects.size(), 5u);
     EXPECT_EQ(path.value().subjects.back(), editor::Subject{f.ids.at(3)});
     auto after = f.service->checkpoint(f.revision).get();
     ASSERT_TRUE(after);
     EXPECT_EQ(ir::ProgramPersistence::encode(*after.value().program).value(), bytes.value());
     auto decoded = ir::ProgramPersistence::decode(bytes.value());
     ASSERT_TRUE(decoded);
+    const auto& restored=*decoded.value().program;
+    EXPECT_FALSE(restored.find(restored.arms(f.ids.at(2)).front().condition)->skipRefresh);
+    EXPECT_FALSE(restored.transfer(f.ids.at(4))->skipRefresh);
+
     f.service = std::make_shared<ir::ProgramService>();
     auto installed = f.service->adopt({}, std::move(decoded.value().program)).get();
     ASSERT_TRUE(installed);
     f.revision = installed.value().current;
-    EXPECT_EQ(f.tree(f.main), labels); // Rebuilt from current IR, not imported evidence.
+    EXPECT_EQ(f.tree(f.main), labels); // The same group identities and empty bodies persist.
 }
-TEST(ProgramGroupingTest, ExternalEntryEditsInvalidateTargetGroupingAndIssuesStayLocal) {
+TEST(ProgramGroupingTest, GroupsRemainAuthoritativeAcrossReferenceEditsAndEmptyBodyHistory) {
     Fixture f;
     auto original = f.tree(f.main);
     ir::ValueBuffer value;
@@ -142,13 +170,46 @@ TEST(ProgramGroupingTest, ExternalEntryEditsInvalidateTargetGroupingAndIssuesSta
     f.revision = changed.value().status.current;
     auto tree = f.service->outline(f.revision, {f.main, 0, 128, true}).get();
     ASSERT_TRUE(tree);
-    EXPECT_NE(f.tree(f.main), original);
-    EXPECT_TRUE(
-        std::ranges::any_of(tree.value().rows, [](const auto &row) { return !row.groupingIssue.empty(); }));
+    EXPECT_EQ(f.tree(f.main), original); // A new reference does not replace or erase an authored group.
     auto undone = f.service->undo(f.revision).get();
     ASSERT_TRUE(undone);
     f.revision = undone.value().status.current;
     EXPECT_EQ(f.tree(f.main), original);
+    auto captured = f.service->checkpoint(f.revision).get();
+    ASSERT_TRUE(captured);
+    const auto arm = captured.value().program->arms(f.ids.at(2)).front();
+    auto cleared = f.service
+                       ->edit({f.revision,
+                               {ir::SemanticOperation{ir::EraseAction{f.ids.at(3)}},
+                                ir::SemanticOperation{ir::EraseAction{f.ids.at(4)}}}})
+                       .get();
+    ASSERT_TRUE(cleared) << messages(cleared.diagnostics());
+    f.revision = cleared.value().status.current;
+    auto empty = f.service->checkpoint(f.revision).get();
+    ASSERT_TRUE(empty);
+    EXPECT_TRUE(empty.value().program->find(arm.body)->order->empty());
+    EXPECT_EQ(empty.value().program->find(f.ids.at(2))->kind, ir::ActionKind::Conditional);
+    auto encoded = ir::ProgramPersistence::encode(*empty.value().program);
+    ASSERT_TRUE(encoded);
+    auto decoded = ir::ProgramPersistence::decode(encoded.value());
+    ASSERT_TRUE(decoded) << messages(decoded.diagnostics());
+    EXPECT_TRUE(decoded.value().program->find(arm.body)->order->empty());
+    auto bodyUndo = f.service->undo(f.revision).get();
+    ASSERT_TRUE(bodyUndo);
+    f.revision = bodyUndo.value().status.current;
+    EXPECT_EQ(f.tree(f.main), original);
+    auto bodyRedo = f.service->redo(f.revision).get();
+    ASSERT_TRUE(bodyRedo);
+    f.revision = bodyRedo.value().status.current;
+    auto outputCapture = f.service->checkpoint(f.revision).get();
+    ASSERT_TRUE(outputCapture);
+    ir::ProgramMaterializer materializer;
+    auto output = materializer.materialize(outputCapture.value(), f.revision,
+                                           outputCapture.value().program->scripts().front().context.id,
+                                           SctRealizationId{"ea3220aa-4c18-4eb2-bb98-0a72dc9c2e8c"});
+    // This fixture deliberately also contains an unresolved branch in another section;
+    // executable publication continues to diagnose it rather than hiding it in a group.
+    EXPECT_FALSE(output);
     editor::ProgramBackend backend(f.service);
     auto broken = backend.inspect(f.revision, f.ids.at(11), {});
     ASSERT_TRUE(broken);
@@ -157,5 +218,28 @@ TEST(ProgramGroupingTest, ExternalEntryEditsInvalidateTargetGroupingAndIssuesSta
     ASSERT_TRUE(page);
     ASSERT_EQ(page.value().rows.size(), 2u);
     EXPECT_FALSE(page.value().rows.front().groupingIssue.empty());
+    ir::ValueBuffer repairedTarget;
+    repairedTarget.add(ir::ValueKind::ActionReference, f.ids.at(12).value);
+    auto repaired =
+        f.service
+            ->edit({f.revision, {ir::ReplaceParameter{f.ids.at(11), {1, {}}, std::move(repairedTarget)}}})
+            .get();
+    ASSERT_TRUE(repaired) << messages(repaired.diagnostics());
+    f.revision = repaired.value().status.current;
+    auto complete = f.service->checkpoint(f.revision).get();
+    ASSERT_TRUE(complete);
+    auto realized = materializer.materialize(complete.value(), f.revision,
+                                             complete.value().program->scripts().front().context.id,
+                                             SctRealizationId{"ea3220aa-4c18-4eb2-bb98-0a72dc9c2e8c"});
+    ASSERT_TRUE(realized) << messages(realized.diagnostics());
+    std::size_t checks = 0;
+    for (const auto &section : realized.value().document->sections)
+        if (auto *code = std::get_if<sct::SctScriptSectionContent>(&section.content))
+            for (const auto &instruction : code->instructions)
+                if (instruction.opcode == 0 || instruction.opcode == 3) {
+                    ++checks;
+                    EXPECT_FALSE(instruction.skipRefresh);
+                }
+    EXPECT_GE(checks, 3u);
 }
 } // namespace

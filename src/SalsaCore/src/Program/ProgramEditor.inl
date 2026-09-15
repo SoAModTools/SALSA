@@ -64,28 +64,10 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
             append({id, seq, std::move(label), a->kind != ActionKind::Instruction && a->kind != ActionKind::Transfer,
                     a->kind});
         };
-        auto groupedRows = [&](const std::vector<GroupedRow>& rows, SctSequenceId seq) {
-            const auto start = std::max(out.total, request.offset) - out.total;
-            const auto end = std::min(rows.size(), start + request.limit - out.rows.size());
-            out.total += std::min(start, rows.size());
-            for (auto n = start; n < end; ++n) {
-                stopped(stop);
-                const auto& row = rows[n];
-                if (row.occurrence) {
-                    const auto& body = owner.flows(seq, stop).bodies.at(*row.occurrence);
-                    append({row.action, seq, row.label, !body.empty(), row.kind, row.occurrence});
-                } else action(row.action, seq);
-            }
-            out.total += rows.size() - std::min(end, rows.size());
-        };
         auto sequence = [&](SctSequenceId id) {
             const auto *seq = d.sequence(id);
             require(seq && seq->order, "Missing outline sequence");
             out.script = seq->script;
-            if (request.semantic) {
-                groupedRows(owner.flows(id, stop).roots, id);
-                return;
-            }
             // Direct indexing gives constant work per requested row, independent
             // of how many sibling actions precede the requested page.
             const auto start = std::max(out.total, request.offset) - out.total;
@@ -102,7 +84,7 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                 return;
             const auto *seq = d.sequence(id);
             require(seq && seq->order, "Missing outline body");
-            append({id, id, name, !seq->order->empty()});
+            append({id, id, name, true});
         };
         auto condition = [&](ConditionId id) {
             auto *c = d.lookup(id.value, EntityKind::Condition, d.conditions);
@@ -111,16 +93,6 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
             require(seq != nullptr, "Missing condition preparation");
             append({id, c->preparation, "Condition", true});
         };
-        if (request.semantic && request.occurrence) {
-            auto* header = d.action(request.occurrence->header);
-            require(header, "Grouped header no longer exists");
-            const auto& grouping = owner.flows(header->owner, stop);
-            auto found = grouping.bodies.find(*request.occurrence);
-            require(found != grouping.bodies.end(), "Control flow changed; refresh this parent");
-            out.script = d.sequence(header->owner)->script;
-            groupedRows(found->second, header->owner);
-            return out;
-        }
         std::visit(
             [&](auto id) {
                 using T = decltype(id);
@@ -293,35 +265,6 @@ std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, Ed
                 subject);
             if (done) {
                 std::reverse(out.subjects.begin(), out.subjects.end());
-                if(semantic) {
-                    std::vector<EditorSubject> path;
-                    for(const auto &item:out.subjects) {
-                        if(auto id=std::get_if<SctActionId>(&item)) {
-                            auto* action = d.action(*id);
-                            const auto& grouping = owner.flows(action->owner, {});
-                            if (const auto* at = grouping.location(*id)) {
-                                std::vector<editor::FlowOccurrence> chain;
-                                auto occurrence = *at;
-                                for (unsigned depth = 0; depth < 256; ++depth) {
-                                    chain.push_back(occurrence);
-                                    auto parent = grouping.parents.find(occurrence);
-                                    if (parent == grouping.parents.end()) break;
-                                    occurrence = parent->second;
-                                }
-                                for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-                                    path.push_back(it->header); out.occurrences.push_back(*it);
-                                }
-                                const auto& siblings = grouping.bodies.at(*at);
-                                if (std::ranges::any_of(siblings, [&](const auto& row) { return row.action == *id && !row.occurrence; })) {
-                                    path.push_back(item); out.occurrences.push_back({});
-                                }
-                                continue;
-                            }
-                        }
-                        path.push_back(item);out.occurrences.push_back({});
-                    }
-                    out.subjects=std::move(path);
-                } else out.occurrences.resize(out.subjects.size());
                 return out;
             }
         }

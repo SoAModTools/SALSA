@@ -18,7 +18,7 @@ Imported `init` and `loop` code sections produce required, enabled lifecycle ent
 
 ## Prepared conditions, loops, switches and transfers
 
-The core builder constructs prepared If/Else If checks, While, DoWhile, For, Switch and explicit Break/Continue actions. Kind-specific tables keep loop/switch/transfer details outside ordinary instruction payloads. These are authored structures; native recognition, execution and compiler lowering are not part of this extension.
+The core builder constructs prepared If/Else If checks, While, DoWhile, For, Switch and explicit Break/Continue actions. Kind-specific tables keep loop/switch/transfer details outside ordinary instruction payloads. These are the shared backing structures for imported and manually created groups. SPICE-assisted import normalization and compiler lowering are described in the editor documentation.
 
 A condition has a stable ID, owner action, optional arm, preparation sequence, and result expression. Preparation may contain multiple instructions or nested constructs. On normal completion, the result expression is evaluated using its stored SCPT semantics. An If/Else If check is reached only if preceding checks were false. An Else has neither a check nor preparation. Preparation is a selectable, annotatable authored sequence; it is not an unconditional preamble attached to the enclosing section.
 
@@ -32,7 +32,7 @@ While and DoWhile have no initialization/update sequences. For owns explicit ord
 
 Switch owns one prepared selector and ordered case/default arms. Each arm owns one body and an ordered list of numeric labels in a shared pool; several labels can select that same body. A separate Default flag permits Default to share a body with numeric labels. Grouped labels do not create duplicate bodies or artificial fallthrough. The selector runs once per switch entry. Labels are distinct signed 32-bit constants across the whole switch (including within an arm); at most one Default may appear, at any position. Every arm needs a numeric label or Default. Label order is retained, and `caseLabels(ArmId)` returns its immutable label range. Default is selected when no label matches. Normal arm completion exits the switch unless explicitly marked Fallthrough; fallthrough enters the next arm body without checking its label or reevaluating the selector. The last arm cannot fall through. An empty switch still evaluates its selector. Later lowering must honor native comparison conventions without silently introducing numeric clamping/coercion.
 
-Break targets a lexically enclosing loop or switch, including from its preparation. Continue targets a lexically enclosing loop and must originate inside that loop's body, possibly through nested constructs. It cannot target its own initialization/check/update. Those phases may still contain a transfer to an enclosing outer loop body. Sibling, foreign-script, absent or incompatible targets fail at construction. `transferDestination` exposes an after-construct exit for Break and the appropriate update/check sequence for Continue, using stable authored identities. It describes intent for later lowering, not emitted instructions.
+Break targets a lexically enclosing conditional, loop or switch, including from its preparation. Continue targets a lexically enclosing loop and must originate inside that loop's body, possibly through nested constructs. It cannot target its own initialization/check/update. Those phases may still contain a transfer to an enclosing outer loop body. Sibling, foreign-script, absent or incompatible targets fail at construction. `transferDestination` exposes an after-construct exit for Break and the appropriate update/check sequence for Continue, using stable authored identities. It describes intent for later lowering, not emitted instructions.
 
 Module ancestry traverses all sequence-owner kinds, preventing overlapping ownership through a condition preparation or loop phase. Direct indexes include condition results and each preparation/body/update action independently. They make no assertion about which iteration or branch executes. No generated jump scaffolding is retained as a second editable authority.
 
@@ -104,3 +104,8 @@ The [binary project codec](WholeProgramIrPersistence.md) writes live content dir
 ## Cutscene interface follow-up
 
 [Cutscene routes](CutsceneRoutes.md) describes typed entry/exit ports, alternative requirement paths, scoped connection/effect queries, and undoable commands operating on the same paged instruction storage.
+
+
+## Authoritative imported and new groups
+
+Imported and user-created groups share the same Action/Arm/ConditionRegion/Sequence storage. SPICE regions are transient normalization input only. Empty owned body sequences are first-class, persistent insertion targets; deleting all their items does not remove the construct. There are no view-local group identities to use in editing commands. `ConditionRegion::skipRefresh` and `Transfer::skipRefresh` retain control-instruction timing during import and lowering (binary schema 4). A scoped Break may exit a conditional, loop or switch.

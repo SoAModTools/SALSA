@@ -5,13 +5,6 @@
 #include <stop_token>
 namespace salsa::core::editor {
 enum class ViewMode { Instructions, Semantic };
-struct FlowOccurrence {
-    SctActionId header;
-    std::uint32_t arm = 0;
-    bool container = false;
-    std::uint32_t region = 0;
-    auto operator<=>(const FlowOccurrence &) const = default;
-};
 enum class RowKind { Instruction, Construct };
 struct OutlineRow {
     Subject subject;
@@ -19,14 +12,12 @@ struct OutlineRow {
     std::string label;
     bool expandable = false;
     std::optional<RowKind> kind;
-    std::optional<FlowOccurrence> occurrence;
     std::string groupingIssue;
 };
 struct OutlineRequest {
     Subject parent;
     std::size_t offset = 0, limit = 128;
     ViewMode mode = ViewMode::Instructions;
-    std::optional<FlowOccurrence> occurrence;
 };
 struct OutlinePage {
     SessionStatus status;
@@ -59,7 +50,6 @@ struct Inspection {
     std::optional<SctTextResourceId> text;
     std::optional<spice::sct::SctCanonicalExpression> condition, schedule;
     bool instruction = false, skipRefresh = false, structured = false;
-    std::optional<SctActionId> promotableContinuation;
     std::string evidence;
 };
 struct ReplaceParameter {
@@ -84,7 +74,6 @@ struct NavigationPath {
     Revision revision;
     SctScriptId script;
     std::vector<Subject> subjects;
-    std::vector<std::optional<FlowOccurrence>> occurrences;
 };
 struct TextDraft {
     Revision revision;

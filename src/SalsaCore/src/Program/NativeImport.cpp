@@ -203,8 +203,8 @@ public:
             output.supplementaryText.push_back(id);
         }
         for (const auto& attachment : document.opaqueAttachments) d.stats.excludedSourceBytes += attachment.bytes.size();
-        auto grouping = importFlowGroups(document, actions, groupedSections);
-        d.initialGrouping.merge(grouping);
+        auto grouping = normalizeImportedGroups(d, document, actions, groupedSections);
+        d.initialFlowIssues.merge(grouping);
         return script;
     }
 };

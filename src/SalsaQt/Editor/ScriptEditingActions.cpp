@@ -48,17 +48,10 @@ ScriptEditingActions::ScriptEditingActions(EditorSessionPresenter *session, QWid
     structure_ = new QAction(tr("Insert If / loop / Switch…"), this);
     edit_ = new QAction(tr("Edit condition / branches…"), this);
     timing_ = new QAction(tr("Instruction timing…"), this);
-    promote_ = new QAction(tr("Edit recognized flow as a construct"), this);
     connect(insert_, &QAction::triggered, this, [this] { insert(); });
     connect(structure_, &QAction::triggered, this, [this] { createStructure(); });
     connect(edit_, &QAction::triggered, this, [this] { edit(); });
     connect(timing_, &QAction::triggered, this, [this] { timing(); });
-    connect(promote_, &QAction::triggered, this, [this] {
-        const auto &i = session_->inspection();
-        if (i && i->promotableContinuation)
-            session_->execute(tr("Promote recognized flow"),
-                              ed::PromoteFlow{std::get<core::SctActionId>(i->subject), *i->promotableContinuation});
-    });
     auto availability = [this] {
         const auto &i = session_->inspection();
         bool ready = i && !session_->busy();
@@ -66,7 +59,6 @@ ScriptEditingActions::ScriptEditingActions(EditorSessionPresenter *session, QWid
         structure_->setEnabled(ready);
         edit_->setEnabled(ready && (i->condition || i->structured));
         timing_->setEnabled(ready && i->instruction);
-        promote_->setEnabled(ready && i->promotableContinuation.has_value());
     };
     connect(session_, &EditorSessionPresenter::inspectionChanged, this, availability);
     connect(session_, &EditorSessionPresenter::availabilityChanged, this, availability);

@@ -236,7 +236,6 @@ struct OutlineRequest {
     EditorSubject parent;
     std::size_t offset = 0, limit = 128;
     bool semantic = false;
-    std::optional<editor::FlowOccurrence> occurrence;
 };
 struct OutlineRow {
     EditorSubject subject;
@@ -244,7 +243,6 @@ struct OutlineRow {
     std::string label;
     bool expandable = false;
     std::optional<ActionKind> kind;
-    std::optional<editor::FlowOccurrence> occurrence;
     std::string groupingIssue;
 };
 struct OutlinePage {
@@ -256,10 +254,9 @@ struct OutlinePage {
     std::uint64_t elapsedMicroseconds = 0;
 };
 struct FlowAssessment {
-    std::optional<SctActionId> promotableContinuation;
     std::string issue;
 };
-struct NavigationPath { ServiceStatus status; SctScriptId script; std::vector<EditorSubject> subjects; std::vector<std::optional<editor::FlowOccurrence>> occurrences; };
+struct NavigationPath { ServiceStatus status; SctScriptId script; std::vector<EditorSubject> subjects; };
 // Owns only the selected closure. Safe across edits, maintenance and shutdown.
 // Sequence orders may contain IDs outside an explicit action selection.
 struct ReadScope {

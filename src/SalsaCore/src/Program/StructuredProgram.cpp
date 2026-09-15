@@ -124,7 +124,7 @@ Result<SctActionId> ProgramBuilder::transfer(SctSequenceId owner, TransferKind k
         auto& d = *data_;
         require(kind == TransferKind::Break || kind == TransferKind::Continue, "Unknown structured transfer kind");
         const auto* destination = d.action(target);
-        require(destination && (destination->kind == ActionKind::Loop || (kind == TransferKind::Break && destination->kind == ActionKind::Switch)),
+        require(destination && (destination->kind == ActionKind::Loop || (kind == TransferKind::Break && (destination->kind == ActionKind::Switch || destination->kind == ActionKind::Conditional))),
             "Break needs a loop/switch; Continue needs a loop");
         const auto* current = d.sequence(owner);
         require(current != nullptr, "Missing transfer owner");

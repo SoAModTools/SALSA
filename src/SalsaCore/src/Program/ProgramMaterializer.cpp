@@ -132,7 +132,7 @@ std::vector<std::uint64_t> signature(const Program &p, const Action &a) {
     auto condition = [&](ConditionId id) {
         const auto *c = p.find(id);
         require(c != nullptr, "Missing condition");
-        out.insert(out.end(), {id.value, c->preparation.value});
+        out.insert(out.end(), {id.value, c->preparation.value, c->skipRefresh});
         valueSignature(p, c->result, out);
     };
     if (a.kind == ActionKind::Instruction)
@@ -166,7 +166,7 @@ std::vector<std::uint64_t> signature(const Program &p, const Action &a) {
         }
     }
     if (const auto *transfer = p.transfer(a.id)) {
-        out.insert(out.end(), {transfer->target.value, static_cast<std::uint64_t>(transfer->kind)});
+        out.insert(out.end(), {transfer->target.value, static_cast<std::uint64_t>(transfer->kind), transfer->skipRefresh});
         if (const auto *loop = p.loop(transfer->target))
             out.insert(out.end(), {static_cast<std::uint64_t>(loop->kind), loop->update.value, loop->condition.value});
     }
@@ -232,7 +232,7 @@ Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> s
         s.subjects = {a.id, id};
         if (arm)
             s.subjects.push_back(*arm);
-        s.instruction = {{}, 0, true, {}, {{0, values.expression(c->result)}, {1, sct::SctInstructionReference{}}}};
+        s.instruction = {{}, 0, c->skipRefresh, {}, {{0, values.expression(c->result)}, {1, sct::SctInstructionReference{}}}};
         s.fixups.push_back({{1, {}}, no});
         t.steps.push_back(std::move(s));
     };
@@ -280,7 +280,7 @@ Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> s
         Step s;
         s.kind = Step::Emit;
         s.subjects = {a.id, c->id};
-        s.instruction = {{}, 3, true, {}, {{0, values.expression(c->result)}}};
+        s.instruction = {{}, 3, c->skipRefresh, {}, {{0, values.expression(c->result)}}};
         auto row = [&](std::uint32_t label, Label target) {
             const auto ordinal = static_cast<std::uint32_t>(s.instruction.repeatedParameterGroups.size());
             s.instruction.repeatedParameterGroups.push_back(
@@ -317,6 +317,7 @@ Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> s
             require(l != nullptr, "Continue needs an enclosing loop");
             jump(l->kind == LoopKind::For ? sequenceLabel(l->update) : Label{LabelKind::Check, l->condition.value});
         }
+        t.steps.back().instruction.skipRefresh = tr->skipRefresh;
         break;
     }
     }

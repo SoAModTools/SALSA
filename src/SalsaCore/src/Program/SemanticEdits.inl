@@ -558,7 +558,7 @@ struct SemanticTransaction {
             auto t = d.transfers[a->detail];
             auto *dest = d.action(t.target);
             require(dest && (dest->kind == ActionKind::Loop ||
-                             (t.kind == TransferKind::Break && dest->kind == ActionKind::Switch)),
+                             (t.kind == TransferKind::Break && (dest->kind == ActionKind::Switch || dest->kind == ActionKind::Conditional))),
                     "Invalid Break/Continue target");
             require(t.kind == TransferKind::Break || t.kind == TransferKind::Continue, "Unknown transfer kind");
             auto *seq = d.sequence(a->owner);

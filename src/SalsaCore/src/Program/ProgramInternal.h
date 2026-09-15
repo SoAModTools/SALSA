@@ -89,7 +89,7 @@ struct ProgramData {
     std::vector<Range> incomingRanges;
     std::vector<SctActionId> successors; // Indexed by action slot, not identity.
     Statistics stats;
-    FlowGroups initialGrouping; // Transient import seed; excluded from checkpoints.
+    ControlFlowIssues initialFlowIssues; // Transient diagnostic seed only; groups persist as actions/arms/sequences.
     // Bulk postings stay pooled. Only edited buckets acquire replaceable ranges.
     std::map<Variable, std::shared_ptr<const std::vector<VariableUse>>> editedUses;
     std::map<SctActionId, std::shared_ptr<const std::vector<TargetUse>>> editedIncoming;
@@ -161,7 +161,7 @@ struct ProgramData {
         baselines.push_back(std::move(baseline)); scripts.push_back({std::move(context), {}, {}}); return id;
     }
     SctActionId appendAction(SctSequenceId owner, ValueId value, std::uint64_t source = 0, SctActionId requested = {}) {
-        initialGrouping.clear();
+        initialFlowIssues.clear();
         require(sequence(owner) != nullptr, "Action owner is missing");
         require(values.find(value.value) && values.find(value.value)->kind == ValueKind::Instruction, "Instruction payload is missing");
         SctActionId id{claim(requested.value, EntityKind::Action, actions.size())};

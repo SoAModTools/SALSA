@@ -3,11 +3,9 @@
 #include "ProgramTypedValues.h"
 #include <algorithm>
 #include <set>
-#include <unordered_set>
 namespace salsa::core::program {
 namespace {
 namespace sct = spice::sct;
-using Occurrence = editor::FlowOccurrence;
 using IdMap = std::unordered_map<std::uint64_t, SctActionId>;
 std::string issueText(const sct::SctStructureIssue &issue) {
     using R = sct::SctStructuredRejectionReason;
@@ -56,7 +54,7 @@ std::string issueText(const sct::SctStructureIssue &issue) {
         return "SPICE could not group this control-flow region.";
     }
 }
-void addIssue(FlowGrouping &out, SctActionId id, std::string text) {
+void addIssue(ControlFlowDiagnostics &out, SctActionId id, std::string text) {
     auto &message = out.issues[id];
     if (message.find(text) != std::string::npos)
         return;
@@ -64,185 +62,15 @@ void addIssue(FlowGrouping &out, SctActionId id, std::string text) {
         message += '\n';
     message += std::move(text);
 }
-std::shared_ptr<FlowGrouping> project(const sct::SctSectionStructure &section,
-                                      const sct::SctScriptSectionContent &code, const IdMap &ids) {
-    auto out = std::make_shared<FlowGrouping>();
-    auto id = [&](sct::SctInstructionId native) { return ids.at(native.value()); };
-    std::map<SctActionId, std::size_t> positions;
-    std::vector<SctActionId> order;
-    std::set<SctActionId> plainJumps;
-    for (const auto &instruction : code.instructions) {
-        auto action = id(instruction.id);
-        positions.emplace(action, order.size());
-        order.push_back(action);
-        if (instruction.opcode == 10 && !instruction.skipRefresh && !instruction.scheduledExpression)
-            plainJumps.insert(action);
-    }
-    std::map<sct::SctBasicBlockId, const sct::SctStructuredBasicBlock *> blockIndex;
-    for (const auto &block : section.blocks)
-        blockIndex.emplace(block.id, &block);
-    auto members = [&](const std::vector<sct::SctBasicBlockId> &blocks) {
-        std::vector<SctActionId> result;
-        for (const auto &blockId : blocks) {
-            auto block = blockIndex.find(blockId);
-            require(block != blockIndex.end(), "SPICE grouping refers to a missing block");
-            for (auto instruction : block->second->instructions)
-                result.push_back(id(instruction));
-        }
-        std::ranges::sort(result, {}, [&](auto action) { return positions.at(action); });
-        result.erase(std::unique(result.begin(), result.end()), result.end());
-        return result;
-    };
-    struct Arm {
-        std::string label;
-        std::vector<SctActionId> members;
-    };
-    struct Region {
-        sct::SctStructuredRegionId native;
-        std::optional<sct::SctStructuredRegionId> parent;
-        SctActionId header;
-        std::vector<SctActionId> members;
-        std::vector<Arm> arms;
-        std::set<SctActionId> hidden;
-        ActionKind kind;
-    };
-    std::map<sct::SctStructuredRegionId, Region> regions;
-    for (const auto &source : section.regions) {
-        Region region{source.id, source.parent, id(source.id.headerInstruction), members(source.members)};
-        region.kind = source.id.kind == sct::SctStructuredRegionKind::Switch ? ActionKind::Switch
-                      : source.id.kind == sct::SctStructuredRegionKind::If ||
-                              source.id.kind == sct::SctStructuredRegionKind::IfElse
-                          ? ActionKind::Conditional
-                          : ActionKind::Loop;
-        if (source.join)
-            out->joins[region.header] = id(source.join->entryInstruction);
-        for (const auto &evidence : source.evidence) {
-            using E = sct::SctStructureEvidenceKind;
-            if (evidence.source &&
-                (evidence.kind == E::PreTargetJump || evidence.kind == E::BackwardTerminatorJump ||
-                 evidence.kind == E::CommonForwardExit)) {
-                auto action = id(*evidence.source);
-                if (plainJumps.contains(action))
-                    region.hidden.insert(action);
-            }
-        }
-        for (const auto &arm : source.arms) {
-            std::string label;
-            switch (arm.kind) {
-            case sct::SctStructuredArmKind::Then:
-                label = "If";
-                break;
-            case sct::SctStructuredArmKind::Else:
-                label = "Else";
-                break;
-            case sct::SctStructuredArmKind::LoopBody:
-                label = source.id.kind == sct::SctStructuredRegionKind::While ? "While" : "Loop";
-                break;
-            case sct::SctStructuredArmKind::SwitchCase:
-                label = "Case ";
-                for (const auto &value : arm.caseLabels) {
-                    if (label.size() > 5)
-                        label += ", ";
-                    label += value.value ? std::to_string(*value.value) : "Default";
-                }
-                break;
-            }
-            auto body = members(arm.blocks);
-            if (source.id.kind != sct::SctStructuredRegionKind::NaturalLoop)
-                std::erase(body, region.header);
-            region.arms.push_back({std::move(label), std::move(body)});
-        }
-        if (region.arms.empty())
-            region.arms.push_back({region.kind == ActionKind::Loop ? "Loop" : "If", {}});
-        // Retain every member not assigned to an arm, including unreachable code.
-        // Only explicit scaffolding reported by SPICE can be hidden.
-        for (auto action : region.members) {
-            if (action == region.header)
-                continue;
-            if (std::ranges::none_of(region.arms, [&](const auto &arm) {
-                    return std::ranges::find(arm.members, action) != arm.members.end();
-                }))
-                region.arms.front().members.push_back(action);
-        }
-        for (auto &arm : region.arms)
-            std::ranges::sort(arm.members, {}, [&](auto action) { return positions.at(action); });
-        regions.emplace(source.id, std::move(region));
-    }
-    std::map<std::pair<std::optional<sct::SctStructuredRegionId>, SctActionId>, const Region *> nestedIndex;
-    for (const auto &[key, region] : regions)
-        nestedIndex.emplace(std::make_pair(region.parent, region.header), &region);
-    std::function<void(const std::vector<SctActionId> &, std::optional<sct::SctStructuredRegionId>,
-                       std::optional<Occurrence>, std::vector<GroupedRow> &, unsigned)>
-        scope;
-    scope = [&](const auto &list, auto parent, auto occurrence, auto &rows, unsigned depth) {
-        require(depth < 256, "Control-flow nesting exceeds the editor grouping depth");
-        std::set<SctActionId> emitted;
-        for (auto action : list) {
-            if (emitted.contains(action))
-                continue;
-            const Region *nested = nullptr;
-            if (auto found = nestedIndex.find({parent, action}); found != nestedIndex.end())
-                nested = found->second;
-            if (!nested) {
-                if (parent && regions.at(*parent).hidden.contains(action)) {
-                    if (occurrence)
-                        out->locations.emplace_back(action, *occurrence);
-                    continue;
-                }
-                rows.push_back({action});
-                if (occurrence)
-                    out->locations.emplace_back(action, *occurrence);
-                continue;
-            }
-            const auto &region = *nested;
-            auto groupParent = occurrence;
-            const auto kind = static_cast<std::uint32_t>(region.native.kind);
-            if (region.kind == ActionKind::Switch) {
-                Occurrence container{region.header, 0, true, kind};
-                rows.push_back({region.header, container, "Switch", region.kind});
-                if (occurrence)
-                    out->parents[container] = *occurrence;
-                groupParent = container;
-            }
-            auto &groupRows = region.kind == ActionKind::Switch ? out->bodies[*groupParent] : rows;
-            for (std::uint32_t n = 0; n < region.arms.size(); ++n) {
-                Occurrence arm{region.header, n, false, kind};
-                groupRows.push_back({region.header, arm, region.arms[n].label, region.kind});
-                if (groupParent)
-                    out->parents[arm] = *groupParent;
-                scope(region.arms[n].members, region.native, arm, out->bodies[arm], depth + 1);
-            }
-            out->locations.emplace_back(region.header, region.kind == ActionKind::Switch
-                                                           ? Occurrence{region.header, 0, true, kind}
-                                                           : Occurrence{region.header, 0, false, kind});
-            emitted.insert(region.members.begin(), region.members.end());
-        }
-    };
-    scope(order, {}, {}, out->roots, 0);
-    std::stable_sort(out->locations.begin(), out->locations.end(),
-                     [](const auto &a, const auto &b) { return a.first < b.first; });
-    std::size_t kept = 0;
-    for (auto item : out->locations) {
-        if (kept && out->locations[kept - 1].first == item.first)
-            out->locations[kept - 1] = item;
-        else
-            out->locations[kept++] = item;
-    }
-    out->locations.resize(kept);
+std::shared_ptr<ControlFlowDiagnostics> project(const sct::SctSectionStructure &section,
+                                                const sct::SctScriptSectionContent &code, const IdMap &ids) {
+    auto out = std::make_shared<ControlFlowDiagnostics>();
     for (const auto &issue : section.issues) {
-        auto target = issue.instruction ? id(*issue.instruction)
-                      : order.empty()   ? SctActionId{}
-                                        : order.front();
-        if (target.valid()) {
-            addIssue(*out, target, issueText(issue));
-            if (auto *occurrence = out->location(target)) {
-                const auto &rows = out->bodies.at(*occurrence);
-                if (target != occurrence->header && std::ranges::none_of(rows, [&](const auto &row) {
-                        return row.action == target && !row.occurrence;
-                    }))
-                    addIssue(*out, occurrence->header, issueText(issue));
-            }
-        }
+        auto native = issue.instruction           ? *issue.instruction
+                      : code.instructions.empty() ? sct::SctInstructionId{}
+                                                  : code.instructions.front().id;
+        if (auto at = ids.find(native.value()); at != ids.end())
+            addIssue(*out, at->second, issueText(issue));
     }
     return out;
 }
@@ -330,45 +158,229 @@ std::span<const TargetUse> incomingUses(const ProgramData &d, SctActionId target
     return std::span(d.targetUses).subspan(range.first, range.count);
 }
 } // namespace
-FlowGroups importFlowGroups(const sct::SctDocument &document, const IdMap &ids,
-                            const std::map<std::uint64_t, SctSequenceId> &sections) {
-    FlowGroups result;
-    auto fallback = [&](const sct::SctDocumentSection &section, std::string message) {
-        auto group = std::make_shared<FlowGrouping>();
-        for (const auto &instruction : std::get<sct::SctScriptSectionContent>(section.content).instructions)
-            group->roots.push_back({ids.at(instruction.id.value())});
-        if (!group->roots.empty())
-            addIssue(*group, group->roots.front().action, "Control-flow analysis failed: " + message);
-        return group;
-    };
+ControlFlowIssues normalizeImportedGroups(ProgramData &d, const sct::SctDocument &document, const IdMap &ids,
+                                          const std::map<std::uint64_t, SctSequenceId> &sections) {
+    ControlFlowIssues result;
+    std::optional<sct::SctStructuredControlFlowAnalysis> analyzed;
     try {
-        const auto analysis = sct::SctStructuredControlFlowAnalysis::build(document);
-        for (const auto &section : document.sections)
-            if (auto at = sections.find(section.id.value()); at != sections.end()) {
-                try {
-                    auto *shape = analysis.findSection(section.id);
-                    require(shape, "SPICE did not return the requested section");
-                    result.emplace(
-                        at->second,
-                        project(*shape, std::get<sct::SctScriptSectionContent>(section.content), ids));
-                } catch (const std::exception &e) {
-                    result[at->second] = fallback(section, e.what());
-                }
-            }
+        analyzed = sct::SctStructuredControlFlowAnalysis::build(document);
     } catch (const std::exception &e) {
         for (const auto &section : document.sections)
-            if (auto at = sections.find(section.id.value()); at != sections.end())
-                result[at->second] = fallback(section, e.what());
+            if (auto at = sections.find(section.id.value()); at != sections.end()) {
+                auto issue = std::make_shared<ControlFlowDiagnostics>();
+                const auto &code = std::get<sct::SctScriptSectionContent>(section.content);
+                if (!code.instructions.empty())
+                    addIssue(*issue, ids.at(code.instructions.front().id.value()),
+                             std::string("Control-flow analysis failed; instructions remain explicit: ") +
+                                 e.what());
+                result.emplace(at->second, std::move(issue));
+            }
+        return result;
+    }
+    const auto &analysis = *analyzed;
+    for (const auto &section : document.sections) {
+        auto at = sections.find(section.id.value());
+        if (at == sections.end())
+            continue;
+        const auto &code = std::get<sct::SctScriptSectionContent>(section.content);
+        const auto *shape = analysis.findSection(section.id);
+        if (!shape)
+            continue;
+        auto diagnostics = project(*shape, code, ids);
+        // Children normalize before parents; physical IDs are used only during import.
+        std::vector<const sct::SctStructuredRegion *> regions;
+        for (const auto &region : shape->regions)
+            regions.push_back(&region);
+        std::stable_sort(regions.begin(), regions.end(),
+                         [](auto *a, auto *b) { return a->members.size() < b->members.size(); });
+        std::map<sct::SctBasicBlockId, const sct::SctStructuredBasicBlock *> blocks;
+        for (const auto &block : shape->blocks)
+            blocks.emplace(block.id, &block);
+        std::map<std::uint64_t, std::size_t> position;
+        for (std::size_t i = 0; i < code.instructions.size(); ++i)
+            position.emplace(code.instructions[i].id.value(), i);
+        auto action = [&](sct::SctInstructionId id) { return ids.at(id.value()); };
+        auto edit = [&](SctActionId id) -> Action & {
+            return *d.actions.find(d.directory.find(id.value).index);
+        };
+        auto order = [&](SctSequenceId id) -> std::vector<SctActionId> & {
+            return d.pendingOrders[d.directory.find(id.value).index];
+        };
+        for (const auto *region : regions) {
+            auto header = action(region->id.headerInstruction);
+            if (d.action(header)->kind != ActionKind::Instruction)
+                continue;
+            bool applying = false;
+            try {
+                using K = sct::SctStructuredRegionKind;
+                require(region->id.kind != K::NaturalLoop,
+                        "This cycle has no supported structured loop condition");
+                require(region->join.has_value(), "The structured continuation is not known");
+                const auto &instruction =
+                    code.instructions[position.at(region->id.headerInstruction.value())];
+                require(!instruction.scheduledExpression,
+                        "A scheduled controller remains an explicit instruction");
+                require(!region->arms.empty(), "The proposed group has no identifiable bodies");
+                ValueId expression;
+                for (auto child : d.child(d.action(header)->value)) {
+                    const auto *parameter = d.values.find(child.value);
+                    if (parameter->kind == ValueKind::Parameter && parameter->data == 0 &&
+                        parameter->count == 1)
+                        expression = d.child(child).front();
+                }
+                require(expression.valid() && d.values.find(expression.value)->kind == ValueKind::Expression,
+                        "The group controller has no editable expression");
+                std::set<SctActionId> members;
+                std::size_t begin = position.at(instruction.id.value()), end = begin;
+                for (auto block : region->members)
+                    for (auto id : blocks.at(block)->instructions) {
+                        members.insert(action(id));
+                        end = std::max(end, position.at(id.value()));
+                    }
+                for (auto i = begin; i <= end; ++i)
+                    require(members.contains(action(code.instructions[i].id)),
+                            "The proposed group does not cover a contiguous instruction range");
+                require(position.at(region->join->entryInstruction.value()) == end + 1,
+                        "The continuation is not immediately after the group");
+                struct Body {
+                    const sct::SctStructuredArm *arm;
+                    std::size_t start;
+                    std::vector<SctActionId> actions;
+                };
+                std::vector<Body> bodies;
+                for (const auto &arm : region->arms) {
+                    require(arm.entry.has_value(), "A proposed arm has no identifiable boundary");
+                    auto start = position.at(arm.entry->entryInstruction.value());
+                    bodies.push_back({&arm, start, {}});
+                }
+                std::stable_sort(bodies.begin(), bodies.end(),
+                                 [](const auto &a, const auto &b) { return a.start < b.start; });
+                require(bodies.front().start <= begin + 1, "An arm would omit the beginning of the group");
+                auto owner = d.action(header)->owner;
+                for (auto id : order(owner))
+                    if (members.contains(id) && id != header) {
+                        auto pos = position.at(d.action(id)->sourceInstruction);
+                        auto selected = bodies.begin();
+                        for (auto body = bodies.begin(); body != bodies.end() && body->start <= pos; ++body)
+                            selected = body;
+                        selected->actions.push_back(id);
+                    }
+                const bool loop = region->id.kind == K::While, sw = region->id.kind == K::Switch;
+                require(!loop || bodies.size() == 1, "A loop requires one body");
+                require(loop || sw || bodies.size() <= 2, "Unsupported conditional arm layout");
+                if (sw) {
+                    bool hasDefault = false;
+                    for (const auto &body : bodies) {
+                        require(!body.arm->caseLabels.empty(), "A switch arm has no labels");
+                        for (const auto &label : body.arm->caseLabels) {
+                            require(label.value.has_value(), "A switch label is not known");
+                            hasDefault |= *label.value == -1;
+                        }
+                    }
+                    require(hasDefault, "A switch without a known default remains explicit");
+                }
+                auto script = d.sequence(owner)->script;
+                auto condition = [&](std::optional<ArmId> arm = {}) {
+                    auto id = d.makeCondition(script, header, expression, arm);
+                    d.conditions.back().skipRefresh = instruction.skipRefresh;
+                    return id;
+                };
+                // There is one backing construct. No inferred body tree survives this step.
+                applying = true;
+                auto &root = edit(header);
+                root.kind = loop ? ActionKind::Loop : sw ? ActionKind::Switch : ActionKind::Conditional;
+                root.value = {};
+                root.firstArm = count32(d.arms.size());
+                root.armCount = loop ? 0 : count32(bodies.size());
+                std::vector<SctSequenceId> destinations;
+                if (loop) {
+                    auto c = condition();
+                    auto body = d.makeSequence(script, header, {}, SequenceRole::LoopBody);
+                    root.detail = count32(d.loops.size());
+                    d.loops.push_back({header, LoopKind::While, c, {}, body, {}});
+                    destinations.push_back(body);
+                } else {
+                    if (sw) {
+                        auto c = condition();
+                        root.detail = count32(d.switches.size());
+                        d.switches.push_back({header, c});
+                    }
+                    for (std::size_t n = 0; n < bodies.size(); ++n) {
+                        Arm arm;
+                        arm.id = ArmId{d.claim(0, EntityKind::Arm, count32(d.arms.size()))};
+                        arm.owner = header;
+                        arm.body = d.makeSequence(script, arm.id, {}, SequenceRole::ArmBody);
+                        if (!sw && n == 0)
+                            arm.condition = condition(arm.id);
+                        if (sw) {
+                            arm.firstLabel = count32(d.caseLabels.size());
+                            for (const auto &label : bodies[n].arm->caseLabels)
+                                if (label.value && *label.value != -1) {
+                                    d.caseLabels.push_back(*label.value);
+                                    ++arm.labelCount;
+                                } else
+                                    arm.includesDefault = true;
+                            if (n + 1 < bodies.size())
+                                for (const auto &evidence : region->evidence)
+                                    if (evidence.kind == sct::SctStructureEvidenceKind::CaseFallthrough &&
+                                        evidence.target &&
+                                        position.at(evidence.target->value()) == bodies[n + 1].start)
+                                        arm.caseExit = CaseExit::Fallthrough;
+                        }
+                        destinations.push_back(arm.body);
+                        d.arms.push_back(arm);
+                    }
+                }
+                for (std::size_t n = 0; n < bodies.size(); ++n) {
+                    for (auto id : bodies[n].actions)
+                        edit(id).owner = destinations[n];
+                    order(destinations[n]) = std::move(bodies[n].actions);
+                }
+                std::erase_if(order(owner), [&](auto id) { return id != header && members.contains(id); });
+                // Retain glue identities and refresh behavior as ordinary scoped transfers.
+                // Nested break targets are already normalized and are left alone.
+                auto join = action(region->join->entryInstruction);
+                for (auto id : members) {
+                    auto original = *d.action(id);
+                    if (original.kind != ActionKind::Instruction)
+                        continue;
+                    const auto *value = d.values.find(original.value.value);
+                    if (value->data != 10 || (value->detail & 2))
+                        continue;
+                    SctActionId target;
+                    for (auto child : d.child(original.value)) {
+                        auto *p = d.values.find(child.value);
+                        if (p->kind == ValueKind::Parameter && p->data == 0 && p->count == 1) {
+                            auto *v = d.values.find(d.child(child).front().value);
+                            if (v->kind == ValueKind::ActionReference)
+                                target = SctActionId{v->data};
+                        }
+                    }
+                    if (target != join && !(loop && target == header))
+                        continue;
+                    auto &transfer = edit(id);
+                    transfer.kind = ActionKind::Transfer;
+                    transfer.value = {};
+                    transfer.detail = count32(d.transfers.size());
+                    d.transfers.push_back({id, header,
+                                           target == header ? TransferKind::Continue : TransferKind::Break,
+                                           bool(value->detail & 1)});
+                }
+                diagnostics->issues.erase(header);
+            } catch (const std::exception &e) {
+                if (applying) throw; // Do not accept a partially installed construct.
+                addIssue(*diagnostics, header, std::string("Kept explicit: ") + e.what());
+            }
+        }
+        result.emplace(at->second, std::move(diagnostics));
     }
     return result;
 }
-std::shared_ptr<const FlowGrouping> analyzeFlowGroup(ProgramData &d, SctSequenceId sequence,
-                                                     std::stop_token stop) {
+std::shared_ptr<const ControlFlowDiagnostics> analyzeFlowIssues(ProgramData &d, SctSequenceId sequence,
+                                                                std::stop_token stop) {
     auto *seq = d.sequence(sequence);
     require(seq && seq->order, "Missing grouping sequence");
-    auto fallback = std::make_shared<FlowGrouping>();
-    for (auto id : *seq->order)
-        fallback->roots.push_back({id});
+    auto fallback = std::make_shared<ControlFlowDiagnostics>();
     try {
         sct::SctDocument document;
         SourceView view{d};
