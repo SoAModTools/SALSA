@@ -3,6 +3,7 @@
 #include <QGraphicsTextItem>
 #include <QGraphicsView>
 #include <QHeaderView>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QTableWidget>
 #include <queue>
@@ -21,12 +22,15 @@ class StoryWindow final : public QDialog {
     QGraphicsScene *scene;
     QLabel *status;
     QCheckBox *bits, *all;
+    QComboBox *scriptFilter;
+    std::vector<ed::ModuleItem> listed;
+    QAction *analyzeAction, *disableAction, *pathAction, *narrativeAction;
     QTimer *refresh;
     std::size_t shown = 0;
     std::vector<ed::StoryEffect> visible;
     std::optional<ed::ModuleItem> selected() {
         int i = modules->currentRow();
-        return i >= 0 && i < int(data.modules.size()) ? std::optional(data.modules[i]) : std::nullopt;
+        return i >= 0 && i < int(listed.size()) ? std::optional(listed[i]) : std::nullopt;
     }
     void page() {
         auto end = std::min(shown + 200, visible.size());
@@ -38,12 +42,20 @@ class StoryWindow final : public QDialog {
             effects->setItem(row, 1, new QTableWidgetItem(q(e.access)));
             effects->setItem(row, 2, new QTableWidgetItem(q(e.expression)));
         }
-        status->setText(tr("%1 modules; %2 candidate relationships; showing %3 of %4 selected effects. Graph "
-                           "shows up to 100 modules.")
-                            .arg(data.modules.size())
-                            .arg(data.links.size())
-                            .arg(shown)
-                            .arg(visible.size()));
+        if (!data.enabled) {
+            status->setText(tr("Script editing mode. Choose Analyze and organize whole project to enable "
+                               "story authoring. Existing organization is retained."));
+            return;
+        }
+        status->setText(
+            tr("Whole project: %1 scripts, %2 modules, %3 candidate relationships. %4 unorganized code "
+               "sections. Showing %5 of %6 selected effects; graph displays up to 100 filtered modules.")
+                .arg(data.scripts.size())
+                .arg(data.modules.size())
+                .arg(data.links.size())
+                .arg(data.unorganizedSections)
+                .arg(shown)
+                .arg(visible.size()));
     }
     void select() {
         visible.clear();
@@ -58,11 +70,16 @@ class StoryWindow final : public QDialog {
     }
     void draw(std::optional<core::SctModuleId> selectedId = {}) {
         modules->clear();
+        listed.clear();
+        auto filter = scriptFilter->currentData().toULongLong();
         for (auto &m : data.modules)
-            modules->addItem(q(m.name));
+            if (data.enabled && (!filter || m.script.value == filter)) {
+                listed.push_back(m);
+                modules->addItem(q(m.name));
+            }
         scene->clear();
         std::map<core::SctModuleId, QPointF> points;
-        std::vector<ed::ModuleItem> ordered = data.modules;
+        std::vector<ed::ModuleItem> ordered = listed;
         std::map<core::SctModuleId, std::size_t> rank;
         for (std::size_t i = 0; i < data.narrative.size(); ++i)
             rank[data.narrative[i]] = i;
@@ -93,29 +110,106 @@ class StoryWindow final : public QDialog {
                 line->setToolTip(q(link.explanation));
                 line->setZValue(-1);
             }
-        if (!data.modules.empty()) {
-            auto found = selectedId ? std::ranges::find(data.modules, *selectedId, &ed::ModuleItem::id)
-                                    : data.modules.end();
-            modules->setCurrentRow(
-                found == data.modules.end() ? 0 : static_cast<int>(found - data.modules.begin()));
+        if (!listed.empty()) {
+            auto found =
+                selectedId ? std::ranges::find(listed, *selectedId, &ed::ModuleItem::id) : listed.end();
+            modules->setCurrentRow(found == listed.end() ? 0 : static_cast<int>(found - listed.begin()));
         } else
             select();
     }
-    void load() {
+    void install(ed::StoryView next) {
+        auto previous = selected();
+        const auto filter = scriptFilter->currentData();
+        data = std::move(next);
+        {
+            QSignalBlocker block(scriptFilter);
+            scriptFilter->clear();
+            scriptFilter->addItem(tr("All scripts (view filter)"), QVariant::fromValue<qulonglong>(0));
+            for (const auto &[id, name] : data.scripts)
+                scriptFilter->addItem(q(name), QVariant::fromValue<qulonglong>(id.value));
+            auto index = scriptFilter->findData(filter);
+            if (index >= 0)
+                scriptFilter->setCurrentIndex(index);
+        }
+        pathAction->setEnabled(data.enabled);
+        narrativeAction->setEnabled(data.enabled);
+        disableAction->setEnabled(data.enabled);
+        draw(previous ? std::optional(previous->id) : std::nullopt);
+    }
+    void review(ed::StoryView result) {
+        if (result.revision != session->revision())
+            return;
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Whole-project organization review"));
+        dialog.resize(720, 500);
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *explanation = new QLabel(
+            tr("Reviewed all %1 scripts. Existing modules are retained. Select unorganized code sections to "
+               "add as modules; section boundaries are suggestions, not cutscene meanings. Unselected code "
+               "remains editable and its readers remain available as links.")
+                .arg(result.scripts.size()),
+            &dialog);
+        explanation->setWordWrap(true);
+        layout->addWidget(explanation);
+        auto *choices = new QListWidget(&dialog);
+        choices->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        for (const auto &candidate : result.candidates) {
+            auto script = std::ranges::find(result.scripts, candidate.script,
+                                            &std::pair<core::SctScriptId, std::string>::first);
+            choices->addItem((script == result.scripts.end() ? QString::number(candidate.script.value)
+                                                             : q(script->second)) +
+                             ": " + q(candidate.name));
+        }
+        layout->addWidget(choices);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        buttons->button(QDialogButtonBox::Ok)->setText(tr("Enable story authoring"));
+        layout->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        if (dialog.exec() != QDialog::Accepted)
+            return;
+        ed::OrganizeStory edit;
+        for (auto *item : choices->selectedItems())
+            edit.modules.push_back(result.candidates.at(choices->row(item)));
+        session->execute(tr("Enable and organize story authoring"), ed::StoryEdit{std::move(edit)},
+                         result.revision);
+    }
+    void load(bool analyze = false) {
         if (!session->backend())
             return;
         auto b = session->backend();
         auto r = session->revision();
         request.unclassifiedBits = bits->isChecked();
         request.allEffects = all->isChecked();
-        auto q = request;
+        auto query = request;
+        query.analyze = analyze;
         stop.request_stop();
         stop = std::stop_source{};
         auto token = stop.get_token();
         auto serial = ++generation;
-        status->setText(tr("Reading selected story scope…"));
+        if (analyze) {
+            refresh->stop();
+            auto result = std::make_shared<std::optional<ed::StoryView>>();
+            session->runOperation(
+                tr("Analyze and organize whole project"),
+                [b, r, query, result](auto token, const auto &progress) mutable {
+                    query.progress = progress;
+                    auto analyzed = b->story(r, query, token);
+                    if (!analyzed)
+                        return core::Result<std::string>::failure(analyzed.diagnostics());
+                    *result = std::move(analyzed).takeValue();
+                    return core::Result<std::string>::success(
+                        "Whole-project story analysis ready for organization review.");
+                },
+                [self = QPointer(this), r, serial, result] {
+                    if (self && self->generation == serial && self->session->revision() == r && *result)
+                        self->review(std::move(**result));
+                });
+            return;
+        }
+        status->setText(tr("Restoring story organization and updating project relationships…"));
         background(
-            this, [=] { return b->story(r, q, token); },
+            this, [=] { return b->story(r, query, token); },
             [this, r, serial](auto result) {
                 if (serial != generation || r != session->revision())
                     return;
@@ -123,9 +217,7 @@ class StoryWindow final : public QDialog {
                     status->setText(tr("Story query failed; see activity log."));
                     return;
                 }
-                auto previous = selected();
-                data = std::move(result).takeValue();
-                draw(previous ? std::optional(previous->id) : std::nullopt);
+                install(std::move(result).takeValue());
             });
     }
     void path() {
@@ -158,7 +250,7 @@ class StoryWindow final : public QDialog {
         if (!previous.contains(to)) {
             QMessageBox::information(
                 this, tr("Path proposal"),
-                tr("No writer/reader or control-flow path connects these modules in this scope."));
+                tr("No writer/reader or control-flow path connects these modules in this project."));
             return;
         }
         std::vector<core::SctModuleId> order;
@@ -228,8 +320,7 @@ class StoryWindow final : public QDialog {
 
   public:
     ~StoryWindow() override { stop.request_stop(); }
-    StoryWindow(EditorSessionPresenter *s, ed::StoryRequest scope, QWidget *host)
-        : QDialog(host), session(s), request(std::move(scope)) {
+    StoryWindow(EditorSessionPresenter *s, QWidget *host) : QDialog(host), session(s) {
         setAttribute(Qt::WA_DeleteOnClose);
         setWindowTitle(tr("Story workspace"));
         resize(1150, 730);
@@ -240,9 +331,18 @@ class StoryWindow final : public QDialog {
         all = new QCheckBox(tr("Inspect all variable effects"), this);
         bar->addWidget(bits);
         bar->addWidget(all);
-        bar->addAction(tr("Refresh"), [this] { load(); });
-        bar->addAction(tr("Propose path…"), [this] { path(); });
-        bar->addAction(tr("Narrative order…"), [this] { narrative(); });
+        bits->setChecked(true);
+        analyzeAction = bar->addAction(tr("Analyze and organize whole project…"), [this] { load(true); });
+        availability(analyzeAction, session);
+        disableAction = bar->addAction(tr("Use script editing only"), [this] {
+            session->execute(tr("Disable story authoring (retain organization)"),
+                             ed::StoryEdit{ed::OrganizeStory{{}, false}});
+        });
+        pathAction = bar->addAction(tr("Propose path…"), [this] { path(); });
+        narrativeAction = bar->addAction(tr("Narrative order…"), [this] { narrative(); });
+        pathAction->setEnabled(false);
+        narrativeAction->setEnabled(false);
+        disableAction->setEnabled(false);
         bar->addAction(tr("Module alias…"), [this] {
             if (auto m = selected())
                 alias(session, this, m->script, m->id);
@@ -252,6 +352,10 @@ class StoryWindow final : public QDialog {
                 decision(session, this, m->id,
                          "Module membership and effects are observations, not proof of narrative meaning.");
         });
+        scriptFilter = new QComboBox(this);
+        scriptFilter->addItem(tr("All scripts (view filter)"), QVariant::fromValue<qulonglong>(0));
+        l->addWidget(scriptFilter);
+        connect(scriptFilter, &QComboBox::currentIndexChanged, this, [this] { draw(); });
         auto *split = new QSplitter(this);
         modules = new QListWidget(split);
         auto *view = new QGraphicsView(split);
@@ -338,18 +442,8 @@ StoryTools::StoryTools(EditorSessionPresenter *s, QWidget *h) : QObject(h), sess
         availability(a, s);
 }
 void StoryTools::open() {
-    catalog(session_, this, [this](auto data) {
-        QStringList labels;
-        for (auto &s : data.scripts)
-            labels << q(s.second);
-        auto chosen = choose(host_, tr("Scripts to include in story analysis"), labels);
-        if (!chosen || chosen->empty())
-            return;
-        ed::StoryRequest request;
-        for (int i : *chosen)
-            request.scripts.push_back(data.scripts[i].first);
-        (new StoryWindow(session_, request, host_))->show();
-    });
+    if (session_->backend() && !session_->busy())
+        (new StoryWindow(session_, host_))->show();
 }
 void StoryTools::meanings() {
     catalog(session_, this, [this](auto data) {

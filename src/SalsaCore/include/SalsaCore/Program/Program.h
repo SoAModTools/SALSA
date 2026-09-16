@@ -210,6 +210,7 @@ struct Annotation {
 };
 using VariableMeaning = editor::Meaning;
 struct Metadata {
+    bool storyEnabled = false;
     std::vector<editor::SectionFolder> folders;
     std::vector<editor::OpcodeCustomization> opcodes;
     std::vector<Module> modules;

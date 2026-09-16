@@ -209,11 +209,37 @@ void EditorSessionPresenter::execute(QString title, ed::EditIntent intent,
         return backend->execute(revision, intent, stop);
     });
 }
-void EditorSessionPresenter::runOperation(QString title, std::function<core::Result<std::string>(std::stop_token,const core::SctLoadingObserver &)> work) {
+void EditorSessionPresenter::runOperation(
+    QString title,
+    std::function<core::Result<std::string>(std::stop_token, const core::SctLoadingObserver &)> work,
+    std::function<void()> completed) {
     if(!backend_ || busy() || !host_)return;
-    auto operation=std::make_unique<ProgramOperation>(std::move(title),
-        [work=std::move(work)](auto stop,const auto &progress){auto result=work(stop,progress);if(!result)return core::Result<std::any>::failure(result.diagnostics());return core::Result<std::any>::success(std::any(std::move(result).takeValue()));},
-        [self=QPointer(this)](std::any value,ProgramOperation &op){auto text=QString::fromStdString(std::any_cast<std::string>(std::move(value)));if(self)emit self->diagnostic(text);op.finish(text);});
+    auto operation = std::make_unique<ProgramOperation>(
+        std::move(title),
+        [work = std::move(work)](auto stop, const auto &progress) {
+            auto result = work(stop, progress);
+            if (!result)
+                return core::Result<std::any>::failure(result.diagnostics());
+            return core::Result<std::any>::success(std::any(std::move(result).takeValue()));
+        },
+        [self = QPointer(this), revision = revision_,
+         completed = std::move(completed)](std::any value, ProgramOperation &op) {
+            if (!self || self->revision_ != revision) {
+                op.fail(QObject::tr("The editor session changed."));
+                return;
+            }
+            auto text = QString::fromStdString(std::any_cast<std::string>(std::move(value)));
+            emit self->diagnostic(text);
+            op.finish(text);
+            if (completed)
+                QMetaObject::invokeMethod(
+                    self,
+                    [self, revision, completed] {
+                        if (self && self->revision_ == revision)
+                            completed();
+                    },
+                    Qt::QueuedConnection);
+        });
     (void)operations_->open(std::move(operation),host_);
 }
 void EditorSessionPresenter::history(bool redo) {

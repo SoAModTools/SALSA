@@ -1,5 +1,7 @@
 # Story interpretations and interaction names
 
+The current paged-IR editor uses **Authoring > Story workspace** with explicit, whole-project opt-in. See [Whole-program IR editor](WholeProgramIrEditor.md#g5-story-interaction-and-route-tools) for the current workflow. The older document-oriented menus and schemas described below are historical implementation notes, not the current project format.
+
 SALSA stores names and interpretations as project metadata. They do not rename executable sections, retarget MLD handlers, change predicates, or change exported instructions.
 
 ## Interaction view

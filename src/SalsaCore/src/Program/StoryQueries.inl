@@ -98,47 +98,102 @@ std::future<Result<editor::StoryView>> ProgramService::story(Revision r, editor:
         editor::StoryView out;
         out.revision = r;
         out.narrative = d.metadata.narrative;
-        std::set<SctScriptId> scope(request.scripts.begin(), request.scripts.end());
-        require(!scope.empty(), "Select scripts for story analysis");
-        for (auto id : scope)
-            require(d.lookup(id.value, EntityKind::Script, d.scripts), "Missing story script");
+        out.enabled = d.metadata.storyEnabled;
+        for (const auto &script : d.scripts)
+            out.scripts.emplace_back(script.context.id, script.context.name);
+        if (!out.enabled && !request.analyze) {
+            for (const auto &m : d.metadata.modules)
+                out.modules.push_back({m.id, m.script, storyAlias(d, m.id, m.name), m.sequences});
+            return out; // Script editing and reopening do not start story analysis.
+        }
+        auto progress = [&](const char *phase, std::size_t done, std::size_t total,
+                            const std::string &item = {}) {
+            stopped(stop);
+            if (request.progress)
+                request.progress({phase, done, total, item});
+        };
+        progress("Reviewing whole-project organization", 0, d.scripts.size());
+        std::set<SctSequenceId> occupied;
+        for (const auto &m : d.metadata.modules)
+            for (auto body : m.sequences) {
+                auto *seq = d.sequence(body);
+                while (seq && seq->owner)
+                    seq = d.sequence(d.action(d.parentAction(*seq))->owner);
+                if (seq)
+                    occupied.insert(seq->id);
+            }
+        std::size_t reviewed = 0;
+        for (const auto &script : d.scripts) {
+            for (auto id : script.sections) {
+                auto *section = d.lookup(id.value, EntityKind::Section, d.sections);
+                if (!section || !section->body.valid() || occupied.contains(section->body) ||
+                    section->name == "init" || section->name == "loop")
+                    continue;
+                ++out.unorganizedSections;
+                if (request.analyze)
+                    out.candidates.push_back({{}, script.context.id, section->name, {section->body}});
+            }
+            progress("Reviewing whole-project organization", ++reviewed, d.scripts.size(),
+                     script.context.name);
+        }
         std::map<SctActionId, std::set<editor::Subject>> owners;
         std::map<SctModuleId, std::shared_ptr<const ModuleSummary>> summaries;
-        for (const auto &m : d.metadata.modules)
-            if (scope.contains(m.script)) {
-                stopped(stop);
-                auto q = o.summarize(r, m.id, stop);
-                summaries.emplace(m.id, q.summary);
-                out.modules.push_back({m.id, m.script, storyAlias(d, m.id, m.name), m.sequences});
-                for (auto action : q.summary->actions)
-                    owners[action].insert(m.id);
-                out.diagnostics.insert(out.diagnostics.end(), q.summary->diagnostics.begin(),
-                                       q.summary->diagnostics.end());
-            }
+        std::size_t analyzed = 0;
+        for (const auto &m : d.metadata.modules) {
+            stopped(stop);
+            progress("Analyzing project modules", analyzed++, d.metadata.modules.size(), m.name);
+            auto q = o.summarize(r, m.id, stop);
+            summaries.emplace(m.id, q.summary);
+            out.modules.push_back({m.id, m.script, storyAlias(d, m.id, m.name), m.sequences});
+            for (auto action : q.summary->actions)
+                owners[action].insert(m.id);
+            out.diagnostics.insert(out.diagnostics.end(), q.summary->diagnostics.begin(),
+                                   q.summary->diagnostics.end());
+        }
         // Entry ownership follows the same nested bodies as the semantic outline.
-        for (const auto &entry : d.metadata.entrypoints)
-            if (scope.contains(entry.script)) {
-                std::vector<SctSequenceId> pending{entry.body};
-                std::set<SctSequenceId> seen;
-                while (!pending.empty()) {
-                    auto seq = pending.back();
-                    pending.pop_back();
-                    if (!seen.insert(seq).second)
-                        continue;
-                    for (auto id : *d.sequence(seq)->order) {
-                        owners[id].insert(entry.id);
-                        auto *a = d.action(id);
-                        for (std::uint32_t n = 0; n < a->armCount; ++n)
-                            pending.push_back(d.arms[a->firstArm + n].body);
-                        if (a->kind == ActionKind::Loop)
-                            pending.push_back(d.loops[a->detail].body);
+        for (const auto &entry : d.metadata.entrypoints) {
+            std::vector<SctSequenceId> pending{entry.body};
+            std::set<SctSequenceId> seen;
+            while (!pending.empty()) {
+                stopped(stop);
+                auto seq = pending.back();
+                pending.pop_back();
+                if (!seen.insert(seq).second)
+                    continue;
+                for (auto id : *d.sequence(seq)->order) {
+                    owners[id].insert(entry.id);
+                    auto *a = d.action(id);
+                    auto condition = [&](ConditionId id) {
+                        if (id.valid())
+                            pending.push_back(
+                                d.lookup(id.value, EntityKind::Condition, d.conditions)->preparation);
+                    };
+                    for (std::uint32_t n = 0; n < a->armCount; ++n) {
+                        const auto &arm = d.arms[a->firstArm + n];
+                        pending.push_back(arm.body);
+                        condition(arm.condition);
                     }
+                    if (a->kind == ActionKind::Loop) {
+                        const auto &loop = d.loops[a->detail];
+                        condition(loop.condition);
+                        for (auto body : {loop.initialize, loop.body, loop.update})
+                            if (body.valid())
+                                pending.push_back(body);
+                    }
+                    if (a->kind == ActionKind::Switch)
+                        condition(d.switches[a->detail].selector);
+                    if (a->kind == ActionKind::Dispatch)
+                        for (const auto &sample : d.dispatches[a->detail].samples)
+                            condition(sample.condition);
                 }
             }
+        }
         // Bring guards in callers/handlers into the target cutscene's interface.
         // These remain references to existing conditions, not new predicates.
         std::map<SctModuleId, std::shared_ptr<const CutsceneSummary>> interfaces;
+        analyzed = 0;
         for (const auto &m : out.modules) {
+            progress("Relating project entry and exit routes", analyzed++, out.modules.size(), m.name);
             auto q = o.cutscene(r, m.id, stop);
             interfaces.emplace(m.id, q.summary);
             for (const auto &route : q.summary->incoming)
@@ -197,8 +252,12 @@ std::future<Result<editor::StoryView>> ProgramService::story(Revision r, editor:
                 for (const auto &read : program::uses(d, *use.variable))
                     if (read.access == Access::Read) {
                         auto targets = owners.find(read.site.action);
-                        if (targets == owners.end())
+                        if (targets == owners.end()) {
+                            out.links.push_back({module.id, read.site.action, key, use.site.action,
+                                                 read.site.action,
+                                                 display + ": reader outside an organized module"});
                             continue;
+                        }
                         for (auto target : targets->second)
                             if (target != editor::Subject(module.id))
                                 out.links.push_back({module.id, target, key, use.site.action,
@@ -208,6 +267,7 @@ std::future<Result<editor::StoryView>> ProgramService::story(Revision r, editor:
                     }
             }
         }
+        progress("Whole-project analysis ready", d.scripts.size(), d.scripts.size());
         return out;
     });
 }

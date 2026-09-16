@@ -7,7 +7,23 @@ void SemanticTransaction::storyEdit(const editor::StoryEdit &edit) {
     std::visit(
         [&](const auto &e) {
             using T = std::decay_t<decltype(e)>;
-            if constexpr (std::is_same_v<T, ed::BindRouteRequirement>) {
+            if constexpr (std::is_same_v<T, ed::OrganizeStory>) {
+                require(e.enabled || e.modules.empty(),
+                        "Disabling story authoring does not organize modules");
+                if (!p.storyEnabled)
+                    p.storyEnabled = d.metadata.storyEnabled;
+                d.metadata.storyEnabled = e.enabled;
+                p.receipt.presentationChanged = true;
+                for (const auto &m : e.modules) {
+                    require(!m.id.valid() && !m.bodies.empty(), "Select new module bodies for organization");
+                    put(Module{{},
+                               m.script,
+                               m.name,
+                               m.bodies,
+                               {{SctEvidenceKind::UserAssertion,
+                                 "Module accepted in whole-project organization review"}}});
+                }
+            } else if constexpr (std::is_same_v<T, ed::BindRouteRequirement>) {
                 auto c = d.metadata.connections[at(e.connection.value, EntityKind::Connection)];
                 auto arm = d.arms[at(e.route.value, EntityKind::Arm)];
                 require(d.action(arm.owner)->kind == ActionKind::Dispatch, "Select a route-owned condition");

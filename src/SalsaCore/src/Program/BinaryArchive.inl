@@ -26,7 +26,8 @@ F(Entrypoint, v.id, v.script, v.name, v.kind, v.body, v.enabled, v.activation, v
 F(Annotation, v.subject, v.alias, v.evidence, v.note, v.bookmark, v.color)
 F(VariableMeaning, v.id, v.script, v.variable, v.value, v.name, v.evidence, v.storyState)
 F(editor::InterpretationRecord, v.subject, v.revision, v.decision, v.explanation, v.evidence)
-F(Metadata, v.modules, v.entrypoints, v.ports, v.languages, v.connections, v.logicalTexts, v.annotations, v.meanings, v.folders, v.opcodes, v.narrative, v.interpretations)
+F(Metadata, v.storyEnabled, v.modules, v.entrypoints, v.ports, v.languages, v.connections, v.logicalTexts,
+  v.annotations, v.meanings, v.folders, v.opcodes, v.narrative, v.interpretations)
 F(SctAuthoringEvidence, v.kind, v.description)
 F(SctUnresolvedBinding, v.originalEvidence, v.explanation, v.evidence)
 F(SctLegacyOrigin, v.capsuleId, v.scriptKey, v.scriptOrdinal)

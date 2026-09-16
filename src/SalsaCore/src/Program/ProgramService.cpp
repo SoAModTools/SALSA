@@ -174,6 +174,7 @@ struct PreparedData {
     std::optional<std::vector<Connection>> connections;
     std::optional<std::vector<SctLogicalText>> logicalTexts;
     std::optional<std::vector<VariableMeaning>> meanings;
+    std::optional<bool> storyEnabled;
     std::optional<std::vector<SctModuleId>> narrative;
     std::optional<std::vector<editor::InterpretationRecord>> interpretations;
     std::optional<std::vector<Annotation>> annotationTable;
@@ -212,6 +213,8 @@ struct PreparedData {
             connections->swap(d.metadata.connections);
         if (logicalTexts)
             logicalTexts->swap(d.metadata.logicalTexts);
+        if (storyEnabled)
+            std::swap(*storyEnabled, d.metadata.storyEnabled);
         if (narrative) narrative->swap(d.metadata.narrative);
         if (interpretations) interpretations->swap(d.metadata.interpretations);
         if (meanings)

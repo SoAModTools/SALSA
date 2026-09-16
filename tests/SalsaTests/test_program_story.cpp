@@ -21,7 +21,7 @@ struct StoryFixture {
     ed::Revision revision;
     SctScriptId a, b;
     SctModuleId ma{1001}, mb{1002};
-    StoryFixture() {
+    StoryFixture(bool organize = true) {
         ir::ProgramBuilder builder({"e44499b5-dcf0-449a-9815-5bdf558eface"});
         for (bool second : {false, true}) {
             sct::SctDocument d;
@@ -71,6 +71,8 @@ struct StoryFixture {
         if (!adopted)
             throw std::runtime_error(messages(adopted.diagnostics()));
         revision = adopted.value().current;
+        if (!organize)
+            return;
         auto modules = service
                            ->edit({revision,
                                    {ir::SemanticOperation{ir::PutMetadata{ir::Module{{}, a, "A", {sa}}}},
@@ -94,15 +96,16 @@ struct StoryFixture {
 };
 TEST(StoryFeatureTest, ScopedMeaningsNarrativeAndItemDecisionsShareHistoryWithoutRebuildingFlow) {
     StoryFixture f;
-    auto empty = f.backend.story(f.revision, {{f.a, f.b}});
+    auto empty = f.backend.story(f.revision, {});
     ASSERT_TRUE(empty);
     EXPECT_TRUE(empty.value().effects.empty());
     EXPECT_EQ(empty.value().modules.size(), 2u);
-    auto observed = f.backend.story(f.revision, {{f.a, f.b}, true});
+    auto observed = f.backend.story(f.revision, {true, false, true});
     ASSERT_TRUE(observed);
     EXPECT_TRUE(std::ranges::any_of(observed.value().links, [&](auto &l) {
         return l.source == f.ma && l.destination == ed::Subject(f.mb);
     }));
+    f.edit(ed::OrganizeStory{});
     auto cached = f.service->summarize(f.revision, f.ma).get().value().summary->build;
     ed::Meaning m;
     m.variable = {SctVariableKind::Bit, 121};
@@ -110,7 +113,7 @@ TEST(StoryFeatureTest, ScopedMeaningsNarrativeAndItemDecisionsShareHistoryWithou
     m.storyState = true;
     f.edit(ed::WriteMeaning{m});
     EXPECT_EQ(f.service->summarize(f.revision, f.ma).get().value().summary->build, cached);
-    auto story = f.backend.story(f.revision, {{f.a, f.b}});
+    auto story = f.backend.story(f.revision, {});
     ASSERT_TRUE(story);
     EXPECT_FALSE(story.value().effects.empty());
     auto interactions = f.backend.interaction(f.revision, f.b);
@@ -147,6 +150,76 @@ TEST(StoryFeatureTest, ScopedMeaningsNarrativeAndItemDecisionsShareHistoryWithou
     ASSERT_TRUE(redo);
     f.revision = redo.value().status.current;
     EXPECT_EQ(f.backend.explanation(f.revision, subject).value().decisions.size(), 1u);
+}
+TEST(StoryFeatureTest, WholeProjectOrganizationIsExplicitUndoableAndPersistent) {
+    StoryFixture f(false);
+    auto before = f.service->checkpoint(f.revision).get().value();
+    auto bytes = ir::ProgramPersistence::encode(*before.program).value();
+    std::vector<SctLoadingProgress> progress;
+    ed::StoryRequest request{true};
+    request.progress = [&](const auto &p) { progress.push_back(p); };
+    auto closed = f.backend.story(f.revision, request);
+    ASSERT_TRUE(closed);
+    EXPECT_FALSE(closed.value().enabled);
+    EXPECT_TRUE(closed.value().candidates.empty());
+    EXPECT_TRUE(closed.value().effects.empty());
+    EXPECT_TRUE(progress.empty()); // No discovery/summarization before opt-in.
+    request.analyze = true;
+    auto review = f.backend.story(f.revision, request);
+    ASSERT_TRUE(review) << messages(review.diagnostics());
+    ASSERT_EQ(review.value().scripts.size(), 2u);
+    ASSERT_EQ(review.value().candidates.size(), 2u); // init/loop are not proposed as cutscenes.
+    EXPECT_NE(review.value().candidates[0].script, review.value().candidates[1].script);
+    EXPECT_FALSE(progress.empty());
+    EXPECT_EQ(progress.back().completed, 2u);
+    EXPECT_EQ(
+        ir::ProgramPersistence::encode(*f.service->checkpoint(f.revision).get().value().program).value(),
+        bytes);
+    std::stop_source stop;
+    stop.request_stop();
+    EXPECT_FALSE(f.backend.story(f.revision, request, stop.get_token()));
+    auto revision = f.revision;
+    f.edit(ed::OrganizeStory{review.value().candidates});
+    EXPECT_FALSE(f.backend.execute(revision, ed::StoryEdit{ed::OrganizeStory{review.value().candidates}}));
+    auto enabled = f.backend.story(f.revision, {true});
+    ASSERT_TRUE(enabled);
+    EXPECT_TRUE(enabled.value().enabled);
+    EXPECT_TRUE(enabled.value().candidates.empty());
+    ASSERT_EQ(enabled.value().modules.size(), 2u);
+    EXPECT_EQ(enabled.value().unorganizedSections, 0u);
+    EXPECT_TRUE(std::ranges::any_of(enabled.value().links, [&](const auto &link) {
+        return link.source == enabled.value().modules[0].id &&
+               link.destination == ed::Subject(enabled.value().modules[1].id);
+    }));
+    auto checkpoint = f.service->checkpoint(f.revision).get().value();
+    auto encoded = ir::ProgramPersistence::encode(*checkpoint.program);
+    ASSERT_TRUE(encoded);
+    auto decoded = ir::ProgramPersistence::decode(encoded.value());
+    ASSERT_TRUE(decoded);
+    EXPECT_TRUE(decoded.value().program->metadata().storyEnabled);
+    EXPECT_EQ(decoded.value().program->metadata().modules.size(), 2u);
+    // Organization does not rewrite instructions or create a second execution representation.
+    EXPECT_EQ(checkpoint.program->statistics().actions, before.program->statistics().actions);
+    auto undo = f.backend.history(f.revision, false);
+    ASSERT_TRUE(undo);
+    f.revision = undo.value().status.current;
+    closed = f.backend.story(f.revision, {});
+    ASSERT_TRUE(closed);
+    EXPECT_FALSE(closed.value().enabled);
+    EXPECT_TRUE(closed.value().modules.empty());
+    auto redo = f.backend.history(f.revision, true);
+    ASSERT_TRUE(redo);
+    f.revision = redo.value().status.current;
+    f.edit(ed::OrganizeStory{{}, false});
+    closed = f.backend.story(f.revision, {});
+    ASSERT_TRUE(closed);
+    EXPECT_FALSE(closed.value().enabled);
+    EXPECT_EQ(closed.value().modules.size(), 2u);
+    EXPECT_TRUE(closed.value().effects.empty());
+    f.edit(ed::OrganizeStory{});
+    auto again = f.backend.story(f.revision, request);
+    ASSERT_TRUE(again);
+    EXPECT_TRUE(again.value().candidates.empty()); // Existing organization is not rediscovered or replaced.
 }
 TEST(StoryFeatureTest, OutputClosureRejectsStaleOrCancelledReviewAndPublishesOneSet) {
     StoryFixture f;

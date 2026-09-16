@@ -1,6 +1,7 @@
 #pragma once
 #include "SalsaCore/Authoring/SctAuthoringStore.h"
 #include "SalsaCore/Editor/AuthoringFeatures.h"
+#include "SalsaCore/Foundation/LoadingProgress.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include <filesystem>
 namespace salsa::core::editor {
@@ -70,8 +71,10 @@ struct StoryCatalog {
     std::vector<SctModuleId> narrative;
 };
 struct StoryRequest {
-    std::vector<SctScriptId> scripts;
+    // Whole project only. Display filters must never restrict analysis coverage.
     bool unclassifiedBits = false, allEffects = false;
+    bool analyze = false; // Explicit, read-only discovery/organization review.
+    SctLoadingObserver progress;
 };
 struct StoryEffect {
     SctModuleId module;
@@ -90,6 +93,10 @@ struct StoryLink {
 };
 struct StoryView {
     Revision revision;
+    bool enabled = false;
+    std::vector<std::pair<SctScriptId, std::string>> scripts;
+    std::vector<ModuleItem> candidates;
+    std::size_t unorganizedSections = 0;
     std::vector<ModuleItem> modules;
     std::vector<StoryEffect> effects;
     std::vector<StoryLink> links;
@@ -119,6 +126,11 @@ struct RouteDetail {
     SctModuleId module;
     std::vector<std::pair<Subject, std::string>> rows;
     std::vector<SctAuthoringEvidence> evidence;
+};
+struct OrganizeStory {
+    // Accepted new definitions only; existing organization is never inferred again.
+    std::vector<ModuleItem> modules;
+    bool enabled = true;
 };
 struct WriteMeaning {
     Meaning meaning;
@@ -156,9 +168,9 @@ struct BindRouteRequirement {
 struct RecoverDispatch {
     SctActionId header;
 };
-using StoryEdit =
-    std::variant<BindRouteRequirement, WriteMeaning, RemoveMeaning, WriteNarrative, DecideInterpretation,
-                 WriteSlot, RemoveSlot, ConnectRoute, DetachRoute, WriteRouteRequirement, RecoverDispatch>;
+using StoryEdit = std::variant<OrganizeStory, BindRouteRequirement, WriteMeaning, RemoveMeaning,
+                               WriteNarrative, DecideInterpretation, WriteSlot, RemoveSlot, ConnectRoute,
+                               DetachRoute, WriteRouteRequirement, RecoverDispatch>;
 struct OutputItem {
     SctScriptId script;
     std::string filename, reason;
