@@ -59,8 +59,30 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
             if (auto alias = owner.outlineAliases.find(row.subject); alias != owner.outlineAliases.end())
                 row.label = alias->second;
             const auto ordinal = out.total++;
-            if (ordinal >= request.offset && out.rows.size() < request.limit)
+            if (ordinal >= request.offset && out.rows.size() < request.limit) {
+                if (request.semantic && row.condition) {
+                    auto *c = d.lookup(row.condition->value, EntityKind::Condition, d.conditions);
+                    require(c, "Missing header condition");
+                    ValueBuffer values; CopyValues copy{d, values};
+                    auto root = copy.copy(c->result);
+                    auto expression = ProgramValues::expression(values, root);
+                    require(bool(expression), "Invalid header expression");
+                    auto text = SctExpressionLanguage::project(expression.value()).text;
+                    std::replace(text.begin(), text.end(), '\n', ' ');
+                    std::replace(text.begin(), text.end(), '\r', ' ');
+                    std::replace(text.begin(), text.end(), '\t', ' ');
+                    if (text.size() > 180) {
+                        auto end = std::size_t{180};
+                        while (end && (static_cast<unsigned char>(text[end]) & 0xc0) == 0x80) --end;
+                        text.resize(end); text += "...";
+                    }
+                    row.label += " " + text;
+                    auto *prep = d.sequence(c->preparation);
+                    if (prep && !prep->order->empty()) row.label += " [" + std::to_string(prep->order->size()) + " before check]";
+                    row.preparation = c->preparation;
+                }
                 out.rows.push_back(std::move(row));
+            }
         };
         auto action = [&](SctActionId id, SctSequenceId seq) {
             const auto *a = d.action(id);
@@ -78,7 +100,7 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                 label = "Route dispatch";
                 break;
             case ActionKind::Conditional:
-                label = "If / Else If / Else";
+                label = request.semantic ? "If" : "If / Else If / Else";
                 break;
             case ActionKind::Loop: {
                 const auto kind = d.loops.at(a->detail).kind;
@@ -92,13 +114,44 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                 label = d.transfers.at(a->detail).kind == TransferKind::Break ? "Break" : "Continue";
                 break;
             }
-            append({id, seq, std::move(label), a->kind != ActionKind::Instruction && a->kind != ActionKind::Transfer,
-                    a->kind});
+            OutlineRow row{id, seq, std::move(label), a->kind != ActionKind::Instruction && a->kind != ActionKind::Transfer, a->kind};
+            if (request.semantic) {
+                if (a->kind == ActionKind::Conditional && a->armCount) {
+                    const auto &first = d.arms[a->firstArm];
+                    row.chain = id; row.condition = first.condition; row.sequence = first.body;
+                } else if (a->kind == ActionKind::Loop) row.condition = d.loops.at(a->detail).condition;
+                else if (a->kind == ActionKind::Switch) row.condition = d.switches.at(a->detail).selector;
+            }
+            append(std::move(row));
+            if (request.semantic && a->kind == ActionKind::Conditional) {
+                for (std::uint32_t n = 1; n < a->armCount; ++n) {
+                    auto &arm = d.arms[a->firstArm + n];
+                    OutlineRow branch{arm.id, arm.body, arm.condition.valid() ? "Else If" : "Else", true};
+                    branch.chain = id;
+                    if (arm.condition.valid()) branch.condition = arm.condition;
+                    append(std::move(branch));
+                }
+            }
         };
         auto sequence = [&](SctSequenceId id) {
             const auto *seq = d.sequence(id);
             require(seq && seq->order, "Missing outline sequence");
             out.script = seq->script;
+            if (request.semantic) {
+                const auto &offsets = owner.rowOffsets(id, stop);
+                const auto base = out.total;
+                const auto start = std::max(base, request.offset) - base;
+                if (start < offsets.back() && out.rows.size() < request.limit) {
+                    auto at = static_cast<std::size_t>(std::upper_bound(offsets.begin(), offsets.end(), start) - offsets.begin() - 1);
+                    out.total = base + offsets[at];
+                    for (; at < seq->order->size() && out.rows.size() < request.limit; ++at) {
+                        stopped(stop);
+                        action((*seq->order)[at], id);
+                    }
+                }
+                out.total = base + offsets.back();
+                return;
+            }
             // Direct indexing gives constant work per requested row, independent
             // of how many sibling actions precede the requested page.
             const auto start = std::max(out.total, request.offset) - out.total;
@@ -122,7 +175,8 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
             require(c != nullptr, "Missing outline condition");
             const auto *seq = d.sequence(c->preparation);
             require(seq != nullptr, "Missing condition preparation");
-            append({id, c->preparation, "Condition", true});
+            if (request.semantic && seq->order->empty()) return;
+            append({id, c->preparation, request.semantic ? "Before check" : "Condition", true});
         };
         std::visit(
             [&](auto id) {
@@ -201,7 +255,13 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     const auto *a = d.action(id);
                     require(a != nullptr, "Missing outline construct");
                     out.script = d.sequence(a->owner)->script;
-                    if (a->kind == ActionKind::Conditional || a->kind == ActionKind::Switch ||
+                    if (request.semantic && a->kind == ActionKind::Conditional) {
+                        if (a->armCount) {
+                            const auto &first = d.arms[a->firstArm];
+                            if (first.condition.valid()) condition(first.condition);
+                            sequence(first.body);
+                        }
+                    } else if (a->kind == ActionKind::Conditional || a->kind == ActionKind::Switch ||
                         a->kind == ActionKind::Dispatch) {
                         if (a->kind == ActionKind::Switch)
                             condition(d.switches.at(a->detail).selector);
@@ -222,7 +282,9 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                                 if (arm.includesDefault)
                                     label += " Default";
                             }
-                            append({arm.id, arm.body, std::move(label), true});
+                            OutlineRow row{arm.id, arm.body, std::move(label), true};
+                            if (request.semantic && arm.condition.valid()) row.condition = arm.condition;
+                            append(std::move(row));
                         }
                     } else if (a->kind == ActionKind::Loop) {
                         const auto &l = d.loops.at(a->detail);
@@ -334,6 +396,26 @@ std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, Ed
                 subject);
             if (done) {
                 std::reverse(out.subjects.begin(), out.subjects.end());
+                if (semantic) {
+                    std::vector<EditorSubject> visible;
+                    for (std::size_t n = 0; n < out.subjects.size(); ++n) {
+                        const auto &item = out.subjects[n];
+                        if (auto id = std::get_if<ArmId>(&item)) {
+                            auto *arm = d.lookup(id->value, EntityKind::Arm, d.arms);
+                            auto *action = d.action(arm->owner);
+                            if (action->kind == ActionKind::Conditional) {
+                                if (d.arms[action->firstArm].id == *id) continue;
+                                if (!visible.empty() && visible.back() == EditorSubject(action->id)) visible.pop_back();
+                            }
+                        }
+                        if (auto id = std::get_if<ConditionId>(&item)) {
+                            auto *c = d.lookup(id->value, EntityKind::Condition, d.conditions);
+                            if (d.sequence(c->preparation)->order->empty()) continue;
+                        }
+                        visible.push_back(item);
+                    }
+                    out.subjects = std::move(visible);
+                }
                 return out;
             }
         }

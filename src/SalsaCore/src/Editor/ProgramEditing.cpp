@@ -124,6 +124,15 @@ Result<Change> ProgramBackend::execute(Revision r, EditIntent intent, std::stop_
                     throw std::runtime_error("Missing branch body");
                 return std::pair(arm->body, std::size_t{0});
             }
+            if (auto condition = std::get_if<ir::ConditionId>(&anchor)) {
+                auto c = std::ranges::find(s->conditions, *condition, &ir::ConditionRegion::id);
+                if (c == s->conditions.end())
+                    throw std::runtime_error("Missing condition preparation");
+                auto seq = std::ranges::find(s->sequences, c->preparation, &ir::Sequence::id);
+                if (seq == s->sequences.end())
+                    throw std::runtime_error("Missing preparation sequence");
+                return std::pair(c->preparation, seq->order->size());
+            }
             if (!s->actions.empty()) {
                 sequence = s->actions.front().owner;
                 auto owner = std::ranges::find(s->sequences, sequence, &ir::Sequence::id);

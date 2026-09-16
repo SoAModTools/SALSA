@@ -18,6 +18,10 @@ struct OutlineRow {
     std::string groupingIssue;
     std::optional<std::uint32_t> color;
     bool bookmarked = false;
+    // View dependencies over the existing IR; these do not own content.
+    std::optional<SctActionId> chain;
+    std::optional<program::ConditionId> condition;
+    std::optional<SctSequenceId> preparation;
 };
 struct OutlineRequest {
     Subject parent;
@@ -56,6 +60,10 @@ struct Inspection {
     std::optional<spice::sct::SctCanonicalExpression> condition, schedule;
     bool instruction = false, skipRefresh = false, structured = false;
     std::string evidence;
+    std::optional<program::ConditionId> conditionTarget;
+    std::optional<SctActionId> construct;
+    std::optional<SctSequenceId> body;
+    bool editableBranches = false;
 };
 struct ReplaceParameter {
     SctActionId action;
@@ -75,6 +83,7 @@ struct Change {
     std::optional<Subject> suggestedSelection;
     std::vector<SctSequenceId> projectionSequences;
     std::vector<Subject> selected;
+    std::vector<program::ConditionId> conditions;
 };
 struct NavigationPath {
     Revision revision;

@@ -118,6 +118,14 @@ std::optional<ir::ValueBuffer> conditionInput(QWidget *parent, const QString &in
 }
 } // namespace
 void ProgramWorkspaceController::editSelected() {
+    if (editor_->inspection() && editor_->inspection()->conditionTarget) {
+        editing_->editAction()->trigger();
+        return;
+    }
+    if (editor_->inspection() && editor_->inspection()->editableBranches) {
+        editing_->branchesAction()->trigger();
+        return;
+    }
     if (!prepareSelection([this] { editSelected(); })) return;
     if (!selected_ || !selectedSubject_ || operations_->active())
         return;
@@ -143,7 +151,7 @@ void ProgramWorkspaceController::editSelected() {
             value = a->value;
         } else if (a->kind == ir::ActionKind::Dispatch) {
             QMessageBox::information(shell_, tr("Route dispatch"),
-                                     tr("Expand a route and select its Condition to edit the complete entry "
+                                     tr("Select a route header and use Edit condition to edit its complete entry "
                                         "requirement. Instructions belong in that route body."));
             return;
         } else if (a->kind == ir::ActionKind::Conditional || a->kind == ir::ActionKind::Switch) {

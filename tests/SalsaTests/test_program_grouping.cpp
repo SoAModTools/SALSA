@@ -131,7 +131,9 @@ TEST(ProgramGroupingTest, ImportedGroupsArePersistentConstructsAndShareBothViews
         EXPECT_EQ(physical.value().rows[n].subject, semantic.value().rows[n].subject);
     auto labels = f.tree(f.main);
     for (const auto *label : {"Switch", "Case 1", "Case 2 Default", "If", "While"})
-        EXPECT_NE(std::ranges::find(labels, label), labels.end()) << label;
+        EXPECT_NE(std::ranges::find_if(labels, [&](const auto &text) {
+            return text == label || text.starts_with(std::string(label) + " ");
+        }), labels.end()) << label;
     for (const auto &label : labels)
         EXPECT_EQ(label.find("recognized"), std::string::npos);
     editor::ProgramBackend backend(f.service);

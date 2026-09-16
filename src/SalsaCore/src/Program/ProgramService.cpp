@@ -277,12 +277,38 @@ struct ServiceOwner {
     std::uint64_t savedRevision = 0;
     std::vector<std::uint32_t> freeActions, freeSequences, freeSections;
     ControlFlowIssues flowIssues;
+    // Derived row offsets only, built lazily for visited semantic sequences.
+    // No expressions, instructions or alternative group model are cached here.
+    std::map<SctSequenceId, std::vector<std::size_t>> semanticRowOffsets;
+    const std::vector<std::size_t>& rowOffsets(SctSequenceId id, std::stop_token stop) {
+        if (auto found = semanticRowOffsets.find(id); found != semanticRowOffsets.end()) return found->second;
+        const auto *sequence = data->sequence(id);
+        require(sequence && sequence->order, "Missing outline sequence");
+        std::vector<std::size_t> offsets;
+        offsets.reserve(sequence->order->size() + 1);
+        offsets.push_back(0);
+        for (auto id : *sequence->order) {
+            stopped(stop);
+            const auto *action = data->action(id);
+            require(action, "Missing outline action");
+            offsets.push_back(offsets.back() + (action->kind == ActionKind::Conditional ? std::max(1u, action->armCount) : 1u));
+        }
+        return semanticRowOffsets.emplace(id, std::move(offsets)).first->second;
+    }
     const ControlFlowDiagnostics& flows(SctSequenceId sequence, std::stop_token stop) {
         if (auto found = flowIssues.find(sequence); found != flowIssues.end()) return *found->second;
         auto grouping = analyzeFlowIssues(*data, sequence, stop);
         return *flowIssues.emplace(sequence, std::move(grouping)).first->second;
     }
     void invalidateOutline(const ChangeReceipt &receipt) {
+        for (auto seq : receipt.sequences) semanticRowOffsets.erase(seq);
+        for (auto id : receipt.actions) if (auto *a = data->action(id)) semanticRowOffsets.erase(a->owner);
+        if (!receipt.scriptLayouts.empty()) {
+            std::erase_if(semanticRowOffsets, [&](const auto &entry) {
+                auto *seq = data->sequence(entry.first);
+                return !seq || std::ranges::find(receipt.scriptLayouts, seq->script) != receipt.scriptLayouts.end();
+            });
+        }
         for (auto seq:receipt.sequences) flowIssues.erase(seq);
         for (auto id:receipt.actions) if(auto *a=data->action(id)) flowIssues.erase(a->owner);
         // A new caller can invalidate recognition in a different sequence.
@@ -377,7 +403,7 @@ struct ServiceOwner {
         ServiceOwner next;
         next.data = std::move(const_cast<Program *>(p.get())->data_);
         next.protectMetadata();
-        outlineAliases.clear();outlineAliasesDirty=true;flowIssues.clear();
+        outlineAliases.clear();outlineAliasesDirty=true;flowIssues.clear();semanticRowOffsets.clear();
         stopped(stop);
         stopped(shutdown);
         require(generation < UINT64_MAX && nextState < UINT64_MAX, "Program generation/history state exhausted");

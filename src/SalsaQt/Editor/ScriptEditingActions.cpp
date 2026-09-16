@@ -19,8 +19,8 @@
 #include <QtConcurrent/QtConcurrentRun>
 namespace salsa::qt {
 namespace ed = core::editor;
-std::optional<spice::sct::SctCanonicalExpression> editExpression(QWidget *parent,
-                                                                 const spice::sct::SctCanonicalExpression &value) {
+std::optional<spice::sct::SctCanonicalExpression>
+editExpression(QWidget *parent, const spice::sct::SctCanonicalExpression &value) {
     QDialog dialog(parent);
     dialog.setWindowTitle(QObject::tr("SCPT expression"));
     dialog.resize(740, 520);
@@ -46,35 +46,51 @@ ScriptEditingActions::ScriptEditingActions(EditorSessionPresenter *session, QWid
     insert_ = new QAction(tr("Insert instruction…"), this);
     insert_->setShortcut(QKeySequence(Qt::Key_Insert));
     structure_ = new QAction(tr("Insert If / loop / Switch…"), this);
-    edit_ = new QAction(tr("Edit condition / branches…"), this);
+    edit_ = new QAction(tr("Edit condition…"), this);
+    preparation_ = new QAction(tr("Add preparation instruction…"), this);
+    branches_ = new QAction(tr("Edit branches / cases…"), this);
     timing_ = new QAction(tr("Instruction timing…"), this);
     connect(insert_, &QAction::triggered, this, [this] { insert(); });
     connect(structure_, &QAction::triggered, this, [this] { createStructure(); });
     connect(edit_, &QAction::triggered, this, [this] { edit(); });
+    connect(preparation_, &QAction::triggered, this, [this] { insert(true); });
+    connect(branches_, &QAction::triggered, this, [this] { branches(); });
     connect(timing_, &QAction::triggered, this, [this] { timing(); });
     auto availability = [this] {
         const auto &i = session_->inspection();
         bool ready = i && !session_->busy();
         insert_->setEnabled(ready);
         structure_->setEnabled(ready);
-        edit_->setEnabled(ready && (i->condition || i->structured));
+        edit_->setEnabled(ready && i->conditionTarget && i->condition);
+        preparation_->setEnabled(ready && i->conditionTarget);
+        branches_->setEnabled(ready && i->construct && i->editableBranches);
         timing_->setEnabled(ready && i->instruction);
     };
     connect(session_, &EditorSessionPresenter::inspectionChanged, this, availability);
     connect(session_, &EditorSessionPresenter::availabilityChanged, this, availability);
     availability();
 }
-void ScriptEditingActions::insert() {
+void ScriptEditingActions::insert(bool preparation) {
     if (!session_->selection())
         return;
     auto anchor = *session_->selection();
+    if (session_->inspection()) {
+        const auto &i = *session_->inspection();
+        if (preparation) {
+            if (!i.conditionTarget)
+                return;
+            anchor = *i.conditionTarget;
+        } else if (i.body)
+            anchor = *i.body;
+    }
     auto revision = session_->revision();
     auto catalog = session_->backend()->opcodes();
     QStringList choices;
     for (const auto &op : catalog)
         choices << QString("%1 — %2").arg(op.code).arg(QString::fromStdString(op.name));
     bool ok = false;
-    auto choice = QInputDialog::getItem(host_, tr("Insert instruction"), tr("Opcode"), choices, 0, false, &ok);
+    auto choice =
+        QInputDialog::getItem(host_, tr("Insert instruction"), tr("Opcode"), choices, 0, false, &ok);
     if (!ok)
         return;
     auto at = choices.indexOf(choice);
@@ -85,10 +101,13 @@ void ScriptEditingActions::createStructure() {
     if (!session_->selection())
         return;
     auto anchor = *session_->selection();
+    if (session_->inspection() && session_->inspection()->body)
+        anchor = *session_->inspection()->body;
     auto revision = session_->revision();
     bool ok = false;
     auto kind = QInputDialog::getItem(host_, tr("Insert structure"), tr("Construct"),
-                                      {"If", "While", "Do While", "For", "Switch", "Break", "Continue"}, 0, false, &ok);
+                                      {"If", "While", "Do While", "For", "Switch", "Break", "Continue"}, 0,
+                                      false, &ok);
     if (!ok)
         return;
     if (kind == "Break" || kind == "Continue") {
@@ -98,9 +117,10 @@ void ScriptEditingActions::createStructure() {
             query.script = session_->inspection()->script;
         auto target = pickReference(session_, query, host_);
         if (target && std::holds_alternative<core::SctActionId>(*target))
-            session_->execute(tr("Insert loop/switch transfer"),
-                              ed::InsertTransfer{anchor, std::get<core::SctActionId>(*target), kind == "Continue"},
-                              revision);
+            session_->execute(
+                tr("Insert loop/switch transfer"),
+                ed::InsertTransfer{anchor, std::get<core::SctActionId>(*target), kind == "Continue"},
+                revision);
         return;
     }
     auto condition = editExpression(host_, spice::sct::SctExpressionFactory::encodedDecimalLiteral(1));
@@ -113,14 +133,18 @@ void ScriptEditingActions::edit() {
     if (!i)
         return;
     auto captured = *i;
-    if (std::holds_alternative<core::program::ConditionId>(captured.subject) && captured.condition) {
+    if (captured.conditionTarget && captured.condition) {
         auto value = editExpression(host_, *captured.condition);
         if (value)
-            session_->execute(tr("Edit condition"), ed::SetExpression{captured.subject, {}, *value}, captured.revision);
+            session_->execute(tr("Edit condition"), ed::SetExpression{*captured.conditionTarget, {}, *value},
+                              captured.revision);
         return;
     }
-    if (!captured.structured || !std::holds_alternative<core::SctActionId>(captured.subject))
+}
+void ScriptEditingActions::branches() {
+    if (!session_->inspection() || !session_->inspection()->construct)
         return;
+    auto captured = *session_->inspection();
     auto backend = session_->backend();
     auto *watcher = new QFutureWatcher<core::Result<ed::StructureDraft>>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, captured] {
@@ -129,9 +153,8 @@ void ScriptEditingActions::edit() {
         if (r && session_->revision() == captured.revision)
             arms(std::move(r).takeValue());
     });
-    watcher->setFuture(QtConcurrent::run([backend, captured] {
-        return backend->structure(captured.revision, std::get<core::SctActionId>(captured.subject));
-    }));
+    watcher->setFuture(QtConcurrent::run(
+        [backend, captured] { return backend->structure(captured.revision, *captured.construct); }));
 }
 void ScriptEditingActions::timing() {
     if (!session_->inspection())
@@ -168,7 +191,8 @@ void ScriptEditingActions::arms(ed::StructureDraft draft) {
     if (draft.arms.empty()) {
         QMessageBox::information(
             host_, tr("Loop controls"),
-            tr("Expand the loop to edit its Condition and insert instructions in Initialize, Body or Update."));
+            tr("Edit the condition from the loop header. Use Add preparation instruction for work before "
+               "each check, or insert into Initialize, Body or Update."));
         return;
     }
     QDialog dialog(host_);
@@ -220,7 +244,8 @@ void ScriptEditingActions::arms(ed::StructureDraft draft) {
             } else if (fallback)
                 a.condition.reset();
             else {
-                if (a.condition && core::SctExpressionLanguage::project(*a.condition).text == text.toStdString())
+                if (a.condition &&
+                    core::SctExpressionLanguage::project(*a.condition).text == text.toStdString())
                     continue;
                 auto value = core::SctExpressionLanguage::parse(text.toStdString());
                 if (!value.succeeded())
@@ -267,7 +292,8 @@ void ScriptEditingActions::arms(ed::StructureDraft draft) {
         if (capture())
             dialog.accept();
         else
-            QMessageBox::warning(&dialog, tr("Invalid branch"), tr("Check the expression or integer case labels."));
+            QMessageBox::warning(&dialog, tr("Invalid branch"),
+                                 tr("Check the expression or integer case labels."));
     });
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     render();

@@ -18,6 +18,12 @@ ProgramService::copy(Revision r, editor::CopySelection request, std::stop_token 
                 } else if (auto id = std::get_if<SectionId>(&subject)) {
                     require(d.lookup(id->value, EntityKind::Section, d.sections), "Missing selected section");
                     sections.insert(*id);
+                } else if (auto id = std::get_if<ArmId>(&subject)) {
+                    auto *arm = d.lookup(id->value, EntityKind::Arm, d.arms);
+                    require(arm && d.action(arm->owner)->kind == ActionKind::Conditional &&
+                                std::ranges::find(request.items, EditorSubject(arm->owner)) != request.items.end(),
+                            "Select the If header to copy the complete chain; use Edit branches for individual branches");
+                    // The flattened branch is already included by its If header.
                 } else
                     throw std::runtime_error("Select actions, complete constructs, or code sections to copy");
             }

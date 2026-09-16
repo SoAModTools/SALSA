@@ -166,7 +166,10 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     editMenu->addAction(editor_->undoAction());
     editMenu->addAction(editor_->redoAction());
     editMenu->addAction(inspector_->editParameterAction());
-    editMenu->addAction(editing_->editAction());editMenu->addAction(editing_->timingAction());
+    editMenu->addAction(editing_->editAction());
+    editMenu->addAction(editing_->preparationAction());
+    editMenu->addAction(editing_->branchesAction());
+    editMenu->addAction(editing_->timingAction());
     editMenu->addAction(editing_->structureAction());
     editMenu->addAction(textEditor_->createAction());editMenu->addAction(textEditor_->deleteAction());
     editMenu->addSeparator();
@@ -692,7 +695,8 @@ bool ProgramWorkspaceController::prepareSelection(std::function<void()> continua
             else if constexpr (std::is_same_v<T, core::SctTextResourceId>)
                 selection.texts.push_back(id);
             else if constexpr (std::is_same_v<T, ir::ArmId>) {
-                if (auto *parent = tab.model->row(index.parent()))
+                if (row->chain) selection.actions.push_back(*row->chain);
+                else if (auto *parent = tab.model->row(index.parent()))
                     if (auto *owner = std::get_if<core::SctActionId>(&parent->subject))
                         selection.actions.push_back(*owner);
             }

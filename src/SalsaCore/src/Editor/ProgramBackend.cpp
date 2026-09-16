@@ -63,14 +63,17 @@ Change ProgramBackend::describe(const ir::ChangeReceipt &c) {
             c.diagnostics,
             c.texts,
             {},
-            c.projectionSequences, c.selected};
+            c.projectionSequences,
+            c.selected,
+            c.conditions};
 }
 Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest request, std::stop_token stop) {
-    auto result = service_
-                      ->outline(revision,
-                                {request.parent, request.offset, request.limit, request.mode == ViewMode::Semantic},
-                                stop)
-                      .get();
+    auto result =
+        service_
+            ->outline(revision,
+                      {request.parent, request.offset, request.limit, request.mode == ViewMode::Semantic},
+                      stop)
+            .get();
     if (!result)
         return Result<OutlinePage>::failure(result.diagnostics());
     auto &p = result.value();
@@ -80,7 +83,9 @@ Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest re
         std::optional<RowKind> kind;
         if (r.kind)
             kind = *r.kind == ir::ActionKind::Instruction ? RowKind::Instruction : RowKind::Construct;
-        out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind, std::move(r.groupingIssue), r.color, r.bookmarked});
+        out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind,
+                            std::move(r.groupingIssue), r.color, r.bookmarked, r.chain, r.condition,
+                            r.preparation});
     }
     return Result<OutlinePage>::success(std::move(out));
 }
@@ -103,6 +108,16 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                 request.texts.push_back(id);
         },
         subject);
+    if (std::holds_alternative<ir::ArmId>(subject)) {
+        auto located = service_->locate(revision, subject).get();
+        if (!located)
+            return Result<Inspection>::failure(located.diagnostics());
+        for (auto it = located.value().subjects.rbegin(); it != located.value().subjects.rend(); ++it)
+            if (auto action = std::get_if<SctActionId>(&*it)) {
+                request.actions.push_back(*action);
+                break;
+            }
+    }
     // Other metadata is not an instruction inspection request. Do not issue an
     // empty read, whose meaning could expand as new engine features are added.
     if (request.actions.empty() && request.sections.empty() && request.conditions.empty() &&
@@ -135,18 +150,44 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
         out.text = s.texts.front().id;
         out.script = s.texts.front().script;
     }
-    for (const auto &c : s.conditions) {
-        auto e = ir::ProgramValues::expression(s.payload, c.result);
-        if (e) {
-            out.description = SctExpressionLanguage::project(e.value()).text;
-            out.condition = e.value();
+    if (auto condition = std::get_if<ir::ConditionId>(&subject))
+        out.conditionTarget = *condition;
+    if (auto arm = std::get_if<ir::ArmId>(&subject)) {
+        auto found = std::ranges::find(s.arms, *arm, &ir::Arm::id);
+        if (found != s.arms.end()) {
+            out.construct = found->owner;
+            out.body = found->body;
+            if (found->condition.valid())
+                out.conditionTarget = found->condition;
         }
     }
     for (const auto &a : s.actions) {
         out.title = "Action " + std::to_string(a.id.value);
         if (a.kind != ir::ActionKind::Instruction) {
             out.structured = true;
-            out.description = "Structured authoring content. Expand to inspect its bodies and conditions.";
+            out.construct = a.id;
+            out.editableBranches = a.kind == ir::ActionKind::Conditional || a.kind == ir::ActionKind::Switch;
+            if (std::holds_alternative<SctActionId>(subject)) {
+                if (a.kind == ir::ActionKind::Conditional) {
+                    auto arm = std::ranges::find(s.arms, a.id, &ir::Arm::owner);
+                    if (arm != s.arms.end()) {
+                        if (arm->condition.valid())
+                            out.conditionTarget = arm->condition;
+                        out.body = arm->body;
+                    }
+                } else if (a.kind == ir::ActionKind::Loop) {
+                    auto loop = std::ranges::find(s.loops, a.id, &ir::Loop::owner);
+                    if (loop != s.loops.end()) {
+                        out.conditionTarget = loop->condition;
+                        out.body = loop->body;
+                    }
+                } else if (a.kind == ir::ActionKind::Switch) {
+                    auto sw = std::ranges::find(s.switches, a.id, &ir::Switch::owner);
+                    if (sw != s.switches.end())
+                        out.conditionTarget = sw->selector;
+                }
+            }
+            out.description = "Structured authoring content. Edit its condition from this header.";
             continue;
         }
         out.instruction = true;
@@ -158,16 +199,22 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                 out.schedule = schedule.value();
         }
         auto grouping = service_->assessFlow(revision, a.id, stop).get();
-        if (!grouping) return Result<Inspection>::failure(grouping.diagnostics());
+        if (!grouping)
+            return Result<Inspection>::failure(grouping.diagnostics());
         out.evidence = std::move(grouping.value().issue);
         const auto *schema = spice::sct::findSctOpcodeSchema(static_cast<std::uint16_t>(v.data));
-        out.title += " — " + (schema ? std::string(schema->semantic.mnemonic) : "Opcode " + std::to_string(v.data));
-        auto custom=std::ranges::find(s.catalog,static_cast<std::uint16_t>(v.data),&OpcodeCustomization::opcode);
-        if(custom!=s.catalog.end() && !custom->name.empty())out.title=custom->name+" (action "+std::to_string(a.id.value)+")";
+        out.title +=
+            " — " + (schema ? std::string(schema->semantic.mnemonic) : "Opcode " + std::to_string(v.data));
+        auto custom =
+            std::ranges::find(s.catalog, static_cast<std::uint16_t>(v.data), &OpcodeCustomization::opcode);
+        if (custom != s.catalog.end() && !custom->name.empty())
+            out.title = custom->name + " (action " + std::to_string(a.id.value) + ")";
         out.description = std::string("Refresh: ") + (v.detail & 1 ? "skipped" : "normal") +
                           "; scheduled: " + (v.detail & 2 ? "yes" : "no");
-        if(custom!=s.catalog.end() && !custom->description.empty())out.description=custom->description+"\n"+out.description;
-        if(custom!=s.catalog.end() && !custom->note.empty())out.description+="\n"+custom->note;
+        if (custom != s.catalog.end() && !custom->description.empty())
+            out.description = custom->description + "\n" + out.description;
+        if (custom != s.catalog.end() && !custom->note.empty())
+            out.description += "\n" + custom->note;
         auto add = [&](ir::ValueId p, std::optional<std::uint32_t> group) {
             const auto &value = s.payload.values.at(p.value);
             if (value.kind == ir::ValueKind::Parameter && value.count == 1) {
@@ -177,7 +224,8 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                     const auto &definition = schema->parameterCatalog[value.data];
                     const auto role = schema->semantic.parameterRoles[value.data];
                     if (!role.empty())
-                        row.name = std::string(role) + (group ? " (group " + std::to_string(*group) + ")" : "");
+                        row.name =
+                            std::string(role) + (group ? " (group " + std::to_string(*group) + ")" : "");
                     if (row.kind == ParameterKind::ReadOnly) {
                         if (definition.referenceKind == spice::sct::SctOpcodeReferenceKind::Instruction)
                             row.kind = ParameterKind::ActionTarget;
@@ -185,13 +233,17 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                             row.kind = ParameterKind::IndexedText;
                             for (unsigned n = 0; n < schema->textReferenceCount; ++n)
                                 if (schema->textReferences[n].parameterIndex == value.data)
-                                    row.kind = schema->textReferences[n].storage == spice::sct::SctTextStorage::Footer
+                                    row.kind = schema->textReferences[n].storage ==
+                                                       spice::sct::SctTextStorage::Footer
                                                    ? ParameterKind::FooterText
                                                    : ParameterKind::IndexedText;
                         }
                     }
                 }
-                if(custom!=s.catalog.end())for(auto &[index,name]:custom->parameters)if(index==row.key.index)row.name=name;
+                if (custom != s.catalog.end())
+                    for (auto &[index, name] : custom->parameters)
+                        if (index == row.key.index)
+                            row.name = name;
                 out.parameters.push_back(std::move(row));
             }
         };
@@ -203,6 +255,21 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                 ++group;
             } else
                 add(child, {});
+        }
+    }
+    if (out.conditionTarget) {
+        auto c = std::ranges::find(s.conditions, *out.conditionTarget, &ir::ConditionRegion::id);
+        if (c != s.conditions.end()) {
+            auto e = ir::ProgramValues::expression(s.payload, c->result);
+            if (e) {
+                out.description = SctExpressionLanguage::project(e.value()).text;
+                out.condition = e.value();
+            }
+            out.construct = c->owner;
+            if (std::holds_alternative<ir::ConditionId>(subject))
+                out.body = c->preparation;
+            out.description +=
+                "\nBefore check instructions run in order before this expression is evaluated.";
         }
     }
     if (!s.texts.empty())

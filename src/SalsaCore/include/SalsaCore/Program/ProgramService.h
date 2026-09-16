@@ -258,6 +258,9 @@ struct OutlineRow {
     std::string groupingIssue;
     std::optional<std::uint32_t> color;
     bool bookmarked = false;
+    std::optional<SctActionId> chain;
+    std::optional<ConditionId> condition;
+    std::optional<SctSequenceId> preparation;
 };
 struct OutlinePage {
     ServiceStatus status;

@@ -4,7 +4,7 @@ This is a source and wiring assessment against the editor before the whole-progr
 
 | Ledger | Reachable capability | Implementation / limit |
 | --- | --- | --- |
-| R01–R02 | Script tabs: Instructions / Semantic; View > Instruction inspector; Edit condition / branches, Instruction timing | Shared IDs and paged outline; SPICE import grouping. General full-value/repeated-group reconstruction still uses the advanced adapter below. |
+| R01–R02 | Script tabs: Instructions / Semantic; View > Instruction inspector; Edit condition, Add preparation instruction, Edit branches / cases, Instruction timing | Shared IDs and paged outline; SPICE import grouping. General full-value/repeated-group reconstruction still uses the advanced adapter below. |
 | R03–R04 | View > Text editor and preview; Edit > New string / Delete string | Detached drafts, Apply/Discard, typed references and supported text preview; not game rendering. |
 | R05–R06 | View > Navigator; Back / Forward; Authoring > Find variable uses | Explicit paged queries and stable navigation. Queries refresh on request. |
 | R07–R08 | Edit > Copy / Cut / Paste / Duplicate / Delete / Move selection; snippets; outline drag/drop | Selection fragments, explicit reference review, one-command history. |

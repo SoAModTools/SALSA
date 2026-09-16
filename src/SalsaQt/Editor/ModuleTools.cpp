@@ -102,7 +102,7 @@ void ModuleTools::editModule(ed::ModuleItem module) {
     auto *editing = new ScriptEditingActions(view, dialog);
     auto *productivity = new ProductivityActions(view, dialog);
     for (auto *a : {editing->insertAction(), editing->structureAction(), editing->editAction(),
-                    editing->timingAction()})
+                    editing->preparationAction(), editing->branchesAction(), editing->timingAction()})
         bar->addAction(a);
     bar->addAction(view->undoAction());
     bar->addAction(view->redoAction());
@@ -119,7 +119,10 @@ void ModuleTools::editModule(ed::ModuleItem module) {
     auto *inspector = new InstructionInspector(view, split);
     split->addWidget(inspector);
     layout->addWidget(split);
-    outline->editRequested = [editing] { editing->editAction()->trigger(); };
+    outline->editRequested = [editing] {
+        if (editing->editAction()->isEnabled()) editing->editAction()->trigger();
+        else editing->branchesAction()->trigger();
+    };
     bar->addAction(tr("Callers and dependencies…"), [this, dialog, module] {
         auto b = session_->backend();
         auto r = session_->revision();
