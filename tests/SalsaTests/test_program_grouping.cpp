@@ -212,6 +212,96 @@ TEST(ProgramGroupingTest, SwitchDefaultIsOptionalAcrossImportPersistenceAndOutpu
         service->shutdown().get();
     }
 }
+TEST(ProgramGroupingTest, ReturnGuardKeepsPrefixContinuationAndEditableIdentity) {
+    for (int mode = 0; mode != 3; ++mode) {
+        SCOPED_TRACE(mode); // Ordinary guard, external body entry, scheduled return.
+        sct::SctDocument source;
+        auto call = jump(3, 9);
+        call.opcode = 11;
+        sct::SctDocumentInstruction ret{sct::SctInstructionId{5}, 12, true};
+        if (mode == 2) ret.scheduledExpression = sct::SctExpressionFactory::encodedDecimalLiteral(1);
+        source.sections.push_back({sct::SctSectionId{1}, "init", sct::SctScriptSectionContent{{
+            {sct::SctInstructionId{1}, 125}, branch(2, 6), call,
+            {sct::SctInstructionId{4}, 125}, ret, {sct::SctInstructionId{6}, 125}}}});
+        source.sections.push_back({sct::SctSectionId{2}, "tail",
+            sct::SctScriptSectionContent{{{sct::SctInstructionId{7}, 12}}}});
+        source.sections.push_back({sct::SctSectionId{3}, "loop",
+            sct::SctScriptSectionContent{{{sct::SctInstructionId{8}, 12}}}});
+        source.sections.push_back({sct::SctSectionId{4}, "helper",
+            sct::SctScriptSectionContent{{{sct::SctInstructionId{9}, 12}}}});
+        if (mode == 1) {
+            auto external = jump(10, 4); external.opcode = 11;
+            source.sections.push_back({sct::SctSectionId{5}, "external",
+                sct::SctScriptSectionContent{{external, {sct::SctInstructionId{11}, 12}}}});
+        }
+        ir::ProgramBuilder builder({Project});
+        SctAuthoringBaseline baseline{{}, {Sha256Digest({})},
+            {AssetLocator::fromRelativePath("guard.sct").value(), 0, {Sha256Digest({})}},
+            {"20d9e32e-11c6-4088-a390-3b99624d219f"}};
+        ASSERT_TRUE(builder.appendImported(source, baseline, {}));
+        auto built = builder.finish(); ASSERT_TRUE(built) << messages(built.diagnostics());
+        const auto &p = *built.value();
+        const auto root = p.sections().front().body;
+        const auto guard = (*p.find(root)->order)[1];
+        EXPECT_EQ(p.find(p.find(root)->order->front())->sourceInstruction, 1u);
+        if (mode != 0) { EXPECT_EQ(p.find(guard)->kind, ir::ActionKind::Instruction); continue; }
+        ASSERT_EQ(p.find(guard)->kind, ir::ActionKind::Conditional);
+        ASSERT_EQ(p.find(root)->order->size(), 3u);
+        EXPECT_EQ(p.find(p.find(root)->order->back())->sourceInstruction, 6u);
+        ASSERT_EQ(p.arms(guard).size(), 1u);
+        const auto arm = p.arms(guard).front();
+        const auto body = *p.find(arm.body)->order;
+        ASSERT_EQ(body.size(), 3u);
+        EXPECT_EQ(p.find(body.back())->sourceInstruction, 5u);
+        auto encoded = ir::ProgramPersistence::encode(p); ASSERT_TRUE(encoded);
+        auto decoded = ir::ProgramPersistence::decode(encoded.value()); ASSERT_TRUE(decoded);
+        auto service = std::make_shared<ir::ProgramService>();
+        auto loaded = service->adopt({}, std::move(decoded.value().program)).get(); ASSERT_TRUE(loaded);
+        auto revision = loaded.value().current;
+        auto change = service->edit({revision, {ir::ReplaceCondition{arm.condition,
+            ir::ValueBuffer::expression(sct::SctExpressionFactory::encodedDecimalLiteral(1)).value()}}}).get();
+        ASSERT_TRUE(change); revision = change.value().status.current;
+        auto undone = service->undo(revision).get(); ASSERT_TRUE(undone);
+        auto redone = service->redo(undone.value().status.current).get(); ASSERT_TRUE(redone);
+        revision = redone.value().status.current;
+        auto cp = service->checkpoint(revision).get(); ASSERT_TRUE(cp);
+        EXPECT_EQ(*cp.value().program->find(arm.body)->order, body);
+        EXPECT_TRUE(service->assessFlow(revision, guard, {}).get().value().issue.empty());
+        ir::ProgramMaterializer materializer;
+        auto output = materializer.exportScript(cp.value(), revision,
+            cp.value().program->scripts().front().context.id,
+            {"ea3220aa-4c18-4eb2-bb98-0a72dc9c2e8c"},
+            sct::SctDocumentExportOptions{sct::SctPlatform::Dreamcast, sct::kSctShiftJisByte7FEncoding});
+        ASSERT_TRUE(output) << messages(output.diagnostics());
+        const auto &code = std::get<sct::SctScriptSectionContent>(output.value().materialized.document->sections.front().content).instructions;
+        std::vector<std::uint16_t> opcodes;
+        for (const auto &i : code) opcodes.push_back(i.opcode);
+        EXPECT_EQ(opcodes, (std::vector<std::uint16_t>{125, 0, 11, 125, 12, 125}));
+        EXPECT_EQ(std::get<sct::SctInstructionReference>(code[1].fixedParameters[1].value).target, code.back().id);
+        EXPECT_TRUE(code[4].skipRefresh);
+        EXPECT_EQ(output.value().materialized.document->sections[1].nameBytes, "tail");
+        // Reusing the materializer after changing Return must rebuild the arm exit.
+        ir::ValueBuffer ordinary;
+        ordinary.add(ir::ValueKind::Instruction, 125);
+        auto replaced = service->edit({revision, {ir::ReplaceInstruction{body.back(), ordinary}}}).get();
+        ASSERT_TRUE(replaced); revision = replaced.value().status.current;
+        cp = service->checkpoint(revision).get(); ASSERT_TRUE(cp);
+        auto changedOutput = materializer.materialize(cp.value(), revision,
+            cp.value().program->scripts().front().context.id, {"ea3220aa-4c18-4eb2-bb98-0a72dc9c2e8c"});
+        ASSERT_TRUE(changedOutput);
+        const auto &changedCode = std::get<sct::SctScriptSectionContent>(changedOutput.value().document->sections.front().content).instructions;
+        ASSERT_EQ(changedCode.size(), 7u);
+        EXPECT_EQ(changedCode[5].opcode, 10u);
+        auto restored = service->undo(revision).get(); ASSERT_TRUE(restored);
+        revision = restored.value().status.current;
+        cp = service->checkpoint(revision).get(); ASSERT_TRUE(cp);
+        auto restoredOutput = materializer.materialize(cp.value(), revision,
+            cp.value().program->scripts().front().context.id, {"ea3220aa-4c18-4eb2-bb98-0a72dc9c2e8c"});
+        ASSERT_TRUE(restoredOutput);
+        EXPECT_EQ(std::get<sct::SctScriptSectionContent>(restoredOutput.value().document->sections.front().content).instructions.size(), 6u);
+        service->shutdown().get();
+    }
+}
 TEST(ProgramGroupingTest, GroupsRemainAuthoritativeAcrossReferenceEditsAndEmptyBodyHistory) {
     Fixture f;
     auto original = f.tree(f.main);

@@ -130,6 +130,7 @@ void valueSignature(const Program &p, ValueId id, std::vector<std::uint64_t> &ou
     for (auto child : p.children(id))
         valueSignature(p, child, out);
 }
+bool fallsThrough(const Program &p, SctSequenceId id);
 std::vector<std::uint64_t> signature(const Program &p, const Action &a,
                                      const editor::LocalizedBlock *localized) {
     std::vector<std::uint64_t> out{static_cast<std::uint64_t>(a.kind)};
@@ -158,6 +159,8 @@ std::vector<std::uint64_t> signature(const Program &p, const Action &a,
             out.push_back(static_cast<std::uint32_t>(label));
         if (arm.condition.valid())
             condition(arm.condition);
+        if (a.kind == ActionKind::Conditional && !localized)
+            out.push_back(fallsThrough(p, arm.body)); // Terminal edits change generated arm exits.
     }
     if (const auto *loop = p.loop(a.id)) {
         out.insert(out.end(), {static_cast<std::uint64_t>(loop->kind), loop->initialize.value, loop->body.value,
@@ -197,6 +200,7 @@ bool fallsThrough(const Program &p, SctSequenceId id) {
         return false;
     if (a->kind == ActionKind::Instruction) {
         const auto *value = p.find(a->value);
+        if (value && (value->detail & 2)) return true; // Scheduling is not an immediate exit.
         const auto *schema = value ? sct::findSctOpcodeSchema(static_cast<std::uint16_t>(value->data)) : nullptr;
         return !schema || (schema->semantic.controlRole != sct::SctOpcodeControlRole::Jump &&
                            schema->semantic.controlRole != sct::SctOpcodeControlRole::Return);
@@ -345,7 +349,8 @@ Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> s
                 check(arm.condition,
                       i + 1 < arms.size() ? Label{LabelKind::Arm, arms[i + 1].id.value} : afterLabel(a.id), arm.id);
             expand(arm.body);
-            jump(afterLabel(a.id), arm.id, arm.body);
+            if (fallsThrough(p, arm.body))
+                jump(afterLabel(a.id), arm.id, arm.body);
         }
         break;
     }

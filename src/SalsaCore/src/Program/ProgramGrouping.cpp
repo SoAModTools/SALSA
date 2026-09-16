@@ -157,6 +157,101 @@ std::span<const TargetUse> incomingUses(const ProgramData &d, SctActionId target
     auto range = d.incomingRanges[at.index];
     return std::span(d.targetUses).subspan(range.first, range.count);
 }
+// A terminal true arm has no common postdominating instruction with the false
+// path. Use SPICE's block/edge facts to select the small guard, not the rest of
+// the section as a synthetic Else. This is only an import candidate: the result
+// becomes the same editable Conditional used by ordinary If/Else authoring.
+std::vector<sct::SctStructuredRegion> returnGuards(const sct::SctSectionStructure &shape,
+                                                 const sct::SctScriptSectionContent &code,
+                                                 const std::map<std::uint64_t, std::size_t> &position) {
+    using Flow = sct::SctControlFlowKind;
+    std::vector<sct::SctStructuredRegion> result;
+    std::vector<std::size_t> returnPositions;
+    for (const auto &block : shape.blocks)
+        for (const auto &edge : block.transfers)
+            if (edge.kind == Flow::Return) returnPositions.push_back(position.at(edge.sourceInstruction.value()));
+    std::ranges::sort(returnPositions);
+    for (const auto &header : shape.blocks) {
+        if (!header.reachable || header.instructions.empty()) continue;
+        const auto controller = header.instructions.back();
+        const auto begin = position.at(controller.value());
+        if (code.instructions[begin].scheduledExpression) continue;
+        const sct::SctStructuredControlTransfer *yes = nullptr, *no = nullptr;
+        for (const auto &edge : header.transfers) if (edge.sourceInstruction == controller) {
+            if (edge.kind == Flow::BranchTrue) yes = &edge;
+            if (edge.kind == Flow::BranchFalse) no = &edge;
+        }
+        if (!yes || !no || !yes->targetBlock || !no->targetBlock ||
+            yes->confidence != sct::SctSemanticConfidence::Known ||
+            no->confidence != sct::SctSemanticConfidence::Known) continue;
+        const auto first = position.at(yes->targetBlock->entryInstruction.value());
+        const auto end = position.at(no->targetBlock->entryInstruction.value());
+        if (first != begin + 1 || end <= first) continue;
+        const auto terminal = std::ranges::lower_bound(returnPositions, first);
+        if (terminal == returnPositions.end() || *terminal >= end) continue;
+        std::map<sct::SctBasicBlockId, const sct::SctStructuredBasicBlock *> body;
+        std::set<sct::SctInstructionId> instructions;
+        bool valid = true;
+        for (const auto &block : shape.blocks) {
+            auto at = position.at(block.id.entryInstruction.value());
+            if (at < first || at >= end) continue;
+            body.emplace(block.id, &block);
+            for (auto id : block.instructions) {
+                if (position.at(id.value()) >= end) valid = false;
+                instructions.insert(id);
+            }
+        }
+        if (!valid || instructions.size() != end - first) continue;
+        for (const auto &entry : shape.entryPoints)
+            if (body.contains(entry.block)) valid = false;
+        // Interior calls/branches from outside the arm must keep their original
+        // entry identity and prevent automatic ownership of the arm.
+        for (const auto &block : shape.blocks) if (!body.contains(block.id))
+            for (const auto &edge : block.transfers)
+                if (edge.targetInstruction && instructions.contains(*edge.targetInstruction) &&
+                    !(edge.sourceInstruction == controller && edge.kind == Flow::BranchTrue)) valid = false;
+        if (!valid) continue;
+        // Settle only blocks whose every local successor returns. Cycles, unknown
+        // transfers, scheduled control flow and exits into the continuation are
+        // deliberately left explicit; calls retain their normal local continuation.
+        std::set<sct::SctBasicBlockId> returns;
+        bool progress = true;
+        while (progress) {
+            progress = false;
+            for (const auto &[id, block] : body) {
+                if (returns.contains(id)) continue;
+                bool settled = true, exits = false;
+                for (const auto &edge : block->transfers) {
+                    if (edge.kind == Flow::Call) continue;
+                    if (edge.kind == Flow::Fallthrough && edge.targetBlock == id) continue;
+                    exits = true;
+                    if (edge.confidence != sct::SctSemanticConfidence::Known ||
+                        code.instructions[position.at(edge.sourceInstruction.value())].scheduledExpression) {
+                        settled = false; break;
+                    }
+                    if (edge.kind == Flow::Return) continue;
+                    if ((edge.kind != Flow::Fallthrough && edge.kind != Flow::Jump &&
+                         edge.kind != Flow::BranchTrue && edge.kind != Flow::BranchFalse) ||
+                        !edge.targetBlock || !returns.contains(*edge.targetBlock)) settled = false;
+                }
+                if (settled && exits) { returns.insert(id); progress = true; }
+            }
+        }
+        if (returns.size() != body.size() || body.empty()) continue;
+        sct::SctStructuredRegion guard;
+        guard.id = {shape.section, controller, sct::SctStructuredRegionKind::If};
+        guard.header = header.id;
+        guard.join = no->targetBlock; // False continuation, not a shared exit.
+        guard.members.push_back(header.id);
+        sct::SctStructuredArm arm;
+        arm.kind = sct::SctStructuredArmKind::Then;
+        arm.entry = yes->targetBlock;
+        for (const auto &[id, block] : body) { guard.members.push_back(id); arm.blocks.push_back(id); }
+        guard.arms.push_back(std::move(arm));
+        result.push_back(std::move(guard));
+    }
+    return result;
+}
 } // namespace
 ControlFlowIssues normalizeImportedGroups(ProgramData &d, const sct::SctDocument &document, const IdMap &ids,
                                           const std::map<std::uint64_t, SctSequenceId> &sections) {
@@ -187,18 +282,22 @@ ControlFlowIssues normalizeImportedGroups(ProgramData &d, const sct::SctDocument
         if (!shape)
             continue;
         auto diagnostics = project(*shape, code, ids);
-        // Children normalize before parents; physical IDs are used only during import.
-        std::vector<const sct::SctStructuredRegion *> regions;
-        for (const auto &region : shape->regions)
-            regions.push_back(&region);
-        std::stable_sort(regions.begin(), regions.end(),
-                         [](auto *a, auto *b) { return a->members.size() < b->members.size(); });
         std::map<sct::SctBasicBlockId, const sct::SctStructuredBasicBlock *> blocks;
         for (const auto &block : shape->blocks)
             blocks.emplace(block.id, &block);
         std::map<std::uint64_t, std::size_t> position;
         for (std::size_t i = 0; i < code.instructions.size(); ++i)
             position.emplace(code.instructions[i].id.value(), i);
+        auto guards = returnGuards(*shape, code, position);
+        // Children normalize before parents; physical IDs are used only during import.
+        std::vector<const sct::SctStructuredRegion *> regions;
+        for (const auto &region : shape->regions)
+            if (!std::ranges::any_of(guards, [&](const auto &guard) {
+                    return guard.id.headerInstruction == region.id.headerInstruction;
+                })) regions.push_back(&region);
+        for (const auto &guard : guards) regions.push_back(&guard);
+        std::stable_sort(regions.begin(), regions.end(),
+                         [](auto *a, auto *b) { return a->members.size() < b->members.size(); });
         auto action = [&](sct::SctInstructionId id) { return ids.at(id.value()); };
         auto edit = [&](SctActionId id) -> Action & {
             return *d.actions.find(d.directory.find(id.value).index);
@@ -234,11 +333,9 @@ ControlFlowIssues normalizeImportedGroups(ProgramData &d, const sct::SctDocument
                 std::size_t begin = position.at(instruction.id.value()), end = begin;
                 for (auto block : region->members)
                     for (auto id : blocks.at(block)->instructions) {
-                        // SPICE regions contain whole basic blocks. A switch's header
-                        // block can start with ordinary work before the selector.
-                        // That prefix is outside the cases and must execute regardless
-                        // of which case is selected (or whether any case matches).
-                        if (region->id.kind == K::Switch && position.at(id.value()) < begin)
+                        // Ordinary work before a branch stays outside its arms.
+                        // Loop headers have separate repeated-preparation semantics.
+                        if (region->id.kind != K::While && position.at(id.value()) < begin)
                             continue;
                         members.insert(action(id));
                         end = std::max(end, position.at(id.value()));
