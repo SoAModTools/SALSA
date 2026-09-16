@@ -22,6 +22,7 @@ struct OutlineRow {
     std::optional<SctActionId> chain;
     std::optional<program::ConditionId> condition;
     std::optional<SctSequenceId> preparation;
+    std::vector<SctSequenceId> supportingSequences;
 };
 struct OutlineRequest {
     Subject parent;
@@ -51,6 +52,10 @@ struct Parameter {
     std::optional<Subject> target;
     std::optional<spice::sct::SctCanonicalExpression> expression;
 };
+struct SupportingSequence {
+    SctSequenceId sequence;
+    std::string label, timing;
+};
 struct Inspection {
     Revision revision;
     Subject subject;
@@ -65,6 +70,9 @@ struct Inspection {
     std::optional<SctActionId> construct;
     std::optional<SctSequenceId> body;
     bool editableBranches = false;
+    std::vector<SupportingSequence> supportingSequences;
+    std::optional<Subject> supportingOwner;
+    std::optional<SctSequenceId> heldSequence;
 };
 struct ReplaceParameter {
     SctActionId action;
@@ -90,6 +98,7 @@ struct NavigationPath {
     Revision revision;
     SctScriptId script;
     std::vector<Subject> subjects;
+    std::optional<SctSequenceId> heldSequence;
 };
 struct TextDraft {
     Revision revision;

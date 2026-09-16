@@ -85,7 +85,7 @@ Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest re
             kind = *r.kind == ir::ActionKind::Instruction ? RowKind::Instruction : RowKind::Construct;
         out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind,
                             std::move(r.groupingIssue), r.color, r.bookmarked, r.chain, r.condition,
-                            r.preparation});
+                            r.preparation, r.supportingSequences});
     }
     return Result<OutlinePage>::success(std::move(out));
 }
@@ -285,6 +285,38 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
             out.editableBranches = false;
             out.body = block.body;
         }
+    // Supporting sequences are still ordinary owned IR sequences. Inspection
+    // exposes their identities; their contents are fetched through the same paged outline.
+    if (out.conditionTarget) {
+        auto c = std::ranges::find(s.conditions, *out.conditionTarget, &ir::ConditionRegion::id);
+        if (c != s.conditions.end()) {
+            std::string timing = "Runs when this check is reached, before evaluating the condition.";
+            auto loop = std::ranges::find(s.loops, c->owner, &ir::Loop::owner);
+            if (loop != s.loops.end()) {
+                timing = loop->kind == ir::LoopKind::DoWhile
+                    ? "Runs after the body, before every check, including the final false check."
+                    : "Runs before every check, including the first and final false check.";
+                if (loop->initialize.valid())
+                    out.supportingSequences.push_back({loop->initialize, "Initialize", "Runs once when entering the loop."});
+            }
+            out.supportingSequences.push_back({c->preparation, "Before check", std::move(timing)});
+            if (loop != s.loops.end() && loop->update.valid())
+                out.supportingSequences.push_back({loop->update, "Update", "Runs after normal body completion or Continue, before the next check."});
+            out.supportingOwner = subject;
+        }
+    }
+    auto location = service_->locate(revision, subject, true).get();
+    if (!location) return Result<Inspection>::failure(location.diagnostics());
+    if (location.value().heldSequence && !location.value().subjects.empty()) {
+        // Keep the outer holding construct visible while inspecting any depth
+        // inside it. Nested control flow is browsed normally within that sequence.
+        auto owner = location.value().subjects.back();
+        auto parent = inspect(revision, owner, stop);
+        if (!parent) return Result<Inspection>::failure(parent.diagnostics());
+        out.supportingOwner = owner;
+        out.supportingSequences = std::move(parent.value().supportingSequences);
+        out.heldSequence = location.value().heldSequence;
+    }
     return Result<Inspection>::success(std::move(out));
 }
 Result<Change> ProgramBackend::replaceParameter(Revision revision, ReplaceParameter edit, std::stop_token stop) {

@@ -83,6 +83,10 @@ void ScriptEditingActions::insert(bool preparation) {
         } else if (i.body)
             anchor = *i.body;
     }
+    insertInto(anchor);
+}
+void ScriptEditingActions::insertInto(ed::Subject anchor) {
+    if (!session_->backend() || session_->busy()) return;
     auto revision = session_->revision();
     auto catalog = session_->backend()->opcodes();
     QStringList choices;

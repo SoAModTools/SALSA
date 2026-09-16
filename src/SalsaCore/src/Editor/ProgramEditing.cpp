@@ -42,7 +42,7 @@ Result<NavigationPath> ProgramBackend::locate(Revision r, Subject subject, ViewM
     if (!p)
         return Result<NavigationPath>::failure(p.diagnostics());
     return Result<NavigationPath>::success(
-        {r, p.value().script, std::move(p.value().subjects)});
+        {r, p.value().script, std::move(p.value().subjects), p.value().heldSequence});
 }
 Result<BrowsePage> ProgramBackend::browse(Revision r, BrowseRequest query, std::stop_token stop) {
     return service_->browse(r, query, stop).get();

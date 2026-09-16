@@ -15,6 +15,7 @@ class ScriptEditingActions final : public QObject {
     QAction *preparationAction() const { return preparation_; }
     QAction *branchesAction() const { return branches_; }
     QAction *timingAction() const { return timing_; }
+    void insertInto(core::editor::Subject);
 
   private:
     void insert(bool preparation = false);

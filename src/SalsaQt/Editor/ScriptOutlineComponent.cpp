@@ -97,8 +97,15 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
         viewStates_[model_->mode() == ed::ViewMode::Semantic ? 1 : 0] = viewState(model_->mode());
         model_->setLanguage(session_->previewLanguage());
         if (script_.valid()) {
+            if (sequence_) {
+                QSignalBlocker selectionBlock(tree_->selectionModel());
+                model_->bind(session_->backend(), session_->revision(), *sequence_);
+                if (session_->inspection() && session_->inspection()->heldSequence == sequence_)
+                    reveal(session_->inspection()->subject);
+                return;
+            }
             model_->bind(session_->backend(), session_->revision(),
-                         module_ ? ed::Subject(*module_) : ed::Subject(script_));
+                         sequence_ ? ed::Subject(*sequence_) : module_ ? ed::Subject(*module_) : ed::Subject(script_));
             restoreSession();
         }
     });
@@ -115,6 +122,7 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     tree_->setColumnHidden(1, true);
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this] {
+        if (!restoring_ && !restoringSession_) cancelReveal();
         if (isVisible() && window()->isActiveWindow() && !restoring_ && !restoringSession_ &&
             selectionChanged)
             selectionChanged();
@@ -176,7 +184,19 @@ void ScriptOutlineComponent::bind(core::SctScriptId script) {
     script_ = script;
     refreshLanguages();
     model_->bind(session_->backend(), session_->revision(),
-                 module_ ? ed::Subject{*module_} : ed::Subject{script});
+                 sequence_ ? ed::Subject{*sequence_} : module_ ? ed::Subject{*module_} : ed::Subject{script});
+}
+void ScriptOutlineComponent::bindSequence(core::SctScriptId script, core::SctSequenceId sequence) {
+    QSignalBlocker selectionBlock(tree_->selectionModel());
+    ++navigationGeneration_;
+    restoring_ = false;
+    sequence_ = sequence;
+    script_ = script;
+    model_->setMode(ed::ViewMode::Instructions);
+    modes_->hide();
+    localization_->hide();
+    tree_->setHeaderHidden(true);
+    model_->bind(session_->backend(), session_->revision(), sequence);
 }
 void ScriptOutlineComponent::bindModule(core::SctScriptId script, core::SctModuleId module) {
     module_ = module;
@@ -280,9 +300,14 @@ void ScriptOutlineComponent::restoreSession(std::function<void()> ready) {
         }
         restoringSession_ = false;
         *next = {};
-        activate();
-        if (selectionChanged)
-            selectionChanged();
+        // A saved supporting instruction is represented by its containing
+        // header in this tree. Keep the precise subject selected in the inspector.
+        const bool heldCurrent = mode == ed::ViewMode::Semantic && state.current &&
+            session_->selection() == state.current && !model_->find(*state.current).isValid();
+        if (!heldCurrent) {
+            activate();
+            if (selectionChanged) selectionChanged();
+        }
         if (ready)
             ready();
     };
@@ -296,7 +321,8 @@ void ScriptOutlineComponent::activate() {
     if (restoring_ || restoringSession_ || !isVisible() || !window()->isActiveWindow())
         return;
     auto *row = model_->row(currentIndex());
-    session_->selectMany(selectedItems(), row ? std::optional(row->subject) : std::nullopt);
+    if (!row && sequence_) session_->select(*sequence_);
+    else session_->selectMany(selectedItems(), row ? std::optional(row->subject) : std::nullopt);
 }
 void ScriptOutlineComponent::restoreVisible() {
     if (!restoring_)
@@ -331,7 +357,8 @@ void ScriptOutlineComponent::restoreVisible() {
     if (!pending) {
         restoring_ = false;
         block.unblock();
-        activate();
+        // Refreshing the visible parent must not replace an inspector selection.
+        if (session_->selection() && model_->find(*session_->selection()).isValid()) activate();
     }
 }
 void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> complete) {
@@ -346,7 +373,7 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
     }
     auto *watcher = new QFutureWatcher<core::Result<ed::NavigationPath>>(this);
     connect(watcher, &QFutureWatcherBase::finished, this,
-            [this, watcher, revision, generation, complete = std::move(complete)]() mutable {
+            [this, watcher, revision, generation, subject, complete = std::move(complete)]() mutable {
                 auto result = watcher->result();
                 watcher->deleteLater();
                 if (!result || revision != session_->revision() || generation != navigationGeneration_) {
@@ -361,7 +388,7 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
                 auto *timer = new QTimer(this);
                 timer->setInterval(16);
                 connect(timer, &QTimer::timeout, this,
-                        [this, timer, path = std::move(path), revision, generation, at = std::size_t{1},
+                        [this, timer, path = std::move(path), revision, generation, subject, at = std::size_t{1},
                          parent = QModelIndex{}, complete = std::move(complete)]() mutable {
                             auto finish = [&] {
                                 timer->stop();
@@ -385,7 +412,8 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
                                 }
                                 scrollTo(parent);
                                 selectionBlock.unblock();
-                                activate();
+                                if (path.heldSequence || sequence_) session_->select(subject);
+                                else activate();
                                 finish();
                                 return;
                             }
@@ -407,8 +435,26 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
                         });
                 timer->start();
             });
-    watcher->setFuture(QtConcurrent::run([backend, revision, subject, mode, module = module_] {
+    watcher->setFuture(QtConcurrent::run([backend, revision, subject, mode, module = module_, sequence = sequence_] {
         auto located = backend->locate(revision, subject, mode);
+        if (located && sequence) {
+            auto ancestry = backend->locate(revision, *sequence, mode);
+            if (!ancestry) return core::Result<ed::NavigationPath>::failure(ancestry.diagnostics());
+            auto prefix = ancestry.value().subjects;
+            prefix.pop_back();
+            auto path = located.value();
+            if (prefix.size() > path.subjects.size() ||
+                !std::equal(prefix.begin(), prefix.end(), path.subjects.begin()))
+                return core::Result<ed::NavigationPath>::failure(
+                    {{core::DiagnosticSeverity::Info, core::DiagnosticCode::InvalidSctAuthoringProject,
+                      "This item is outside the inspected sequence."}});
+            auto start = prefix.size();
+            if (start < path.subjects.size() && path.subjects[start] == ed::Subject(*sequence)) ++start;
+            std::vector<ed::Subject> scoped{*sequence};
+            scoped.insert(scoped.end(), path.subjects.begin() + start, path.subjects.end());
+            path.subjects = std::move(scoped);
+            return core::Result<ed::NavigationPath>::success(std::move(path));
+        }
         if (!located || !module)
             return located;
         auto detail = backend->module(revision, *module);
@@ -449,7 +495,7 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
 
 namespace salsa::qt {
 void ScriptOutlineComponent::refreshLanguages() {
-    if (!script_.valid() || !session_->backend())
+    if (sequence_ || !script_.valid() || !session_->backend())
         return;
     auto b = session_->backend();
     auto r = session_->revision();

@@ -192,6 +192,10 @@ void ProgramOutlineModel::resetChildren(std::size_t n) {
 }
 void ProgramOutlineModel::apply(const ir::Change &change) {
     revision_ = change.status.current;
+    if (!nodes_.empty())
+        if (auto *sequence = std::get_if<core::SctSequenceId>(&nodes_[0].row.subject))
+            if (std::ranges::find(change.sequences, *sequence) != change.sequences.end())
+                resetChildren(0);
     if (!nodes_.empty() && std::holds_alternative<core::SctModuleId>(nodes_[0].row.subject) &&
         change.presentationChanged) {
         resetChildren(0);
@@ -221,7 +225,8 @@ void ProgramOutlineModel::apply(const ir::Change &change) {
         std::vector<std::size_t> affected;
         for (std::size_t n = 1; n < nodes_.size(); ++n)
             if (nodes_[n].live && nodes_[n].fetched &&
-                (!std::holds_alternative<core::SctActionId>(nodes_[n].row.subject) || nodes_[n].row.chain) &&
+                (!std::holds_alternative<core::SctActionId>(nodes_[n].row.subject) || nodes_[n].row.chain ||
+                 nodes_[n].row.condition) &&
                 std::ranges::find(change.projectionSequences, nodes_[n].row.sequence) !=
                     change.projectionSequences.end())
                 affected.push_back(n);
@@ -235,7 +240,8 @@ void ProgramOutlineModel::apply(const ir::Change &change) {
         if (!node.live)
             continue;
         const bool sequenceContainer =
-            !std::holds_alternative<core::SctActionId>(node.row.subject) || node.row.chain;
+            !std::holds_alternative<core::SctActionId>(node.row.subject) || node.row.chain ||
+            (mode_ == ir::ViewMode::Semantic && node.row.condition);
         if (sequenceContainer && node.fetched &&
             std::ranges::find(change.sequences, node.row.sequence) != change.sequences.end())
             orders.push_back(n);
@@ -248,6 +254,8 @@ void ProgramOutlineModel::apply(const ir::Change &change) {
                 changed |=
                     node.row.preparation &&
                     std::ranges::find(change.sequences, *node.row.preparation) != change.sequences.end();
+                for (auto sequence : node.row.supportingSequences)
+                    changed |= std::ranges::find(change.sequences, sequence) != change.sequences.end();
                 if constexpr (std::is_same_v<T, core::SctActionId>)
                     changed |= std::ranges::find(change.actions, id) != change.actions.end();
                 else if constexpr (std::is_same_v<T, core::program::SectionId>)

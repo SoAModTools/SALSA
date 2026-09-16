@@ -12,6 +12,7 @@ class ScriptOutlineComponent final : public QWidget {
     ProgramOutlineModel *outlineModel() const { return model_; }
     void bind(core::SctScriptId);
     void bindModule(core::SctScriptId, core::SctModuleId);
+    void bindSequence(core::SctScriptId, core::SctSequenceId);
     std::vector<core::editor::Subject> selectedItems() const;
     core::editor::OutlineViewState viewState(core::editor::ViewMode) const;
     void setViewStates(core::editor::OutlineViewState instructions, core::editor::OutlineViewState semantic);
@@ -19,6 +20,7 @@ class ScriptOutlineComponent final : public QWidget {
     void activate();
     void setSemantic(bool);
     void reveal(core::editor::Subject, std::function<void()> = {});
+    void cancelReveal() { ++navigationGeneration_; }
     QModelIndex currentIndex() const;
     void setCurrentIndex(const QModelIndex &);
     void scrollTo(const QModelIndex &);
@@ -34,6 +36,7 @@ class ScriptOutlineComponent final : public QWidget {
     void refreshLanguages();
     core::SctScriptId script_;
     std::optional<core::SctModuleId> module_;
+    std::optional<core::SctSequenceId> sequence_;
     std::uint64_t navigationGeneration_ = 0, sessionRestoreGeneration_ = 0;
     bool restoring_ = false, restoringSession_ = false;
     core::editor::OutlineViewState viewStates_[2];

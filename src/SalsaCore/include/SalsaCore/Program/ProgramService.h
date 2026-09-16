@@ -262,6 +262,7 @@ struct OutlineRow {
     std::optional<SctActionId> chain;
     std::optional<ConditionId> condition;
     std::optional<SctSequenceId> preparation;
+    std::vector<SctSequenceId> supportingSequences;
 };
 struct OutlinePage {
     ServiceStatus status;
@@ -274,7 +275,13 @@ struct OutlinePage {
 struct FlowAssessment {
     std::string issue;
 };
-struct NavigationPath { ServiceStatus status; SctScriptId script; std::vector<EditorSubject> subjects; };
+struct NavigationPath {
+    ServiceStatus status;
+    SctScriptId script;
+    std::vector<EditorSubject> subjects;
+    // In Semantic mode the visible path ends at the owner of this inspector sequence.
+    std::optional<SctSequenceId> heldSequence;
+};
 // Owns only the selected closure. Safe across edits, maintenance and shutdown.
 // Sequence orders may contain IDs outside an explicit action selection.
 struct ReadScope {

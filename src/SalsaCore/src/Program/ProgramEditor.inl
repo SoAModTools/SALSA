@@ -91,8 +91,16 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     }
                     row.label += " " + text;
                     auto *prep = d.sequence(c->preparation);
-                    if (prep && !prep->order->empty()) row.label += " [" + std::to_string(prep->order->size()) + " before check]";
+                    if (prep && !prep->order->empty()) row.label += " [" + std::to_string(prep->order->size()) + " instructions before check]";
                     row.preparation = c->preparation;
+                }
+                if (request.semantic) {
+                    for (auto sequence : row.supportingSequences) {
+                        const auto *s = d.sequence(sequence);
+                        if (s && !s->order->empty())
+                            row.label += " [" + std::to_string(s->order->size()) +
+                                (s->role == SequenceRole::LoopInitialize ? " initialize instructions]" : " update instructions]");
+                    }
                 }
                 out.rows.push_back(std::move(row));
             }
@@ -206,9 +214,13 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     row.chain = id;
                     row.condition = first.condition;
                     row.sequence = first.body;
-                } else if (a->kind == ActionKind::Loop)
+                } else if (a->kind == ActionKind::Loop) {
                     row.condition = d.loops.at(a->detail).condition;
-                else if (a->kind == ActionKind::Switch)
+                    const auto &loop = d.loops.at(a->detail);
+                    row.sequence = loop.body;
+                    if (loop.initialize.valid()) row.supportingSequences.push_back(loop.initialize);
+                    if (loop.update.valid()) row.supportingSequences.push_back(loop.update);
+                } else if (a->kind == ActionKind::Switch)
                     row.condition = d.switches.at(a->detail).selector;
             }
             append(std::move(row));
@@ -265,7 +277,7 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
             require(c != nullptr, "Missing outline condition");
             const auto *seq = d.sequence(c->preparation);
             require(seq != nullptr, "Missing condition preparation");
-            if (request.semantic && seq->order->empty()) return;
+            if (request.semantic) return;
             append({id, c->preparation, request.semantic ? "Before check" : "Condition", true});
         };
         std::visit(
@@ -408,13 +420,14 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                         }
                     } else if (a->kind == ActionKind::Loop) {
                         const auto &l = d.loops.at(a->detail);
-                        bodyRow(l.initialize, "Initialize");
-                        if (l.kind != LoopKind::DoWhile)
-                            condition(l.condition);
-                        bodyRow(l.body, "Body");
-                        bodyRow(l.update, "Update");
-                        if (l.kind == LoopKind::DoWhile)
-                            condition(l.condition);
+                        if (request.semantic) sequence(l.body);
+                        else {
+                            bodyRow(l.initialize, "Initialize");
+                            if (l.kind != LoopKind::DoWhile) condition(l.condition);
+                            bodyRow(l.body, "Body");
+                            bodyRow(l.update, "Update");
+                            if (l.kind == LoopKind::DoWhile) condition(l.condition);
+                        }
                     }
                 } else if constexpr (std::is_same_v<T, ArmId>) {
                     auto *arm = d.lookup(id.value, EntityKind::Arm, d.arms);
@@ -555,7 +568,16 @@ std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, Ed
                         }
                         if (auto id = std::get_if<ConditionId>(&item)) {
                             auto *c = d.lookup(id->value, EntityKind::Condition, d.conditions);
-                            if (d.sequence(c->preparation)->order->empty()) continue;
+                            out.heldSequence = c->preparation;
+                            break;
+                        }
+                        if (auto id = std::get_if<SctSequenceId>(&item)) {
+                            auto *s = d.sequence(*id);
+                            if (s->role == SequenceRole::LoopBody) continue;
+                            if (s->role == SequenceRole::LoopInitialize || s->role == SequenceRole::LoopUpdate) {
+                                out.heldSequence = *id;
+                                break;
+                            }
                         }
                         visible.push_back(item);
                     }

@@ -1076,9 +1076,10 @@ TEST(EditorBackendTest, CompactConditionsKeepBranchIdentityAndPreparationEditabl
     auto preparation = backend.execute(revision, editor::InsertOpcode{checks[1], 16});
     ASSERT_TRUE(preparation) << messages(preparation.diagnostics()); revision = preparation.value().status.current;
     auto prepRows = backend.outline(revision, {second, 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(prepRows);
-    ASSERT_EQ(prepRows.value().rows.size(), 1u);
-    EXPECT_EQ(prepRows.value().rows[0].label, "Before check");
-    EXPECT_EQ(prepRows.value().rows[0].subject, editor::Subject(checks[1]));
+    EXPECT_TRUE(prepRows.value().rows.empty());
+    inspected = backend.inspect(revision, second); ASSERT_TRUE(inspected);
+    ASSERT_EQ(inspected.value().supportingSequences.size(), 1u);
+    auto held = inspected.value().supportingSequences.front().sequence;
     auto instructions = backend.outline(revision, {checks[1], 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(instructions);
     ASSERT_EQ(instructions.value().rows.size(), 1u);
     auto firstPrep = instructions.value().rows[0].subject;
@@ -1087,9 +1088,14 @@ TEST(EditorBackendTest, CompactConditionsKeepBranchIdentityAndPreparationEditabl
     instructions = backend.outline(revision, {checks[1], 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(instructions);
     ASSERT_EQ(instructions.value().rows.size(), 2u); EXPECT_EQ(instructions.value().rows[0].subject, firstPrep);
     page = backend.outline(revision, {section, 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(page);
-    EXPECT_EQ(page.value().rows[1].label, "Else If BitVar[123] [2 before check]");
+    EXPECT_EQ(page.value().rows[1].label, "Else If BitVar[123] [2 instructions before check]");
     path = backend.locate(revision, firstPrep, editor::ViewMode::Semantic); ASSERT_TRUE(path);
-    EXPECT_EQ(path.value().subjects, (std::vector<editor::Subject>{script, section, second, checks[1], firstPrep}));
+    EXPECT_EQ(path.value().subjects, (std::vector<editor::Subject>{script, section, second}));
+    EXPECT_EQ(path.value().heldSequence, held);
+    auto heldInspection = backend.inspect(revision, firstPrep); ASSERT_TRUE(heldInspection);
+    EXPECT_EQ(heldInspection.value().supportingOwner, second);
+    EXPECT_EQ(heldInspection.value().heldSequence, held);
+    EXPECT_TRUE(heldInspection.value().instruction);
     for (int n = 0; n < 2; ++n) {
         auto undo = backend.history(revision, false); ASSERT_TRUE(undo); revision = undo.value().status.current;
     }
@@ -1131,16 +1137,81 @@ TEST(EditorBackendTest, LoopAndSwitchHeadersExposeExactConditionsWithoutEmptyPre
     auto inspect = backend.inspect(revision, loop); ASSERT_TRUE(inspect);
     EXPECT_EQ(inspect.value().conditionTarget, condition); EXPECT_TRUE(inspect.value().body);
     auto loopRows = backend.outline(revision, {loop, 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(loopRows);
-    ASSERT_EQ(loopRows.value().rows.size(), 1u); EXPECT_EQ(loopRows.value().rows[0].label, "Body");
+    EXPECT_TRUE(loopRows.value().rows.empty());
+    ASSERT_EQ(inspect.value().supportingSequences.size(), 1u);
     auto caseRows = backend.outline(revision, {sw, 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(caseRows);
     ASSERT_EQ(caseRows.value().rows.size(), 1u); EXPECT_EQ(caseRows.value().rows[0].label, "Case 1 Default");
     auto prep = backend.execute(revision, editor::InsertOpcode{condition, 16}); ASSERT_TRUE(prep);
     revision = prep.value().status.current;
     loopRows = backend.outline(revision, {loop, 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(loopRows);
-    ASSERT_EQ(loopRows.value().rows.size(), 2u); EXPECT_EQ(loopRows.value().rows[0].label, "Before check");
-    EXPECT_EQ(loopRows.value().rows[1].label, "Body");
+    EXPECT_TRUE(loopRows.value().rows.empty());
+    inspect = backend.inspect(revision, loop); ASSERT_TRUE(inspect);
+    auto held = inspect.value().supportingSequences.front().sequence;
+    auto heldRows = backend.outline(revision, {held, 0, 128, editor::ViewMode::Instructions}); ASSERT_TRUE(heldRows);
+    ASSERT_EQ(heldRows.value().rows.size(), 1u);
+    auto path = backend.locate(revision, heldRows.value().rows.front().subject, editor::ViewMode::Semantic);
+    ASSERT_TRUE(path); EXPECT_EQ(path.value().heldSequence, held);
+    EXPECT_EQ(path.value().subjects.back(), editor::Subject(loop));
 }
 
+TEST(EditorBackendTest, SupportingLoopPhasesKeepNestedNavigationAndLocalHistory) {
+    for (auto kind : {ir::LoopKind::While, ir::LoopKind::DoWhile, ir::LoopKind::For}) {
+        ir::ProgramBuilder builder({Project});
+        auto script = builder.importedScript(baseline(), {}).value();
+        auto section = builder.section({{}, script, "loops"}).value();
+        auto value = builder.expression(*sct::SctExpressionFactory::bitVariable(121).expression).value();
+        auto loop = builder.loop(builder.sectionBody(section), kind, value).value();
+        auto detail = *builder.loop(loop);
+        auto prep = builder.conditionPreparation(detail.condition);
+        auto nested = builder.conditional(prep, std::array{value}).value();
+        auto leaf = builder.instruction(builder.branchBodies(nested).front(),
+                                       builder.value(ir::ValueKind::Instruction, 16).value()).value();
+        auto bodyAction = builder.instruction(detail.body,
+                                             builder.value(ir::ValueKind::Instruction, 16).value()).value();
+        auto built = builder.finish(); ASSERT_TRUE(built);
+        auto service = std::make_shared<ir::ProgramService>();
+        auto opened = service->adopt({}, std::move(built).takeValue()).get(); ASSERT_TRUE(opened);
+        auto revision = opened.value().current;
+        editor::ProgramBackend backend(service);
+        auto rows = backend.outline(revision, {loop, 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(rows);
+        ASSERT_EQ(rows.value().rows.size(), 1u);
+        EXPECT_EQ(rows.value().rows.front().subject, editor::Subject(bodyAction));
+        auto bodyPath = backend.locate(revision, bodyAction, editor::ViewMode::Semantic); ASSERT_TRUE(bodyPath);
+        EXPECT_FALSE(bodyPath.value().heldSequence);
+        EXPECT_EQ(bodyPath.value().subjects, (std::vector<editor::Subject>{script, section, loop, bodyAction}));
+        auto leafPath = backend.locate(revision, leaf, editor::ViewMode::Semantic); ASSERT_TRUE(leafPath);
+        EXPECT_EQ(leafPath.value().subjects, (std::vector<editor::Subject>{script, section, loop}));
+        EXPECT_EQ(leafPath.value().heldSequence, prep);
+        auto raw = backend.locate(revision, leaf, editor::ViewMode::Instructions); ASSERT_TRUE(raw);
+        EXPECT_EQ(raw.value().subjects.back(), editor::Subject(leaf));
+        EXPECT_FALSE(raw.value().heldSequence);
+        auto inspected = backend.inspect(revision, leaf); ASSERT_TRUE(inspected) << messages(inspected.diagnostics());
+        EXPECT_TRUE(inspected.value().instruction);
+        EXPECT_EQ(inspected.value().supportingOwner, editor::Subject(loop));
+        EXPECT_EQ(inspected.value().heldSequence, prep);
+        ASSERT_EQ(inspected.value().supportingSequences.size(), kind == ir::LoopKind::For ? 3u : 1u);
+        if (kind == ir::LoopKind::For) {
+            EXPECT_EQ(inspected.value().supportingSequences[0].sequence, detail.initialize);
+            EXPECT_EQ(inspected.value().supportingSequences[2].sequence, detail.update);
+            auto edit = backend.execute(revision, editor::InsertOpcode{detail.update, 16}); ASSERT_TRUE(edit);
+            revision = edit.value().status.current;
+            auto phase = backend.outline(revision, {detail.update, 0, 128}); ASSERT_TRUE(phase);
+            ASSERT_EQ(phase.value().rows.size(), 1u);
+            auto added = phase.value().rows.front().subject;
+            auto path = backend.locate(revision, added, editor::ViewMode::Semantic); ASSERT_TRUE(path);
+            EXPECT_EQ(path.value().heldSequence, detail.update);
+            auto header = backend.outline(revision, {section, 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(header);
+            EXPECT_NE(header.value().rows.front().label.find("1 update instructions"), std::string::npos);
+            auto undo = backend.history(revision, false); ASSERT_TRUE(undo);
+            revision = undo.value().status.current;
+            phase = backend.outline(revision, {detail.update, 0, 128}); ASSERT_TRUE(phase);
+            EXPECT_TRUE(phase.value().rows.empty());
+            auto redo = backend.history(revision, true); ASSERT_TRUE(redo);
+            phase = backend.outline(redo.value().status.current, {detail.update, 0, 128}); ASSERT_TRUE(phase);
+            EXPECT_EQ(phase.value().rows.front().subject, added);
+        }
+    }
+}
 TEST(EditorProductivityTest, FragmentsRemapSelectedReferencesAndRetainEmptyGroups) {
     Fixture f;
     editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service, [](auto *) {}));

@@ -2,6 +2,7 @@
 #include "Editor/EditorQueryWidget.h"
 #include "Editor/EditorSessionPresenter.h"
 #include "Editor/ScriptEditingActions.h"
+#include "Editor/SupportingSequenceEditor.h"
 #include <QAction>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -32,6 +33,7 @@ InstructionInspector::InstructionInspector(EditorSessionPresenter *session, QWid
     auto *toolbar = new QToolBar(this);
     toolbar->addAction(edit_);
     layout->addWidget(toolbar);
+    layout->addWidget(new SupportingSequenceEditor(session, this), 1);
     follow_ = toolbar->addAction(tr("Follow reference"));
     connect(follow_, &QAction::triggered, this, [this] {
         const auto &i = session_->inspection();
@@ -65,6 +67,7 @@ void InstructionInspector::refresh() {
         if (parameters_->rowCount())
             parameters_->selectRow(std::clamp(selected, 0, parameters_->rowCount() - 1));
     }
+    parameters_->setVisible(parameters_->rowCount() != 0);
     availability();
 }
 void InstructionInspector::availability() {
