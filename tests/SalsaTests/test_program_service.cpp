@@ -90,6 +90,62 @@ struct Fixture {
     }
     ~Fixture() { service.shutdown().get(); }
 };
+TEST(EditorBackendTest, SemanticStringsUseExistingGroupMarkersAndStableNavigation) {
+    ir::ProgramBuilder builder({Project});
+    auto script = builder.importedScript(baseline(), {}).value();
+    auto indexed = [&](const char *name) {
+        auto text = builder.textEntity({{}, script, builder.text(ir::ValueKind::PlainText, name).value(),
+                                       sct::SctTextKind::PlainString, false}).value();
+        auto preamble = builder.value(ir::ValueKind::Words).value();
+        auto content = builder.value(ir::ValueKind::IndexedSection, text.value, 0, std::span(&preamble, 1)).value();
+        auto section = builder.section({{}, script, name, {}, content}).value();
+        return std::pair(section, text);
+    };
+    auto marker = [&](const char *name) {
+        return builder.section({{}, script, name, {}, builder.value(ir::ValueKind::StringGroup).value()}).value();
+    };
+    auto unmarked = indexed("unmarked");
+    auto groupA = marker("strings_A");
+    auto a = indexed("a"), b = indexed("b");
+    auto empty = marker("empty");
+    auto groupB = marker("strings_B");
+    auto c = indexed("c");
+    auto code = builder.section({{}, script, "code"}).value();
+    auto trailing = indexed("after_code");
+    auto footer = builder.textEntity({{},script,builder.text(ir::ValueKind::PlainText,"debug").value(),sct::SctTextKind::PlainString,true}).value();
+    auto order = builder.scriptSections(script);
+    auto program = builder.finish();ASSERT_TRUE(program)<<messages(program.diagnostics());
+    auto service = std::make_shared<ir::ProgramService>();
+    auto opened = service->adopt({},std::move(program).takeValue()).get();ASSERT_TRUE(opened);
+    auto revision = opened.value().current;
+    editor::ProgramBackend backend(service);
+    auto root = backend.outline(revision,{script,0,128,editor::ViewMode::Semantic},{});ASSERT_TRUE(root);
+    ASSERT_EQ(root.value().rows.size(),7u);
+    EXPECT_EQ(root.value().rows[0].subject,editor::Subject(unmarked.first));
+    EXPECT_EQ(root.value().rows[1].subject,editor::Subject(groupA));
+    EXPECT_TRUE(root.value().rows[1].expandable);EXPECT_TRUE(root.value().rows[2].expandable);
+    EXPECT_EQ(root.value().rows.back().subject,editor::Subject(footer));
+    auto members = backend.outline(revision,{groupA,1,1,editor::ViewMode::Semantic},{});ASSERT_TRUE(members);
+    EXPECT_EQ(members.value().total,2u);ASSERT_EQ(members.value().rows.size(),1u);
+    EXPECT_EQ(members.value().rows.front().subject,editor::Subject(b.first));
+    EXPECT_EQ(backend.outline(revision,{empty,0,128,editor::ViewMode::Semantic},{}).value().total,0u);
+    auto flat = backend.outline(revision,{script,0,128,editor::ViewMode::Instructions},{});ASSERT_TRUE(flat);
+    EXPECT_EQ(flat.value().total,order.size()+1);
+    auto path = backend.locate(revision,b.second,editor::ViewMode::Semantic);ASSERT_TRUE(path);
+    EXPECT_EQ(path.value().subjects,(std::vector<editor::Subject>{script,groupA,b.first}));
+    EXPECT_EQ(backend.locate(revision,b.second,editor::ViewMode::Instructions).value().subjects,
+              (std::vector<editor::Subject>{script,b.first}));
+    EXPECT_EQ(backend.inspect(revision,b.first,{}).value().text,b.second);
+    EXPECT_EQ(backend.locate(revision,trailing.second,editor::ViewMode::Semantic).value().subjects,
+              (std::vector<editor::Subject>{script,trailing.first}));
+    std::erase(order,b.first);order.insert(std::ranges::find(order,c.first),b.first);
+    auto moved = service->edit({revision,{ir::ReorderSections{script,order}}}).get();ASSERT_TRUE(moved);
+    EXPECT_EQ(backend.locate(moved.value().status.current,b.second,editor::ViewMode::Semantic).value().subjects,
+              (std::vector<editor::Subject>{script,groupB,b.first}));
+    auto undone=service->undo(moved.value().status.current).get();ASSERT_TRUE(undone);
+    EXPECT_EQ(backend.locate(undone.value().status.current,b.second,editor::ViewMode::Semantic).value().subjects,
+              (std::vector<editor::Subject>{script,groupA,b.first}));
+}
 TEST(ProgramServiceTest, EditorPagesAndSelectedValuesRemainScoped) {
     Fixture f;
     auto page = f.service.outline(f.revision, {f.section, 1, 2}).get();

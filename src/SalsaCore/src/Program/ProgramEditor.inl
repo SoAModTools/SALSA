@@ -1,5 +1,28 @@
 // Included by ProgramService.cpp inside the program namespace.
 // Only direct children are visited. Payloads and descendant bodies stay resident.
+namespace {
+bool sectionContentIs(const ProgramData &data, const Section &section, ValueKind kind) {
+    const auto *value = data.values.find(section.content.value);
+    return !section.body.valid() && value && value->kind == kind;
+}
+// The existing marker is the group identity. As in SPICE's current string-group
+// index, it owns the following contiguous indexed sections, stopping at any
+// other section. This is an outline over authored order, not a second authority.
+std::optional<SectionId> indexedStringParent(const ProgramData &data, const Section &section) {
+    if (!sectionContentIs(data, section, ValueKind::IndexedSection)) return {};
+    auto *script = data.lookup(section.script.value, EntityKind::Script, data.scripts);
+    require(script, "Missing string-group script");
+    std::optional<SectionId> marker;
+    for (auto id : script->sections) {
+        if (id == section.id) return marker;
+        auto *current = data.lookup(id.value, EntityKind::Section, data.sections);
+        require(current, "Missing string-group section");
+        if (sectionContentIs(data, *current, ValueKind::StringGroup)) marker = id;
+        else if (!sectionContentIs(data, *current, ValueKind::IndexedSection)) marker.reset();
+    }
+    return {};
+}
+} // namespace
 std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequest request, std::stop_token stop) {
     return control_->submit<OutlinePage>([r, request = std::move(request), stop](auto &owner) {
         const auto started = std::chrono::steady_clock::now();
@@ -108,17 +131,34 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     auto *script = d.lookup(id.value, EntityKind::Script, d.scripts);
                     require(script != nullptr, "Missing outline script");
                     out.script = id;
-                    out.total = script->sections.size() + script->supplementaryText.size();
+                    std::vector<SectionId> semanticSections;
+                    std::span<const SectionId> sections = script->sections;
+                    if (request.semantic) {
+                        semanticSections.reserve(script->sections.size());
+                        bool inStringGroup = false;
+                        for (auto sid : script->sections) {
+                            stopped(stop);
+                            auto *section = d.lookup(sid.value, EntityKind::Section, d.sections);
+                            require(section, "Missing outline section");
+                            if (sectionContentIs(d, *section, ValueKind::IndexedSection) && inStringGroup)
+                                continue;
+                            semanticSections.push_back(sid);
+                            inStringGroup = sectionContentIs(d, *section, ValueKind::StringGroup);
+                        }
+                        sections = semanticSections;
+                    }
+                    out.total = sections.size() + script->supplementaryText.size();
                     auto total = out.total;
                     out.total = request.offset;
                     for (auto at = request.offset; at < std::min(total, request.offset + request.limit); ++at) {
                         stopped(stop);
-                        if (at < script->sections.size()) {
-                            auto *s = d.lookup(script->sections[at].value, EntityKind::Section, d.sections);
+                        if (at < sections.size()) {
+                            auto *s = d.lookup(sections[at].value, EntityKind::Section, d.sections);
                             require(s != nullptr, "Missing outline section");
-                            append({s->id, s->body, s->name, s->body.valid()});
+                            append({s->id, s->body, s->name, s->body.valid() ||
+                                (request.semantic && sectionContentIs(d, *s, ValueKind::StringGroup))});
                         } else {
-                            auto *t = d.lookup(script->supplementaryText[at - script->sections.size()].value,
+                            auto *t = d.lookup(script->supplementaryText[at - sections.size()].value,
                                                EntityKind::Text, d.texts);
                             require(t != nullptr, "Missing footer text");
                             append(
@@ -138,6 +178,23 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     out.script = s->script;
                     if (s->body.valid())
                         sequence(s->body);
+                    else if (request.semantic && sectionContentIs(d, *s, ValueKind::StringGroup)) {
+                        const auto *script = d.lookup(s->script.value, EntityKind::Script, d.scripts);
+                        require(script, "Missing string-group script");
+                        auto at = std::ranges::find(script->sections, id);
+                        require(at != script->sections.end(), "String group is not in its script");
+                        for (++at; at != script->sections.end(); ++at) {
+                            stopped(stop);
+                            const auto *member = d.lookup(at->value, EntityKind::Section, d.sections);
+                            require(member, "Missing string-group member");
+                            if (!sectionContentIs(d, *member, ValueKind::IndexedSection)) break;
+                            // Do not allocate labels for members outside the requested page.
+                            if (out.total < request.offset || out.rows.size() == request.limit)
+                                ++out.total;
+                            else
+                                append({member->id, {}, member->name, false});
+                        }
+                    }
                 } else if constexpr (std::is_same_v<T, SctSequenceId>)
                     sequence(id);
                 else if constexpr (std::is_same_v<T, SctActionId>) {
@@ -235,6 +292,7 @@ std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, Ed
                     } else if constexpr (std::is_same_v<T, SectionId>) {
                         auto *s = d.lookup(id.value, EntityKind::Section, d.sections);
                         require(s, "Missing section");
+                        if (semantic) if (auto group = indexedStringParent(d, *s)) return *group;
                         return s->script;
                     } else if constexpr (std::is_same_v<T, SctActionId>) {
                         auto *a = d.action(id);
