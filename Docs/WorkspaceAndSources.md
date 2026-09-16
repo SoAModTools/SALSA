@@ -6,6 +6,22 @@ Open **View > Workspace and sources** for the source hierarchy, current project 
 
 Changed and missing files retain their authored scripts and original baselines. Files marked **Not imported** have no authored script to navigate to. Optional MLD associations remain in **Authoring > Optional MLD resources…**, with explicit reselection; this SCT source review does not scan MLD contents.
 
+## Editing multiple discs
+
+SALSA currently does not support multiple discs in a single project. Dreamcast Disc 1 and Disc 2 can contain different versions of the same-named script, so keep each disc's extraction, authored project and workspace separate. Do not combine the two extraction folders into one imported dataset.
+
+To edit both discs at the same time, open two separate instances of SALSA:
+
+1. In the first instance, open the Disc 1 extraction with its own workspace.
+2. In the second instance, open the Disc 2 extraction with a different workspace.
+3. Save each project independently and export to the corresponding disc's output directory.
+
+Use separate workspaces rather than opening the same workspace for editing in both instances. Each project has its own edits and Undo/Redo history; changes are not synchronized between discs.
+
+The existing clipboard can copy instructions, complete constructs and code sections between projects. Paste remaps internal identities and requires you to resolve references outside the copied content, including referenced text. This is not a complete module or cutscene transfer: dialogue, module definitions, entrypoints, connections and MLD assets are not automatically bundled. Prefer Copy followed by Paste and review; the current Cut command removes source content immediately after copying and does not wait for a successful paste in the other instance.
+
+A dedicated module/cutscene transfer workflow is planned, not yet implemented. It will retain separate project ownership and make destination dependencies explicit. See the [planned transfer direction](WholeProgramIrProductionPlan.md#separate-disc-projects-and-future-module-transfer).
+
 ## Recovery and external edits
 
 - **Save project** saves the authoritative binary project and view state using the workspace transaction. It also detects external checkpoint changes rather than silently overwriting them.

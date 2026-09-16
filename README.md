@@ -10,6 +10,8 @@ The original Python application is preserved under `legacy/python` as a behavior
 
 User-facing documentation starts at [Docs/README.md](Docs/README.md).
 
+SALSA currently supports one disc per project. To edit both Dreamcast discs at the same time, open two separate SALSA instances, each with its own disc extraction and workspace. Combining both discs into one project is not supported. See [editing multiple discs](Docs/WorkspaceAndSources.md#editing-multiple-discs).
+
 The production editor uses the [whole-program service](Docs/WholeProgramIrEditor.md): one workspace authority, paged resident-script views, local journal edits, and binary project persistence with zstd level 1. Startup opens no dataset automatically. Native SCTs are imported once; reopening a saved workspace and its tabs reads the binary project. Native publication generates fresh SCT layout from authored content. Python SALSA v7 remains an import format only.
 
 ## Building

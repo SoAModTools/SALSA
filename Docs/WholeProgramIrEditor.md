@@ -2,6 +2,8 @@
 
 The executable opens `ProgramWindow`, backed by one `ProgramService` per workspace. Tabs contain script IDs, a paged outline model, and a stable selected subject. They do not contain an `SctEditSession`, mutable native document, full authoring history, or a script-wide instruction map.
 
+For Dreamcast, use one disc per project. Editing both discs concurrently means opening two SALSA instances with separate disc extractions and workspaces; a combined multi-disc project is not supported. See [editing multiple discs](WorkspaceAndSources.md#editing-multiple-discs) for the workflow and current clipboard limits.
+
 ## Loading and persistence
 
 Startup restores geometry and recent-item settings without opening a dataset. Explicit dataset opening restores its associated workspace. `EditorWorkspaceIO` runs dataset inventory/fingerprinting, workspace assessment/recovery, and checkpoint preparation in a worker. Fresh import discovers and orders the SCT paths, then runs a continuously replenished worker pool. Each worker reads and hashes one file, retains its baseline, parses and normalizes that same immutable capture, and releases source bytes and SPICE graphs before taking another file. The complete dataset fingerprint is assigned to detached script baselines after the scan, before installation. A saved workspace runs inventory hashing without native import, then reads the binary `project.salsaproject` directly. Resident script tabs never parse their source again.

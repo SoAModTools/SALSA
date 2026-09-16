@@ -202,3 +202,16 @@ Status: agreed future feature; separate annotation import/export is not implemen
 - Preview additions, updates and conflicts. Allow selected merges, retaining the current version, or explicit replacement. Project overrides take precedence while the imported original and its provenance remain inspectable; preserve script-specific overrides within their scope.
 - Keep descriptive variable bindings separate from executable assignment changes and allocation reservations. Importing a catalog changes labels/explanations only: it does not reserve slots, reassign flags, rewrite instructions or certify free storage. Reservation exchange, if wanted later, is a separately selected operation.
 - Apply an accepted import as one undoable metadata change. Refresh affected labels/explanations without rebuilding instruction facts or the whole connectivity graph. No automatic remote subscription or synchronization is included.
+
+
+## Separate disc projects and future module transfer
+
+Decision: keep Dreamcast Disc 1 and Disc 2 in separate projects. SALSA currently does not support multi-disc import, dependency resolution or publication within one project. Recommend two SALSA instances, each using its own extraction, workspace and output directory, when users want to edit both discs at once. No combined-disc project, automatic variant selection or shared live authority is scheduled by this decision.
+
+The IR can retain same-named scripts under distinct IDs and imported baselines, but that storage capability is not complete multi-disc support. The current editor has one dataset association, and coordinated output resolves filename dependencies across the project and rejects duplicate output filenames. Combining disc inventories does not supply the missing disc context. Missing assets on one Dreamcast disc remain expected inventory differences.
+
+Future transfer work should extend the existing serialized fragment/clipboard mechanism rather than replace the paged IR. A module/cutscene package should carry its owned bodies, conditions, preparation, dialogue, relevant annotations, module definition and entry/exit slots. Paste chooses a destination script, allocates destination-owned identities and remaps internal references. Present dependencies outside the package for explicit copying, rebinding or unresolved retention where the draft model permits it; unresolved execution references still require repair before export.
+
+Keep MLD assets outside the script package and make destination resource context explicit. Preserve numeric flag assignments unless the user requests a mapping. Do not infer that two same-named scripts or identical source copies should share subsequent edits. Story-state relationships can continue across discs without either project becoming the other's live authority.
+
+For a future Move workflow, accept the destination copy before offering removal from the source, identify remaining source callers, and retain independent undo histories. Current Cut deletes immediately after clipboard creation and is not a coordinated cross-instance move. Module packaging, automatic dialogue/dependency inclusion and coordinated source removal are future work, not capabilities delivered by the current clipboard.
