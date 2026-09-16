@@ -40,7 +40,9 @@ ProgramOperation::ProgramOperation(QString name, Work work, Install install, boo
         preparing_ = true;
         setCancellable(true);
         try {
-            install_(std::move(result).takeValue(), *this);
+            // Installation may offer a subsequent stage and replace install_.
+            auto install = install_;
+            install(std::move(result).takeValue(), *this);
         } catch (const std::exception &e) {
             fail(QString::fromUtf8(e.what()));
         }
@@ -56,6 +58,7 @@ core::ExclusiveOperationFlowDefinition ProgramOperation::flowDefinition() const 
             {{"configure", R::Configuration, P::Hidden, L::Standard},
              {"working", R::Processing, P::Visible, L::Compact},
              {"review", R::Review, P::Hidden, L::Standard},
+             {"next", R::Review, P::Hidden, L::Standard},
              {"summary", R::Summary, P::Hidden, L::Compact}},
             {{"start", "configure", "start", "working"},
              {"reconfigure", "working", "configure", "configure"},
@@ -63,11 +66,19 @@ core::ExclusiveOperationFlowDefinition ProgramOperation::flowDefinition() const 
              {"review", "working", "review", "review"},
              {"retry", "review", "retry", "working"},
              {"cancel_review", "review", "cancelled", "summary"},
+             {"offer_next", "working", "next", "next"},
+             {"continue_next", "next", "continue_next", "working"},
+             {"finish_next", "next", "complete", "summary"},
              {"complete", "working", "complete", "summary"},
              {"failed", "working", "failed", "summary"},
              {"cancelled", "working", "cancelled", "summary"}}};
 }
 QWidget *ProgramOperation::createPage(std::string_view id, QWidget *parent) {
+    if (id == "next") {
+        nextContainer_ = new QWidget(parent);
+        new QVBoxLayout(nextContainer_);
+        return nextContainer_;
+    }
     if (id == "configure" && configurationPage)
         return configurationPage(parent);
     auto *page = new QWidget(parent);
@@ -81,6 +92,16 @@ QWidget *ProgramOperation::createPage(std::string_view id, QWidget *parent) {
     return page;
 }
 void ProgramOperation::pageEntered(std::string_view page) {
+    choosingNext_ = page == "next";
+    if (choosingNext_) {
+        setCancellable(true);
+        auto *layout = nextContainer_->layout();
+        while (auto *item = layout->takeAt(0)) {
+            if (item->widget()) item->widget()->deleteLater();
+            delete item;
+        }
+        if (nextPage_) layout->addWidget(nextPage_(nextContainer_));
+    }
     configuring_ = page == "configure";
     if (configuring_) {
         setCancellable(true);
@@ -129,6 +150,10 @@ void ProgramOperation::progress(QString phase, quint64 n, quint64 total, QString
     reportProgress(phase, n, total, ExclusiveOperationProgressUnit::Steps, item);
 }
 std::optional<ExclusiveOperationAction> ProgramOperation::actionForEdge(std::string_view edge) const {
+    if (edge == "continue_next")
+        return ExclusiveOperationAction{nextAction_, ExclusiveOperationActionRole::Secondary};
+    if (edge == "finish_next")
+        return ExclusiveOperationAction{tr("Finish"), ExclusiveOperationActionRole::Primary};
     if (edge == "start")
         return ExclusiveOperationAction{tr("Open project"), ExclusiveOperationActionRole::Primary};
     if (edge == "retry")
@@ -149,7 +174,26 @@ void ProgramOperation::offerRetry(QString message, Work work) {
     setCancellable(true);
     raiseEvent("review");
 }
+void ProgramOperation::offerNext(QString action, std::function<Work()> prepare, Install install,
+                                std::function<QWidget *(QWidget *)> page, bool discardCancelled) {
+    nextAction_ = std::move(action);
+    nextWork_ = std::move(prepare);
+    install_ = std::move(install);
+    nextPage_ = std::move(page);
+    discardCancelled_ = discardCancelled;
+    preparing_ = false;
+    cancelPresentation = {};
+    recoverFailure = {};
+    raiseEvent("next");
+}
 void ProgramOperation::handleEvent(std::string_view event) {
+    if (event == "complete" && choosingNext_) { finish(); return; }
+    if (event == "continue_next") {
+        work_ = nextWork_();
+        preparing_ = false;
+        started_ = false;
+        stop_ = std::stop_source{};
+    }
     if (event == "start" && prepareWork)
         work_ = prepareWork();
     if (event == "retry") {
@@ -162,7 +206,7 @@ void ProgramOperation::handleEvent(std::string_view event) {
 void ProgramOperation::requestCancel() {
     if (done_ || !cancellable())
         return;
-    if (reviewing_ || configuring_) {
+    if (reviewing_ || configuring_ || choosingNext_) {
         done_ = true;
         summary_ = tr("Workspace opening cancelled.");
         setCancellable(false);
@@ -181,6 +225,7 @@ void ProgramOperation::finish(QString message) {
     done_ = true;
     setCancellable(false);
     summary_ = message.isEmpty() ? tr("Ready") : message;
+    if (stop_.stop_requested()) { raiseEvent("cancelled"); return; }
     raiseEvent("complete");
     requestDismissal();
 }

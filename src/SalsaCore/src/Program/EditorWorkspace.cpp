@@ -196,7 +196,9 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
             auto installed = out->service->adopt({}, std::move(prepared), stop).get();
             if (!installed) return Result<std::shared_ptr<EditorWorkspace>>::failure(installed.diagnostics());
             out->status = installed.value();
+            out->status = take(out->service->organizeImportedLocalization(out->status.current, stop, observer).get());
             out->needsInitialSave = true;
+            out->newlyImported = true;
         }
         progress(observer, stop, "Preparing script catalog");
         out->catalog = take(out->service->catalog(out->status.current).get());

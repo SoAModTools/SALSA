@@ -608,7 +608,9 @@ FreshLegacyImportCommitResult LegacyFreshImportCommitService::commit(
             retain(LegacyMetadataKind::SectionGroups, script.ordinal)});
     }
     auto imported = program::LegacyProgramImport::importCapsule({projectId.value()}, importRoot / L"capsule",
-        finalDataset.identity.fingerprint, selections, {}, {},
+        finalDataset.identity.fingerprint, selections, {}, [&](const SctLoadingProgress &p) {
+            report(observer, FreshLegacyImportPhase::CreatingWorkspace, p.completed, p.total, p.phase);
+        },
         {retain(LegacyMetadataKind::ProjectVariableAliases, {}), retain(LegacyMetadataKind::OpcodeColors, {})});
     if (!imported) return {FreshLegacyImportCommitStatus::RecoveryBlocked, {}, plan.workspaceDestination.path, imported.diagnostics()};
     // The accepted native outputs and the retained import baseline must describe

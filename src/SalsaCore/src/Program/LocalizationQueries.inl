@@ -1,3 +1,36 @@
+std::future<Result<ServiceStatus>> ProgramService::organizeImportedLocalization(
+    Revision r, std::stop_token stop, SctLoadingObserver progress) {
+    return control_->submit<ServiceStatus>([=](ServiceOwner &o) {
+        o.match(r, stop);
+        require(o.data != nullptr, "No imported project");
+        if (progress) progress({"Linking localized messages", 0, 0, {}});
+        editor::LocalizationChange discover;
+        discover.discover = true;
+        auto discovered = o.install(o.prepare({r, {SemanticOperation{editor::FeatureEdit{discover}}}}, stop), stop);
+        auto &d = *o.data;
+        auto lookup = localizationLookup(d);
+        std::set<SctActionId> covered;
+        editor::LocalizationChange reduce;
+        for (std::uint32_t n = 0; n < d.actions.size(); ++n) {
+            stopped(stop);
+            if (progress && (n % 128 == 0 || n + 1 == d.actions.size()))
+                progress({"Recognizing localized sequences", n, d.actions.size(), {}});
+            auto id = d.actions.find(n)->id;
+            if (covered.contains(id)) continue;
+            if (auto candidate = recognizeLocalization(d, id, &lookup)) {
+                reduce.promote.push_back(candidate->header);
+                for (const auto &branch : candidate->branches) covered.insert(branch.owner);
+            }
+        }
+        if (!reduce.promote.empty()) {
+            if (progress) progress({"Reducing localized sequences", 0, 0, {}});
+            o.install(o.prepare({discovered.status.current, {SemanticOperation{editor::FeatureEdit{std::move(reduce)}}}}, stop), stop);
+        }
+        stopped(stop);
+        if (progress) progress({"Localization ready", 1, 1, {}});
+        return o.status();
+    });
+}
 std::future<Result<editor::LocalizationCatalog>> ProgramService::localizations(Revision r, bool recognize,
                                                                                std::stop_token stop) {
     return control_->submit<editor::LocalizationCatalog>([=](ServiceOwner &o) {

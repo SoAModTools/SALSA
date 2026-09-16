@@ -21,6 +21,9 @@ class ProgramOperation final : public ExclusiveOperationController {
     std::optional<ExclusiveOperationAction> actionForEdge(std::string_view) const override;
     void handleEvent(std::string_view) override;
     void offerRetry(QString, Work);
+    // Continue an already successful import without opening a second operation.
+    void offerNext(QString action, std::function<Work()> prepare, Install,
+                   std::function<QWidget *(QWidget *)> page, bool discardCancelled = true);
     // Optional selection stage, inside the same exclusive operation.
     std::function<QWidget *(QWidget *)> configurationPage;
     std::function<Work()> prepareWork;
@@ -54,6 +57,11 @@ class ProgramOperation final : public ExclusiveOperationController {
     std::shared_ptr<Pending> pending_ = std::make_shared<Pending>();
     QFutureWatcher<core::Result<std::any>> watcher_;
     QTimer timer_;
+    QString nextAction_;
+    std::function<Work()> nextWork_;
+    std::function<QWidget *(QWidget *)> nextPage_;
+    QWidget *nextContainer_ = nullptr;
+    bool choosingNext_ = false;
     bool started_ = false, done_ = false, discardCancelled_ = false, preparing_ = false, reviewing_ = false,
          configuring_ = false;
 };

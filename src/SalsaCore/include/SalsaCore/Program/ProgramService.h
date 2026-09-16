@@ -490,6 +490,9 @@ class ProgramService final {
         translation(Revision, SctTextResourceId, SctLanguageGroupId, std::stop_token = {});
     std::future<Result<editor::LocalizationCatalog>> localizations(Revision, bool = false,
                                                                    std::stop_token = {});
+    // Fresh, isolated import sessions only; reopening restores saved organization.
+    std::future<Result<ServiceStatus>> organizeImportedLocalization(Revision, std::stop_token = {},
+                                                                   SctLoadingObserver = {});
     std::future<Result<editor::FeatureInventory>> features(Revision, SctScriptId, std::stop_token = {});
     std::future<Result<std::vector<editor::FeatureSite>>> textUses(Revision, SctTextResourceId, std::stop_token = {});
     std::future<Result<std::vector<editor::LanguageSuggestion>>> suggestLanguages(Revision, SctScriptId, std::stop_token = {});

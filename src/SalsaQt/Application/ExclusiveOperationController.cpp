@@ -23,6 +23,13 @@ bool ExclusiveOperationController::finishing() const noexcept { return finishing
 
 void ExclusiveOperationController::raiseEvent(const std::string_view event) {
     lastRaisedEvent_ = event;
+    // Controllers raise this terminal event only after their worker/cleanup has
+    // finished. Cancellation is already the user's decision, not another review.
+    if (event == "cancelled" || event.ends_with("/cancelled")) {
+        reportTerminalActivity(QStringLiteral("OperationCancelled"), tr("Operation cancelled."));
+        requestDismissal();
+        return;
+    }
     emit eventRaised(QString::fromUtf8(event.data(), static_cast<qsizetype>(event.size())));
 }
 

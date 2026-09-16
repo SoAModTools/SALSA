@@ -18,6 +18,7 @@ struct EditorWorkspace {
     Catalog catalog;
     std::optional<std::string> checkpointDigest;
     bool needsInitialSave = false;
+    bool newlyImported = false; // Transient completion flow; never saved in a project.
     std::uint64_t openedMicroseconds = 0;
 };
 struct EditorOpenRequest {

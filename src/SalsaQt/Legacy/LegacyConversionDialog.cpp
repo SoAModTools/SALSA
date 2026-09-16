@@ -449,7 +449,8 @@ void LegacyImportController::startConversion() {
 void LegacyImportController::finishConversion() {
     conversion_ = conversionWatcher_.result();
     setCancellable(true);
-    if (conversion_->status == core::LegacyConversionStatus::Cancelled) {
+    if (conversion_->status == core::LegacyConversionStatus::Cancelled ||
+        (stopSource_.stop_requested() && conversion_->capsule)) {
         cleanupTransientArtifacts();
         raiseEvent("cancelled");
     } else if (!conversion_->capsule) {
@@ -583,6 +584,11 @@ void LegacyImportController::startPreparation() {
 void LegacyImportController::finishPreparation() {
     auto result = preparationWatcher_.result();
     setCancellable(true);
+    if (result && stopSource_.stop_requested()) {
+        cleanupTransientArtifacts();
+        raiseEvent("cancelled");
+        return;
+    }
     if (!result) {
         reportDiagnostics(diagnosticText(result.diagnostics()));
         cleanupTransientArtifacts();

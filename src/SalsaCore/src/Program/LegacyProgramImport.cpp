@@ -1,4 +1,5 @@
 #include "SalsaCore/Program/LegacyProgramImport.h"
+#include "SalsaCore/Program/ProgramService.h"
 #include "ProgramInternal.h"
 #include "../Legacy/LegacyProgramBridge.h"
 #include "SpiceSCT/SctDocumentExporter.h"
@@ -132,7 +133,14 @@ Result<LegacyProgramResult> LegacyProgramImport::importCapsule(
         if (!built)
             return Result<LegacyProgramResult>::failure(built.diagnostics());
         diagnostics.insert(diagnostics.end(), built.diagnostics().begin(), built.diagnostics().end());
-        result.project.program = std::move(built).takeValue();
+        ProgramService prepared;
+        auto adopted = prepared.adopt({}, std::move(built).takeValue(), stop).get();
+        if (!adopted) return Result<LegacyProgramResult>::failure(adopted.diagnostics());
+        auto localized = prepared.organizeImportedLocalization(adopted.value().current, stop, observer).get();
+        if (!localized) return Result<LegacyProgramResult>::failure(localized.diagnostics());
+        auto checkpoint = prepared.checkpoint(localized.value().current, stop).get();
+        if (!checkpoint) return Result<LegacyProgramResult>::failure(checkpoint.diagnostics());
+        result.project.program = checkpoint.value().program;
         progress("Legacy program ready", selected.size(), selected.size());
         return Result<LegacyProgramResult>::success(std::move(result), std::move(diagnostics));
     } catch (const std::exception &e) {

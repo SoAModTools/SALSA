@@ -127,6 +127,8 @@
     <ClCompile Include="Application\ProgramOperation.cpp" />
     <ClInclude Include="Application\ProgramOperation.h" />
     <ClInclude Include="Application\ImportOperation.h" />
+    <ClInclude Include="Application\ImportCompletion.h" />
+    <ClCompile Include="Application\ImportCompletion.cpp" />
     <ClCompile Include="Application\ProgramWindow.cpp" />
     <ClInclude Include="Application\ProgramWindow.h" />
     <ClCompile Include="Sct\ProgramValueDialog.cpp" />

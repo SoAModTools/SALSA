@@ -10,6 +10,7 @@
 #include "Editor/OrganizationComponent.h"
 #include "Editor/AuthoringTools.h"
 #include "Editor/StoryTools.h"
+#include "Application/ImportCompletion.h"
 #include "Editor/EditorQueryWidget.h"
 #include "Editor/ScriptOutlineComponent.h"
 #include "SalsaCore/Editor/ProgramBackend.h"
@@ -358,6 +359,7 @@ void ProgramWorkspaceController::openDataset(QString root, QString destination, 
         QFormLayout *overrides = nullptr;
         std::vector<core::Diagnostic> pending;
         std::set<std::string> unresolved;
+        bool importedLegacy = false;
     };
     auto choice = std::make_shared<Choice>();
     auto suggestedWorkspace = [associations = associations_](const QString &path) {
@@ -372,12 +374,13 @@ void ProgramWorkspaceController::openDataset(QString root, QString destination, 
     choice->request.workspace = std::filesystem::path(destination.toStdWString());
     const auto generation = workspaceGeneration_;
     auto operation = std::make_unique<ProgramOperation>(tr("Open / Import Project"), ProgramOperation::Work{},
-        [this, generation](std::any value, ProgramOperation &op) {
+        [this, generation, choice](std::any value, ProgramOperation &op) {
             if (closing_ || generation != workspaceGeneration_) {
                 op.fail(tr("Workspace changed before opening finished."));
                 return;
             }
             auto prepared = std::any_cast<std::shared_ptr<ir::EditorWorkspace>>(std::move(value));
+            prepared->newlyImported |= choice->importedLegacy;
             auto root = QString::fromStdWString(prepared->dataset->dataset().root.wstring());
             auto destination = QString::fromStdWString(prepared->workspace->descriptor().root.wstring());
             for (int i = associations_.size() - 2; i >= 0; i -= 2)
@@ -491,6 +494,7 @@ void ProgramWorkspaceController::openDataset(QString root, QString destination, 
         return true;
     };
     auto converted = [choice, native](QString source, QString workspace) {
+        choice->importedLegacy = true;
         choice->request = {};
         choice->request.dataset.datasetRoot = std::filesystem::path(source.toStdWString());
         choice->request.workspace = std::filesystem::path(workspace.toStdWString());
@@ -570,6 +574,11 @@ void ProgramWorkspaceController::restoreTabs(QPointer<ProgramOperation> op, std:
                     tabs_->setCurrentWidget(t.view);
         restoring_ = false;
         updateTitle();
+        if (!op->stopped() && workspace_->newlyImported) {
+            workspace_->newlyImported = false;
+            offerImportCompletion(*op, editor_);
+            return;
+        }
         op->finish(
             op->stopped()
                 ? tr("Restoration stopped; the workspace and completed tabs remain open. Saved tabs were retained.")

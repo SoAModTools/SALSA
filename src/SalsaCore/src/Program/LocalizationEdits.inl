@@ -246,8 +246,9 @@ void SemanticTransaction::localizationEdit(const editor::LocalizationChange &req
     // Recognize against the captured edit revision before neighboring routes change shape.
     std::vector<LocalizationRecognition> promotions;
     std::set<SctActionId> promotedOwners;
+    auto promotionLookup = localizationLookup(d);
     for (auto id : request.promote) {
-        auto r = recognizeLocalization(d, id);
+        auto r = recognizeLocalization(d, id, &promotionLookup);
         require(r.has_value(),
                 "This region is not an equivalent localized sequence; keep its instructions explicit");
         std::set<SctActionId> owners;

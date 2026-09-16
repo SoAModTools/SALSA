@@ -54,3 +54,6 @@ Only indexed translations are adopted. Donor execution, footer text, asset bindi
 Whole-program binary schema **9** persists language mappings, output inclusion, logical uses and localization recipes alongside authored text. Container framing **2** and Zstandard level **1** are unchanged. The preview language is transient presentation state. All accepted edits participate in project undo/redo and save/reopen. Older development project schemas remain unsupported; Python SALSA v7 import remains supported, followed by optional localization discovery.
 
 The initial private `me002a` checks found that the Dreamcast EU examples still contain imported text rejected by native export; the same errors occur before localization changes. Their dispatch is retained explicitly by this recognizer. Logical-message editing and interchange remain available. This is not a claim that every imported script is immediately exportable.
+
+
+Fresh dataset and supported v7 imports automatically run logical-message discovery and reduce equivalent localization branches before the project is shown. Ambiguous or non-equivalent sequences remain explicit. Reopening a saved project preserves its mappings, manual assignments and explicitly expanded sequences without repeating discovery. The discovery and recognition actions remain available for deliberate later edits.

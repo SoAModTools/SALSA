@@ -429,7 +429,9 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
     const auto original = LocalGameProject::inspect({root / "source"}); ASSERT_TRUE(original);
     ir::EditorOpenRequest request{{root / "source"}, root / "workspace"};
     std::atomic<unsigned> parsed = 0;
+    unsigned localizationPasses = 0;
     auto opened = ir::EditorWorkspaceIO::open(request, {}, [&](const auto& p) {
+        if (p.phase == "Linking localized messages") ++localizationPasses;
         if (p.phase == "Parsing SCT") {
             ++parsed;
             // The scan has already captured this file. Nothing downstream may reopen it.
@@ -439,6 +441,8 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
     ASSERT_TRUE(opened) << messages(opened.diagnostics());
     EXPECT_EQ(parsed, 3u);
     auto session = opened.value();
+    EXPECT_TRUE(session->newlyImported);
+    EXPECT_EQ(localizationPasses, 1u);
     ASSERT_EQ(session->catalog.scripts.size(), 3u);
     EXPECT_EQ(session->dataset->snapshot().fingerprint, original.value().snapshot().fingerprint);
     auto cp = session->service->checkpoint(session->status.current).get(); ASSERT_TRUE(cp);
@@ -451,9 +455,14 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
     writeSources();
     auto saved = ir::EditorWorkspaceIO::save(*session, session->status.current, {}); ASSERT_TRUE(saved);
     parsed = 0;
-    auto reopened = ir::EditorWorkspaceIO::open(request, {}, [&](const auto& p) { if (p.phase == "Parsing SCT") ++parsed; });
+    auto reopened = ir::EditorWorkspaceIO::open(request, {}, [&](const auto& p) {
+        if (p.phase == "Parsing SCT") ++parsed;
+        if (p.phase == "Linking localized messages") ++localizationPasses;
+    });
     ASSERT_TRUE(reopened) << messages(reopened.diagnostics());
     EXPECT_EQ(parsed, 0u);
+    EXPECT_EQ(localizationPasses, 1u);
+    EXPECT_FALSE(reopened.value()->newlyImported);
     for (std::size_t i = 0; i < session->catalog.scripts.size(); ++i)
         EXPECT_EQ(session->catalog.scripts[i].id, reopened.value()->catalog.scripts[i].id);
     std::stop_source cancelled;
@@ -1538,6 +1547,22 @@ TEST(LocalizationTest, SharedBodyWideCsvAndRuntimeLanguagesShareOneHistory) {
         }
         editor::LocalizationChange discover;
         discover.discover = true;
+        // The fresh-import pass performs discovery and reduction together, using
+        // the same equivalence rules as these explicit editing commands.
+        {
+            auto source = service->checkpoint(revision).get(); ASSERT_TRUE(source);
+            ir::ProgramService imported;
+            auto adopted = imported.adopt({}, std::move(source.value().program)).get();
+            ASSERT_TRUE(adopted) << messages(adopted.diagnostics());
+            std::vector<std::string> phases;
+            auto ready = imported.organizeImportedLocalization(adopted.value().current, {},
+                [&](const auto &p) { phases.push_back(p.phase); }).get();
+            ASSERT_TRUE(ready) << messages(ready.diagnostics());
+            auto result = imported.checkpoint(ready.value().current).get(); ASSERT_TRUE(result);
+            EXPECT_EQ(result.value().program->metadata().localization.blocks.size(), 1u);
+            EXPECT_EQ(result.value().program->metadata().logicalTexts.size(), 1u);
+            EXPECT_NE(std::ranges::find(phases, "Reducing localized sequences"), phases.end());
+        }
         edit(editor::FeatureEdit{discover});
         auto catalog = backend.localizations(revision, true);
         ASSERT_TRUE(catalog) << messages(catalog.diagnostics());
