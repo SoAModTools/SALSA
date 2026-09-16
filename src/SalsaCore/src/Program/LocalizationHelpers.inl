@@ -56,6 +56,7 @@ struct LocalizationRecognition {
     SctActionId header;
     bool sw = false, independent = false, refresh = true, single = false;
     std::vector<LocalizationBranch> branches;
+    std::optional<Arm> emptyDefault;
     std::string reason;
 };
 std::optional<LocalizationRecognition> recognizeLocalization(ProgramData &d, SctActionId id,
@@ -134,8 +135,10 @@ std::optional<LocalizationRecognition> recognizeLocalization(ProgramData &d, Sct
             std::optional<std::uint32_t> selector;
             if (r.sw) {
                 if (arm.includesDefault) {
-                    if (!d.sequence(arm.body)->order->empty())
+                    if (arm.labelCount || arm.caseExit != CaseExit::ExitSwitch ||
+                        !d.sequence(arm.body)->order->empty())
                         return false;
+                    r.emptyDefault = arm;
                     continue;
                 }
                 if (arm.labelCount != 1 || arm.caseExit != CaseExit::ExitSwitch)

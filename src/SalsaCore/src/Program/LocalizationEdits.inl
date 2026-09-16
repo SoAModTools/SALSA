@@ -297,9 +297,16 @@ void SemanticTransaction::localizationEdit(const editor::LocalizationChange &req
                 cp.copy(d.lookup(first.arm.condition.value, EntityKind::Condition, d.conditions)->result);
             kept.condition = std::move(b);
         }
-        if (!r.independent)
-            arms(id, {kept});
-        else {
+        if (!r.independent) {
+            std::vector<ArmEdit> retained{kept};
+            if (r.emptyDefault) {
+                ArmEdit fallback;
+                fallback.id = r.emptyDefault->id;
+                fallback.includesDefault = true;
+                retained.push_back(fallback);
+            }
+            arms(id, retained);
+        } else {
             auto orderIds = order(d.action(id)->owner);
             for (std::size_t n = 1; n < r.branches.size(); ++n) {
                 eraseTree(r.branches[n].owner);
@@ -362,6 +369,16 @@ void SemanticTransaction::localizationEdit(const editor::LocalizationChange &req
                 e.condition = conditionValue(rules[n].selector.value_or(0));
             edits.push_back(std::move(e));
         }
+        if (block.switchSelection)
+            for (std::uint32_t n = 0; n < root.armCount; ++n) {
+                const auto &arm = d.arms[root.firstArm + n];
+                if (arm.includesDefault) {
+                    ArmEdit fallback;
+                    fallback.id = arm.id;
+                    fallback.includesDefault = true;
+                    edits.push_back(fallback);
+                }
+            }
         if (!block.independent)
             arms(id, edits);
         else

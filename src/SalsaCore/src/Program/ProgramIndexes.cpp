@@ -444,10 +444,18 @@ void finishMetadata(ProgramData &d, std::vector<Diagnostic> &diagnostics, bool a
     for (const auto &block : d.metadata.localization.blocks) {
         auto *a = d.action(block.action);
         require(a && (a->kind == ActionKind::Conditional || a->kind == ActionKind::Switch) &&
-                    a->armCount == 1 && d.arms[a->firstArm].body == block.body &&
+                    a->armCount >= 1 && d.arms[a->firstArm].body == block.body &&
                     localizedActions.insert(block.action).second,
                 "Localized block needs its single canonical body; edit localization settings rather than its "
                 "dispatch arms");
+        if (a->armCount != 1) {
+            require(a->kind == ActionKind::Switch && a->armCount == 2,
+                    "Localized switch may retain only an empty Default besides its canonical body");
+            const auto &fallback = d.arms[a->firstArm + 1];
+            require(fallback.includesDefault && !fallback.labelCount && fallback.caseExit == CaseExit::ExitSwitch &&
+                        d.sequence(fallback.body)->order->empty(),
+                    "Localized switch Default must remain empty");
+        }
         require(block.switchSelection == (a->kind == ActionKind::Switch) &&
                     (!block.independent || !block.switchSelection) &&
                     (!block.unconditional || (!block.switchSelection && !block.independent)),

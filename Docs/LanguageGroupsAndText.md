@@ -12,6 +12,8 @@ Choose **Recognize language branches…** to review optional organization. Equiv
 
 The semantic editor shows a single localized operation directly, or a **Localized sequence** containing its editable instructions. Indexed operands display a logical message name and a text preview. The localization selector above the semantic tree changes this preview and the inspected translation; it does not change runtime output. Missing translations are shown rather than silently falling back. Multiple translations assigned to the same message/language need manual correction.
 
+Switches do not require a Default case. Import grouping leaves instructions before the selector outside its case bodies. Export preserves whether a Default exists; localization organization and expansion also retain an explicitly empty Default rather than inventing one for switches without it. A nonempty Default still needs explicit authoring and is not automatically collapsed into a localized body. Import-grouping corrections apply when importing source scripts; reopening a saved project does not reorganize its authored groups.
+
 Use generated-instruction preview to inspect the runtime branches. **Expand localization to instructions…** turns a flat localized body back into explicit language branches using the current mappings and included languages. Undo restores its shared representation. Expand before copying an entire localized construct to a fragment. Nested constructs added to a shared body can be lowered, but explicit expansion currently requires a flat body.
 
 ## Runtime languages

@@ -234,6 +234,12 @@ ControlFlowIssues normalizeImportedGroups(ProgramData &d, const sct::SctDocument
                 std::size_t begin = position.at(instruction.id.value()), end = begin;
                 for (auto block : region->members)
                     for (auto id : blocks.at(block)->instructions) {
+                        // SPICE regions contain whole basic blocks. A switch's header
+                        // block can start with ordinary work before the selector.
+                        // That prefix is outside the cases and must execute regardless
+                        // of which case is selected (or whether any case matches).
+                        if (region->id.kind == K::Switch && position.at(id.value()) < begin)
+                            continue;
                         members.insert(action(id));
                         end = std::max(end, position.at(id.value()));
                     }
@@ -269,15 +275,12 @@ ControlFlowIssues normalizeImportedGroups(ProgramData &d, const sct::SctDocument
                 require(!loop || bodies.size() == 1, "A loop requires one body");
                 require(loop || sw || bodies.size() <= 2, "Unsupported conditional arm layout");
                 if (sw) {
-                    bool hasDefault = false;
                     for (const auto &body : bodies) {
                         require(!body.arm->caseLabels.empty(), "A switch arm has no labels");
                         for (const auto &label : body.arm->caseLabels) {
                             require(label.value.has_value(), "A switch label is not known");
-                            hasDefault |= *label.value == -1;
                         }
                     }
-                    require(hasDefault, "A switch without a known default remains explicit");
                 }
                 auto script = d.sequence(owner)->script;
                 auto condition = [&](std::optional<ArmId> arm = {}) {

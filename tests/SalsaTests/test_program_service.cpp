@@ -1390,7 +1390,7 @@ TEST(EditorAuthoringToolsTest, SelectorBatchPropagatesKnownCopiesAndRejectsBranc
 
 namespace {
 TEST(LocalizationTest, SharedBodyWideCsvAndRuntimeLanguagesShareOneHistory) {
-    for (int mode = 0; mode < 3; ++mode) {
+    for (int mode = 0; mode < 4; ++mode) {
         SCOPED_TRACE(mode);
         ir::ProgramBuilder b({Project});
         SctScriptContext context;
@@ -1406,10 +1406,13 @@ TEST(LocalizationTest, SharedBodyWideCsvAndRuntimeLanguagesShareOneHistory) {
             b.expression(*SctExpressionLanguage::parse("ByteVar[87] == 1").expression).value()};
         SctActionId header;
         std::vector<SctSequenceId> bodies;
-        if (mode == 2) {
+        if (mode >= 2) {
+            std::vector<ir::Case> cases{ir::Case{{0}}, ir::Case{{1}}};
+            if (mode == 3)
+                cases.push_back(ir::Case{{}, true});
             header = b.switchRegion(
                           main, b.expression(*SctExpressionLanguage::parse("ByteVar[87]").expression).value(),
-                          std::array{ir::Case{{0}}, ir::Case{{1}}})
+                          cases)
                          .value();
             bodies = b.branchBodies(header);
         } else if (mode == 1) {
@@ -1487,6 +1490,21 @@ TEST(LocalizationTest, SharedBodyWideCsvAndRuntimeLanguagesShareOneHistory) {
         EXPECT_EQ(cp.program->find(dialogActions[1]), nullptr);
         auto lowered = output();
         ASSERT_TRUE(lowered) << messages(lowered.diagnostics());
+        auto checkDefault = [&](const auto &result, std::size_t languageCount) {
+            if (mode < 2) return;
+            const auto &sections = result.value().materialized.document->sections;
+            const auto scene = std::ranges::find(sections, std::string("scene"), &sct::SctDocumentSection::nameBytes);
+            ASSERT_NE(scene, sections.end());
+            const auto &code = std::get<sct::SctScriptSectionContent>(scene->content).instructions;
+            const auto sw = std::ranges::find(code, 3, &sct::SctDocumentInstruction::opcode);
+            ASSERT_NE(sw, code.end());
+            EXPECT_EQ(sw->repeatedParameterGroups.size(), languageCount + (mode == 3 ? 1u : 0u));
+            const auto defaults = std::ranges::count_if(sw->repeatedParameterGroups, [](const auto &g) {
+                return std::get<sct::SctEncodedWordValue>(g.parameters[0].value).value == UINT32_MAX;
+            });
+            EXPECT_EQ(defaults, mode == 3 ? 1 : 0);
+        };
+        checkDefault(lowered, 2);
         if (mode == 1) {
             auto &doc = *lowered.value().materialized.document;
             auto section =
@@ -1547,6 +1565,7 @@ TEST(LocalizationTest, SharedBodyWideCsvAndRuntimeLanguagesShareOneHistory) {
         edit(editor::FeatureEdit{settings});
         auto newOutput = output();
         ASSERT_TRUE(newOutput) << messages(newOutput.diagnostics());
+        checkDefault(newOutput, 2);
         cp = service->checkpoint(revision).get().value();
         auto encoded = ir::ProgramPersistence::encode(*cp.program);
         ASSERT_TRUE(encoded);
@@ -1554,6 +1573,8 @@ TEST(LocalizationTest, SharedBodyWideCsvAndRuntimeLanguagesShareOneHistory) {
         ASSERT_TRUE(reopened) << messages(reopened.diagnostics());
         EXPECT_EQ(reopened.value().program->metadata().localization.blocks.size(), 1u);
         EXPECT_EQ(reopened.value().program->metadata().localization.languages.back().selector, 8u);
+        if (mode >= 2)
+            EXPECT_EQ(std::ranges::any_of(reopened.value().program->arms(header), &ir::Arm::includesDefault), mode == 3);
         auto undo = backend.history(revision, false);
         ASSERT_TRUE(undo);
         revision = undo.value().status.current;
@@ -1568,7 +1589,9 @@ TEST(LocalizationTest, SharedBodyWideCsvAndRuntimeLanguagesShareOneHistory) {
         cp = service->checkpoint(revision).get().value();
         EXPECT_TRUE(cp.program->metadata().localization.blocks.empty());
         EXPECT_NE(cp.program->find(dialogActions[0]), nullptr);
-        ASSERT_TRUE(output());
+        auto expandedOutput = output();
+        ASSERT_TRUE(expandedOutput) << messages(expandedOutput.diagnostics());
+        checkDefault(expandedOutput, 2);
         service->shutdown().get();
     }
 }

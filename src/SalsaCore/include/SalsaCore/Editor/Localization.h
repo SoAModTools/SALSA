@@ -16,7 +16,8 @@ struct LocalizationUse {
     spice::sct::SctParameterAddress operand;
     SctLogicalTextId message;
 };
-// One canonical arm/body, with a lowering recipe rather than executable copies.
+// One canonical executable arm/body, with a lowering recipe rather than copies.
+// A switch may also retain its authored empty Default arm.
 struct LocalizedBlock {
     SctActionId action;
     SctSequenceId body;

@@ -290,7 +290,8 @@ Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> s
                                     localized->skipRefresh,
                                     {},
                                     {{0, *SctExpressionLanguage::parse("ByteVar[87]").expression}}};
-            for (std::size_t n = 0; n <= languages.size(); ++n) {
+            const bool hasDefault = std::ranges::any_of(p.arms(a.id), &Arm::includesDefault);
+            for (std::size_t n = 0; n < languages.size() + (hasDefault ? 1u : 0u); ++n) {
                 auto value = n < languages.size() ? *languages[n].selector : UINT32_MAX;
                 auto ordinal = static_cast<std::uint32_t>(n);
                 selector.instruction.repeatedParameterGroups.push_back(
@@ -379,7 +380,7 @@ Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> s
                 {{{2, sct::SctEncodedWordValue{label}}, {3, sct::SctInstructionReference{}}}});
             s.fixups.push_back({{3, ordinal}, target});
         };
-        Label defaultTarget = afterLabel(a.id);
+        std::optional<Label> defaultTarget;
         for (const auto &arm : p.arms(a.id)) {
             for (auto label : p.caseLabels(arm.id)) {
                 require(label != -1, "SCT reserves case -1 for Default; use the authored Default label");
@@ -388,9 +389,10 @@ Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> s
             if (arm.includesDefault)
                 defaultTarget = sequenceLabel(arm.body);
         }
-        // Body order is authored order; the native fallback row follows every
-        // numeric label even when Default shares an earlier body.
-        row(UINT32_MAX, defaultTarget);
+        // Absence of Default is meaningful. Do not invent an unmatched-selector route.
+        // An explicit fallback follows numeric labels even when it shares a body.
+        if (defaultTarget)
+            row(UINT32_MAX, *defaultTarget);
         t.steps.push_back(std::move(s));
         for (const auto &arm : p.arms(a.id)) {
             expand(arm.body);

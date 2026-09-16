@@ -159,6 +159,59 @@ TEST(ProgramGroupingTest, ImportedGroupsArePersistentConstructsAndShareBothViews
     f.revision = installed.value().current;
     EXPECT_EQ(f.tree(f.main), labels); // The same group identities and empty bodies persist.
 }
+TEST(ProgramGroupingTest, SwitchDefaultIsOptionalAcrossImportPersistenceAndOutput) {
+    for (bool hasDefault : {false, true}) {
+        SCOPED_TRACE(hasDefault);
+        auto source = document();
+        source.sections.erase(source.sections.begin() + 2); // Omit the unrelated unresolved fixture.
+        auto &select = std::get<sct::SctScriptSectionContent>(source.sections.front().content).instructions.front();
+        if (!hasDefault)
+            select.repeatedParameterGroups.pop_back();
+        auto &sourceCode = std::get<sct::SctScriptSectionContent>(source.sections.front().content).instructions;
+        sourceCode.insert(sourceCode.begin(), sct::SctDocumentInstruction{sct::SctInstructionId{14}, 125});
+        ir::ProgramBuilder builder({Project});
+        SctAuthoringBaseline baseline{{}, {Sha256Digest({})},
+            {AssetLocator::fromRelativePath("switch.sct").value(), 0, {Sha256Digest({})}},
+            {"20d9e32e-11c6-4088-a390-3b99624d219f"}};
+        ASSERT_TRUE(builder.appendImported(source, baseline, {}));
+        auto built = builder.finish();
+        ASSERT_TRUE(built) << messages(built.diagnostics());
+        auto &program = *built.value();
+        auto root = program.find(program.sections().front().body);
+        ASSERT_GE(root->order->size(), 2u);
+        EXPECT_EQ(program.find(root->order->front())->sourceInstruction, 14u);
+        auto id = (*root->order)[1];
+        ASSERT_EQ(program.find(id)->kind, ir::ActionKind::Switch);
+        EXPECT_EQ(std::ranges::any_of(program.arms(id), &ir::Arm::includesDefault), hasDefault);
+        auto encoded = ir::ProgramPersistence::encode(program);
+        ASSERT_TRUE(encoded);
+        auto decoded = ir::ProgramPersistence::decode(encoded.value());
+        ASSERT_TRUE(decoded) << messages(decoded.diagnostics());
+        auto service = std::make_shared<ir::ProgramService>();
+        auto loaded = service->adopt({}, std::move(decoded.value().program)).get();
+        ASSERT_TRUE(loaded);
+        auto cp = service->checkpoint(loaded.value().current).get();
+        ASSERT_TRUE(cp);
+        ir::ProgramMaterializer materializer;
+        auto output = materializer.exportScript(cp.value(), loaded.value().current,
+            cp.value().program->scripts().front().context.id,
+            {"ea3220aa-4c18-4eb2-bb98-0a72dc9c2e8c"},
+            sct::SctDocumentExportOptions{sct::SctPlatform::Dreamcast, sct::kSctShiftJisByte7FEncoding});
+        ASSERT_TRUE(output) << messages(output.diagnostics());
+        const auto &code = std::get<sct::SctScriptSectionContent>(
+            output.value().materialized.document->sections.front().content).instructions;
+        const auto sw = std::ranges::find(code, 3, &sct::SctDocumentInstruction::opcode);
+        ASSERT_NE(sw, code.end());
+        EXPECT_EQ(code.front().opcode, 125u); // Prefix was not moved into case one.
+        ASSERT_EQ(sw->repeatedParameterGroups.size(), hasDefault ? 3u : 2u);
+        EXPECT_EQ(std::get<sct::SctEncodedWordValue>(sw->repeatedParameterGroups[0].parameters[0].value).value, 1u);
+        EXPECT_EQ(std::get<sct::SctEncodedWordValue>(sw->repeatedParameterGroups[1].parameters[0].value).value, 2u);
+        if (hasDefault)
+            EXPECT_EQ(std::get<sct::SctInstructionReference>(sw->repeatedParameterGroups[1].parameters[1].value).target,
+                      std::get<sct::SctInstructionReference>(sw->repeatedParameterGroups[2].parameters[1].value).target);
+        service->shutdown().get();
+    }
+}
 TEST(ProgramGroupingTest, GroupsRemainAuthoritativeAcrossReferenceEditsAndEmptyBodyHistory) {
     Fixture f;
     auto original = f.tree(f.main);
