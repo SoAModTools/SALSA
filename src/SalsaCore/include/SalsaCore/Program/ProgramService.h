@@ -248,6 +248,7 @@ struct OutlineRequest {
     EditorSubject parent;
     std::size_t offset = 0, limit = 128;
     bool semantic = false;
+    SctLanguageGroupId language;
 };
 struct OutlineRow {
     EditorSubject subject;
@@ -292,6 +293,7 @@ struct ReadScope {
     std::vector<Transfer> transfers;
     ValueBuffer payload;
     std::vector<editor::OpcodeCustomization> catalog;
+    std::vector<editor::LocalizedBlock> localized;
 };
 struct ProgramFragment {
     SctAuthoringProjectId project;
@@ -477,6 +479,10 @@ class ProgramService final {
     std::future<Result<CutsceneQuery>> cutscene(Revision, SctModuleId, std::stop_token = {});
     std::future<Result<editor::ModuleDetail>> featureModule(Revision, SctModuleId, std::stop_token = {});
     std::future<Result<std::vector<SctLocalActivation>>> activationSuggestions(Revision, SctScriptId, std::stop_token = {});
+    std::future<Result<std::optional<SctTextResourceId>>>
+        translation(Revision, SctTextResourceId, SctLanguageGroupId, std::stop_token = {});
+    std::future<Result<editor::LocalizationCatalog>> localizations(Revision, bool = false,
+                                                                   std::stop_token = {});
     std::future<Result<editor::FeatureInventory>> features(Revision, SctScriptId, std::stop_token = {});
     std::future<Result<std::vector<editor::FeatureSite>>> textUses(Revision, SctTextResourceId, std::stop_token = {});
     std::future<Result<std::vector<editor::LanguageSuggestion>>> suggestLanguages(Revision, SctScriptId, std::stop_token = {});

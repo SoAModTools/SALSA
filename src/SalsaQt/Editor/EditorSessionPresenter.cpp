@@ -47,6 +47,11 @@ EditorSessionPresenter *EditorSessionPresenter::createViewSession(QWidget *owner
     view->setParent(owner);
     view->changeSink_ = this;
     view->bind(backend_, revision_);
+    view->previewLanguage_ = previewLanguage_;
+    connect(this, &EditorSessionPresenter::previewLanguageChanged, view,
+            [this, view] { view->setPreviewLanguage(previewLanguage_); });
+    connect(view, &EditorSessionPresenter::previewLanguageChanged, this,
+            [this, view] { setPreviewLanguage(view->previewLanguage()); });
     // Share revision notifications without moving another view's selection.
     auto forward = [](EditorSessionPresenter *target, const ed::Change &change) {
         if (target->revision() == change.status.current)
@@ -65,10 +70,22 @@ EditorSessionPresenter *EditorSessionPresenter::createViewSession(QWidget *owner
     return view;
 }
 
+void EditorSessionPresenter::setPreviewLanguage(core::SctLanguageGroupId language) {
+    if (previewLanguage_ == language)
+        return;
+    previewLanguage_ = language;
+    inspection_.reset();
+    reading_ = false;
+    auto selected = selection_;
+    selection_.reset();
+    select(selected);
+    emit previewLanguageChanged();
+}
 bool EditorSessionPresenter::busy() const { return operations_->active(); }
 void EditorSessionPresenter::bind(std::shared_ptr<ed::Backend> backend, ed::Revision revision) {
     ++sessionGeneration_;
     backend_ = std::move(backend);
+    previewLanguage_ = {};
     revision_ = revision;
     inspection_.reset();
     reading_ = false;
@@ -138,8 +155,38 @@ void EditorSessionPresenter::select(std::optional<ed::Subject> subject) {
         inspection_ = std::move(result).takeValue();
         emit inspectionChanged();
     });
-    watcher->setFuture(QtConcurrent::run(
-        [backend, revision, subject = *subject, stop] { return backend->inspect(revision, subject, stop); }));
+    watcher->setFuture(
+        QtConcurrent::run([backend, revision, subject = *subject, stop, language = previewLanguage_] {
+            auto result = backend->inspect(revision, subject, stop);
+            if (!result || !language.valid())
+                return result;
+            auto translate = [&](core::SctTextResourceId text) {
+                return backend->translation(revision, text, language, stop);
+            };
+            if (result.value().text) {
+                auto target = translate(*result.value().text);
+                if (!target)
+                    return core::Result<ed::Inspection>::failure(target.diagnostics());
+                result.value().text = target.value();
+                if (!target.value())
+                    result.value().description = "Missing translation in the selected preview language";
+            }
+            for (auto &p : result.value().parameters)
+                if (p.target)
+                    if (auto id = std::get_if<core::SctTextResourceId>(&*p.target)) {
+                        auto target = translate(*id);
+                        if (!target)
+                            return core::Result<ed::Inspection>::failure(target.diagnostics());
+                        if (target.value()) {
+                            p.target = ed::Subject(*target.value());
+                            p.value = "Translation " + std::to_string(target.value()->value);
+                        } else {
+                            p.target.reset();
+                            p.value = "Missing translation";
+                        }
+                    }
+            return result;
+        }));
 }
 void EditorSessionPresenter::accept(const ed::Change &change) {
     if (change.status.current.project != revision_.project ||

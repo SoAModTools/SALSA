@@ -3,6 +3,7 @@
 #include "ProgramInternal.h"
 #include "ProgramTypedValues.h"
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
+#include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include <set>
 
 namespace salsa::core::program {
@@ -42,6 +43,8 @@ struct Step {
     std::vector<Subject> subjects;
     bool generated = true;
     bool clone = false;
+    SctLanguageGroupId language;
+    std::optional<std::pair<Label, Label>> localizedExit;
 };
 struct Template {
     std::vector<std::uint64_t> signature;
@@ -127,7 +130,8 @@ void valueSignature(const Program &p, ValueId id, std::vector<std::uint64_t> &ou
     for (auto child : p.children(id))
         valueSignature(p, child, out);
 }
-std::vector<std::uint64_t> signature(const Program &p, const Action &a) {
+std::vector<std::uint64_t> signature(const Program &p, const Action &a,
+                                     const editor::LocalizedBlock *localized) {
     std::vector<std::uint64_t> out{static_cast<std::uint64_t>(a.kind)};
     auto condition = [&](ConditionId id) {
         const auto *c = p.find(id);
@@ -135,6 +139,16 @@ std::vector<std::uint64_t> signature(const Program &p, const Action &a) {
         out.insert(out.end(), {id.value, c->preparation.value, c->skipRefresh});
         valueSignature(p, c->result, out);
     };
+    if (localized) {
+        const auto &block = *localized;
+        out.insert(out.end(), {block.body.value, block.switchSelection, block.independent, block.skipRefresh,
+                               block.unconditional, block.languages.size()});
+        for (auto language : block.languages)
+            out.push_back(language.value);
+        for (auto &language : p.metadata().localization.languages)
+            out.insert(out.end(),
+                       {language.language.value, language.selector.value_or(UINT32_MAX), language.included});
+    }
     if (a.kind == ActionKind::Instruction)
         valueSignature(p, a.value, out);
     for (const auto &arm : p.arms(a.id)) {
@@ -195,7 +209,8 @@ bool fallsThrough(const Program &p, SctSequenceId id) {
     return true;
 }
 #include "DispatchLowering.inl"
-Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> sig) {
+Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> sig,
+                 const editor::LocalizedBlock *localized) {
     Template t{std::move(sig)};
     Values values(p);
     auto mark = [&](Label l) {
@@ -236,6 +251,83 @@ Template compile(const Program &p, const Action &a, std::vector<std::uint64_t> s
         s.fixups.push_back({{1, {}}, no});
         t.steps.push_back(std::move(s));
     };
+    if (localized) {
+        std::vector<editor::LocalizationLanguage> languages;
+        auto addLanguage = [&](const auto &l) {
+            if (l.included) {
+                languages.push_back(l);
+            }
+        };
+        for (auto id : localized->languages) {
+            auto found = std::ranges::find(p.metadata().localization.languages, id,
+                                           &editor::LocalizationLanguage::language);
+            if (found != p.metadata().localization.languages.end())
+                addLanguage(*found);
+        }
+        for (const auto &l : p.metadata().localization.languages)
+            if (std::ranges::find(localized->languages, l.language) == localized->languages.end())
+                addLanguage(l);
+        if (localized->unconditional && languages.size() == 1) {
+            Step body;
+            body.kind = Step::Expand;
+            body.sequence = localized->body;
+            body.language = languages.front().language;
+            body.clone = true;
+            t.steps.push_back(std::move(body));
+            return t;
+        }
+        for (auto &l : languages)
+            require(l.selector.has_value(), "Included localization needs a ByteVar[87] value");
+        auto label = [&](std::size_t n) {
+            return n < languages.size() ? Label{LabelKind::Dispatch, a.id.value, n + 1} : afterLabel(a.id);
+        };
+        if (localized->switchSelection && !languages.empty()) {
+            Step selector;
+            selector.kind = Step::Emit;
+            selector.subjects = {a.id};
+            selector.instruction = {{},
+                                    3,
+                                    localized->skipRefresh,
+                                    {},
+                                    {{0, *SctExpressionLanguage::parse("ByteVar[87]").expression}}};
+            for (std::size_t n = 0; n <= languages.size(); ++n) {
+                auto value = n < languages.size() ? *languages[n].selector : UINT32_MAX;
+                auto ordinal = static_cast<std::uint32_t>(n);
+                selector.instruction.repeatedParameterGroups.push_back(
+                    {{{2, sct::SctEncodedWordValue{value}}, {3, sct::SctInstructionReference{}}}});
+                selector.fixups.push_back({{3, ordinal}, label(n)});
+            }
+            t.steps.push_back(std::move(selector));
+        }
+        for (std::size_t n = 0; n < languages.size(); ++n) {
+            mark(label(n));
+            if (!localized->switchSelection) {
+                Step test;
+                test.kind = Step::Emit;
+                test.subjects = {a.id};
+                test.instruction = {{},
+                                    0,
+                                    localized->skipRefresh,
+                                    {},
+                                    {{0, *SctExpressionLanguage::parse("ByteVar[87] == " +
+                                                                       std::to_string(*languages[n].selector))
+                                              .expression},
+                                     {1, sct::SctInstructionReference{}}}};
+                test.fixups.push_back({{1, {}}, label(n + 1)});
+                t.steps.push_back(std::move(test));
+            }
+            Step body;
+            body.kind = Step::Expand;
+            body.sequence = localized->body;
+            body.clone = true;
+            body.language = languages[n].language;
+            if (localized->independent)
+                body.localizedExit = std::pair(afterLabel(a.id), label(n + 1));
+            t.steps.push_back(std::move(body));
+            jump(localized->independent ? label(n + 1) : afterLabel(a.id), {}, localized->body);
+        }
+        return t;
+    }
     switch (a.kind) {
     case ActionKind::Instruction:
         t.steps.push_back(values.instruction(a));
@@ -362,6 +454,12 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
             require(text && text->script == selected, "Missing or foreign text");
             const auto *v = p.find(text->value);
             require(v != nullptr, "Missing text payload");
+            if (!text->languages.empty() && std::ranges::all_of(text->languages, [&](auto language) {
+                    auto at = std::ranges::find(p.metadata().localization.languages, language,
+                                                &editor::LocalizationLanguage::language);
+                    return at != p.metadata().localization.languages.end() && !at->included;
+                }))
+                return false;
             return v->kind != ValueKind::Unavailable;
         };
         Values values(p);
@@ -448,7 +546,13 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
             auto *a = p.find(action);
             return a ? a->owner : SctSequenceId{};
         };
+        std::vector<std::pair<Label, Label>> localizedExits;
         auto qualify = [&](Label l) {
+            for (auto it = localizedExits.rbegin(); it != localizedExits.rend(); ++it)
+                if (l == it->first) {
+                    l = it->second;
+                    break;
+                }
             for (auto at = clones.rbegin(); at != clones.rend(); ++at)
                 if (contained(labelSequence(l), at->first)) {
                     l.space = at->second;
@@ -473,6 +577,56 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                 ref->target = found->second;
             }
         };
+        std::map<SctActionId, const editor::LocalizedBlock *> localizedBlocks;
+        for (auto &block : p.metadata().localization.blocks)
+            if (p.find(p.find(block.action)->owner)->script == selected)
+                localizedBlocks.emplace(block.action, &block);
+        std::vector<SctLanguageGroupId> activeLanguages;
+        std::map<SctLogicalTextId, const SctLogicalText *> messages;
+        for (auto &m : p.metadata().logicalTexts)
+            if (m.script == selected)
+                messages.emplace(m.id, &m);
+        std::map<std::pair<SctActionId, sct::SctParameterAddress>, const SctLogicalText *> textUses;
+        for (auto &u : p.metadata().localization.uses)
+            if (auto m = messages.find(u.message); m != messages.end())
+                textUses.emplace(std::make_pair(u.action, u.operand), m->second);
+        auto localizeParameter = [&](SctActionId action, sct::SctDocumentParameter &parameter,
+                                     std::optional<std::uint32_t> group) {
+            auto *reference = std::get_if<sct::SctStringReference>(&parameter.value);
+            if (!reference)
+                return;
+            auto use = textUses.find({action, {parameter.schemaIndex, group}});
+            if (use == textUses.end())
+                return;
+            auto *message = use->second;
+            if (std::ranges::find(message->variants, SctTextResourceId{reference->target.value()}) ==
+                message->variants.end())
+                return; // explicitly retargeted ordinary operand
+            SctLanguageGroupId language;
+            std::optional<std::pair<Label, Label>> localizedExit;
+            if (!activeLanguages.empty())
+                language = activeLanguages.back();
+            else {
+                std::vector<SctLanguageGroupId> included;
+                for (const auto &l : p.metadata().localization.languages)
+                    if (l.included)
+                        included.push_back(l.language);
+                if (included.size() == 1)
+                    language = included.front();
+            }
+            if (!language.valid())
+                return;
+            SctTextResourceId variant;
+            for (auto id : message->variants) {
+                auto *text = p.find(id);
+                if (std::ranges::find(text->languages, language) != text->languages.end()) {
+                    require(!variant.valid(), ("Ambiguous translation for " + message->name).c_str());
+                    variant = id;
+                }
+            }
+            require(variant.valid(), ("Missing translation for " + message->name).c_str());
+            reference->target = sct::SctStringId{variant.value};
+        };
         std::function<void(SctSequenceId)> sequence;
         sequence = [&](SctSequenceId id) {
             cancelled();
@@ -495,13 +649,15 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                                 "explicit");
                     }
                 mark(actionLabel(actionId));
-                auto sig = signature(p, *a);
+                auto localized = localizedBlocks.find(actionId);
+                auto *block = localized == localizedBlocks.end() ? nullptr : localized->second;
+                auto sig = signature(p, *a, block);
                 const auto key = std::pair(selected, actionId);
                 auto found = cache_->templates.find(key);
                 if (found == cache_->templates.end() || found->second.signature != sig) {
                     Template t;
                     try {
-                        t = compile(p, *a, std::move(sig));
+                        t = compile(p, *a, std::move(sig), block);
                     } catch (const std::exception &e) {
                         throw std::runtime_error("Action " + std::to_string(actionId.value) + ": " + e.what());
                     }
@@ -515,7 +671,15 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                     else if (step.kind == Step::Expand) {
                         if (step.clone)
                             clones.emplace_back(step.sequence, ++nextSpace);
+                        if (step.language.valid())
+                            activeLanguages.push_back(step.language);
+                        if (step.localizedExit)
+                            localizedExits.push_back(*step.localizedExit);
                         sequence(step.sequence);
+                        if (step.language.valid())
+                            activeLanguages.pop_back();
+                        if (step.localizedExit)
+                            localizedExits.pop_back();
                         if (step.clone)
                             clones.pop_back();
                     } else {
@@ -524,11 +688,15 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                         const auto from = position();
                         auto instruction = step.instruction;
                         instruction.id = document.allocateInstructionId();
-                        for (auto &parameter : instruction.fixedParameters)
+                        for (auto &parameter : instruction.fixedParameters) {
+                            localizeParameter(actionId, parameter, {});
                             remapText(parameter);
-                        for (auto &group : instruction.repeatedParameterGroups)
-                            for (auto &parameter : group.parameters)
+                        }
+                        for (std::uint32_t n = 0; n < instruction.repeatedParameterGroups.size(); ++n)
+                            for (auto &parameter : instruction.repeatedParameterGroups[n].parameters) {
+                                localizeParameter(actionId, parameter, n);
                                 remapText(parameter);
+                            }
                         for (auto fixup : step.fixups) {
                             fixup.target = qualify(fixup.target);
                             pending.push_back({from, fixup});
@@ -550,7 +718,8 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                 require(content != nullptr, "Missing section content");
                 if (content->kind == ValueKind::Unavailable || (content->kind == ValueKind::IndexedSection &&
                                                                 !indexed.contains(SctTextResourceId{content->data}))) {
-                    omitted("Excluded unavailable source section " + section.name);
+                    if (content->kind == ValueKind::Unavailable)
+                        omitted("Excluded unavailable source section " + section.name);
                     continue;
                 }
             }

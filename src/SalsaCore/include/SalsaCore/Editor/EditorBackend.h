@@ -27,6 +27,7 @@ struct OutlineRequest {
     Subject parent;
     std::size_t offset = 0, limit = 128;
     ViewMode mode = ViewMode::Instructions;
+    SctLanguageGroupId language;
 };
 struct OutlinePage {
     SessionStatus status;
@@ -248,6 +249,10 @@ class Backend {
     virtual Result<std::vector<std::byte>> copy(Revision, CopySelection, std::stop_token = {}) = 0;
     virtual Result<FragmentReview> reviewPaste(Revision, Subject, std::span<const std::byte>, std::stop_token = {}) = 0;
     virtual Result<Organization> organization(Revision, SctScriptId, std::stop_token = {}) = 0;
+    virtual Result<std::optional<SctTextResourceId>>
+        translation(Revision, SctTextResourceId, SctLanguageGroupId, std::stop_token = {}) = 0;
+    virtual Result<LocalizationCatalog> localizations(Revision, bool recognize = false,
+                                                      std::stop_token = {}) = 0;
     virtual Result<FeatureInventory> features(Revision, SctScriptId, std::stop_token = {}) = 0;
     virtual Result<ModuleDetail> module(Revision, SctModuleId, std::stop_token = {}) = 0;
     virtual Result<std::vector<LanguageSuggestion>> suggestLanguages(Revision, SctScriptId, std::stop_token = {}) = 0;

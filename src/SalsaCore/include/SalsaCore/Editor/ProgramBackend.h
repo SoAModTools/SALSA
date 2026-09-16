@@ -26,6 +26,9 @@ class ProgramBackend final : public Backend {
     Result<Change> history(Revision, bool, std::stop_token = {}) override;
     using ResourceLoader = std::function<Result<smores::script::Resource>(std::string, smores::script::ResourceRole, std::stop_token)>;
     void setResourceLoader(ResourceLoader loader) { resourceLoader_=std::move(loader); }
+    Result<std::optional<SctTextResourceId>> translation(Revision, SctTextResourceId, SctLanguageGroupId,
+                                                         std::stop_token = {}) override;
+    Result<LocalizationCatalog> localizations(Revision, bool = false, std::stop_token = {}) override;
     Result<FeatureInventory> features(Revision, SctScriptId, std::stop_token = {}) override;
     Result<ModuleDetail> module(Revision, SctModuleId, std::stop_token = {}) override;
     Result<std::vector<LanguageSuggestion>> suggestLanguages(Revision, SctScriptId, std::stop_token = {}) override;

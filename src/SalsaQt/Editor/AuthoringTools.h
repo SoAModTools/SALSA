@@ -24,6 +24,7 @@ class LanguageTools final : public QObject {
     QWidget *host_;
     void open();
     void batch(std::vector<core::SctTextResourceId>);
+    void localizations();
 };
 class EntryResourceTools final : public QObject {
   public:

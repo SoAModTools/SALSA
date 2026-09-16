@@ -1,16 +1,17 @@
-#include "SalsaCore/Program/ProgramPersistence.h"
-#include "SalsaCore/Program/EditorWorkspace.h"
 #include "SalsaCore/Editor/ProgramBackend.h"
 #include "SalsaCore/Persistence/AtomicFile.h"
+#include "SalsaCore/Program/EditorWorkspace.h"
+#include "SalsaCore/Program/ProgramMaterializer.h"
+#include "SalsaCore/Program/ProgramPersistence.h"
 #include "SalsaCore/Program/ProgramService.h"
 #include "SalsaCore/Program/ProgramValues.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include "SpiceSCT/SctInstructionFactory.h"
-#include <gtest/gtest.h>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <gtest/gtest.h>
 
 namespace {
 using namespace salsa::core;
@@ -1386,3 +1387,225 @@ TEST(EditorAuthoringToolsTest, SelectorBatchPropagatesKnownCopiesAndRejectsBranc
     auto preview=backend.previewSelectors(f.revision,first,last,{{6,1}});ASSERT_TRUE(preview)<<messages(preview.diagnostics());EXPECT_EQ(preview.value().values[8],2);EXPECT_EQ(preview.value().values[9],2);EXPECT_EQ(preview.value().values[6],1);EXPECT_EQ(preview.value().tiles.size(),42u);
     EXPECT_FALSE(backend.previewSelectors(f.revision,f.writer,f.branch,{}));auto undo=backend.history(f.revision,false);ASSERT_TRUE(undo);auto checkpoint=f.service.checkpoint(undo.value().status.current).get();ASSERT_TRUE(checkpoint);EXPECT_EQ(checkpoint.value().program->find(f.sequence)->order->size(),4u);
 }
+
+namespace {
+TEST(LocalizationTest, SharedBodyWideCsvAndRuntimeLanguagesShareOneHistory) {
+    for (int mode = 0; mode < 3; ++mode) {
+        SCOPED_TRACE(mode);
+        ir::ProgramBuilder b({Project});
+        SctScriptContext context;
+        context.name = "a";
+        auto script = b.importedScript(baseline(), context).value();
+        for (auto name : {"init", "loop"}) {
+            auto seq = b.sectionBody(b.section({{}, script, name}).value());
+            b.instruction(seq, b.value(ir::ValueKind::Instruction, 12).value());
+        }
+        auto main = b.sectionBody(b.section({{}, script, "scene"}).value());
+        std::array conditions{
+            b.expression(*SctExpressionLanguage::parse("ByteVar[87] == 0").expression).value(),
+            b.expression(*SctExpressionLanguage::parse("ByteVar[87] == 1").expression).value()};
+        SctActionId header;
+        std::vector<SctSequenceId> bodies;
+        if (mode == 2) {
+            header = b.switchRegion(
+                          main, b.expression(*SctExpressionLanguage::parse("ByteVar[87]").expression).value(),
+                          std::array{ir::Case{{0}}, ir::Case{{1}}})
+                         .value();
+            bodies = b.branchBodies(header);
+        } else if (mode == 1) {
+            header = b.conditional(main, std::span(conditions).first(1)).value();
+            bodies = b.branchBodies(header);
+            auto next = b.conditional(main, std::span(conditions).subspan(1)).value();
+            bodies.push_back(b.branchBodies(next).front());
+        } else {
+            header = b.conditional(main, conditions).value();
+            bodies = b.branchBodies(header);
+        }
+        b.instruction(main, b.value(ir::ValueKind::Instruction, 12).value());
+        auto built = b.finish();
+        ASSERT_TRUE(built) << messages(built.diagnostics());
+        auto service = std::make_shared<ir::ProgramService>();
+        auto opened = service->adopt({}, std::move(built).takeValue()).get();
+        ASSERT_TRUE(opened) << messages(opened.diagnostics());
+        auto revision = opened.value().current;
+        editor::ProgramBackend backend(service);
+        auto edit = [&](editor::EditIntent request) {
+            auto result = backend.execute(revision, std::move(request));
+            if (!result)
+                throw std::runtime_error(messages(result.diagnostics()));
+            revision = result.value().status.current;
+            return result.value();
+        };
+        auto create = [&](std::string name, std::string value) {
+            sct::SctMessage msg;
+            msg.headerUtf8 = "Speaker";
+            msg.body.elements = {sct::SctTextChunk{value},
+                                 sct::SctInlineCommand{sct::SctMessageCommandCode::E, {}}};
+            auto c = edit(editor::CreateText{script, name, false, sct::SctTextKind::SctString, msg});
+            return std::get<SctTextResourceId>(*c.suggestedSelection);
+        };
+        auto base = create("ahello", "Hello, \"there\"\nNext"), french = create("aFhello", "Bonjour");
+        std::vector<SctActionId> dialogActions;
+        for (std::size_t n = 0; n < 2; ++n) {
+            edit(editor::InsertOpcode{bodies[n], 144});
+            auto cp = service->checkpoint(revision).get().value();
+            auto id = cp.program->find(bodies[n])->order->front();
+            dialogActions.push_back(id);
+            auto parameter = sct::findSctOpcodeSchema(144)->textReferences[0].parameterIndex;
+            edit(editor::BindReference{id, {parameter, {}}, n ? french : base});
+            auto owner = cp.program->find(std::get<ir::ArmId>(*cp.program->find(bodies[n])->owner))->owner;
+            auto transfer =
+                service
+                    ->edit({revision,
+                            {semantic(ir::InsertTransfer{bodies[n], 1, ir::TransferKind::Break, owner})}})
+                    .get();
+            ASSERT_TRUE(transfer) << messages(transfer.diagnostics());
+            revision = transfer.value().status.current;
+        }
+        editor::LocalizationChange discover;
+        discover.discover = true;
+        edit(editor::FeatureEdit{discover});
+        auto catalog = backend.localizations(revision, true);
+        ASSERT_TRUE(catalog) << messages(catalog.diagnostics());
+        ASSERT_EQ(catalog.value().messages.size(), 1u);
+        ASSERT_EQ(catalog.value().candidates.size(), 1u);
+        EXPECT_EQ(catalog.value().candidates[0].first, header);
+        auto original = service->checkpoint(revision).get().value();
+        ir::ProgramMaterializer materializer;
+        auto output = [&] {
+            auto cp = service->checkpoint(revision).get().value();
+            return materializer.exportScript(
+                cp, revision, script, {"f44499b5-dcf0-449a-9815-5bdf558eface"},
+                sct::SctDocumentExportOptions{sct::SctPlatform::GameCube, sct::kSctShiftJisByte7FEncoding});
+        };
+        editor::LocalizationChange organize;
+        organize.promote = {header};
+        edit(editor::FeatureEdit{organize});
+        auto cp = service->checkpoint(revision).get().value();
+        ASSERT_EQ(cp.program->metadata().localization.blocks.size(), 1u);
+        EXPECT_NE(cp.program->find(dialogActions[0]), nullptr);
+        EXPECT_EQ(cp.program->find(dialogActions[1]), nullptr);
+        auto lowered = output();
+        ASSERT_TRUE(lowered) << messages(lowered.diagnostics());
+        if (mode == 1) {
+            auto &doc = *lowered.value().materialized.document;
+            auto section =
+                std::ranges::find(doc.sections, std::string("scene"), &sct::SctDocumentSection::nameBytes);
+            ASSERT_NE(section, doc.sections.end());
+            auto &code = std::get<sct::SctScriptSectionContent>(section->content).instructions;
+            std::vector<sct::SctInstructionId> guards;
+            for (auto &i : code)
+                if (i.opcode == 0)
+                    guards.push_back(i.id);
+            ASSERT_EQ(guards.size(), 2u);
+            auto jump = std::ranges::find(code, 10u, &sct::SctDocumentInstruction::opcode);
+            ASSERT_NE(jump, code.end());
+            EXPECT_EQ(std::get<sct::SctInstructionReference>(jump->fixedParameters.front().value).target,
+                      guards[1]);
+        }
+
+        auto language = cp.program->find(french)->languages.front();
+        auto outline =
+            backend.outline(revision, {bodies.front(), 0, 128, editor::ViewMode::Semantic, language});
+        ASSERT_TRUE(outline);
+        EXPECT_NE(outline.value().rows.front().label.find("Bonjour"), std::string::npos);
+        auto mapped = backend.translation(revision, base, language);
+        ASSERT_TRUE(mapped);
+        EXPECT_EQ(mapped.value(), french);
+        catalog = backend.localizations(revision);
+        ASSERT_TRUE(catalog);
+        std::vector<std::string> languages;
+        for (auto &l : catalog.value().languages)
+            languages.push_back(l.name);
+        auto csv = editor::LocalizationCsv::encode(catalog.value(), languages);
+        ASSERT_TRUE(csv);
+        EXPECT_NE(csv.value().find("\"Message\",\"Unmarked\",\"French\""), std::string::npos);
+        auto decoded = editor::LocalizationCsv::decode(csv.value(), catalog.value());
+        ASSERT_TRUE(decoded) << messages(decoded.diagnostics());
+        ASSERT_EQ(decoded.value().size(), 2u);
+        auto wrong = catalog.value();
+        wrong.revision.project.value = "other";
+        EXPECT_FALSE(editor::LocalizationCsv::decode(csv.value(), wrong));
+        editor::LocalizationChange translate;
+        translate.translations = decoded.value();
+        auto message = catalog.value().messages.front().id;
+        translate.translations.push_back(
+            {message, "Mod language",
+             sct::SctMessage{
+                 {},
+                 {{sct::SctTextChunk{"New"}, sct::SctInlineCommand{sct::SctMessageCommandCode::E, {}}}}}});
+        edit(editor::FeatureEdit{translate});
+        EXPECT_FALSE(output()); // new runtime language has no assigned selector yet
+        catalog = backend.localizations(revision);
+        ASSERT_TRUE(catalog);
+        auto rules = catalog.value().settings.languages;
+        ASSERT_EQ(rules.size(), 3u);
+        rules.back().selector = 8;
+        rules[1].included = false;
+        editor::LocalizationChange settings;
+        settings.languages = rules;
+        edit(editor::FeatureEdit{settings});
+        auto newOutput = output();
+        ASSERT_TRUE(newOutput) << messages(newOutput.diagnostics());
+        cp = service->checkpoint(revision).get().value();
+        auto encoded = ir::ProgramPersistence::encode(*cp.program);
+        ASSERT_TRUE(encoded);
+        auto reopened = ir::ProgramPersistence::decode(encoded.value());
+        ASSERT_TRUE(reopened) << messages(reopened.diagnostics());
+        EXPECT_EQ(reopened.value().program->metadata().localization.blocks.size(), 1u);
+        EXPECT_EQ(reopened.value().program->metadata().localization.languages.back().selector, 8u);
+        auto undo = backend.history(revision, false);
+        ASSERT_TRUE(undo);
+        revision = undo.value().status.current;
+        EXPECT_FALSE(output());
+        auto redo = backend.history(revision, true);
+        ASSERT_TRUE(redo);
+        revision = redo.value().status.current;
+        EXPECT_TRUE(output());
+        editor::LocalizationChange expand;
+        expand.expand = {header};
+        edit(editor::FeatureEdit{expand});
+        cp = service->checkpoint(revision).get().value();
+        EXPECT_TRUE(cp.program->metadata().localization.blocks.empty());
+        EXPECT_NE(cp.program->find(dialogActions[0]), nullptr);
+        ASSERT_TRUE(output());
+        service->shutdown().get();
+    }
+}
+TEST(LocalizationTest, CsvPreservesKindsCommandsAndMissingCells) {
+    editor::LocalizationCatalog catalog;
+    catalog.revision.project = {Project};
+    auto language = SctLanguageGroupId{1};
+    catalog.languages.push_back({language, "Custom, language", {}});
+    sct::SctMessage message;
+    message.headerUtf8 = "A)\\B";
+    message.body.elements = {
+        sct::SctTextChunk{"=literal,\"quoted\"\n\\message"},
+        sct::SctInlineCommand{sct::SctMessageCommandCode::C, sct::SctByteListCommandArgument{{1, 2, 3}}},
+        sct::SctInlineCommand{sct::SctMessageCommandCode::P, sct::SctDecimalCommandArgument{12}},
+        sct::SctInlineCommand{sct::SctMessageCommandCode::E, {}}};
+    std::vector<sct::SctTextValue> values{message, sct::SctPlainText{""}, sct::SctEmptyIndexedText{},
+                                          sct::SctMessage{}};
+    for (std::size_t n = 0; n < values.size(); ++n) {
+        auto id = SctLogicalTextId{n + 10};
+        editor::LocalizationMessage row;
+        row.id = id;
+        row.translations.push_back({id, "Custom, language", values[n]});
+        catalog.messages.push_back(row);
+    }
+    auto missing = SctLogicalTextId{20};
+    catalog.messages.push_back({missing});
+    auto encoded = editor::LocalizationCsv::encode(catalog, {"Custom, language"});
+    ASSERT_TRUE(encoded);
+    auto decoded = editor::LocalizationCsv::decode(encoded.value(), catalog);
+    ASSERT_TRUE(decoded) << messages(decoded.diagnostics());
+    ASSERT_EQ(decoded.value().size(), 5u);
+    EXPECT_FALSE(decoded.value().back().value);
+    for (std::size_t n = 0; n < values.size(); ++n) {
+        ASSERT_TRUE(decoded.value()[n].value);
+        EXPECT_EQ(editor::LocalizationCsv::text(*decoded.value()[n].value).value(),
+                  editor::LocalizationCsv::text(values[n]).value());
+    }
+    EXPECT_FALSE(editor::LocalizationCsv::decode(encoded.value() + "\"unfinished", catalog));
+}
+} // namespace

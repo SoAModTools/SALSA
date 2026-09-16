@@ -212,6 +212,8 @@ struct SemanticTransaction {
         p.receipt.actions.push_back(id);
     }
     void arms(SctActionId id, const std::vector<ArmEdit> &edits) {
+        require(std::ranges::none_of(d.metadata.localization.blocks, [&](auto &b) { return b.action == id; }),
+                "Edit localization settings rather than the generated language arms");
         auto &a = editAction(id);
         require(a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch, "Arms need a conditional or switch");
         const auto script = d.sequence(a.owner)->script;
@@ -424,6 +426,7 @@ struct SemanticTransaction {
     }
     void storyEdit(const editor::StoryEdit&);
     void feature(const editor::FeatureEdit&);
+    void localizationEdit(const editor::LocalizationChange &);
     void featureReplace(editor::FeatureSite, ValueId);
     void moveMany(const MoveActions &);
     void paste(const PasteFragment &);
@@ -563,6 +566,74 @@ struct SemanticTransaction {
             op);
     }
     void finish() {
+        // Reconcile only instructions changed by this transaction. New text operands in a
+        // canonical body participate in localization immediately, without rediscovery.
+        if (!d.metadata.logicalTexts.empty() && !p.actions.empty()) {
+            std::optional<LocalizationLookup> lookup;
+            for (auto &patch : p.actions) {
+                auto *action = d.actions.find(patch.index);
+                if (!action || !action->id.valid() || action->kind != ActionKind::Instruction)
+                    continue;
+                featureOperands(d, *action, [&](auto address, auto value) {
+                    auto *v = d.values.find(value.value);
+                    if (v->kind != ValueKind::IndexedTextReference)
+                        return;
+                    if (p.actions.size() > 32 && !lookup)
+                        lookup = localizationLookup(d);
+                    auto *logical = logicalFor(d, SctTextResourceId{v->data}, lookup ? &*lookup : nullptr);
+                    if (!logical)
+                        return;
+                    auto use = std::ranges::find_if(d.metadata.localization.uses, [&](auto &u) {
+                        return u.action == action->id && u.operand == address;
+                    });
+                    if (use != d.metadata.localization.uses.end() && use->message == logical->id)
+                        return;
+                    if (!p.localization)
+                        p.localization = d.metadata.localization;
+                    if (use == d.metadata.localization.uses.end())
+                        d.metadata.localization.uses.push_back({action->id, address, logical->id});
+                    else
+                        use->message = logical->id;
+                    changed = true;
+                });
+            }
+        }
+        std::set<SctActionId> changedUses;
+        for (auto &patch : p.actions) {
+            changedUses.insert(patch.other.id);
+            changedUses.insert(d.actions.find(patch.index)->id);
+        }
+        auto validUse = [&](const editor::LocalizationUse &use) {
+            if (!p.logicalTexts && !changedUses.contains(use.action))
+                return true;
+            auto *a = d.action(use.action);
+            auto *m = d.lookup(use.message.value, EntityKind::LogicalText, d.metadata.logicalTexts);
+            if (!a || !m)
+                return false;
+            bool valid = false;
+            featureOperands(d, *a, [&](auto address, auto id) {
+                auto *v = d.values.find(id.value);
+                if (address == use.operand && v->kind == ValueKind::IndexedTextReference &&
+                    std::ranges::find(m->variants, SctTextResourceId{v->data}) != m->variants.end())
+                    valid = true;
+            });
+            return valid;
+        };
+        if ((p.logicalTexts || !changedUses.empty()) &&
+            std::ranges::any_of(d.metadata.localization.uses, [&](auto &use) { return !validUse(use); })) {
+            if (!p.localization)
+                p.localization = d.metadata.localization;
+            std::erase_if(d.metadata.localization.uses, [&](auto &use) { return !validUse(use); });
+            changed = true;
+        }
+        if (!changedUses.empty() && std::ranges::any_of(d.metadata.localization.blocks,
+                                                        [&](auto &b) { return !d.action(b.action); })) {
+            if (!p.localization)
+                p.localization = d.metadata.localization;
+            std::erase_if(d.metadata.localization.blocks, [&](auto &b) { return !d.action(b.action); });
+            changed = true;
+        }
+
         std::set<std::uint64_t> removed;
         for(auto [id,prior]:p.locations) if(prior.kind!=EntityKind::None && d.directory.find(id).kind==EntityKind::None) removed.insert(id);
         if(!removed.empty()) {

@@ -26,6 +26,8 @@ class EditorSessionPresenter final : public QObject {
     QAction *undoAction() const { return undo_; }
     QAction *redoAction() const { return redo_; }
     bool busy() const;
+    core::SctLanguageGroupId previewLanguage() const { return previewLanguage_; }
+    void setPreviewLanguage(core::SctLanguageGroupId);
     const std::optional<core::editor::Subject> &selection() const { return selection_; }
     void execute(QString, core::editor::EditIntent, std::optional<core::editor::Revision> = {});
     void navigate(core::editor::Subject);
@@ -38,6 +40,7 @@ class EditorSessionPresenter final : public QObject {
     QAction *forwardAction() const { return forward_; }
 
   signals:
+    void previewLanguageChanged();
     void inspectionChanged();
     void sessionChanged();
     void navigationRequested(const salsa::core::editor::Subject &);
@@ -53,6 +56,7 @@ class EditorSessionPresenter final : public QObject {
     QPointer<EditorSessionPresenter> changeSink_;
     std::shared_ptr<core::editor::Backend> backend_;
     core::editor::Revision revision_, requestRevision_;
+    core::SctLanguageGroupId previewLanguage_;
     bool reading_ = false;
     std::optional<core::editor::Subject> selection_;
     std::vector<core::editor::Subject> selectionSet_;

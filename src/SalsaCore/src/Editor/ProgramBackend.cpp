@@ -68,12 +68,12 @@ Change ProgramBackend::describe(const ir::ChangeReceipt &c) {
             c.conditions};
 }
 Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest request, std::stop_token stop) {
-    auto result =
-        service_
-            ->outline(revision,
-                      {request.parent, request.offset, request.limit, request.mode == ViewMode::Semantic},
-                      stop)
-            .get();
+    auto result = service_
+                      ->outline(revision,
+                                {request.parent, request.offset, request.limit,
+                                 request.mode == ViewMode::Semantic, request.language},
+                                stop)
+                      .get();
     if (!result)
         return Result<OutlinePage>::failure(result.diagnostics());
     auto &p = result.value();
@@ -274,6 +274,17 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
     }
     if (!s.texts.empty())
         out.description = "Use Edit selected text for formatted dialogue and choices.";
+    for (auto &block : s.localized)
+        if (out.construct == block.action) {
+            out.title = "Localized sequence";
+            out.description = "One editable body. Runtime selectors are configured in Localizations; use "
+                              "generated-instruction preview to inspect lowering.";
+            out.evidence = block.explanation;
+            out.condition.reset();
+            out.conditionTarget.reset();
+            out.editableBranches = false;
+            out.body = block.body;
+        }
     return Result<Inspection>::success(std::move(out));
 }
 Result<Change> ProgramBackend::replaceParameter(Revision revision, ReplaceParameter edit, std::stop_token stop) {

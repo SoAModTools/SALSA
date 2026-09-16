@@ -26,8 +26,13 @@ F(Entrypoint, v.id, v.script, v.name, v.kind, v.body, v.enabled, v.activation, v
 F(Annotation, v.subject, v.alias, v.evidence, v.note, v.bookmark, v.color)
 F(VariableMeaning, v.id, v.script, v.variable, v.value, v.name, v.evidence, v.storyState)
 F(editor::InterpretationRecord, v.subject, v.revision, v.decision, v.explanation, v.evidence)
-F(Metadata, v.storyEnabled, v.modules, v.entrypoints, v.ports, v.languages, v.connections, v.logicalTexts,
-  v.annotations, v.meanings, v.folders, v.opcodes, v.narrative, v.interpretations)
+F(editor::LocalizationLanguage, v.language, v.selector, v.included)
+F(editor::LocalizationUse, v.action, v.operand, v.message)
+F(editor::LocalizedBlock, v.action, v.body, v.switchSelection, v.independent, v.skipRefresh, v.languages,
+  v.explanation, v.unconditional)
+F(editor::LocalizationState, v.languages, v.uses, v.blocks)
+F(Metadata, v.storyEnabled, v.localization, v.modules, v.entrypoints, v.ports, v.languages, v.connections,
+  v.logicalTexts, v.annotations, v.meanings, v.folders, v.opcodes, v.narrative, v.interpretations)
 F(SctAuthoringEvidence, v.kind, v.description)
 F(SctUnresolvedBinding, v.originalEvidence, v.explanation, v.evidence)
 F(SctLegacyOrigin, v.capsuleId, v.scriptKey, v.scriptOrdinal)

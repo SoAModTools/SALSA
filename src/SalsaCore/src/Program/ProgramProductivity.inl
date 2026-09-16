@@ -66,6 +66,10 @@ ProgramService::copy(Revision r, editor::CopySelection request, std::stop_token 
             }
             out->script = script;
             out->content = *o.read(r, selection, stop);
+            for (const auto &block : d.metadata.localization.blocks)
+                require(std::ranges::find(out->content.actions, block.action, &Action::id) ==
+                            out->content.actions.end(),
+                        "Expand localized blocks to explicit instructions before copying them");
             out->content.scripts.clear();
             if (!out->roots.empty()) {
                 const auto owner = d.action(out->roots.front())->owner;

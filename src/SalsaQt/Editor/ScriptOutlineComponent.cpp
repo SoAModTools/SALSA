@@ -1,5 +1,6 @@
 #include "Editor/ScriptOutlineComponent.h"
 #include "Editor/EditorSessionPresenter.h"
+#include <QComboBox>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -80,6 +81,31 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
     modes_->addTab(tr("Instructions"));
     modes_->addTab(tr("Semantic"));
     layout->addWidget(modes_);
+    localization_ = new QComboBox(this);
+    localization_->setToolTip(
+        tr("Preview localization only; runtime selection is configured in Localizations"));
+    localization_->addItem(tr("Localization: source text"), QVariant::fromValue<qulonglong>(0));
+    layout->addWidget(localization_);
+    localization_->hide();
+    connect(localization_, &QComboBox::currentIndexChanged, this,
+            [this] { session_->setPreviewLanguage({localization_->currentData().toULongLong()}); });
+    connect(session_, &EditorSessionPresenter::previewLanguageChanged, this, [this] {
+        QSignalBlocker block(localization_);
+        auto at = localization_->findData(QVariant::fromValue<qulonglong>(session_->previewLanguage().value));
+        if (at >= 0)
+            localization_->setCurrentIndex(at);
+        viewStates_[model_->mode() == ed::ViewMode::Semantic ? 1 : 0] = viewState(model_->mode());
+        model_->setLanguage(session_->previewLanguage());
+        if (script_.valid()) {
+            model_->bind(session_->backend(), session_->revision(),
+                         module_ ? ed::Subject(*module_) : ed::Subject(script_));
+            restoreSession();
+        }
+    });
+    connect(session_, &EditorSessionPresenter::changed, this, [this](const ed::Change &c) {
+        if (c.presentationChanged)
+            refreshLanguages();
+    });
     auto *selectionTree = new SelectionTree(session, this);
     tree_ = selectionTree;
     selectionTree->selected = [this] { return selectedItems(); };
@@ -133,6 +159,7 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
     model_->pageReady = [this] { restoreVisible(); };
 
     connect(modes_, &QTabBar::currentChanged, this, [this](int mode) {
+        localization_->setVisible(mode != 0);
         const auto oldMode = model_->mode();
         viewStates_[oldMode == ed::ViewMode::Semantic ? 1 : 0] = viewState(oldMode);
         model_->setMode(mode ? ed::ViewMode::Semantic : ed::ViewMode::Instructions);
@@ -147,6 +174,7 @@ ScriptOutlineComponent::ScriptOutlineComponent(EditorSessionPresenter *session, 
 void ScriptOutlineComponent::setSemantic(bool semantic) { modes_->setCurrentIndex(semantic ? 1 : 0); }
 void ScriptOutlineComponent::bind(core::SctScriptId script) {
     script_ = script;
+    refreshLanguages();
     model_->bind(session_->backend(), session_->revision(),
                  module_ ? ed::Subject{*module_} : ed::Subject{script});
 }
@@ -416,5 +444,32 @@ void ScriptOutlineComponent::reveal(ed::Subject subject, std::function<void()> c
             {{core::DiagnosticSeverity::Info, core::DiagnosticCode::InvalidSctAuthoringProject,
               "This target is outside the module; open it from the script outline."}});
     }));
+}
+} // namespace salsa::qt
+
+namespace salsa::qt {
+void ScriptOutlineComponent::refreshLanguages() {
+    if (!script_.valid() || !session_->backend())
+        return;
+    auto b = session_->backend();
+    auto r = session_->revision();
+    auto script = script_;
+    auto *watcher = new QFutureWatcher<core::Result<ed::FeatureInventory>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, r, script] {
+        auto result = watcher->result();
+        watcher->deleteLater();
+        if (r != session_->revision() || script != script_ || !result)
+            return;
+        QSignalBlocker block(localization_);
+        localization_->clear();
+        localization_->addItem(tr("Localization: source text"), QVariant::fromValue<qulonglong>(0));
+        for (auto &l : result.value().languages)
+            localization_->addItem(QString::fromStdString(l.name),
+                                   QVariant::fromValue<qulonglong>(l.id.value));
+        auto n = localization_->findData(QVariant::fromValue<qulonglong>(session_->previewLanguage().value));
+        if (n >= 0)
+            localization_->setCurrentIndex(n);
+    });
+    watcher->setFuture(QtConcurrent::run([b, r, script] { return b->features(r, script); }));
 }
 } // namespace salsa::qt

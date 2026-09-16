@@ -290,8 +290,14 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\SalsaCore\Editor\AuthoringFeatures.h" />
+    <ClInclude Include="include\SalsaCore\Editor\Localization.h" />
     <ClCompile Include="src\Editor\ProgramFeatures.cpp" />
+    <ClCompile Include="src\Editor\LocalizationCsv.cpp" />
+    <ClCompile Include="src\Editor\LocalizationSct.cpp" />
     <ClInclude Include="src\Program\FeatureHelpers.inl" />
+    <ClInclude Include="src\Program\LocalizationQueries.inl" />
+    <ClInclude Include="src\Program\LocalizationEdits.inl" />
+    <ClInclude Include="src\Program\LocalizationHelpers.inl" />
     <ClInclude Include="src\Program\FeatureQueries.inl" />
     <ClInclude Include="src\Program\FeatureEdits.inl" />
   </ItemGroup>

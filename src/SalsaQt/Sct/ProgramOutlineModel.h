@@ -10,6 +10,7 @@ class ProgramOutlineModel final : public QAbstractItemModel {
   public:
     explicit ProgramOutlineModel(QObject *parent = nullptr);
     void bind(std::shared_ptr<core::editor::Backend>, core::editor::Revision, core::editor::Subject);
+    void setLanguage(core::SctLanguageGroupId language) { language_ = language; }
     void setMode(core::editor::ViewMode mode) { mode_ = mode; }
     core::editor::ViewMode mode() const { return mode_; }
     bool pending(const QModelIndex &index) const;
@@ -46,6 +47,7 @@ class ProgramOutlineModel final : public QAbstractItemModel {
     std::shared_ptr<core::editor::Backend> service_;
     core::editor::Revision revision_;
     core::editor::ViewMode mode_ = core::editor::ViewMode::Instructions;
+    core::SctLanguageGroupId language_;
     std::uint64_t generation_ = 0, nextRequest_ = 0;
     std::size_t slot(const QModelIndex &) const;
     QModelIndex indexFor(std::size_t) const;

@@ -1,17 +1,18 @@
 #include "SalsaCore/Program/ProgramService.h"
 #include "DispatchPredicates.h"
+#include "ExplicitFlow.h"
 #include "NativeCollection.h"
 #include "ProgramInternal.h"
-#include "ExplicitFlow.h"
+#include "SalsaCore/Authoring/SctTextAuthoring.h"
 #include "SalsaCore/Program/ProgramPersistence.h"
 #include "SalsaCore/Program/ProgramValues.h"
-#include "SalsaCore/Authoring/SctTextAuthoring.h"
-#include "SpiceSCT/SctScptEncoding.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
+#include "SpiceSCT/SctScptEncoding.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <regex>
 #include <set>
 #include <thread>
 #include <unordered_set>
@@ -175,6 +176,7 @@ struct PreparedData {
     std::optional<std::vector<SctLogicalText>> logicalTexts;
     std::optional<std::vector<VariableMeaning>> meanings;
     std::optional<bool> storyEnabled;
+    std::optional<editor::LocalizationState> localization;
     std::optional<std::vector<SctModuleId>> narrative;
     std::optional<std::vector<editor::InterpretationRecord>> interpretations;
     std::optional<std::vector<Annotation>> annotationTable;
@@ -213,6 +215,8 @@ struct PreparedData {
             connections->swap(d.metadata.connections);
         if (logicalTexts)
             logicalTexts->swap(d.metadata.logicalTexts);
+        if (localization)
+            std::swap(*localization, d.metadata.localization);
         if (storyEnabled)
             std::swap(*storyEnabled, d.metadata.storyEnabled);
         if (narrative) narrative->swap(d.metadata.narrative);
@@ -261,9 +265,11 @@ struct PreparedData {
 // clang-format off
 #include "CutsceneInternal.inl"
 #include "FeatureHelpers.inl"
+#include "LocalizationHelpers.inl"
 #include "SemanticEdits.inl"
 #include "FragmentEdits.inl"
 #include "FeatureEdits.inl"
+#include "LocalizationEdits.inl"
 #include "StoryEdits.inl"
 #include "CutsceneEdits.inl"
 #include "DispatchEdits.inl"
@@ -355,6 +361,10 @@ struct ServiceOwner {
             if (id.valid())
                 protectedIds.insert(id.value);
         };
+        for (auto &x : m.localization.blocks) {
+            protect(x.action);
+            protect(x.body);
+        }
         for (auto &x : m.modules)
             for (auto id : x.sequences)
                 protect(id);
@@ -572,6 +582,13 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
                             a.value = d.add(original.kind, original.data, original.detail, children);
                         }
                     } else if constexpr (std::is_same_v<T, ReplaceCondition>) {
+                        auto *localizedCondition =
+                            d.lookup(edit.condition.value, EntityKind::Condition, d.conditions);
+                        require(!localizedCondition ||
+                                    std::ranges::none_of(
+                                        d.metadata.localization.blocks,
+                                        [&](auto &b) { return b.action == localizedCondition->owner; }),
+                                "Edit the localization mapping rather than a generated language selector");
                         auto at = location(edit.condition.value, EntityKind::Condition);
                         const auto *owner = d.action(d.conditions[at].owner);
                         require(owner->kind != ActionKind::Dispatch || d.conditions[at].arm.has_value(),
@@ -1126,6 +1143,9 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
     for (const auto& section : out->sections) owners.insert(section.script);
     for (auto id : owners)
         out->scripts.push_back(d.scripts[d.directory.find(id.value).index]);
+    for (auto &block : d.metadata.localization.blocks)
+        if (std::ranges::find(out->actions, block.action, &Action::id) != out->actions.end())
+            out->localized.push_back(block);
     for(const auto &custom : d.metadata.opcodes)
         if(std::ranges::any_of(out->actions,[&](const auto &a){return a.kind==ActionKind::Instruction && out->payload.values.at(a.value.value).data==custom.opcode;}))out->catalog.push_back(custom);
     std::sort(out->actions.begin(), out->actions.end(), [](auto &a, auto &b) { return a.id < b.id; });
@@ -1493,10 +1513,11 @@ std::future<Result<std::shared_ptr<const ReadScope>>> ProgramService::read(Revis
     return control_->submit<std::shared_ptr<const ReadScope>>(
         [r, s = std::move(s), stop](auto &o) { return o.read(r, s, stop); });
 }
-#include "ProgramEditor.inl"
-#include "ProgramBrowse.inl"
-#include "ProgramProductivity.inl"
 #include "FeatureQueries.inl"
+#include "LocalizationQueries.inl"
+#include "ProgramBrowse.inl"
+#include "ProgramEditor.inl"
+#include "ProgramProductivity.inl"
 #include "StoryQueries.inl"
 std::future<Result<VariableQuery>> ProgramService::uses(Revision r, Variable key) {
     return control_->submit<VariableQuery>([r, key](auto &o) {

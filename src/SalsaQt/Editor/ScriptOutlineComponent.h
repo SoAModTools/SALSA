@@ -3,6 +3,7 @@
 #include <QWidget>
 class QTreeView;
 class QTabBar;
+class QComboBox;
 namespace salsa::qt {
 class EditorSessionPresenter;
 class ScriptOutlineComponent final : public QWidget {
@@ -29,6 +30,8 @@ class ScriptOutlineComponent final : public QWidget {
     ProgramOutlineModel *model_;
     QTreeView *tree_;
     QTabBar *modes_;
+    QComboBox *localization_;
+    void refreshLanguages();
     core::SctScriptId script_;
     std::optional<core::SctModuleId> module_;
     std::uint64_t navigationGeneration_ = 0, sessionRestoreGeneration_ = 0;

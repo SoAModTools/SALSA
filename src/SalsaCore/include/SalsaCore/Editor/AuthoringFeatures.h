@@ -1,6 +1,7 @@
 #pragma once
 #include "SalsaCore/Authoring/SctAuthoringProject.h"
 #include "SalsaCore/Editor/EditorIdentity.h"
+#include "SalsaCore/Editor/Localization.h"
 namespace salsa::core::editor {
 struct BodyItem {
     SctSequenceId id;
@@ -161,8 +162,9 @@ struct SetArrival {
     std::string stem;
     std::optional<std::uint32_t> encoded;
 };
-using FeatureEdit = std::variant<SetArrival, WriteModule, RemoveModule, WriteEntry, RemoveEntry, RepairRoot,
-                                 WriteLanguage, RemoveLanguage, AssignTextGroups, ApplyLanguageSuggestions,
-                                 WriteLogicalText, RemoveLogicalText, SplitText, WriteTextBatch,
-                                 InsertTextUses, SetResources, SelectResourceEntry, WriteSelectors>;
+using FeatureEdit =
+    std::variant<LocalizationChange, SetArrival, WriteModule, RemoveModule, WriteEntry, RemoveEntry,
+                 RepairRoot, WriteLanguage, RemoveLanguage, AssignTextGroups, ApplyLanguageSuggestions,
+                 WriteLogicalText, RemoveLogicalText, SplitText, WriteTextBatch, InsertTextUses, SetResources,
+                 SelectResourceEntry, WriteSelectors>;
 } // namespace salsa::core::editor

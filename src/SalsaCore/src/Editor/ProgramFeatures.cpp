@@ -7,6 +7,14 @@ template <class T> Result<T> featureFailure(std::string text) {
     return Result<T>::failure(
         {{DiagnosticSeverity::Error, DiagnosticCode::InvalidSctAuthoringProject, std::move(text)}});
 }
+Result<std::optional<SctTextResourceId>> ProgramBackend::translation(Revision r, SctTextResourceId text,
+                                                                     SctLanguageGroupId language,
+                                                                     std::stop_token stop) {
+    return service_->translation(r, text, language, stop).get();
+}
+Result<LocalizationCatalog> ProgramBackend::localizations(Revision r, bool recognize, std::stop_token stop) {
+    return service_->localizations(r, recognize, stop).get();
+}
 Result<FeatureInventory> ProgramBackend::features(Revision r, SctScriptId script, std::stop_token stop) {
     return service_->features(r, script, stop).get();
 }

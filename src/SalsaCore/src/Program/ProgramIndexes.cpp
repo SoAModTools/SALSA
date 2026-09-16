@@ -133,7 +133,10 @@ DirectFacts actionFacts(ProgramData& d, std::span<const SctActionId> actions, st
         const auto& a = *found; const auto script = d.sequence(a.owner)->script;
         auto condition = [&](ConditionId id) {
             const auto* region = d.lookup(id.value, EntityKind::Condition, d.conditions);
-            require(region && region->owner == a.id, "Missing or foreign condition region");
+            require(region && region->owner == a.id,
+                    ("Missing or foreign condition region " + std::to_string(id.value) + " for action " +
+                     std::to_string(a.id.value))
+                        .c_str());
             inspect(region->result, {a.id, {}, region->arm, 0, id}, script);
         };
         if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Dispatch) {
@@ -426,6 +429,44 @@ void finishMetadata(ProgramData &d, std::vector<Diagnostic> &diagnostics, bool a
         auto& l = d.metadata.logicalTexts[i]; script(l.script); l.id = SctLogicalTextId{claim(l.id.value, EntityKind::LogicalText, i)};
         for (auto id : l.variants) { const auto* t = d.lookup(id.value, EntityKind::Text, d.texts); require(t && t->script == l.script, "Dangling logical text variant"); }
         if (l.module) { const auto* m = d.lookup(l.module->value, EntityKind::Module, d.metadata.modules); require(m && m->script == l.script, "Dangling logical text module"); }
+    }
+    std::set<SctLanguageGroupId> configuredLanguages;
+    std::set<std::uint32_t> selectorValues;
+    for (const auto &rule : d.metadata.localization.languages) {
+        require(d.lookup(rule.language.value, EntityKind::Language, d.metadata.languages) &&
+                    configuredLanguages.insert(rule.language).second,
+                "Missing or repeated localization language");
+        if (rule.selector)
+            require(*rule.selector <= 255 && selectorValues.insert(*rule.selector).second,
+                    "ByteVar[87] values must be unique bytes");
+    }
+    std::set<SctActionId> localizedActions;
+    for (const auto &block : d.metadata.localization.blocks) {
+        auto *a = d.action(block.action);
+        require(a && (a->kind == ActionKind::Conditional || a->kind == ActionKind::Switch) &&
+                    a->armCount == 1 && d.arms[a->firstArm].body == block.body &&
+                    localizedActions.insert(block.action).second,
+                "Localized block needs its single canonical body; edit localization settings rather than its "
+                "dispatch arms");
+        require(block.switchSelection == (a->kind == ActionKind::Switch) &&
+                    (!block.independent || !block.switchSelection) &&
+                    (!block.unconditional || (!block.switchSelection && !block.independent)),
+                "Invalid localization selection mode");
+        std::set<SctLanguageGroupId> languages;
+        require(!block.languages.empty(), "Localized block needs its source language");
+        for (auto language : block.languages)
+            require(d.lookup(language.value, EntityKind::Language, d.metadata.languages) &&
+                        languages.insert(language).second,
+                    "Missing or repeated localized block language");
+    }
+    std::set<std::pair<SctActionId, spice::sct::SctParameterAddress>> localizedUses;
+    for (const auto &use : d.metadata.localization.uses) {
+        auto *a = d.action(use.action);
+        auto *m = d.lookup(use.message.value, EntityKind::LogicalText, d.metadata.logicalTexts);
+        require(a && m && d.sequence(a->owner)->script == m->script &&
+                    localizedUses.emplace(use.action, use.operand).second,
+                "Invalid logical message use");
+        operand(use.action, use.operand);
     }
     std::set<std::tuple<SctScriptId,SctVariableKey,std::optional<std::int64_t>>> meaningKeys;
     for(std::uint32_t i=0;i<d.metadata.meanings.size();++i) {

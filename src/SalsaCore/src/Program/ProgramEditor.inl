@@ -1,6 +1,19 @@
 // Included by ProgramService.cpp inside the program namespace.
 // Only direct children are visited. Payloads and descendant bodies stay resident.
 namespace {
+std::size_t localizedBodySize(const ProgramData &d, const editor::LocalizedBlock &block) {
+    auto *body = d.lookup(block.body.value, EntityKind::Sequence, d.sequences);
+    auto size = body->order->size();
+    if (size) {
+        auto *last = d.action(body->order->back());
+        if (last->kind == ActionKind::Transfer) {
+            auto &transfer = d.transfers[last->detail];
+            if (transfer.kind == TransferKind::Break && transfer.target == block.action)
+                --size;
+        }
+    }
+    return size;
+}
 bool sectionContentIs(const ProgramData &data, const Section &section, ValueKind kind) {
     const auto *value = data.values.find(section.content.value);
     return !section.body.valid() && value && value->kind == kind;
@@ -84,7 +97,18 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                 out.rows.push_back(std::move(row));
             }
         };
-        auto action = [&](SctActionId id, SctSequenceId seq) {
+        auto logicalSection = [&](const Section &section) -> const SctLogicalText * {
+            if (!sectionContentIs(d, section, ValueKind::IndexedSection))
+                return nullptr;
+            return logicalFor(d, SctTextResourceId{d.values.find(section.content.value)->data});
+        };
+        auto primarySection = [&](const Section &section) {
+            auto *logical = logicalSection(section);
+            return !logical || logical->variants.empty() ||
+                   logical->variants.front().value == d.values.find(section.content.value)->data;
+        };
+        std::function<void(SctActionId, SctSequenceId)> action;
+        action = [&](SctActionId id, SctSequenceId seq) {
             const auto *a = d.action(id);
             require(a != nullptr, "Missing outline action");
             std::string label;
@@ -114,13 +138,78 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                 label = d.transfers.at(a->detail).kind == TransferKind::Break ? "Break" : "Continue";
                 break;
             }
+            const auto localized =
+                std::ranges::find(d.metadata.localization.blocks, id, &editor::LocalizedBlock::action);
+            if (localized != d.metadata.localization.blocks.end()) {
+                auto *body = d.sequence(localized->body);
+                if (request.semantic && localizedBodySize(d, *localized) == 1 &&
+                    d.action(body->order->front())->kind == ActionKind::Instruction) {
+                    action(body->order->front(), localized->body);
+                    return;
+                }
+                label = "Localized sequence";
+            }
+            if (request.semantic && a->kind == ActionKind::Instruction)
+                featureOperands(d, *a, [&](auto address, auto value) {
+                    auto *v = d.values.find(value.value);
+                    if (v->kind != ValueKind::IndexedTextReference)
+                        return;
+                    auto *message = logicalFor(d, SctTextResourceId{v->data});
+                    if (!message)
+                        return;
+                    label += " : " + message->name;
+                    const Text *text = d.lookup(v->data, EntityKind::Text, d.texts);
+                    if (request.language.valid()) {
+                        text = nullptr;
+                        for (auto variant : message->variants) {
+                            auto *t = d.lookup(variant.value, EntityKind::Text, d.texts);
+                            if (std::ranges::find(t->languages, request.language) != t->languages.end()) {
+                                if (text) {
+                                    text = nullptr;
+                                    break;
+                                }
+                                text = t;
+                            }
+                        }
+                    }
+                    if (!text) {
+                        label += " — Missing translation";
+                        return;
+                    }
+                    ValueBuffer b;
+                    CopyValues cp{d, b};
+                    auto root = cp.copy(text->value);
+                    auto tv = ProgramValues::text(b, root);
+                    if (!tv)
+                        return;
+                    std::string preview;
+                    if (auto p = std::get_if<spice::sct::SctPlainText>(&tv.value()))
+                        preview = p->utf8;
+                    if (auto p = std::get_if<spice::sct::SctMessage>(&tv.value()))
+                        for (const auto &element : p->body.elements)
+                            if (auto t = std::get_if<spice::sct::SctTextChunk>(&element))
+                                preview += t->utf8;
+                    std::replace(preview.begin(), preview.end(), '\n', ' ');
+                    if (preview.size() > 100) {
+                        std::size_t end = 100;
+                        while (end && (static_cast<unsigned char>(preview[end]) & 0xc0) == 0x80)
+                            --end;
+                        preview.resize(end);
+                        preview += "…";
+                    }
+                    label += " — " + preview;
+                });
             OutlineRow row{id, seq, std::move(label), a->kind != ActionKind::Instruction && a->kind != ActionKind::Transfer, a->kind};
-            if (request.semantic) {
+            if (request.semantic && localized == d.metadata.localization.blocks.end()) {
                 if (a->kind == ActionKind::Conditional && a->armCount) {
                     const auto &first = d.arms[a->firstArm];
-                    row.chain = id; row.condition = first.condition; row.sequence = first.body;
-                } else if (a->kind == ActionKind::Loop) row.condition = d.loops.at(a->detail).condition;
-                else if (a->kind == ActionKind::Switch) row.condition = d.switches.at(a->detail).selector;
+                    row.chain = id;
+                    row.condition = first.condition;
+                    row.sequence = first.body;
+                } else if (a->kind == ActionKind::Loop)
+                    row.condition = d.loops.at(a->detail).condition;
+                else if (a->kind == ActionKind::Switch)
+                    row.condition = d.switches.at(a->detail).selector;
             }
             append(std::move(row));
             if (request.semantic && a->kind == ActionKind::Conditional) {
@@ -128,7 +217,8 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     auto &arm = d.arms[a->firstArm + n];
                     OutlineRow branch{arm.id, arm.body, arm.condition.valid() ? "Else If" : "Else", true};
                     branch.chain = id;
-                    if (arm.condition.valid()) branch.condition = arm.condition;
+                    if (arm.condition.valid())
+                        branch.condition = arm.condition;
                     append(std::move(branch));
                 }
             }
@@ -194,6 +284,8 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                             stopped(stop);
                             auto *section = d.lookup(sid.value, EntityKind::Section, d.sections);
                             require(section, "Missing outline section");
+                            if (!primarySection(*section))
+                                continue;
                             if (sectionContentIs(d, *section, ValueKind::IndexedSection) && inStringGroup)
                                 continue;
                             semanticSections.push_back(sid);
@@ -209,8 +301,11 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                         if (at < sections.size()) {
                             auto *s = d.lookup(sections[at].value, EntityKind::Section, d.sections);
                             require(s != nullptr, "Missing outline section");
-                            append({s->id, s->body, s->name, s->body.valid() ||
-                                (request.semantic && sectionContentIs(d, *s, ValueKind::StringGroup))});
+                            auto *logical = request.semantic ? logicalSection(*s) : nullptr;
+                            append(
+                                {s->id, s->body, logical ? logical->name : s->name,
+                                 s->body.valid() || logical ||
+                                     (request.semantic && sectionContentIs(d, *s, ValueKind::StringGroup))});
                         } else {
                             auto *t = d.lookup(script->supplementaryText[at - sections.size()].value,
                                                EntityKind::Text, d.texts);
@@ -232,7 +327,21 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     out.script = s->script;
                     if (s->body.valid())
                         sequence(s->body);
-                    else if (request.semantic && sectionContentIs(d, *s, ValueKind::StringGroup)) {
+                    else if (request.semantic && logicalSection(*s)) {
+                        auto *logical = logicalSection(*s);
+                        for (auto id : logical->variants) {
+                            auto *text = d.lookup(id.value, EntityKind::Text, d.texts);
+                            std::string label;
+                            for (auto l : text->languages) {
+                                auto *language =
+                                    d.lookup(l.value, EntityKind::Language, d.metadata.languages);
+                                if (!label.empty())
+                                    label += ", ";
+                                label += language->name;
+                            }
+                            append({id, {}, label.empty() ? "Unassigned" : label, false});
+                        }
+                    } else if (request.semantic && sectionContentIs(d, *s, ValueKind::StringGroup)) {
                         const auto *script = d.lookup(s->script.value, EntityKind::Script, d.scripts);
                         require(script, "Missing string-group script");
                         auto at = std::ranges::find(script->sections, id);
@@ -242,11 +351,18 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                             const auto *member = d.lookup(at->value, EntityKind::Section, d.sections);
                             require(member, "Missing string-group member");
                             if (!sectionContentIs(d, *member, ValueKind::IndexedSection)) break;
+                            if (!primarySection(*member))
+                                continue;
                             // Do not allocate labels for members outside the requested page.
                             if (out.total < request.offset || out.rows.size() == request.limit)
                                 ++out.total;
-                            else
-                                append({member->id, {}, member->name, false});
+                            else {
+                                auto *logical = logicalSection(*member);
+                                append({member->id,
+                                        {},
+                                        logical ? logical->name : member->name,
+                                        logical != nullptr});
+                            }
                         }
                     }
                 } else if constexpr (std::is_same_v<T, SctSequenceId>)
@@ -255,14 +371,18 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     const auto *a = d.action(id);
                     require(a != nullptr, "Missing outline construct");
                     out.script = d.sequence(a->owner)->script;
-                    if (request.semantic && a->kind == ActionKind::Conditional) {
+                    auto localized = std::ranges::find(d.metadata.localization.blocks, id,
+                                                       &editor::LocalizedBlock::action);
+                    if (request.semantic && localized != d.metadata.localization.blocks.end())
+                        sequence(localized->body);
+                    else if (request.semantic && a->kind == ActionKind::Conditional) {
                         if (a->armCount) {
                             const auto &first = d.arms[a->firstArm];
                             if (first.condition.valid()) condition(first.condition);
                             sequence(first.body);
                         }
                     } else if (a->kind == ActionKind::Conditional || a->kind == ActionKind::Switch ||
-                        a->kind == ActionKind::Dispatch) {
+                               a->kind == ActionKind::Dispatch) {
                         if (a->kind == ActionKind::Switch)
                             condition(d.switches.at(a->detail).selector);
                         for (std::uint32_t i = 0; i < a->armCount; ++i) {
@@ -377,6 +497,17 @@ std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, Ed
                     } else if constexpr (std::is_same_v<T, SctTextResourceId>) {
                         auto *t = d.lookup(id.value, EntityKind::Text, d.texts);
                         require(t, "Missing text");
+                        if (semantic && !t->supplementary)
+                            if (auto *logical = logicalFor(d, id); logical && !logical->variants.empty()) {
+                                auto *script = d.lookup(t->script.value, EntityKind::Script, d.scripts);
+                                for (auto sid : script->sections) {
+                                    auto *section = d.lookup(sid.value, EntityKind::Section, d.sections);
+                                    auto *value = d.values.find(section->content.value);
+                                    if (value && value->kind == ValueKind::IndexedSection &&
+                                        value->data == logical->variants.front().value)
+                                        return sid;
+                                }
+                            }
                         if (!t->supplementary) {
                             auto *script = d.lookup(t->script.value, EntityKind::Script, d.scripts);
                             for (auto sid : script->sections) {
@@ -400,9 +531,23 @@ std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, Ed
                     std::vector<EditorSubject> visible;
                     for (std::size_t n = 0; n < out.subjects.size(); ++n) {
                         const auto &item = out.subjects[n];
+                        if (auto id = std::get_if<SctActionId>(&item)) {
+                            auto localized = std::ranges::find(d.metadata.localization.blocks, *id,
+                                                               &editor::LocalizedBlock::action);
+                            if (localized != d.metadata.localization.blocks.end()) {
+                                auto *body = d.sequence(localized->body);
+                                if (localizedBodySize(d, *localized) == 1 &&
+                                    d.action(body->order->front())->kind == ActionKind::Instruction)
+                                    continue;
+                            }
+                        }
                         if (auto id = std::get_if<ArmId>(&item)) {
                             auto *arm = d.lookup(id->value, EntityKind::Arm, d.arms);
                             auto *action = d.action(arm->owner);
+                            if (std::ranges::find(d.metadata.localization.blocks, action->id,
+                                                  &editor::LocalizedBlock::action) !=
+                                d.metadata.localization.blocks.end())
+                                continue;
                             if (action->kind == ActionKind::Conditional) {
                                 if (d.arms[action->firstArm].id == *id) continue;
                                 if (!visible.empty() && visible.back() == EditorSubject(action->id)) visible.pop_back();

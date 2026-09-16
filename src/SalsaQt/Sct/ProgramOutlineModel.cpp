@@ -102,7 +102,7 @@ void ProgramOutlineModel::fetchMore(const QModelIndex &parent) {
     auto *watcher = new QFutureWatcher<core::Result<ir::OutlinePage>>(this);
     const auto revision = revision_;
     auto service = service_;
-    ir::OutlineRequest input{node.row.subject, node.children.size(), 128, mode_};
+    ir::OutlineRequest input{node.row.subject, node.children.size(), 128, mode_, language_};
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, n, generation, revision, request] {
         auto result = watcher->result();
         watcher->deleteLater();
@@ -270,7 +270,7 @@ void ProgramOutlineModel::apply(const ir::Change &change) {
             auto revision = revision_;
             auto service = service_;
             auto *watcher = new QFutureWatcher<core::Result<ir::OutlinePage>>(this);
-            ir::OutlineRequest request{nodes_[parent].row.subject, nodes_[n].ordinal, 1, mode_};
+            ir::OutlineRequest request{nodes_[parent].row.subject, nodes_[n].ordinal, 1, mode_, language_};
             connect(watcher, &QFutureWatcherBase::finished, this,
                     [this, watcher, n, expected, generation, revision,
                      changePresentation = change.presentationChanged] {

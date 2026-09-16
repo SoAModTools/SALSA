@@ -5,9 +5,12 @@
 namespace salsa::qt {
 using namespace feature_ui;
 LanguageTools::LanguageTools(EditorSessionPresenter *s, QWidget *h) : QObject(h), session_(s), host_(h) {
-    action = new QAction(tr("Languages and text groups…"), this);
-    connect(action, &QAction::triggered, this, [this] { open(); });
-    availability(action, session_);
+    action = new QAction(tr("Localizations…"), this);
+    connect(action, &QAction::triggered, this, [this] { localizations(); });
+    auto available = [this] { action->setEnabled(session_->backend() && !session_->busy()); };
+    connect(session_, &EditorSessionPresenter::sessionChanged, this, available);
+    connect(session_, &EditorSessionPresenter::availabilityChanged, this, available);
+    available();
 }
 void LanguageTools::open() {
     inventory(session_, this, [this](ed::FeatureInventory data) {

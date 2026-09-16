@@ -1,73 +1,54 @@
-# Language groups and text authoring (S7)
+# Localizations and logical messages
 
-Open **Document → Language Groups and Text** for the active imported script.
-Languages are project-wide groups with stable IDs and user-defined names. A
-string may be unassigned, assigned to one group, or shared by several groups.
-There is no prescribed locale list or requirement to fill every group.
+Open **Localizations…** from the editor's authoring actions. Language groups are project-wide, user-defined names, not a fixed set of supported locales. The feature is available in Instruction mode and does not require story analysis.
 
-## Discovery and correction
+## Discover and organize
 
-Opening the editor discovers indexed and footer text resources. Indexed section
-names and native string-group markers supply initial, editable suggestions:
+Choose **Discover / link strings** to propose assignments and link indexed strings into logical messages. Existing explicit assignments are retained. Recognition follows the legacy string extractor: ordinary F/S/G markers at character 1, corroborated by string-group names or an unmarked counterpart; `palyoko` names use character 7. Unmarked counterparts use **Unmarked**, without assuming English. Strings with no language pattern receive an editable **Source** group. Source is initially excluded from runtime output when other language groups were recognized. Footer/debug strings stay outside this indexed localization abstraction.
 
-- Ordinary legacy F/S/G markers use character 1 of the string name, corroborated
-  by the group suffix (lowercase or uppercase) or an unmarked counterpart.
-- The legacy `palyoko` convention uses character 7 of a nine-character name.
-- Short, unmatched, conflicting, and duplicate candidates remain unassigned.
-- An unmarked counterpart is labelled **Unmarked**, without assuming English.
-- Footer text has no indexed-name evidence and starts unassigned.
+Logical messages belong to their original script and retain stable identities. Their translations appear together in the semantic string tree. Use **String groups / assignments…** to rename groups, correct membership, manually link variants, split shared resources, or use the existing detailed text editor. These operations edit the same project and share its undo history.
 
-Create or rename groups, select strings, select their desired groups, and apply
-the assignment. Selecting no groups explicitly unassigns the strings. Explicit
-assignments survive rescanning. Grouping never rewrites section names, references,
-ByteVar selectors, predicates, or output encoding. Source names and the basis for
-inference remain separate evidence.
+Choose **Recognize language branches…** to review optional organization. Equivalent flat instruction sequences behind `ByteVar[87]` comparisons or switches can become one canonical editable body. Standalone operations with one source variant can also be organized before adding translations. A lone operation referencing an already multilingual family is left explicit until its dispatch is recognized; the presence of translated strings alone does not identify a safe dispatch boundary. The recognizer compares all other operands, scheduling and refresh settings; it does not discard differing preparation work or guess through unresolved control flow. Unsupported or ambiguous cases stay explicit. The recorded explanation is available when inspecting the localized construct.
 
-## Logical text and execution uses
+The semantic editor shows a single localized operation directly, or a **Localized sequence** containing its editable instructions. Indexed operands display a logical message name and a text preview. The localization selector above the semantic tree changes this preview and the inspected translation; it does not change runtime output. Missing translations are shown rather than silently falling back. Multiple translations assigned to the same message/language need manual correction.
 
-A logical text links explicitly selected resources belonging to one script. It
-may belong to a module; the module filter also shows text used by that module.
-Suggested correspondence keys help find likely translations, but do not create
-execution routes or prove correspondence.
+Use generated-instruction preview to inspect the runtime branches. **Expand localization to instructions…** turns a flat localized body back into explicit language branches using the current mappings and included languages. Undo restores its shared representation. Expand before copying an entire localized construct to a fragment. Nested constructs added to a shared body can be lowered, but explicit expansion currently requires a flat body.
 
-Edit selected resources together using the existing message/plain-text editors.
-The batch is one project-history command. Every value must encode under the
-selected text convention before any edit is accepted. A shared resource is edited
-once, affecting all its uses. **Split** creates a separate resource for one of its
-groups and retargets only the exact uses selected by the user. Other callers
-continue to use the original resource.
+## Runtime languages
 
-Deleting an unreferenced text through the ordinary editor also removes its group
-membership and logical-text references in the same history command. The logical
-text retains its identity and can remain incomplete; undo restores the resource
-and its assignments.
+**Mappings / output languages…** assigns each group a distinct byte value for `ByteVar[87]` and controls its inclusion in output. Excluding a language retains its authored translations. Blank mappings are allowed in drafts; exporting runtime selection requires mappings and an unambiguous translation for each included language. An originally unguarded operation remains unguarded when it has only one included language.
 
-Create new indexed or footer text resources, then insert uses at explicit action
-locations. Select an existing operation as the template and an action before
-which to insert it within the intended route. The insertion batch retains the
-template's other operands, result behavior, scheduling, and refresh settings.
-Indexed dialogue, indexed choices, footer choices, and generated-list operations
-keep their original opcode; choosing a language group never invents dispatch or
-fallback behavior. Physical fallthrough includes the new operation. Optionally
-select one incoming reference, including a switch-case operand, to enter the new
-operation too; unselected references keep their original targets. A case reached
-only by a jump needs that explicit incoming-edge selection. Independent operations
-on different arrivals to one shared anchor require separate explicit blocks.
-Action promotion and insertion commit together; cancelling selection changes no
-project state.
+You may add more or fewer groups than the source scripts used. SALSA warns when assigning new or changed selector values: script-side dispatch does not add language choices to the game's title screen. A matching game modification must supply those values. No retail language inventory is enforced. Language names and preview selection do not choose the export encoding, endianness or platform.
 
-## Persistence and boundaries
+Organization retains the original switch/first-match/independent-guard behavior and refresh settings. Editing the shared body changes every generated language variant. Ordinary explicit guards remain ordinary code: their predicates are not rewritten by changing a localization mapping. If such code still references an excluded string, export reports that reference instead of discarding the operation.
 
-Private semantic schema **8** stores group IDs, resource identities and membership,
-explicit-assignment state, source evidence, and logical correspondence. Text values
-and instruction operands remain in the owned authored program; the catalog is not
-a second document authority. Presentation and compressed-container versions are
-unchanged. Project history, save/reopen, core materialization, and editor
-publication use the same content. Baseline replacement with text bindings requires
-explicit reconciliation rather than matching fresh physical IDs accidentally.
+## Translation table and CSV
 
-Language labels do not choose encoding, regional packaging, runtime selector
-values, or supported platforms. Existing Python SALSA v7 import remains supported;
-discovery can be run on the imported authored script. Opaque text requires explicit
-repair before it can become executable authored text. New-script creation,
-automatic language dispatch, library pruning, and graph authoring are outside S7.
+The table uses logical messages as rows and languages as columns, with 100 messages displayed per page. **Apply text edits** commits the accumulated edits as one undoable command. Pending edits must be applied before other localization operations; closing offers to discard them.
+
+**Export CSV…** selects language columns. CSV has two metadata records followed by the editable table:
+
+```csv
+"# SALSA localization","1"
+"# Project","project-uuid"
+"Message","English","French"
+"123","\messageHello\e{}","\messageBonjour\e{}"
+```
+
+`Message` contains the stable logical-message ID. Keep it intact; rows may be reordered. The project header prevents applying IDs to another project. Language headers are user-defined group names. There are no repeated script, language, encoding or provenance columns. Importing an unknown language name creates a group; absent columns and absent rows leave existing content unchanged. Repeated message IDs, duplicate language headers and unknown IDs are rejected before applying edits.
+
+A blank cell means a missing translation and removes that language assignment, retaining the underlying resource. `\message` represents an empty message, `\empty` an empty indexed record, and `\plain:` an empty plain-text value. Message text can contain quoted CSV commas and newlines. Formatting is reversible: `\h(Speaker)` is a header; commands include `\e{}`, `\p(12){}` and `\c[1,2,3]{}`. The `{}` terminator separates a command from following text. Literal backslashes are doubled in message text. Exported formatting can be retained while translating the surrounding words.
+
+**Import CSV…** reviews the number of affected cells, missing values, and new groups before applying one undoable edit. The table and CSV share the same text notation. Translations may remain incomplete while editing; executable output still needs encodable text and resolved references.
+
+## Import indexed strings from SCT
+
+**Import indexed SCT strings…** reads donor files, matches their script stems and legacy correspondence keys to the open project's logical messages, and presents candidates for explicit selection into a destination language. Choose only one donor variant per logical message. Unmatched messages can be added to an existing matched script. Ambiguous matches and undecoded text are reported. Run discovery first so destination messages are available for matching.
+
+Only indexed translations are adopted. Donor execution, footer text, asset bindings, and baselines do not replace the project's authored scripts. SPICE supplies parsing, text-convention recommendations and text decoding. The current public API reads a temporary complete SCT document to obtain its indexed strings; a selective SPICE reader would be an optimization, not a separate SALSA parser.
+
+## Persistence
+
+Whole-program binary schema **9** persists language mappings, output inclusion, logical uses and localization recipes alongside authored text. Container framing **2** and Zstandard level **1** are unchanged. The preview language is transient presentation state. All accepted edits participate in project undo/redo and save/reopen. Older development project schemas remain unsupported; Python SALSA v7 import remains supported, followed by optional localization discovery.
+
+The initial private `me002a` checks found that the Dreamcast EU examples still contain imported text rejected by native export; the same errors occur before localization changes. Their dispatch is retained explicitly by this recognizer. Logical-message editing and interchange remain available. This is not a claim that every imported script is immediately exportable.

@@ -37,7 +37,7 @@ struct Frames {
         w.raw("SALSAPRJ", 8);
         w.put(std::uint32_t{2});
         w.put(std::uint32_t{1});
-        w.put(std::uint32_t{8});
+        w.put(std::uint32_t{9});
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_compressionLevel, 1));
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_checksumFlag, 1));
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_nbWorkers, 0));
@@ -101,7 +101,7 @@ struct Unframes {
         require(std::memcmp(magic, "SALSAPRJ", 8) == 0, "Not a SALSA project container");
         require(r.get<std::uint32_t>() == 2, "Unsupported project container version; original file is unchanged");
         require(r.get<std::uint32_t>() == 1, "Unsupported project compression codec");
-        require(r.get<std::uint32_t>() == 8, "Unsupported program binary schema");
+        require(r.get<std::uint32_t>() == 9, "Unsupported program binary schema");
         for (;;) {
             checkStop(stop);
             auto n = r.get<std::uint32_t>(), c = r.get<std::uint32_t>();

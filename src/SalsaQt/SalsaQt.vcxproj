@@ -165,6 +165,7 @@
     <ClInclude Include="Editor\FeatureUi.h" />
     <ClCompile Include="Editor\ModuleTools.cpp" />
     <ClCompile Include="Editor\LanguageTools.cpp" />
+    <ClCompile Include="Editor\LocalizationTools.cpp" />
     <ClCompile Include="Editor\EntryResourceTools.cpp" />
     <ClCompile Include="Editor\SelectorTools.cpp" />
   </ItemGroup>
