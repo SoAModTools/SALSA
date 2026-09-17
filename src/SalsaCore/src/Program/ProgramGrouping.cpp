@@ -66,6 +66,14 @@ std::shared_ptr<ControlFlowDiagnostics> project(const sct::SctSectionStructure &
                                                 const sct::SctScriptSectionContent &code, const IdMap &ids) {
     auto out = std::make_shared<ControlFlowDiagnostics>();
     for (const auto &issue : section.issues) {
+        // A resolved Jump may deliberately continue in another section. This
+        // limits section-local grouping, but is not an instruction warning.
+        if (issue.kind == sct::SctStructureIssueKind::CrossSectionNonCallControlFlow && issue.instruction) {
+            auto instruction = std::ranges::find(code.instructions, *issue.instruction,
+                                                 &sct::SctDocumentInstruction::id);
+            if (instruction != code.instructions.end() && instruction->opcode == 10)
+                continue;
+        }
         auto native = issue.instruction           ? *issue.instruction
                       : code.instructions.empty() ? sct::SctInstructionId{}
                                                   : code.instructions.front().id;

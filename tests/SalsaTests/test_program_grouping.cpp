@@ -62,14 +62,14 @@ struct Fixture {
     ir::Revision revision;
     ir::SectionId main, incomplete;
     std::map<std::uint64_t, SctActionId> ids;
-    Fixture() {
+    Fixture(sct::SctDocument source = document()) {
         ir::ProgramBuilder builder({Project});
         SctAuthoringBaseline baseline{
             {},
             {Sha256Digest({})},
             {AssetLocator::fromRelativePath("test.sct").value(), 0, {Sha256Digest({})}},
             {"20d9e32e-11c6-4088-a390-3b99624d219f"}};
-        auto imported = builder.appendImported(document(), baseline, {});
+        auto imported = builder.appendImported(source, baseline, {});
         if (!imported)
             throw std::runtime_error(messages(imported.diagnostics()));
         auto program = builder.finish();
@@ -111,6 +111,43 @@ struct Fixture {
         return labels;
     }
 };
+TEST(ProgramGroupingTest, CrossSectionJumpRemainsExplicitWithDestinationAndNoWarning) {
+    auto source = document();
+    std::get<sct::SctScriptSectionContent>(source.sections[1].content).instructions = {jump(10, 13)};
+    auto &incomplete = std::get<sct::SctScriptSectionContent>(source.sections[2].content).instructions.front();
+    incomplete.opcode = 10;
+    incomplete.fixedParameters = {{0, incomplete.fixedParameters[1].value}};
+    Fixture f(std::move(source));
+    for (bool reopened : {false, true}) {
+        SCOPED_TRACE(reopened);
+        auto checkpoint = f.service->checkpoint(f.revision).get();
+        ASSERT_TRUE(checkpoint);
+        auto bytes = ir::ProgramPersistence::encode(*checkpoint.value().program);
+        ASSERT_TRUE(bytes);
+        if (reopened) {
+            auto decoded = ir::ProgramPersistence::decode(bytes.value());
+            ASSERT_TRUE(decoded);
+            auto adopted = f.service->adopt(f.revision, std::move(decoded.value().program)).get();
+            ASSERT_TRUE(adopted);
+            f.revision = adopted.value().current;
+        }
+        auto section = checkpoint.value().program->sections()[1].id;
+        for (bool semantic : {false, true}) {
+            auto rows = f.service->outline(f.revision, {section, 0, 128, semantic}).get();
+            ASSERT_TRUE(rows);
+            ASSERT_EQ(rows.value().rows.size(), 1u);
+            EXPECT_EQ(rows.value().rows.front().label, "Jump → loop");
+            EXPECT_EQ(rows.value().rows.front().subject, ir::EditorSubject{f.ids.at(10)});
+            EXPECT_TRUE(rows.value().rows.front().groupingIssue.empty());
+        }
+        auto broken = f.service->outline(f.revision, {f.incomplete, 0, 128, true}).get();
+        ASSERT_TRUE(broken);
+        EXPECT_FALSE(broken.value().rows.front().groupingIssue.empty());
+        auto after = f.service->checkpoint(f.revision).get();
+        ASSERT_TRUE(after);
+        EXPECT_EQ(ir::ProgramPersistence::encode(*after.value().program).value(), bytes.value());
+    }
+}
 TEST(ProgramGroupingTest, ImportedGroupsArePersistentConstructsAndShareBothViews) {
     Fixture f;
     auto checkpoint = f.service->checkpoint(f.revision).get();

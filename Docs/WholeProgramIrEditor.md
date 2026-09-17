@@ -28,6 +28,8 @@ Modules, entrypoints, language groups, item explanations, variable uses, and mod
 
 Native publication and explicit generated-instruction inspection call the same revision-qualified materializer. Publication settings choose native byte order, text convention and wrapper independently of project compression. Replacing files in the source dataset requires the publication control to be selected. Missing MLD evidence does not gate publication. A stale or unsupported executable draft fails there with diagnostics.
 
+Resolved jumps remain explicit, editable instructions in both outline modes. Their labels show the destination, such as `Jump → A18MAIN`; an interior destination also includes its stable action ID. A jump crossing a section boundary does not by itself receive a grouping warning. Unresolved targets and other grouping problems still report diagnostics. SALSA does not simplify away jumps to adjacent sections or replace them with subscript calls.
+
 ## Retirement and remaining presentation work
 
 The old MainWindow, WorkspaceController/SctDocumentController, snapshot outline/parameter models, full-state authoring dialogs, and patch/rebase UI are excluded from the production Qt target. Historical sources remain available to their isolated regression targets and import-boundary helpers. There is no runtime switch back to the old authority, and no synchronization layer between it and the production service.

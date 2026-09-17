@@ -73,6 +73,30 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                 row.label = alias->second;
             const auto ordinal = out.total++;
             if (ordinal >= request.offset && out.rows.size() < request.limit) {
+                if (auto *id = std::get_if<SctActionId>(&row.subject)) {
+                    auto *a = d.action(*id);
+                    if (a && a->kind == ActionKind::Instruction && d.values.find(a->value.value)->data == 10)
+                        featureOperands(d, *a, [&](auto address, auto value) {
+                            const auto *v = d.values.find(value.value);
+                            if (v->kind != ValueKind::ActionReference) return;
+                            auto target = SctActionId{v->data};
+                            auto *destination = d.action(target);
+                            if (!destination) return;
+                            auto *sequence = d.sequence(destination->owner);
+                            while (sequence->owner)
+                                sequence = d.sequence(d.action(d.parentAction(*sequence))->owner);
+                            const auto *script = d.lookup(sequence->script.value, EntityKind::Script, d.scripts);
+                            for (auto sectionId : script->sections) {
+                                const auto *section = d.lookup(sectionId.value, EntityKind::Section, d.sections);
+                                if (section->body != sequence->id) continue;
+                                row.label += " → " + section->name;
+                                // Interior targets must not look like section entry transfers.
+                                if (sequence->order->empty() || sequence->order->front() != target)
+                                    row.label += " / action " + std::to_string(target.value);
+                                break;
+                            }
+                        });
+                }
                 if (request.semantic && row.condition) {
                     auto *c = d.lookup(row.condition->value, EntityKind::Condition, d.conditions);
                     require(c, "Missing header condition");
