@@ -121,17 +121,17 @@ TEST(EditorBackendTest, SemanticStringsUseExistingGroupMarkersAndStableNavigatio
     auto revision = opened.value().current;
     editor::ProgramBackend backend(service);
     auto root = backend.outline(revision,{script,0,128,editor::ViewMode::Semantic},{});ASSERT_TRUE(root);
-    ASSERT_EQ(root.value().rows.size(),7u);
+    ASSERT_EQ(root.value().rows.size(),6u);
     EXPECT_EQ(root.value().rows[0].subject,editor::Subject(unmarked.first));
     EXPECT_EQ(root.value().rows[1].subject,editor::Subject(groupA));
     EXPECT_TRUE(root.value().rows[1].expandable);EXPECT_TRUE(root.value().rows[2].expandable);
-    EXPECT_EQ(root.value().rows.back().subject,editor::Subject(footer));
+    EXPECT_EQ(root.value().rows.back().subject,editor::Subject(trailing.first));
     auto members = backend.outline(revision,{groupA,1,1,editor::ViewMode::Semantic},{});ASSERT_TRUE(members);
     EXPECT_EQ(members.value().total,2u);ASSERT_EQ(members.value().rows.size(),1u);
     EXPECT_EQ(members.value().rows.front().subject,editor::Subject(b.first));
     EXPECT_EQ(backend.outline(revision,{empty,0,128,editor::ViewMode::Semantic},{}).value().total,0u);
     auto flat = backend.outline(revision,{script,0,128,editor::ViewMode::Instructions},{});ASSERT_TRUE(flat);
-    EXPECT_EQ(flat.value().total,order.size()+1);
+    EXPECT_EQ(flat.value().total,order.size());
     auto path = backend.locate(revision,b.second,editor::ViewMode::Semantic);ASSERT_TRUE(path);
     EXPECT_EQ(path.value().subjects,(std::vector<editor::Subject>{script,groupA,b.first}));
     EXPECT_EQ(backend.locate(revision,b.second,editor::ViewMode::Instructions).value().subjects,
@@ -996,6 +996,11 @@ TEST(EditorBackendTest, CreatesAndBindsTextWithPagedNavigationAndHistory) {
     ASSERT_NE(param,inspected.value().parameters.end());
     auto bound=backend.execute(revision,editor::BindReference{instructionId,param->key,textId});ASSERT_TRUE(bound)<<messages(bound.diagnostics());
     revision=bound.value().status.current;
+    auto owned = backend.inspect(revision,instructionId); ASSERT_TRUE(owned);
+    auto ownedParam = std::ranges::find(owned.value().parameters,editor::ParameterKind::FooterText,&editor::Parameter::kind);
+    auto originalText = textId;
+    textId = std::get<SctTextResourceId>(*ownedParam->target);
+    EXPECT_NE(textId, originalText); // Binding copies a string value; it never links editing.
     editor::BrowseRequest uses;uses.kind=editor::BrowseKind::Incoming;uses.target=textId;
     auto refs=backend.browse(revision,uses);ASSERT_TRUE(refs);ASSERT_EQ(refs.value().rows.size(),1u);EXPECT_EQ(refs.value().rows.front().subject,editor::Subject{instructionId});
     auto draft=backend.text(revision,textId);ASSERT_TRUE(draft);draft.value().value=sct::SctPlainText{"Edited"};
@@ -1005,6 +1010,110 @@ TEST(EditorBackendTest, CreatesAndBindsTextWithPagedNavigationAndHistory) {
     auto undo=backend.history(revision,false);ASSERT_TRUE(undo);
     auto original=backend.text(undo.value().status.current,textId);ASSERT_TRUE(original);
     EXPECT_EQ(std::get<sct::SctPlainText>(original.value().value).utf8,"Hello");
+}
+TEST(EditorBackendTest, ImportedFooterParametersOwnTheirTextThroughEditsCopiesAndExport) {
+    sct::SctDocument document;
+    auto sourceText = document.allocateSupplementaryTextId();
+    document.supplementaryText.push_back({sourceText, sct::SctTextKind::SctString,
+        sct::SctMessage{{}, {{sct::SctTextChunk{"Shared source"}, sct::SctInlineCommand{sct::SctMessageCommandCode::E,{}}}}}});
+    sct::SctScriptSectionContent code;
+    const auto parameter = sct::findSctOpcodeSchema(24)->textReferences[0].parameterIndex;
+    for (unsigned n=0; n<2; ++n) {
+        sct::SctDocumentInstruction instruction;
+        instruction.id=document.allocateInstructionId(); instruction.opcode=24;
+        instruction.fixedParameters.push_back({parameter,sct::SctSupplementaryTextReference{sourceText}});
+        code.instructions.push_back(instruction);
+    }
+    code.instructions.push_back({document.allocateInstructionId(),12});
+    document.sections.push_back({document.allocateSectionId(),"init",code});
+    document.sections.push_back({document.allocateSectionId(),"loop",sct::SctScriptSectionContent{{{document.allocateInstructionId(),12}}}});
+    ir::ProgramBuilder builder({Project});
+    auto imported=builder.appendImported(document,baseline(),{});ASSERT_TRUE(imported)<<messages(imported.diagnostics());
+    auto program=builder.finish();ASSERT_TRUE(program)<<messages(program.diagnostics());
+    ASSERT_EQ(program.value()->texts().size(),2u);
+    EXPECT_NE(program.value()->texts()[0].id,program.value()->texts()[1].id);
+    EXPECT_EQ(program.value()->texts()[0].sourceText,sourceText.value());
+    EXPECT_EQ(program.value()->texts()[1].sourceText,sourceText.value());
+    auto script=imported.value();
+    auto section=program.value()->scripts()[0].sections[0];
+    auto body=program.value()->find(section)->body;
+    auto actions=*program.value()->find(body)->order;
+    auto service=std::make_shared<ir::ProgramService>();
+    auto adopted=service->adopt({},std::move(program).takeValue()).get();ASSERT_TRUE(adopted);
+    auto revision=adopted.value().current;
+    editor::ProgramBackend backend(service);
+    auto inspect=[&](SctActionId action){return backend.inspect(revision,action).value().parameters.front();};
+    auto first=inspect(actions[0]), second=inspect(actions[1]);
+    ASSERT_TRUE(first.textValue);ASSERT_TRUE(second.textValue);
+    EXPECT_NE(first.target,second.target);EXPECT_NE(first.value.find("Shared source"),std::string::npos);
+    auto changedValue=*first.textValue;
+    std::get<sct::SctTextChunk>(std::get<sct::SctMessage>(changedValue).body.elements.front()).utf8="Independent";
+    auto edit=backend.execute(revision,editor::WriteStringParameter{actions[0],{parameter,{}},changedValue});ASSERT_TRUE(edit)<<messages(edit.diagnostics());revision=edit.value().status.current;
+    EXPECT_EQ(inspect(actions[0]).target,first.target);
+    EXPECT_NE(inspect(actions[0]).value.find("Independent"),std::string::npos);
+    EXPECT_EQ(inspect(actions[1]).value,second.value);
+    auto undo=backend.history(revision,false);ASSERT_TRUE(undo);revision=undo.value().status.current;
+    EXPECT_EQ(inspect(actions[0]).value,first.value);
+    auto redo=backend.history(revision,true);ASSERT_TRUE(redo);revision=redo.value().status.current;
+    auto clipboard=backend.copy(revision,{{actions[0]}});ASSERT_TRUE(clipboard);
+    auto review=backend.reviewPaste(revision,actions[1],clipboard.value());ASSERT_TRUE(review);EXPECT_TRUE(review.value().bindings.empty());
+    auto pasted=backend.execute(revision,editor::PasteSelection{actions[1],clipboard.value(),{}});ASSERT_TRUE(pasted)<<messages(pasted.diagnostics());revision=pasted.value().status.current;
+    ASSERT_FALSE(pasted.value().selected.empty());
+    auto copied=std::get<SctActionId>(pasted.value().selected.front());
+    EXPECT_NE(inspect(copied).target,first.target);EXPECT_EQ(inspect(copied).value,inspect(actions[0]).value);
+    auto copyText = std::get<SctTextResourceId>(*inspect(copied).target);
+    auto path=backend.locate(revision,copyText,editor::ViewMode::Semantic);ASSERT_TRUE(path);
+    EXPECT_EQ(path.value().subjects.back(),editor::Subject(copied));
+    {
+        ir::ProgramBuilder destination({"b44499b5-dcf0-449a-9815-5bdf558eface"});
+        auto otherScript=destination.importedScript(baseline(true),{}).value();
+        auto otherSection=destination.section({{},otherScript,"init"}).value();
+        auto ret=destination.instruction(destination.sectionBody(otherSection),destination.value(ir::ValueKind::Instruction,12).value()).value();
+        auto otherProgram=destination.finish();ASSERT_TRUE(otherProgram);
+        auto otherService=std::make_shared<ir::ProgramService>();
+        auto opened=otherService->adopt({},std::move(otherProgram).takeValue()).get();ASSERT_TRUE(opened);
+        editor::ProgramBackend other(otherService);
+        auto bindings=other.reviewPaste(opened.value().current,ret,clipboard.value());ASSERT_TRUE(bindings);EXPECT_TRUE(bindings.value().bindings.empty());
+        auto result=other.execute(opened.value().current,editor::PasteSelection{ret,clipboard.value(),{}});ASSERT_TRUE(result)<<messages(result.diagnostics());
+        auto action=std::get<SctActionId>(result.value().selected.front());
+        auto value=other.inspect(result.value().status.current,action);ASSERT_TRUE(value);
+        EXPECT_EQ(value.value().parameters.front().value,inspect(actions[0]).value);
+    }
+
+    auto removed=backend.execute(revision,editor::DeleteItem{copied});ASSERT_TRUE(removed)<<messages(removed.diagnostics());revision=removed.value().status.current;
+    auto cp=service->checkpoint(revision).get();ASSERT_TRUE(cp);
+    EXPECT_EQ(cp.value().program->find(copyText),nullptr);
+    EXPECT_EQ(std::ranges::count_if(cp.value().program->texts(),[](const auto &t){return t.id.valid();}),2);
+    auto saved=ir::ProgramPersistence::encode(*cp.value().program);ASSERT_TRUE(saved);
+    auto reopened=ir::ProgramPersistence::decode(saved.value());ASSERT_TRUE(reopened)<<messages(reopened.diagnostics());
+    EXPECT_EQ(reopened.value().program->texts().size(),2u);
+    for(auto mode:{editor::ViewMode::Instructions,editor::ViewMode::Semantic}) {
+        auto outline=backend.outline(revision,{script,0,128,mode});ASSERT_TRUE(outline);EXPECT_EQ(outline.value().total,2u);
+    }
+    ir::ProgramMaterializer materializer;
+    auto exported=materializer.exportScript(cp.value(),revision,script,{"f44499b5-dcf0-449a-9815-5bdf558eface"},
+        sct::SctDocumentExportOptions{sct::SctPlatform::GameCube,sct::kSctShiftJisByte7FEncoding});
+    ASSERT_TRUE(exported)<<messages(exported.diagnostics());
+    EXPECT_EQ(exported.value().materialized.document->supplementaryText.size(),2u);
+}
+TEST(EditorBackendTest, NewStringParameterCanBeEditedWithoutCreatingASeparateTextItem) {
+    Fixture f;editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service,[](auto*){}));
+    for (std::uint16_t opcode : {23,24}) {
+        auto inserted=backend.execute(f.revision,editor::InsertOpcode{f.writer,opcode});ASSERT_TRUE(inserted);
+        auto revision=inserted.value().status.current;
+        ASSERT_FALSE(inserted.value().actions.empty());
+        auto action=inserted.value().actions.front();
+        auto parameter=sct::findSctOpcodeSchema(opcode)->textReferences[0].parameterIndex;
+        auto inspection=backend.inspect(revision,action);ASSERT_TRUE(inspection);
+        EXPECT_EQ(inspection.value().parameters.front().textKind,sct::findSctOpcodeSchema(opcode)->textReferences[0].kind);
+        sct::SctTextValue message=sct::SctMessage{{},{{sct::SctTextChunk{"New message"},sct::SctInlineCommand{sct::SctMessageCommandCode::E,{}}}}};
+        if(opcode==23)message=sct::SctPlainText{"New message"};
+        auto edited=backend.execute(revision,editor::WriteStringParameter{action,{parameter,{}},message});
+        ASSERT_TRUE(edited)<<messages(edited.diagnostics());
+        f.revision=edited.value().status.current;
+        auto inspected=backend.inspect(f.revision,action);ASSERT_TRUE(inspected);
+        EXPECT_NE(inspected.value().parameters.front().value.find("New message"),std::string::npos);
+    }
 }
 TEST(EditorBackendTest, CreatesAndEditsStructuredArmsWithoutWidgetStorageTypes) {
     Fixture f;editor::ProgramBackend backend(std::shared_ptr<ir::ProgramService>(&f.service,[](auto*){}));
@@ -1536,11 +1645,17 @@ TEST(LocalizationTest, SharedBodyWideCsvAndRuntimeLanguagesShareOneHistory) {
             dialogActions.push_back(id);
             auto parameter = sct::findSctOpcodeSchema(144)->textReferences[0].parameterIndex;
             edit(editor::BindReference{id, {parameter, {}}, n ? french : base});
+            if (mode == 3) {
+                // Equivalent branches compare owned strings by value, not text ID.
+                auto printed=edit(editor::InsertOpcode{id,23});
+                auto print=printed.actions.front();
+                edit(editor::WriteStringParameter{print,{0,{}},sct::SctPlainText{"same debug text"}});
+            }
             auto owner = cp.program->find(std::get<ir::ArmId>(*cp.program->find(bodies[n])->owner))->owner;
             auto transfer =
                 service
                     ->edit({revision,
-                            {semantic(ir::InsertTransfer{bodies[n], 1, ir::TransferKind::Break, owner})}})
+                            {semantic(ir::InsertTransfer{bodies[n], mode == 3 ? 2u : 1u, ir::TransferKind::Break, owner})}})
                     .get();
             ASSERT_TRUE(transfer) << messages(transfer.diagnostics());
             revision = transfer.value().status.current;

@@ -181,19 +181,19 @@ void TextEditorComponent::create() {
         return;
     bool ok = false;
     auto name =
-        QInputDialog::getText(this, tr("New string"), tr("Section name or footer label"), QLineEdit::Normal, {}, &ok);
+        QInputDialog::getText(this, tr("New string"), tr("Section name"), QLineEdit::Normal, {}, &ok);
     if (!ok || name.isEmpty())
         return;
     auto storage =
-        QInputDialog::getItem(this, tr("Text storage"), tr("Storage"),
-                              {tr("Indexed dialogue"), tr("Footer dialogue"), tr("Footer plain text")}, 0, false, &ok);
+        QInputDialog::getItem(this, tr("Text kind"), tr("Kind"),
+                              {tr("Indexed dialogue"), tr("Indexed plain text")}, 0, false, &ok);
     if (!ok)
         return;
     ed::CreateText input;
     input.script = session_->inspection()->script;
     input.name = name.toStdString();
-    input.footer = storage != tr("Indexed dialogue");
-    if (storage == tr("Footer plain text")) {
+    input.footer = false;
+    if (storage == tr("Indexed plain text")) {
         input.kind = spice::sct::SctTextKind::PlainString;
         input.value = spice::sct::SctPlainText{""};
     } else {

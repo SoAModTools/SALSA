@@ -309,6 +309,29 @@ struct ServiceOwner {
         auto grouping = analyzeFlowIssues(*data, sequence, stop);
         return *flowIssues.emplace(sequence, std::move(grouping)).first->second;
     }
+    void refreshStringOwners(const PreparedData &patch, ChangeReceipt &receipt) {
+        auto &d = *data;
+        d.footerOwners.resize(d.texts.size());
+        for (const auto &change : patch.actions)
+            mapFooterOperands(d, change.other.value, [&](auto text, auto) {
+                auto at = d.directory.find(text.value);
+                if (at.kind == EntityKind::Text) d.footerOwners[at.index] = {};
+                return text;
+            });
+        for (const auto &change : patch.actions) {
+            const auto &action = *d.actions.find(change.index);
+            if (action.id.valid()) mapFooterOperands(d, action.value, [&](auto text, auto) {
+                d.footerOwners[d.directory.find(text.value).index] = action.id;
+                return text;
+            });
+        }
+        for (auto text : receipt.texts) {
+            auto at = d.directory.find(text.value);
+            if (at.kind == EntityKind::Text && d.footerOwners[at.index].valid())
+                receipt.actions.push_back(d.footerOwners[at.index]);
+        }
+        unique(receipt.actions);
+    }
     void invalidateOutline(const ChangeReceipt &receipt) {
         for (auto seq : receipt.sequences) semanticRowOffsets.erase(seq);
         for (auto id : receipt.actions) if (auto *a = data->action(id)) semanticRowOffsets.erase(a->owner);
@@ -558,6 +581,35 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
                             auto replace = [&](ValueId &id) {
                                 auto v = *d.values.find(id.value);
                                 if (v.kind == ValueKind::Parameter && v.data == edit.address.schemaIndex) {
+                                    if (edit.stringKind) {
+                                        const auto *schema = spice::sct::findSctOpcodeSchema(static_cast<std::uint16_t>(original.data));
+                                        bool stringOperand = false;
+                                        if (schema) for (unsigned n = 0; n < schema->textReferenceCount; ++n)
+                                            stringOperand |= schema->textReferences[n].parameterIndex == v.data &&
+                                                schema->textReferences[n].storage == spice::sct::SctTextStorage::Footer;
+                                        require(stringOperand, "Expected a string-valued parameter");
+                                        auto kind = d.values.find(value.value)->kind;
+                                        require(kind == ValueKind::PlainText || kind == ValueKind::Message, "Invalid string parameter value");
+                                        auto operand = d.child(id);
+                                        auto *ref = operand.size() == 1 ? d.values.find(operand.front().value) : nullptr;
+                                        if (ref && ref->kind == ValueKind::SupplementaryTextReference) {
+                                            auto ti = location(ref->data, EntityKind::Text);
+                                            auto &text = touch(p->texts, ti, d.texts[ti]);
+                                            require(text.supplementary, "Expected a string parameter");
+                                            text.value = value; text.kind = *edit.stringKind;
+                                            value = d.add(ValueKind::SupplementaryTextReference, text.id.value);
+                                        } else {
+                                            require(ref != nullptr, "Missing string operand slot");
+                                            auto script = d.sequence(a.owner)->script;
+                                            auto text = SctTextResourceId{d.allocate()};
+                                            auto ti = count32(d.texts.size());
+                                            d.texts.push_back({text, script, value, *edit.stringKind, true});
+                                            p->texts.push_back({ti, {}}); changeLocation(text.value, {EntityKind::Text, ti});
+                                            auto si = location(script.value, EntityKind::Script);
+                                            touch(p->scripts, si, d.scripts[si]).supplementaryText.push_back(text);
+                                            value = d.add(ValueKind::SupplementaryTextReference, text.value);
+                                        }
+                                    }
                                     id = d.add(ValueKind::Parameter, v.data, v.detail, std::span(&value, 1));
                                     valueShape(d, id);
                                     found = true;
@@ -753,6 +805,49 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
                 op);
         }
         semantic.finish();
+        // Newly introduced operands own copies. Unchanged operands keep their IDs,
+        // including ordinary parameter/timing edits and moves. Only touched actions
+        // are inspected; no whole-project scan is needed for this ownership rule.
+        std::set<SctTextResourceId> freshTexts, claimedFresh, oldTexts, keptTexts;
+        for (const auto &change : p->texts)
+            if (!change.other.id.valid()) freshTexts.insert(d.texts[change.index].id);
+        for (const auto &change : p->actions) {
+            std::map<spice::sct::SctParameterAddress, SctTextResourceId> previous;
+            if (change.other.id.valid())
+                mapFooterOperands(d, change.other.value, [&](auto id, auto address) {
+                    previous.emplace(address, id); oldTexts.insert(id); return id;
+                });
+            auto &current = *d.actions.find(change.index);
+            if (!current.id.valid()) continue;
+            const auto script = d.sequence(current.owner)->script;
+            current.value = mapFooterOperands(d, current.value, [&](auto id, auto address) {
+                auto *text = d.lookup(id.value, EntityKind::Text, d.texts);
+                require(text && text->supplementary && text->script == script, "Missing string operand");
+                if ((previous.contains(address) && previous.at(address) == id) ||
+                    (freshTexts.contains(id) && claimedFresh.insert(id).second)) {
+                    keptTexts.insert(id); return id;
+                }
+                auto copy = *text;
+                copy.id = SctTextResourceId{d.allocate()};
+                auto index = count32(d.texts.size());
+                d.texts.push_back(copy); p->texts.push_back({index, {}});
+                changeLocation(copy.id.value, {EntityKind::Text, index});
+                auto si = location(script.value, EntityKind::Script);
+                touch(p->scripts, si, d.scripts[si]).supplementaryText.push_back(copy.id);
+                keptTexts.insert(copy.id);
+                return copy.id;
+            });
+        }
+        // Retired instruction-owned strings disappear with their operands. Keep
+        // explicitly annotated resources available to inspection until unbound.
+        for (auto id : oldTexts) if (!keptTexts.contains(id) && !protectedIds.contains(id.value)) {
+            auto index = location(id.value, EntityKind::Text);
+            auto script = d.texts[index].script;
+            auto si = location(script.value, EntityKind::Script);
+            std::erase(touch(p->scripts, si, d.scripts[si]).supplementaryText, id);
+            touch(p->texts, index, d.texts[index]) = {};
+            changeLocation(id.value, {});
+        }
         if (semantic.changed) {
             finishMetadata(d, p->diagnostics, false, false);
             auto previous = std::move(protectedIds);
@@ -829,7 +924,7 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
             p->receipt.sections.push_back(s.id.valid() ? s.id : c.other.id);
         }
         for (auto &c : p->scripts)
-            if (c.other.sections != d.scripts[c.index].sections || c.other.supplementaryText != d.scripts[c.index].supplementaryText)
+            if (c.other.sections != d.scripts[c.index].sections)
                 p->receipt.scriptLayouts.push_back(d.scripts[c.index].context.id);
         unique(p->receipt.sections);
         for (auto &c : p->conditions)
@@ -949,6 +1044,7 @@ ChangeReceipt ServiceOwner::install(PreparedChange change, std::stop_token stop)
     for(auto id:receipt.oldTargets)if(auto *a=data->action(id))receipt.projectionSequences.push_back(a->owner);
     for(auto id:receipt.newTargets)if(auto *a=data->action(id))receipt.projectionSequences.push_back(a->owner);
     unique(receipt.projectionSequences);
+    refreshStringOwners(*p, receipt);
     invalidateOutline(receipt);
     invalidate(receipt);
     return receipt;
@@ -993,6 +1089,7 @@ ChangeReceipt ServiceOwner::travel(Revision expected, bool redo, std::stop_token
     for(auto id:receipt.oldTargets)if(auto *a=data->action(id))receipt.projectionSequences.push_back(a->owner);
     for(auto id:receipt.newTargets)if(auto *a=data->action(id))receipt.projectionSequences.push_back(a->owner);
     unique(receipt.projectionSequences);
+    refreshStringOwners(*p, receipt);
     invalidateOutline(receipt);
     invalidate(receipt);
     return receipt;

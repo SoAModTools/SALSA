@@ -195,11 +195,32 @@ void SemanticTransaction::paste(const PasteFragment &e) {
         return target;
     };
     auto target = [&](SctActionId id) { return ids.contains(id.value) ? remap(id) : external(id); };
+    // Footer values travel with copied instructions, including across projects.
+    // Indexed strings remain explicit external bindings.
+    std::map<SctTextResourceId, SctTextResourceId> ownedTexts;
+    std::vector<std::pair<std::uint32_t, ValueId>> copiedTextValues;
+    for (const auto &source : s.texts) if (source.supplementary) {
+        auto copy = source;
+        copy.id = SctTextResourceId{d.allocate()};
+        copy.script = script;
+        if (f.project != d.id || f.script != script) copy.sourceText = 0;
+        if (f.project != d.id) { copy.languages.clear(); copy.explicitAssignment = false; }
+        auto index = count32(d.texts.size());
+        d.texts.push_back(copy); p.texts.push_back({index, {}});
+        locate(copy.id.value, {EntityKind::Text, index});
+        auto si = at(script.value, EntityKind::Script);
+        touch(p.scripts, si, d.scripts[si]).supplementaryText.push_back(copy.id);
+        ownedTexts.emplace(source.id, copy.id);
+        copiedTextValues.emplace_back(index, source.value);
+    }
     auto payload = s.payload;
     for (auto &v : payload.values) {
         if (v.kind == ValueKind::ActionReference)
             v.data = target(SctActionId{v.data}).value;
-        if (v.kind == ValueKind::IndexedTextReference || v.kind == ValueKind::SupplementaryTextReference) {
+        if (v.kind == ValueKind::SupplementaryTextReference) {
+            require(ownedTexts.contains(SctTextResourceId{v.data}), "Missing copied string operand");
+            v.data = ownedTexts.at(SctTextResourceId{v.data}).value;
+        } else if (v.kind == ValueKind::IndexedTextReference) {
             auto id = external(SctTextResourceId{v.data});
             auto *t = d.lookup(id.value, EntityKind::Text, d.texts);
             require(t->supplementary == (v.kind == ValueKind::SupplementaryTextReference),
@@ -216,6 +237,7 @@ void SemanticTransaction::paste(const PasteFragment &e) {
         require(!id.valid() || id.value < payload.values.size(), "Invalid fragment value");
         return id.valid() ? ValueId{base + id.value} : id;
     };
+    for (auto [index, source] : copiedTextValues) d.texts[index].value = value(source);
     for (auto &seq : s.sequences)
         if (auto it = seqRows.find(seq.id.value); it != seqRows.end()) {
             auto row = seq;

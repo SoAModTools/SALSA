@@ -41,6 +41,7 @@ struct ReplaceParameter {
     SctActionId action;
     spice::sct::SctParameterAddress address;
     ValueBuffer value;
+    std::optional<spice::sct::SctTextKind> stringKind; // Owned string value, rather than a reference binding.
 };
 struct ReplaceInstruction {
     SctActionId action;

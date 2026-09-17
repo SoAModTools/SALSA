@@ -194,6 +194,13 @@ Result<Change> ProgramBackend::execute(Revision r, EditIntent intent, std::stop_
                     edits.push_back(ir::ReplaceInstruction{
                         e.action, take(ir::ProgramValues::compose(
                                       v.kind, v.data, (e.skipRefresh ? 1u : 0u) | (e.schedule ? 2u : 0u), parts))});
+                } else if constexpr (std::is_same_v<T, WriteStringParameter>) {
+                    auto inspected = take(inspect(r, e.action, stop));
+                    auto p = std::ranges::find(inspected.parameters, e.parameter, &Parameter::key);
+                    if (p == inspected.parameters.end() || p->kind != ParameterKind::FooterText)
+                        throw std::runtime_error("Select a string-valued parameter");
+                    edits.push_back(ir::ReplaceParameter{e.action, {e.parameter.index, e.parameter.group},
+                        take(ir::ProgramValues::text(e.value)), p->textKind});
                 } else if constexpr (std::is_same_v<T, WriteText>) {
                     if (e.draft.revision != r)
                         throw std::runtime_error("Text draft is stale; keep the draft and reload before applying");

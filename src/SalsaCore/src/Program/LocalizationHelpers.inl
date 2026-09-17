@@ -225,6 +225,14 @@ std::optional<LocalizationRecognition> recognizeLocalization(ProgramData &d, Sct
                 lang = text->languages.front();
                 foundText = true;
                 signature.push_back(message->id.value);
+            } else if (v->kind == ValueKind::SupplementaryTextReference) {
+                const auto *text = d.lookup(v->data, EntityKind::Text, d.texts);
+                if (!text || d.values.find(text->value.value)->kind == ValueKind::Unavailable) return false;
+                signature.push_back(static_cast<std::uint64_t>(text->kind));
+                if (!value(text->value)) return false;
+            } else if (v->kind == ValueKind::PlainText || v->kind == ValueKind::TextChunk) {
+                for (std::uint32_t i = 0; i < v->detail; ++i)
+                    signature.push_back(static_cast<unsigned char>(d.characters.at(v->data + i)));
             } else
                 signature.push_back(v->data);
             for (auto c : d.child(id))

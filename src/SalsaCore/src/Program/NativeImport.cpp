@@ -88,7 +88,9 @@ class NativeNormalizer {
     ProgramData& d;
     ExpressionScratch expressionScratch;
     std::unordered_map<std::uint64_t, SctActionId> actions;
-    std::unordered_map<std::uint64_t, SctTextResourceId> indexed, supplementary;
+    std::unordered_map<std::uint64_t, SctTextResourceId> indexed;
+    std::unordered_map<std::uint64_t, const sct::SctDocumentSupplementaryText*> supplementary;
+    SctScriptId importingScript;
     ValueId words(ValueKind kind, std::span<const std::uint32_t> words, std::uint64_t data = 0, std::uint32_t detail = 0) {
         std::vector<ValueId> children; children.reserve(words.size());
         for (auto word : words) children.push_back(d.add(ValueKind::Word, word));
@@ -102,7 +104,13 @@ class NativeNormalizer {
             else if constexpr (std::is_same_v<T, sct::SctTerminatedWordSequenceValue>) return words(ValueKind::Words, v.words);
             else if constexpr (std::is_same_v<T, sct::SctInstructionReference>) return d.add(ValueKind::ActionReference, actions.at(v.target.value()).value);
             else if constexpr (std::is_same_v<T, sct::SctStringReference>) return d.add(ValueKind::IndexedTextReference, indexed.at(v.target.value()).value);
-            else if constexpr (std::is_same_v<T, sct::SctSupplementaryTextReference>) return d.add(ValueKind::SupplementaryTextReference, supplementary.at(v.target.value()).value);
+            else if constexpr (std::is_same_v<T, sct::SctSupplementaryTextReference>) {
+                const auto &source = *supplementary.at(v.target.value());
+                const auto id = SctTextResourceId{d.claim(0, EntityKind::Text, count32(d.texts.size()))};
+                d.texts.push_back({id, importingScript, text(source.value), source.kind, true, source.id.value()});
+                d.scripts.back().supplementaryText.push_back(id);
+                return d.add(ValueKind::SupplementaryTextReference, id.value);
+            }
             else if constexpr (std::is_same_v<T, sct::SctUnresolvedReferenceValue>) return words(ValueKind::Unresolved, v.encodedWords,
                 static_cast<std::uint64_t>(v.expectedTarget.storage), v.expectedTarget.textKind ? 1 + static_cast<std::uint32_t>(*v.expectedTarget.textKind) : 0);
             else { ++d.stats.unavailableItems; return d.add(ValueKind::Unavailable, v.words.size(), 2); }
@@ -146,6 +154,7 @@ public:
     SctScriptId append(const sct::SctDocument& document, SctAuthoringBaseline baseline, SctScriptContext context) {
         const auto script = d.beginScript(std::move(baseline), std::move(context));
         auto& output = d.scripts.back();
+        importingScript = script;
         // Bind every target before copying operands. Maps die with this import.
         for (const auto& section : document.sections) {
             if (const auto* code = std::get_if<sct::SctScriptSectionContent>(&section.content)) {
@@ -156,7 +165,7 @@ public:
                 require(value->string.id.value() != 0 && indexed.emplace(value->string.id.value(), SctTextResourceId{d.allocate()}).second, "Duplicate/zero native text ID");
         }
         for (const auto& value : document.supplementaryText)
-            require(value.id.value() != 0 && supplementary.emplace(value.id.value(), SctTextResourceId{d.allocate()}).second, "Duplicate/zero native supplementary text ID");
+            require(value.id.value() != 0 && supplementary.emplace(value.id.value(), &value).second, "Duplicate/zero native supplementary text ID");
         std::set<std::uint64_t> sourceSections;
         std::map<std::uint64_t, SctSequenceId> groupedSections;
         for (const auto& source : document.sections) {
@@ -195,12 +204,6 @@ public:
                 section.content = words(ValueKind::StringGroup, marker->preambleWords);
             else { ++d.stats.unavailableItems; section.content = d.add(ValueKind::Unavailable, 0, 4); }
             output.sections.push_back(section.id); d.sections.push_back(std::move(section));
-        }
-        for (const auto& source : document.supplementaryText) {
-            const auto id = supplementary.at(source.id.value());
-            d.claim(id.value, EntityKind::Text, count32(d.texts.size()));
-            d.texts.push_back({id, script, text(source.value), source.kind, true, source.id.value()});
-            output.supplementaryText.push_back(id);
         }
         for (const auto& attachment : document.opaqueAttachments) d.stats.excludedSourceBytes += attachment.bytes.size();
         auto grouping = normalizeImportedGroups(d, document, actions, groupedSections);

@@ -106,7 +106,7 @@ std::optional<Variable> read(const Value& op) {
 }
 }
 void valueShape(const ProgramData& d, ValueId id) { shape(d, id); }
-DirectFacts actionFacts(ProgramData& d, std::span<const SctActionId> actions, std::vector<Diagnostic>& diagnostics) {
+DirectFacts actionFacts(ProgramData& d, std::span<const SctActionId> actions, std::vector<Diagnostic>& diagnostics, bool recordTextOwners) {
     DirectFacts facts;
     auto inspect = [&](ValueId id, Site site, SctScriptId script) {
         const auto& v = node(d, id);
@@ -123,6 +123,11 @@ DirectFacts actionFacts(ProgramData& d, std::span<const SctActionId> actions, st
         } else if (v.kind == ValueKind::IndexedTextReference || v.kind == ValueKind::SupplementaryTextReference) {
             auto* target = d.lookup(v.data, EntityKind::Text, d.texts);
             require(target && target->script == script && target->supplementary == (v.kind == ValueKind::SupplementaryTextReference), "Dangling or incompatible resolved text target");
+            if (recordTextOwners && target->supplementary) {
+                auto &owner = d.footerOwners[d.directory.find(target->id.value).index];
+                require(!owner.valid(), "A string parameter cannot share its editable value");
+                owner = site.action;
+            }
         } else if (v.kind == ValueKind::Unresolved) {
             diagnostics.push_back({DiagnosticSeverity::Warning, DiagnosticCode::UnresolvedSctAuthoringBinding,
                 "Unresolved operand in action " + std::to_string(site.action.value)});
@@ -187,7 +192,8 @@ void buildIndexes(ProgramData& d, std::vector<Diagnostic>& diagnostics, bool che
     if (checkValueShapes) for (std::uint32_t i = 0; i < d.values.size(); ++i) shape(d, ValueId{i});
     std::vector<SctActionId> ids;
     for (std::uint32_t i = 0; i < d.actions.size(); ++i) if (auto id = d.actions.find(i)->id; id.valid()) ids.push_back(id);
-    auto facts = actionFacts(d, ids, diagnostics);
+    d.footerOwners.assign(d.texts.size(), {});
+    auto facts = actionFacts(d, ids, diagnostics, true);
     d.accesses = std::move(facts.accesses); d.computed = std::move(facts.computed); d.targetUses = std::move(facts.targets);
     d.variableUses.clear(); d.incomingRanges.clear();
     finalizePostings(d);
@@ -363,6 +369,7 @@ void finishMetadata(ProgramData &d, std::vector<Diagnostic> &diagnostics, bool a
         }
     }
     for (const auto& t : d.texts) {
+        if (!t.id.valid()) continue;
         const auto& v = node(d, t.value);
         require(v.kind == ValueKind::PlainText || v.kind == ValueKind::Message || v.kind == ValueKind::EmptyIndexedText || v.kind == ValueKind::Unavailable, "Invalid text entity payload");
         require(t.supplementary || indexedOwners.contains(t.id), "Indexed text has no section owner");

@@ -92,7 +92,7 @@ Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest re
 Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, std::stop_token stop) {
     ir::ReadSelection request;
     request.descend = false;
-    request.referencedText = false;
+    request.referencedText = true;
     std::visit(
         [&](auto id) {
             using T = decltype(id);
@@ -220,6 +220,9 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
             if (value.kind == ir::ValueKind::Parameter && value.count == 1) {
                 auto row = parameter(s.payload, children(s.payload, p).front(),
                                      {static_cast<std::uint32_t>(value.data), group});
+                const auto &operand = s.payload.values.at(children(s.payload, p).front().value);
+                if (operand.kind == ir::ValueKind::Unresolved && operand.detail)
+                    row.textKind = static_cast<spice::sct::SctTextKind>(operand.detail - 1);
                 if (schema && value.data < schema->parameterCatalogCount) {
                     const auto &definition = schema->parameterCatalog[value.data];
                     const auto role = schema->semantic.parameterRoles[value.data];
@@ -232,11 +235,13 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                         else if (definition.referenceKind == spice::sct::SctOpcodeReferenceKind::Text) {
                             row.kind = ParameterKind::IndexedText;
                             for (unsigned n = 0; n < schema->textReferenceCount; ++n)
-                                if (schema->textReferences[n].parameterIndex == value.data)
+                                if (schema->textReferences[n].parameterIndex == value.data) {
                                     row.kind = schema->textReferences[n].storage ==
                                                        spice::sct::SctTextStorage::Footer
                                                    ? ParameterKind::FooterText
                                                    : ParameterKind::IndexedText;
+                                    row.textKind = schema->textReferences[n].kind;
+                                }
                         }
                     }
                 }
@@ -244,6 +249,24 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                     for (auto &[index, name] : custom->parameters)
                         if (index == row.key.index)
                             row.name = name;
+                if (row.kind == ParameterKind::FooterText && row.target) {
+                    auto id = std::get_if<SctTextResourceId>(&*row.target);
+                    auto text = id ? std::ranges::find(s.texts, *id, &ir::Text::id) : s.texts.end();
+                    if (text != s.texts.end()) {
+                        row.textKind = text->kind;
+                        auto decoded = ir::ProgramValues::text(s.payload, text->value);
+                        if (decoded) {
+                            row.textValue = decoded.value();
+                            row.value.clear();
+                            if (auto plain = std::get_if<spice::sct::SctPlainText>(&*row.textValue)) row.value = plain->utf8;
+                            else if (auto message = std::get_if<spice::sct::SctMessage>(&*row.textValue))
+                                for (const auto &element : message->body.elements) {
+                                    if (auto chunk = std::get_if<spice::sct::SctTextChunk>(&element)) row.value += chunk->utf8;
+                                    else row.value += " [control] ";
+                                }
+                        } else row.value = "Unavailable string value";
+                    }
+                }
                 out.parameters.push_back(std::move(row));
             }
         };

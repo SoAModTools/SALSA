@@ -80,6 +80,7 @@ struct ProgramData {
     std::vector<Dispatch> dispatches;
     std::vector<Transfer> transfers;
     std::vector<Text> texts;
+    std::vector<SctActionId> footerOwners; // Derived, indexed by text slot; never serialized.
     Metadata metadata;
     Directory directory;
     std::map<Variable, Range> variableUses;
@@ -169,11 +170,48 @@ struct ProgramData {
         pendingOrders[directory.find(owner.value).index].push_back(id); return id;
     }
 };
+// Transform only string operands; immutable text payloads may share pooled bytes,
+// but each parameter has an independent editable text identity.
+template<class Map> ValueId mapFooterOperands(ProgramData &d, ValueId root, Map map) {
+    const auto *instruction = d.values.find(root.value);
+    if (!instruction || instruction->kind != ValueKind::Instruction) return root;
+    auto transform = [&](ValueId id, std::optional<std::uint32_t> group) {
+        auto parameter = *d.values.find(id.value);
+        if (parameter.kind != ValueKind::Parameter) return id;
+        auto children = d.child(id);
+        if (children.size() != 1) return id;
+        auto ref = *d.values.find(children.front().value);
+        if (ref.kind != ValueKind::SupplementaryTextReference) return id;
+        auto target = map(SctTextResourceId{ref.data}, spice::sct::SctParameterAddress{static_cast<std::uint32_t>(parameter.data), group});
+        if (target.value == ref.data) return id;
+        auto value = d.add(ref.kind, target.value);
+        return d.add(parameter.kind, parameter.data, parameter.detail, std::span(&value, 1));
+    };
+    auto value = *instruction;
+    auto original = d.child(root);
+    std::vector<ValueId> children(original.begin(), original.end());
+    bool changed = false;
+    std::uint32_t group = 0;
+    for (auto &id : children) {
+        auto before = id;
+        auto v = *d.values.find(id.value);
+        if (v.kind == ValueKind::RepeatedGroup) {
+            auto source = d.child(id);
+            std::vector<ValueId> items(source.begin(), source.end());
+            bool edited = false;
+            for (auto &item : items) { auto next = transform(item, group); edited |= next != item; item = next; }
+            if (edited) id = d.add(v.kind, v.data, v.detail, items);
+            ++group;
+        } else id = transform(id, {});
+        changed |= before != id;
+    }
+    return changed ? d.add(value.kind, value.data, value.detail, children) : root;
+}
 // Native normalization is also used by the public expression input operation.
 ValueId normalizeExpression(ProgramData&, const spice::sct::SctCanonicalExpression&);
 struct DirectFacts { std::vector<VariableUse> accesses, computed; std::vector<TargetUse> targets; };
 void valueShape(const ProgramData&, ValueId);
-DirectFacts actionFacts(ProgramData&, std::span<const SctActionId>, std::vector<Diagnostic>&);
+DirectFacts actionFacts(ProgramData&, std::span<const SctActionId>, std::vector<Diagnostic>&, bool recordTextOwners = false);
 void finalizePostings(ProgramData&);
 void buildIndexes(ProgramData&, std::vector<Diagnostic>&, bool checkValueShapes = true);
 void validateDispatch(const ProgramData &, const Dispatch &);

@@ -3,6 +3,9 @@
 #include "Editor/EditorSessionPresenter.h"
 #include "Editor/ScriptEditingActions.h"
 #include "Editor/SupportingSequenceEditor.h"
+#include "Sct/SctMessageEditorWidget.h"
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QAction>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -77,7 +80,7 @@ void InstructionInspector::availability() {
                    i->parameters[row].kind != core::editor::ParameterKind::ReadOnly;
     edit_->setEnabled(enabled);
     follow_->setEnabled(i && row >= 0 && row < static_cast<int>(i->parameters.size()) &&
-                        i->parameters[row].target.has_value());
+                        i->parameters[row].target.has_value() && i->parameters[row].kind != core::editor::ParameterKind::FooterText);
     edit_->setToolTip(enabled ? tr("Apply one parameter edit through project history")
                       : i && row >= 0 && row < static_cast<int>(i->parameters.size()) && !session_->busy()
                           ? QString::fromStdString(i->parameters[row].unavailableReason)
@@ -96,8 +99,36 @@ void InstructionInspector::editParameter() {
             session_->execute(tr("Edit SCPT parameter"), core::editor::SetExpression{subject, p.key, *value}, revision);
         return;
     }
-    if (p.kind == core::editor::ParameterKind::ActionTarget || p.kind == core::editor::ParameterKind::IndexedText ||
-        p.kind == core::editor::ParameterKind::FooterText) {
+    if (p.kind == core::editor::ParameterKind::FooterText) {
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Edit string parameter: %1").arg(QString::fromStdString(p.name)));
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *editor = new SctMessageEditorWidget(&dialog);
+        layout->addWidget(editor);
+        auto draft = p.textValue.value_or(p.textKind == spice::sct::SctTextKind::PlainString
+            ? spice::sct::SctTextValue{spice::sct::SctPlainText{}}
+            : spice::sct::SctTextValue{spice::sct::SctMessage{}});
+        if (!p.textValue && p.textKind == spice::sct::SctTextKind::SctString) {
+            core::SctMessageDraft empty;
+            empty.completion = core::SctMessageClose{};
+            auto value = core::SctMessageAuthoringProfile::materialize(empty);
+            if (value.succeeded()) draft = *value.message;
+        }
+        editor->bindValue(draft, p.textKind, spice::sct::SctTextStorage::Footer,
+                          [&](auto value) { draft = std::move(value); return true; });
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        layout->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+            if (editor->flushPending()) dialog.accept();
+        });
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        dialog.resize(650, 420);
+        if (dialog.exec() == QDialog::Accepted)
+            session_->execute(tr("Edit string parameter"), core::editor::WriteStringParameter{
+                std::get<core::SctActionId>(subject), p.key, std::move(draft)}, revision);
+        return;
+    }
+    if (p.kind == core::editor::ParameterKind::ActionTarget || p.kind == core::editor::ParameterKind::IndexedText) {
         core::editor::BrowseRequest query;
         query.kind = p.kind == core::editor::ParameterKind::ActionTarget ? core::editor::BrowseKind::Actions
                                                                          : core::editor::BrowseKind::Texts;

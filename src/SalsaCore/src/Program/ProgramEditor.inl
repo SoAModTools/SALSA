@@ -160,14 +160,13 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
             if (request.semantic && a->kind == ActionKind::Instruction)
                 featureOperands(d, *a, [&](auto address, auto value) {
                     auto *v = d.values.find(value.value);
-                    if (v->kind != ValueKind::IndexedTextReference)
-                        return;
-                    auto *message = logicalFor(d, SctTextResourceId{v->data});
-                    if (!message)
-                        return;
-                    label += " : " + message->name;
+                    const bool owned = v->kind == ValueKind::SupplementaryTextReference;
+                    if (!owned && v->kind != ValueKind::IndexedTextReference) return;
+                    auto *message = owned ? nullptr : logicalFor(d, SctTextResourceId{v->data});
+                    if (!owned && !message) return;
+                    if (message) label += " : " + message->name;
                     const Text *text = d.lookup(v->data, EntityKind::Text, d.texts);
-                    if (request.language.valid()) {
+                    if (!owned && request.language.valid()) {
                         text = nullptr;
                         for (auto variant : message->variants) {
                             auto *t = d.lookup(variant.value, EntityKind::Text, d.texts);
@@ -305,7 +304,7 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                         }
                         sections = semanticSections;
                     }
-                    out.total = sections.size() + script->supplementaryText.size();
+                    out.total = sections.size();
                     auto total = out.total;
                     out.total = request.offset;
                     for (auto at = request.offset; at < std::min(total, request.offset + request.limit); ++at) {
@@ -318,15 +317,6 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                                 {s->id, s->body, logical ? logical->name : s->name,
                                  s->body.valid() || logical ||
                                      (request.semantic && sectionContentIs(d, *s, ValueKind::StringGroup))});
-                        } else {
-                            auto *t = d.lookup(script->supplementaryText[at - sections.size()].value,
-                                               EntityKind::Text, d.texts);
-                            require(t != nullptr, "Missing footer text");
-                            append(
-                                {t->id,
-                                 {},
-                                 t->sourceName.empty() ? "Footer text " + std::to_string(t->id.value) : t->sourceName,
-                                 false});
                         }
                     }
                     out.total = total;
@@ -510,6 +500,13 @@ std::future<Result<NavigationPath>> ProgramService::locate(Revision revision, Ed
                     } else if constexpr (std::is_same_v<T, SctTextResourceId>) {
                         auto *t = d.lookup(id.value, EntityKind::Text, d.texts);
                         require(t, "Missing text");
+                        if (t->supplementary) {
+                            out.subjects.pop_back();
+                            auto slot = d.directory.find(id.value).index;
+                            if (slot < d.footerOwners.size() && d.footerOwners[slot].valid())
+                                return d.footerOwners[slot];
+                            return t->script;
+                        }
                         if (semantic && !t->supplementary)
                             if (auto *logical = logicalFor(d, id); logical && !logical->variants.empty()) {
                                 auto *script = d.lookup(t->script.value, EntityKind::Script, d.scripts);

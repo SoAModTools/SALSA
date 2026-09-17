@@ -40,6 +40,16 @@ std::vector<editor::FeatureSite> featureTextUses(ProgramData &d, SctTextResource
     auto *t = d.lookup(text.value, EntityKind::Text, d.texts);
     require(t, "Missing text");
     std::vector<editor::FeatureSite> out;
+    if (t->supplementary) {
+        auto index = d.directory.find(text.value).index;
+        if (index < d.footerOwners.size()) if (auto *a = d.action(d.footerOwners[index]))
+            featureOperands(d, *a, [&](auto address, auto id) {
+                const auto *v = d.values.find(id.value);
+                if (v->kind == ValueKind::SupplementaryTextReference && v->data == text.value)
+                    out.push_back({a->id, address});
+            });
+        return out;
+    }
     for (std::uint32_t n = 0; n < d.actions.size(); ++n) {
         stopped(stop);
         auto &a = *d.actions.find(n);

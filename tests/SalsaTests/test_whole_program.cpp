@@ -2,6 +2,7 @@
 #include "SpiceSCT/SctDocumentExporter.h"
 #include "SpiceSCT/SctInstructionFactory.h"
 #include <gtest/gtest.h>
+#include <set>
 #include <array>
 
 namespace {
@@ -28,7 +29,9 @@ sct::SctDocument fixture() {
     operations.push_back(sct::SctScptInertOperation{});
     operations.push_back(sct::SctScptStackOverwritePreviousWithTopOperation{});
     broad.fixedParameters.push_back({5, expression});
-    broad.repeatedParameterGroups = {{{{2, sct::SctInstructionReference{target}}}}, {{{2, sct::SctInstructionReference{target}}}}};
+    broad.repeatedParameterGroups = {
+        {{{2, sct::SctInstructionReference{target}}, {3, sct::SctSupplementaryTextReference{footer}}}},
+        {{{2, sct::SctInstructionReference{target}}, {3, sct::SctSupplementaryTextReference{footer}}}}};
     std::vector<sct::SctDocumentInstruction> code;
     code.push_back(broad);
     code.push_back({target, 17, false, {}, {{0, sct::SctExpressionFactory::floatLiteral(121.0f)}}});
@@ -72,10 +75,16 @@ TEST(WholeProgramTest, ImportsIndependentTypedProgramsAndDirectConnections) {
     EXPECT_TRUE(std::ranges::any_of(built.diagnostics(), [](const Diagnostic& d) { return d.code == DiagnosticCode::UnresolvedSctAuthoringBinding; }));
     EXPECT_EQ(p.find(a.value())->context.legacyOrigin->scriptKey, "script");
     auto payload = p.children(broad->value); EXPECT_EQ(p.find(p.children(payload[1])[0])->data, 0xabcdef12);
-    const auto& text = p.texts()[0]; auto elements = p.children(text.value); ASSERT_EQ(elements.size(), 3);
+    const auto text = std::ranges::find_if(p.texts(), [&](const auto &t) { return t.script == a.value() && !t.supplementary; });
+    ASSERT_NE(text,p.texts().end()); auto elements = p.children(text->value); ASSERT_EQ(elements.size(), 3);
     EXPECT_EQ(p.text(elements[0]), "Header"); EXPECT_EQ(p.text(elements[1]), "Body");
     EXPECT_EQ(p.find(elements[2])->detail, 2); EXPECT_EQ(p.children(elements[2]).size(), 2);
-    EXPECT_EQ(p.text(p.texts()[1].value), "Debug");
+    std::set<SctTextResourceId> strings;
+    for (const auto &t : p.texts()) if(t.script == a.value() && t.supplementary) {
+        EXPECT_EQ(p.text(t.value), "Debug"); strings.insert(t.id);
+    }
+    EXPECT_EQ(strings.size(),3u); // Fixed and repeated operands split the same source string.
+
 }
 TEST(WholeProgramTest, StructuredChainOwnsFlatArmsAndBodiesWithoutGeneratedJumps) {
     ir::ProgramBuilder builder({Project}, 7, 1ULL << 40);

@@ -573,6 +573,7 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
             if (actual.space)
                 labels.try_emplace(l, position()); // first occurrence for presentation only
         };
+        std::set<SctTextResourceId> usedSupplementary;
         auto remapText = [&](sct::SctDocumentParameter &parameter) {
             if (auto *ref = std::get_if<sct::SctStringReference>(&parameter.value)) {
                 const auto found = indexed.find(SctTextResourceId{ref->target.value()});
@@ -581,6 +582,7 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
             } else if (auto *ref = std::get_if<sct::SctSupplementaryTextReference>(&parameter.value)) {
                 const auto found = supplementary.find(SctTextResourceId{ref->target.value()});
                 require(found != supplementary.end(), "Dangling or cross-script supplementary text reference");
+                usedSupplementary.insert(found->first);
                 ref->target = found->second;
             }
         };
@@ -756,7 +758,7 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
             }
         }
         for (auto textId : script->supplementaryText) {
-            if (!supplementary.contains(textId))
+            if (!usedSupplementary.contains(textId))
                 continue;
             cancelled();
             const auto *text = p.find(textId);

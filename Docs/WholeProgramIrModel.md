@@ -113,3 +113,12 @@ Imported and user-created groups share the same Action/Arm/ConditionRegion/Seque
 ## G5 presentation and meaning records
 
 `VariableMeaning::storyState` classifies user-defined variables/values for default story display. `Metadata::narrative` is an ordered list of stable module IDs; `Metadata::interpretations` stores item subject, captured revision, decision, explanation and evidence. These are journaled metadata, with no second executable condition or stored whole-program relationship graph. Meaning/narrative edits retain executable summary caches. Private binary schema 6 persists these fields; older development schemas are rejected. See the G5 section of [the editor guide](WholeProgramIrEditor.md).
+
+
+## Instruction-owned string parameters
+
+Footer placement is an SCT serialization detail. Import creates an independent editable text identity for every referencing instruction parameter, including repeated parameter groups. Several parameters may retain the same baseline-qualified source text ID as provenance; that does not share their editing state. Immutable payload bytes can remain pooled internally. Unreferenced source footer records are not authored instructions or standalone content.
+
+Instruction inspection displays the decoded string and edits it using the plain/formatted text controls. Both outlines omit standalone footer entries. Copy/paste and snippets carry these string values with their instructions, including across projects. Rebinding copies the value; ordinary edits retain the existing parameter's text identity. Removing an operand retires its string unless explicit metadata still references it. The derived text-owner index permits navigation and row updates without scanning the whole project.
+
+Materialization produces SCT footer entries only for emitted references. This implementation emits independent entries; an eventual deduplication option belongs to export and must compare encoded bytes and storage requirements, rather than displayed text. Indexed dialogue and logical localization groups retain their separate identities and sharing rules. Source decoding continues to use independent footer text evidence; this ownership change does not change export encoding policy.

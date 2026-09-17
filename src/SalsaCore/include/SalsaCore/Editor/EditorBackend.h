@@ -51,6 +51,8 @@ struct Parameter {
     std::string unavailableReason;
     std::optional<Subject> target;
     std::optional<spice::sct::SctCanonicalExpression> expression;
+    std::optional<spice::sct::SctTextValue> textValue;
+    spice::sct::SctTextKind textKind = spice::sct::SctTextKind::SctString;
 };
 struct SupportingSequence {
     SctSequenceId sequence;
@@ -144,6 +146,11 @@ struct SetTiming {
     SctActionId action;
     bool skipRefresh = false;
     std::optional<spice::sct::SctCanonicalExpression> schedule;
+};
+struct WriteStringParameter {
+    SctActionId action;
+    ParameterKey parameter;
+    spice::sct::SctTextValue value;
 };
 struct WriteText {
     TextDraft draft;
@@ -239,7 +246,7 @@ struct RenameCodeSection { program::SectionId section; std::string name; };
 struct WriteNote { ItemNote note; };
 struct WriteOrganization { SctScriptId script; std::vector<program::SectionId> order; std::vector<SectionFolder> folders; };
 struct WriteOpcode { OpcodeCustomization opcode; };
-using EditIntent = std::variant<StoryEdit,FeatureEdit,SetExpression, BindReference, SetTiming, WriteText, CreateText, DeleteItem,
+using EditIntent = std::variant<StoryEdit,FeatureEdit,SetExpression, BindReference, SetTiming, WriteStringParameter, WriteText, CreateText, DeleteItem,
                                 InsertOpcode, InsertStructure, InsertTransfer, WriteArms, PromoteFlow, PasteSelection, MoveSelection, DeleteSelection, WriteNote, WriteOrganization, WriteOpcode, NewSection, RenameCodeSection>;
 // Blocking operations run on workers. Each result is qualified by the captured
 // revision and owns selected values only, never a live document or storage view.

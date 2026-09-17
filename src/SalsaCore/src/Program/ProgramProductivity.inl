@@ -7,7 +7,7 @@ ProgramService::copy(Revision r, editor::CopySelection request, std::stop_token 
             require(o.data && !request.items.empty(), "Select content to copy");
             auto &d = *o.data;
             ReadSelection selection;
-            selection.referencedText = false;
+            selection.referencedText = true;
             std::set<SctActionId> actions;
             std::set<SectionId> sections;
             SctScriptId script;
@@ -66,6 +66,7 @@ ProgramService::copy(Revision r, editor::CopySelection request, std::stop_token 
             }
             out->script = script;
             out->content = *o.read(r, selection, stop);
+            std::erase_if(out->content.texts, [](const auto &text) { return !text.supplementary; });
             for (const auto &block : d.metadata.localization.blocks)
                 require(std::ranges::find(out->content.actions, block.action, &Action::id) ==
                             out->content.actions.end(),
@@ -118,7 +119,7 @@ ProgramService::reviewPaste(Revision r, editor::Subject anchor,
         for (auto &v : fragment->content.payload.values) {
             if (v.kind == ValueKind::ActionReference && !internal.contains(v.data))
                 dependencies.insert(SctActionId{v.data});
-            if (v.kind == ValueKind::IndexedTextReference || v.kind == ValueKind::SupplementaryTextReference)
+            if (v.kind == ValueKind::IndexedTextReference)
                 dependencies.insert(SctTextResourceId{v.data});
         }
         for (auto &t : fragment->content.transfers)

@@ -109,7 +109,22 @@ Result<ValueId> ProgramBuilder::expression(const spice::sct::SctCanonicalExpress
     catch (const std::exception& e) { diagnostics_.push_back(failure(e.what())); return Result<ValueId>::failure(diagnostics_.back()); }
 }
 Result<SctActionId> ProgramBuilder::instruction(SctSequenceId owner, ValueId value, SctActionId requested) {
-    try { require(data_ != nullptr, "Builder already finished"); return Result<SctActionId>::success(data_->appendAction(owner, value, 0, requested)); }
+    try {
+        require(data_ != nullptr, "Builder already finished");
+        auto &d = *data_;
+        auto *sequence = d.sequence(owner); require(sequence, "Missing instruction sequence");
+        const auto script = sequence->script;
+        value = mapFooterOperands(d, value, [&](SctTextResourceId source, auto) {
+            auto *text = d.lookup(source.value, EntityKind::Text, d.texts);
+            require(text && text->supplementary && text->script == script, "Missing string operand");
+            auto copy = *text;
+            copy.id = SctTextResourceId{d.claim(0, EntityKind::Text, count32(d.texts.size()))};
+            d.texts.push_back(copy);
+            d.scripts[d.directory.find(script.value).index].supplementaryText.push_back(copy.id);
+            return copy.id;
+        });
+        return Result<SctActionId>::success(d.appendAction(owner, value, 0, requested));
+    }
     catch (const std::exception& e) { diagnostics_.push_back(failure(e.what())); return Result<SctActionId>::failure(diagnostics_.back()); }
 }
 Result<SctActionId> ProgramBuilder::conditional(SctSequenceId owner, std::span<const ValueId> conditions) {
