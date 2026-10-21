@@ -31,6 +31,7 @@
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDockWidget>
+#include <QDir>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -140,6 +141,7 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     file->addAction(tr("Open Project..."), this, [this] { openSavedProject(); }, QKeySequence::Open);
     file->addAction(tr("Import Project..."), this, [this] { openDataset(); });
     recent_ = file->addMenu(tr("Recent projects"));
+    connect(recent_, &QMenu::aboutToShow, this, &ProgramWorkspaceController::recentMenu);
     file->addAction(tr("Review source changes"), this, [this] { reviewSources(); }, QKeySequence(Qt::Key_F5));
     file->addAction(tr("Import Python SALSA v7 projectâ€¦"), this, [this] { importLegacy(); });
     file->addAction(tr("Save project"), this, [this] { save(); }, QKeySequence::Save);
@@ -247,7 +249,7 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     associations_ = settings.value("workspace/patchAssociations").toStringList();
     shell_->restoreGeometry(settings.value("window/geometry").toByteArray());
     shell_->restoreState(settings.value("window/programState").toByteArray());
-    recentMenu();
+    recent_->addAction(tr("Checking saved projects…"))->setEnabled(false);
     // Startup deliberately performs no dataset or workspace I/O.
 }
 ProgramWorkspaceController::~ProgramWorkspaceController() {
@@ -270,14 +272,37 @@ const ir::ScriptSummary *ProgramWorkspaceController::script(core::SctScriptId id
     return i == workspace_->catalog.scripts.end() ? nullptr : &*i;
 }
 void ProgramWorkspaceController::recentMenu() {
+    const auto generation = ++recentGeneration_;
     recent_->clear();
+    recent_->addAction(tr("Checking saved projects…"))->setEnabled(false);
+    QStringList candidates;
+    std::set<QString> seen;
     for (const auto &root : recents_)
         for (int i = 0; i + 1 < associations_.size(); i += 2)
             if (associations_[i].compare(root, Qt::CaseInsensitive) == 0) {
                 const auto path = associations_[i + 1];
-                recent_->addAction(path, this, [this, path] { openSavedProject(path); });
+                const auto key = QDir::cleanPath(QDir::fromNativeSeparators(path)).toCaseFolded();
+                if (seen.insert(key).second) candidates.push_back(path);
                 break;
             }
+    auto *watcher = new QFutureWatcher<QStringList>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, generation] {
+        const auto saved = watcher->result();
+        watcher->deleteLater();
+        if (closing_ || generation != recentGeneration_) return;
+        recent_->clear();
+        for (const auto &path : saved)
+            recent_->addAction(path, this, [this, path] { openSavedProject(path); });
+        if (saved.empty()) recent_->addAction(tr("No saved projects"))->setEnabled(false);
+    });
+    watcher->setFuture(QtConcurrent::run([candidates = std::move(candidates)] {
+        QStringList saved;
+        for (const auto &path : candidates) {
+            auto exists = ir::EditorWorkspaceIO::hasSavedCheckpoint(std::filesystem::path(path.toStdWString()));
+            if (exists && exists.value()) saved.push_back(path);
+        }
+        return saved;
+    }));
 }
 void ProgramWorkspaceController::updateTitle() {
     if(workspace_) workspaceView_->status(workspace_->status.dirty || sessionDirty_,workspace_->needsInitialSave);

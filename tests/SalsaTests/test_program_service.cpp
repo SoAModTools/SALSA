@@ -11,6 +11,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <fstream>
+#include <iterator>
 #include <gtest/gtest.h>
 
 namespace {
@@ -428,6 +430,9 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
     writeSources();
     const auto original = LocalGameProject::inspect({root / "source"}); ASSERT_TRUE(original);
     ir::EditorOpenRequest request{{root / "source"}, root / "workspace"};
+    auto absent = ir::EditorWorkspaceIO::hasSavedCheckpoint(request.workspace);
+    ASSERT_TRUE(absent);
+    EXPECT_FALSE(absent.value());
     std::atomic<unsigned> parsed = 0;
     unsigned localizationPasses = 0;
     auto opened = ir::EditorWorkspaceIO::open(request, {}, [&](const auto& p) {
@@ -442,6 +447,12 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
     EXPECT_EQ(parsed, 3u);
     auto session = opened.value();
     EXPECT_TRUE(session->newlyImported);
+    EXPECT_FALSE(session->needsInitialSave);
+    EXPECT_FALSE(session->status.dirty);
+    EXPECT_TRUE(session->checkpointDigest.has_value());
+    auto savedInitially = ir::EditorWorkspaceIO::hasSavedCheckpoint(request.workspace);
+    ASSERT_TRUE(savedInitially);
+    EXPECT_TRUE(savedInitially.value());
     EXPECT_EQ(localizationPasses, 1u);
     ASSERT_EQ(session->catalog.scripts.size(), 3u);
     EXPECT_EQ(session->dataset->snapshot().fingerprint, original.value().snapshot().fingerprint);
@@ -453,7 +464,6 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
         EXPECT_EQ(*retained.value(), (std::vector<std::byte>(std::as_bytes(std::span(bytes)).begin(), std::as_bytes(std::span(bytes)).end())));
     }
     writeSources();
-    auto saved = ir::EditorWorkspaceIO::save(*session, session->status.current, {}); ASSERT_TRUE(saved);
     // Saved authoring content must reopen without touching the extraction.
     std::filesystem::rename(root / "source", root / "offline-source");
     request.requireSavedProject = true;
@@ -476,6 +486,9 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
     const auto savedPath = session->workspace->componentPath(
         session->workspace->descriptor().components.authoring / L"project.salsaproject");
     std::filesystem::rename(savedPath, savedPath.wstring() + L".held");
+    auto removed = ir::EditorWorkspaceIO::hasSavedCheckpoint(request.workspace);
+    ASSERT_TRUE(removed);
+    EXPECT_FALSE(removed.value());
     EXPECT_FALSE(ir::EditorWorkspaceIO::open(request)); // Never silently import a missing saved project.
     EXPECT_FALSE(std::filesystem::exists(savedPath));
     std::filesystem::rename(savedPath.wstring() + L".held", savedPath);
@@ -493,6 +506,27 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
     EXPECT_FALSE(std::filesystem::exists(request.workspace));
     for (const auto& entry : std::filesystem::directory_iterator(root))
         EXPECT_FALSE(entry.path().filename().string().starts_with(".salsa-import-"));
+}
+TEST(ProgramServiceTest, InitialSaveFailureDoesNotOverwriteAnAppearingCheckpoint) {
+    const auto root = std::filesystem::temp_directory_path() / generateSctAuthoringUuid().value();
+    struct Cleanup { std::filesystem::path root; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(root, ec); } } cleanup{root};
+    std::filesystem::create_directories(root / "source");
+    const auto bytes = nativeBytes();
+    ASSERT_TRUE(replaceFileAtomically(root / "source" / "a.sct", std::as_bytes(std::span(bytes))));
+    const auto checkpoint = root / "workspace" / "authoring" / "project.salsaproject";
+    const std::string other = "Concurrent saved content";
+    bool reachedSave = false;
+    auto opened = ir::EditorWorkspaceIO::open({{root / "source"}, root / "workspace"}, {}, [&](const auto& p) {
+        if (p.phase == "Saving authoring project") {
+            reachedSave = true;
+            EXPECT_TRUE(replaceFileAtomically(checkpoint, std::as_bytes(std::span(other))));
+        }
+    });
+    EXPECT_TRUE(reachedSave);
+    EXPECT_FALSE(opened);
+    std::ifstream file(checkpoint, std::ios::binary);
+    const std::string retained{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    EXPECT_EQ(retained, other);
 }
 TEST(ProgramServiceTest, SourceReviewComparesImmutableBaselinesWithoutParsingOrEditing) {
     const auto root=std::filesystem::temp_directory_path()/generateSctAuthoringUuid().value();

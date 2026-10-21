@@ -100,6 +100,18 @@ private:
     std::condition_variable ready_;
 };
 } // namespace
+Result<bool> EditorWorkspaceIO::hasSavedCheckpoint(const std::filesystem::path &workspace) {
+    try {
+        auto layout = take(LocalSalsaWorkspace::inspectLayout(workspace));
+        if (!layout) return Result<bool>::success(false);
+        std::error_code ec;
+        const bool exists = std::filesystem::is_regular_file(
+            layout->root / layout->components.authoring / L"project.salsaproject", ec);
+        return Result<bool>::success(exists && !ec);
+    } catch (const std::exception &e) {
+        return Result<bool>::failure(failure(e.what()));
+    }
+}
 Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpenRequest &request, std::stop_token stop,
                                                                  const SctLoadingObserver &observer) {
     try {
@@ -205,7 +217,11 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
         if (!installed) return Result<std::shared_ptr<EditorWorkspace>>::failure(installed.diagnostics());
         out->status = installed.value();
         out->status = take(out->service->organizeImportedLocalization(out->status.current, stop, observer).get());
-        out->needsInitialSave = true;
+        progress(observer, stop, "Saving initial imported project");
+        auto saved = save(*out, out->status.current, out->presentation, stop, observer);
+        if (!saved) return Result<std::shared_ptr<EditorWorkspace>>::failure(saved.diagnostics());
+        out->status = saved.value().status;
+        out->checkpointDigest = saved.value().digest;
         out->newlyImported = true;
         progress(observer, stop, "Preparing script catalog");
         out->catalog = take(out->service->catalog(out->status.current).get());

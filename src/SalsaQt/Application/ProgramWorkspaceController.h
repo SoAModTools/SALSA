@@ -85,6 +85,7 @@ class ProgramWorkspaceController final : public QObject {
     std::shared_ptr<const core::program::ReadScope> selected_;
     std::optional<core::program::EditorSubject> selectedSubject_;
     std::uint64_t selectionGeneration_ = 0, workspaceGeneration_ = 0;
+    std::uint64_t recentGeneration_ = 0;
     bool restoring_ = false, preserveSession_ = false, sessionDirty_ = false, closing_ = false;
     QStringList recents_, associations_;
 };

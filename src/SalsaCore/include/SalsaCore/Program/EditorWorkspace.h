@@ -38,6 +38,8 @@ struct EditorSaveResult {
 };
 class EditorWorkspaceIO final {
   public:
+    // Read-only presence check for recent-project discovery; no recovery or source scan.
+    static Result<bool> hasSavedCheckpoint(const std::filesystem::path &workspace);
     static editor::WorkspaceOverview overview(const EditorWorkspace &);
     static Result<editor::WorkspaceOverview> reviewSources(const EditorWorkspace &, Revision,
         std::stop_token = {}, const SctLoadingObserver & = {});
