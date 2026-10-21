@@ -56,7 +56,7 @@ core::ExclusiveOperationFlowDefinition ProgramOperation::flowDefinition() const 
     using L = core::ExclusiveOperationPageLayout;
     return {configurationPage ? "configure" : "working",
             {{"configure", R::Configuration, P::Hidden, L::Standard},
-             {"working", R::Processing, P::Visible, L::Compact},
+             {"working", R::Processing, P::Visible, configurationPage ? L::Standard : L::Compact},
              {"review", R::Review, P::Hidden, L::Standard},
              {"next", R::Review, P::Hidden, L::Standard},
              {"summary", R::Summary, P::Hidden, L::Compact}},
@@ -155,7 +155,7 @@ std::optional<ExclusiveOperationAction> ProgramOperation::actionForEdge(std::str
     if (edge == "finish_next")
         return ExclusiveOperationAction{tr("Finish"), ExclusiveOperationActionRole::Primary};
     if (edge == "start")
-        return ExclusiveOperationAction{tr("Open project"), ExclusiveOperationActionRole::Primary};
+        return ExclusiveOperationAction{tr("Import project"), ExclusiveOperationActionRole::Primary};
     if (edge == "retry")
         return ExclusiveOperationAction{tr("Open with selected dataset"), ExclusiveOperationActionRole::Primary};
     return {};

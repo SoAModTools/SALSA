@@ -46,6 +46,7 @@ public:
     [[nodiscard]] virtual QString title() const = 0;
     [[nodiscard]] virtual core::ExclusiveOperationFlowDefinition flowDefinition() const = 0;
     [[nodiscard]] virtual QWidget* createPage(std::string_view pageId, QWidget* parent) = 0;
+    [[nodiscard]] virtual bool progressOnlyPage(std::string_view) const { return false; }
     [[nodiscard]] virtual std::optional<ExclusiveOperationAction> actionForEdge(
         std::string_view edgeId) const;
     [[nodiscard]] virtual bool edgeEnabled(std::string_view edgeId) const;

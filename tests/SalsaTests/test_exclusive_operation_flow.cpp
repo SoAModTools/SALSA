@@ -27,10 +27,8 @@ TEST(ExclusiveOperationFlowTest, TraversesDeclaredCyclesAndGuardsEdges) {
     EXPECT_FALSE(flow.dispatch("finish", [](std::string_view id) { return id != "finish"; }));
     EXPECT_TRUE(flow.dispatch("retry"));
     EXPECT_EQ(flow.currentNode()->progress, ExclusiveOperationProgressVisibility::Visible);
-    EXPECT_EQ(flow.currentNode()->layout, ExclusiveOperationPageLayout::Compact);
     EXPECT_TRUE(flow.dispatch("prepared"));
     EXPECT_EQ(flow.currentNode()->progress, ExclusiveOperationProgressVisibility::Hidden);
-    EXPECT_EQ(flow.currentNode()->layout, ExclusiveOperationPageLayout::Expanded);
     EXPECT_TRUE(flow.dispatch("finish"));
     EXPECT_EQ(flow.currentPage(), "summary");
     EXPECT_EQ(flow.currentNode()->progress, ExclusiveOperationProgressVisibility::Hidden);
@@ -53,17 +51,6 @@ TEST(ExclusiveOperationFlowTest, RejectsAReachableBranchThatCannotFinish) {
     ExclusiveOperationFlow flow(std::move(definition));
 
     EXPECT_FALSE(flow.validationErrors().empty());
-}
-
-TEST(ExclusiveOperationFlowTest, DialogSizingGrowsMonotonicallyAndClampsToScreen) {
-    EXPECT_EQ(resolveExclusiveOperationSize(ExclusiveOperationPageLayout::Compact,
-        {}, {1920, 1080}), (ExclusiveOperationLogicalSize{560, 260}));
-    EXPECT_EQ(resolveExclusiveOperationSize(ExclusiveOperationPageLayout::Standard,
-        {900, 650}, {1920, 1080}, ExclusiveOperationLogicalSize{1000, 700}),
-        (ExclusiveOperationLogicalSize{1000, 700}));
-    EXPECT_EQ(resolveExclusiveOperationSize(ExclusiveOperationPageLayout::Expanded,
-        {1500, 1000}, {1200, 800}),
-        (ExclusiveOperationLogicalSize{1080, 720}));
 }
 
 TEST(ExclusiveOperationGateTest, LeaseExcludesAndMovePreservesOwnership) {

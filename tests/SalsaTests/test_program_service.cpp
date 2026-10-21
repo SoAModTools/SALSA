@@ -454,17 +454,36 @@ TEST(ProgramServiceTest, DatasetPipelineConsumesCapturedBytesAndReopensCheckpoin
     }
     writeSources();
     auto saved = ir::EditorWorkspaceIO::save(*session, session->status.current, {}); ASSERT_TRUE(saved);
+    // Saved authoring content must reopen without touching the extraction.
+    std::filesystem::rename(root / "source", root / "offline-source");
+    request.requireSavedProject = true;
+    request.dataset.datasetRoot.clear();
     parsed = 0;
+    unsigned scans = 0;
     auto reopened = ir::EditorWorkspaceIO::open(request, {}, [&](const auto& p) {
         if (p.phase == "Parsing SCT") ++parsed;
         if (p.phase == "Linking localized messages") ++localizationPasses;
+        if (p.phase == "Discovering dataset assets" || p.phase == "Reading dataset fingerprints") ++scans;
     });
     ASSERT_TRUE(reopened) << messages(reopened.diagnostics());
     EXPECT_EQ(parsed, 0u);
+    EXPECT_EQ(scans, 0u);
     EXPECT_EQ(localizationPasses, 1u);
     EXPECT_FALSE(reopened.value()->newlyImported);
     for (std::size_t i = 0; i < session->catalog.scripts.size(); ++i)
         EXPECT_EQ(session->catalog.scripts[i].id, reopened.value()->catalog.scripts[i].id);
+    EXPECT_TRUE(ir::EditorWorkspaceIO::save(*reopened.value(), reopened.value()->status.current, {}));
+    const auto savedPath = session->workspace->componentPath(
+        session->workspace->descriptor().components.authoring / L"project.salsaproject");
+    std::filesystem::rename(savedPath, savedPath.wstring() + L".held");
+    EXPECT_FALSE(ir::EditorWorkspaceIO::open(request)); // Never silently import a missing saved project.
+    EXPECT_FALSE(std::filesystem::exists(savedPath));
+    std::filesystem::rename(savedPath.wstring() + L".held", savedPath);
+    std::filesystem::rename(root / "offline-source", root / "source");
+    auto reviewed = ir::EditorWorkspaceIO::reviewSources(*reopened.value(), reopened.value()->status.current);
+    ASSERT_TRUE(reviewed);
+    request.requireSavedProject = false;
+    request.dataset.datasetRoot = root / "source";
     std::stop_source cancelled;
     request.workspace = root / "cancelled";
     auto stopped = ir::EditorWorkspaceIO::open(request, cancelled.get_token(), [&](const auto& p) {

@@ -157,6 +157,7 @@ void ExclusiveOperationDialog::showCurrentPage() {
         found = pageWidgets_.emplace(id, page).first;
     }
     pages_->setCurrentWidget(found->second);
+    pages_->setVisible(!controller_->progressOnlyPage(id));
     controller_->pageEntered(id);
     rebuildActions();
     if (node != nullptr) {
@@ -185,7 +186,10 @@ void ExclusiveOperationDialog::applyPageLayout(
         {available.width(), available.height()},
         initialSizeApplied_ ? std::optional<core::ExclusiveOperationLogicalSize>{
             {width(), height()}} : std::nullopt);
-    resize(target.width, target.height);
+    if (controller_->progressOnlyPage(flow_.currentPage()) && diagnostics_->isHidden())
+        resize(target.width, this->layout()->sizeHint().height());
+    else
+        resize(target.width, target.height);
     initialSizeApplied_ = true;
 }
 

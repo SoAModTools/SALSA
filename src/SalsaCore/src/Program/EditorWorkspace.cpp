@@ -111,9 +111,7 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
         bool hasCheckpoint = false;
         if (layout) {
             progress(observer, stop, "Recovering workspace transactions", false);
-            for (const auto& recovered : WorkspaceTransactionService::recoverAll(layout->root, layout->components.transactions))
-                require(recovered.status == WorkspaceTransactionStatus::Verified ||
-                        recovered.status == WorkspaceTransactionStatus::RolledBack, "Workspace recovery is blocked");
+            out->workspace = std::make_shared<const LocalSalsaWorkspace>(take(LocalSalsaWorkspace::openExisting(request.workspace)));
             hasCheckpoint = std::filesystem::exists(layout->root / layout->components.authoring / L"project.salsaproject");
             if (!hasCheckpoint) {
                 const auto patches = layout->root / layout->components.patches;
@@ -121,6 +119,29 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
                     "This workspace has retired patch authoring without a binary project. Choose a fresh workspace; "
                     "existing files were not replaced.");
             }
+        }
+        require(hasCheckpoint || !request.requireSavedProject,
+            "The saved project checkpoint is missing. Use Import Project explicitly to create a new project.");
+        if (hasCheckpoint) {
+            progress(observer, stop, "Reading authoring checkpoint");
+            const auto& w = *out->workspace;
+            ProgramOpenRequest open;
+            open.path = w.componentPath(projectPath(w));
+            open.progress = observer;
+            auto loaded = out->service->openProject(std::move(open), stop).get();
+            if (!loaded) return Result<std::shared_ptr<EditorWorkspace>>::failure(loaded.diagnostics());
+            out->status = loaded.value().status;
+            out->presentation = std::move(loaded.value().presentation);
+            if (loaded.value().encodedDigest) out->checkpointDigest = loaded.value().encodedDigest->toHex();
+            progress(observer, stop, "Preparing script catalog");
+            out->catalog = take(out->service->catalog(out->status.current).get());
+            std::vector<AssetDescriptor> sources;
+            for (const auto& script : out->catalog.scripts)
+                if (script.baselineSource) sources.push_back(*script.baselineSource);
+            out->dataset = std::make_shared<const LocalGameProject>(
+                LocalGameProject::fromRecorded(w.descriptor().dataset, std::move(sources)));
+            out->openedMicroseconds = elapsed(start);
+            return Result<std::shared_ptr<EditorWorkspace>>::success(std::move(out), loaded.diagnostics());
         }
         std::unique_ptr<ImportBaselines> baselines;
         std::unique_ptr<NativeDatasetPreparation> native;
@@ -131,29 +152,27 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
             std::lock_guard lock(progressMutex);
             if (observer) observer(p);
         };
-        if (!hasCheckpoint) {
-            baselines = std::make_unique<ImportBaselines>(request.workspace);
-            native = std::make_unique<NativeDatasetPreparation>(SctAuthoringProjectId{uuid()});
-            pipeline.sourceExpansionFactor = 8;
-            pipeline.consume = [&](std::size_t ordinal, const CapturedSource& source, std::stop_token token) {
-                auto retained = baselines->retain(source);
-                if (!retained) return retained;
-                auto convention = request.textConvention;
-                if (auto found = request.textOverrides.find(source.descriptor().locator.path().generic_string());
-                    found != request.textOverrides.end()) convention = found->second;
-                SctScriptContext context;
-                context.name = source.descriptor().locator.path().stem().string();
-                context.platform = request.dataset.platform;
-                context.region = request.dataset.region;
-                spice::sct::SctDocumentImportOptions options;
-                if (convention) options.sourceTextEncoding = spice::sct::sctTextEncodingFor(*convention);
-                return native->append(ordinal, source, std::move(context), {uuid()}, convention, options, token, report);
-            };
-        }
-        progress(observer, stop, hasCheckpoint ? "Inspecting dataset inventory" : "Scanning and importing scripts");
+        baselines = std::make_unique<ImportBaselines>(request.workspace);
+        native = std::make_unique<NativeDatasetPreparation>(SctAuthoringProjectId{uuid()});
+        pipeline.sourceExpansionFactor = 8;
+        pipeline.consume = [&](std::size_t ordinal, const CapturedSource& source, std::stop_token token) {
+            auto retained = baselines->retain(source);
+            if (!retained) return retained;
+            auto convention = request.textConvention;
+            if (auto found = request.textOverrides.find(source.descriptor().locator.path().generic_string());
+                found != request.textOverrides.end()) convention = found->second;
+            SctScriptContext context;
+            context.name = source.descriptor().locator.path().stem().string();
+            context.platform = request.dataset.platform;
+            context.region = request.dataset.region;
+            spice::sct::SctDocumentImportOptions options;
+            if (convention) options.sourceTextEncoding = spice::sct::sctTextEncodingFor(*convention);
+            return native->append(ordinal, source, std::move(context), {uuid()}, convention, options, token, report);
+        };
+        progress(observer, stop, "Scanning and importing scripts");
         auto dataset = LocalGameProject::inspect(request.dataset, stop, [&](const DatasetScanProgress& p) {
             report({p.phase == DatasetScanPhase::Discovering ? "Discovering dataset assets"
-                : hasCheckpoint ? "Reading dataset fingerprints" : "Script ready",
+                : "Script ready",
                 p.completed, p.total.value_or(0), p.currentPath.generic_string()});
         }, pipeline);
         if (!dataset) return Result<std::shared_ptr<EditorWorkspace>>::failure(dataset.diagnostics());
@@ -177,29 +196,17 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
             take(LocalSalsaWorkspace::openOrCreate(request.workspace, out->dataset->dataset(), request.acceptance)));
         const auto& w = *out->workspace;
         const auto path = w.componentPath(projectPath(w));
-        if (hasCheckpoint) {
-            progress(observer, stop, "Reading authoring checkpoint");
-            ProgramOpenRequest open;
-            open.path = path;
-            open.progress = observer;
-            auto loaded = out->service->openProject(std::move(open), stop).get();
-            if (!loaded) return Result<std::shared_ptr<EditorWorkspace>>::failure(loaded.diagnostics());
-            out->status = loaded.value().status;
-            out->presentation = std::move(loaded.value().presentation);
-            if (loaded.value().encodedDigest) out->checkpointDigest = loaded.value().encodedDigest->toHex();
-        } else {
-            require(!std::filesystem::exists(path), "Workspace checkpoint appeared during import; reopen the workspace");
-            progress(observer, stop, "Publishing imported baselines", false);
-            baselines->publish(w);
-            baselines.reset();
-            progress(observer, stop, "Installing script collection");
-            auto installed = out->service->adopt({}, std::move(prepared), stop).get();
-            if (!installed) return Result<std::shared_ptr<EditorWorkspace>>::failure(installed.diagnostics());
-            out->status = installed.value();
-            out->status = take(out->service->organizeImportedLocalization(out->status.current, stop, observer).get());
-            out->needsInitialSave = true;
-            out->newlyImported = true;
-        }
+        require(!std::filesystem::exists(path), "Workspace checkpoint appeared during import; reopen the workspace");
+        progress(observer, stop, "Publishing imported baselines", false);
+        baselines->publish(w);
+        baselines.reset();
+        progress(observer, stop, "Installing script collection");
+        auto installed = out->service->adopt({}, std::move(prepared), stop).get();
+        if (!installed) return Result<std::shared_ptr<EditorWorkspace>>::failure(installed.diagnostics());
+        out->status = installed.value();
+        out->status = take(out->service->organizeImportedLocalization(out->status.current, stop, observer).get());
+        out->needsInitialSave = true;
+        out->newlyImported = true;
         progress(observer, stop, "Preparing script catalog");
         out->catalog = take(out->service->catalog(out->status.current).get());
         out->openedMicroseconds = elapsed(start);

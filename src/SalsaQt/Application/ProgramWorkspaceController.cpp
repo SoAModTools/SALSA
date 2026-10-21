@@ -105,8 +105,7 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     workspaceView_->navigate = [this](auto id) { openScript(id); };
     workspaceView_->refreshRequested = [this] { reviewSources(); };
     workspaceView_->reopenRequested = [this] {
-        if(workspace_) openDataset(QString::fromStdWString(workspace_->dataset->dataset().root.wstring()),
-                                  QString::fromStdWString(workspace_->workspace->descriptor().root.wstring()));
+        if(workspace_) openSavedProject(QString::fromStdWString(workspace_->workspace->descriptor().root.wstring()));
     };
     workspaceView_->importRequested = [this] { openDataset(); };
     editor_ = new EditorSessionPresenter(operations_, shell_);
@@ -138,8 +137,9 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     status_ = new QLabel(shell_);
     shell_->statusBar()->addWidget(status_, 1);
     auto *file = shell_->menuBar()->addMenu(tr("&File"));
-    file->addAction(tr("Open / Import Project..."), this, [this] { openDataset(); }, QKeySequence::Open);
-    recent_ = file->addMenu(tr("Recent datasets"));
+    file->addAction(tr("Open Project..."), this, [this] { openSavedProject(); }, QKeySequence::Open);
+    file->addAction(tr("Import Project..."), this, [this] { openDataset(); });
+    recent_ = file->addMenu(tr("Recent projects"));
     file->addAction(tr("Review source changes"), this, [this] { reviewSources(); }, QKeySequence(Qt::Key_F5));
     file->addAction(tr("Import Python SALSA v7 projectâ€¦"), this, [this] { importLegacy(); });
     file->addAction(tr("Save project"), this, [this] { save(); }, QKeySequence::Save);
@@ -272,7 +272,12 @@ const ir::ScriptSummary *ProgramWorkspaceController::script(core::SctScriptId id
 void ProgramWorkspaceController::recentMenu() {
     recent_->clear();
     for (const auto &root : recents_)
-        recent_->addAction(root, this, [this, root] { openDataset(root); });
+        for (int i = 0; i + 1 < associations_.size(); i += 2)
+            if (associations_[i].compare(root, Qt::CaseInsensitive) == 0) {
+                const auto path = associations_[i + 1];
+                recent_->addAction(path, this, [this, path] { openSavedProject(path); });
+                break;
+            }
 }
 void ProgramWorkspaceController::updateTitle() {
     if(workspace_) workspaceView_->status(workspace_->status.dirty || sessionDirty_,workspace_->needsInitialSave);
@@ -351,6 +356,49 @@ void ProgramWorkspaceController::closeRequested(QCloseEvent *e) {
     s.setValue("window/programState", shell_->saveState());
     e->accept();
 }
+void ProgramWorkspaceController::rememberWorkspace(const ir::EditorWorkspace &prepared) {
+    auto root = QString::fromStdWString(prepared.dataset->dataset().root.wstring());
+    auto destination = QString::fromStdWString(prepared.workspace->descriptor().root.wstring());
+    for (int i = associations_.size() - 2; i >= 0; i -= 2)
+        if (associations_[i].compare(root, Qt::CaseInsensitive) == 0) {
+            associations_.removeAt(i + 1);
+            associations_.removeAt(i);
+        }
+    associations_.prepend(destination);
+    associations_.prepend(root);
+    recents_.removeAll(root);
+    recents_.prepend(root);
+    while (recents_.size() > 12)
+        recents_.removeLast();
+    QSettings s;
+    s.setValue("workspace/patchAssociations", associations_);
+    s.setValue("workspace/recentDatasets", recents_);
+    recentMenu();
+}
+void ProgramWorkspaceController::openSavedProject(QString destination) {
+    if (!readyToLeave()) return;
+    if (destination.isEmpty()) {
+        destination = QFileDialog::getExistingDirectory(shell_, tr("Open saved authoring workspace"));
+        if (destination.isEmpty()) return;
+    }
+    ir::EditorOpenRequest request;
+    request.workspace = std::filesystem::path(destination.toStdWString());
+    request.requireSavedProject = true;
+    const auto generation = workspaceGeneration_;
+    auto operation = std::make_unique<ProgramOperation>(tr("Opening project"),
+        [request](auto stop, const auto &observer) {
+            return boxed(ir::EditorWorkspaceIO::open(request, stop, observer));
+        },
+        [this, generation](std::any value, ProgramOperation &op) {
+            if (closing_ || generation != workspaceGeneration_) {
+                op.fail(tr("Workspace changed before opening finished."));
+                return;
+            }
+            install(std::any_cast<std::shared_ptr<ir::EditorWorkspace>>(std::move(value)), op);
+        }, true);
+    operation->compactOpening = true;
+    (void)operations_->open(std::move(operation), shell_);
+}
 void ProgramWorkspaceController::openDataset(QString root, QString destination, bool legacy) {
     if (!readyToLeave()) return;
     struct Choice {
@@ -373,7 +421,7 @@ void ProgramWorkspaceController::openDataset(QString root, QString destination, 
     choice->request.dataset.datasetRoot = std::filesystem::path(root.toStdWString());
     choice->request.workspace = std::filesystem::path(destination.toStdWString());
     const auto generation = workspaceGeneration_;
-    auto operation = std::make_unique<ProgramOperation>(tr("Open / Import Project"), ProgramOperation::Work{},
+    auto operation = std::make_unique<ProgramOperation>(tr("Import Project"), ProgramOperation::Work{},
         [this, generation, choice](std::any value, ProgramOperation &op) {
             if (closing_ || generation != workspaceGeneration_) {
                 op.fail(tr("Workspace changed before opening finished."));
@@ -381,23 +429,6 @@ void ProgramWorkspaceController::openDataset(QString root, QString destination, 
             }
             auto prepared = std::any_cast<std::shared_ptr<ir::EditorWorkspace>>(std::move(value));
             prepared->newlyImported |= choice->importedLegacy;
-            auto root = QString::fromStdWString(prepared->dataset->dataset().root.wstring());
-            auto destination = QString::fromStdWString(prepared->workspace->descriptor().root.wstring());
-            for (int i = associations_.size() - 2; i >= 0; i -= 2)
-                if (associations_[i].compare(root, Qt::CaseInsensitive) == 0) {
-                    associations_.removeAt(i + 1);
-                    associations_.removeAt(i);
-                }
-            associations_.prepend(destination);
-            associations_.prepend(root);
-            recents_.removeAll(root);
-            recents_.prepend(root);
-            while (recents_.size() > 12)
-                recents_.removeLast();
-            QSettings s;
-            s.setValue("workspace/patchAssociations", associations_);
-            s.setValue("workspace/recentDatasets", recents_);
-            recentMenu();
             install(std::move(prepared), op);
         },
         true);
@@ -517,6 +548,7 @@ void ProgramWorkspaceController::install(std::shared_ptr<ir::EditorWorkspace> pr
     tabs_->clear();
     scripts_->clear();
     workspace_ = std::move(prepared);
+    rememberWorkspace(*workspace_);
     workspaceView_->present(ir::EditorWorkspaceIO::overview(*workspace_));
     auto backend=std::make_shared<core::editor::ProgramBackend>(workspace_->service);
     backend->setResourceLoader([dataset=workspace_->dataset](std::string asset,smores::script::ResourceRole role,std::stop_token stop){

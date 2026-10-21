@@ -400,6 +400,16 @@ LocalGameProject::LocalGameProject(
       dataset_(std::move(dataset)),
       catalog_(std::move(catalog)) {}
 
+LocalGameProject LocalGameProject::fromRecorded(DatasetContext dataset, std::vector<AssetDescriptor> assets) {
+    std::ranges::sort(assets, {}, &AssetDescriptor::locator);
+    assets.erase(std::unique(assets.begin(), assets.end(), [](const auto& a, const auto& b) {
+        return a.locator == b.locator;
+    }), assets.end());
+    LocalGameProjectOptions options{dataset.root, dataset.identity.platform, dataset.identity.region};
+    AssetCatalogSnapshot catalog{std::move(assets), dataset.identity.fingerprint};
+    return LocalGameProject(std::move(options), std::move(dataset), std::move(catalog));
+}
+
 Result<LocalGameProject> LocalGameProject::inspect(
     const LocalGameProjectOptions& options,
     const std::stop_token stopToken,

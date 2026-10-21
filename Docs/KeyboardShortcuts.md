@@ -2,7 +2,7 @@
 
 ## Files and documents
 
-- **Ctrl+O:** Open a dataset.
+- **Ctrl+O:** Open a saved authoring workspace. Use **File > Import Project** for a new extraction or legacy project.
 - **Ctrl+S:** Save the authoring project, including scripts whose tabs are closed. A workspace must be associated.
 - **Ctrl+Shift+E:** Export the active SCT document.
 - **F5:** Review source file changes without decoding SCTs or modifying authored content.

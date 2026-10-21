@@ -18,6 +18,9 @@ struct DatasetScanPipeline {
 
 class LocalGameProject final : public GameProjectContext, public AssetCatalog {
 public:
+    // Restore recorded source context without reading the extraction. The
+    // catalog is historical; rescan/loadAsset explicitly check current files.
+    [[nodiscard]] static LocalGameProject fromRecorded(DatasetContext, std::vector<AssetDescriptor>);
     [[nodiscard]] static Result<LocalGameProject> inspect(
         const LocalGameProjectOptions& options,
         std::stop_token stopToken = {},

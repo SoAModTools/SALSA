@@ -29,6 +29,7 @@ struct EditorOpenRequest {
     std::optional<spice::sct::SctKnownTextConvention> textConvention;
     std::map<std::string, spice::sct::SctKnownTextConvention> textOverrides;
     std::size_t nativeWorkers = 0;
+    bool requireSavedProject = false; // A missing checkpoint must never start an import.
 };
 struct EditorSaveResult {
     ServiceStatus status;

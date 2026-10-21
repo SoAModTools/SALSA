@@ -13,7 +13,7 @@ class ImportOperation final : public ExclusiveOperationController {
         forward(*native_, "native/");
         forward(*legacy_, "legacy/");
     }
-    QString title() const override { return tr("Open / Import Project"); }
+    QString title() const override { return tr("Import Project"); }
     core::ExclusiveOperationFlowDefinition flowDefinition() const override {
         core::ExclusiveOperationFlowDefinition result;
         result.entry = startLegacy_ ? "legacy/configure" : "native/configure";

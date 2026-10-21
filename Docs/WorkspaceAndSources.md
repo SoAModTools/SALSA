@@ -25,7 +25,7 @@ A dedicated module/cutscene transfer workflow is planned, not yet implemented. I
 ## Recovery and external edits
 
 - **Save project** saves the authoritative binary project and view state using the workspace transaction. It also detects external checkpoint changes rather than silently overwriting them.
-- **Reopen saved project** uses the unified open flow, including pending transaction recovery, reassociation decisions, and unsupported-schema diagnostics. Unsaved changes still receive the normal Save / Discard / Cancel decision. A failed open leaves the current workspace installed. Save first if you want to retain your current edits before reopening.
+- **Reopen saved project** starts immediately with compact progress, including pending transaction recovery and unsupported-schema diagnostics. It restores the saved IR without scanning or decoding source files and works while the extraction is unavailable. Missing checkpoints are reported rather than imported again. Use **Review source changes** for an explicit source comparison. Unsaved changes still receive the normal Save / Discard / Cancel decision. A failed open leaves the current workspace installed. Save first if you want to retain your current edits before reopening.
 - **Import into another workspace…** opens the unified import flow. Choose the source dataset and a fresh destination to inspect externally changed scripts independently. This does not merge them into the current project.
 - Source refresh cannot discard edits. Save and native export continue to use authored content. Missing original files do not authorize synthesizing a new script or rebinding a baseline.
 

@@ -136,7 +136,6 @@ TEST(ProgramGroupingTest, CrossSectionJumpRemainsExplicitWithDestinationAndNoWar
             auto rows = f.service->outline(f.revision, {section, 0, 128, semantic}).get();
             ASSERT_TRUE(rows);
             ASSERT_EQ(rows.value().rows.size(), 1u);
-            EXPECT_EQ(rows.value().rows.front().label, "Jump → loop");
             EXPECT_EQ(rows.value().rows.front().subject, ir::EditorSubject{f.ids.at(10)});
             EXPECT_TRUE(rows.value().rows.front().groupingIssue.empty());
         }

@@ -493,6 +493,21 @@ Result<std::optional<SalsaWorkspaceDescriptor>> LocalSalsaWorkspace::inspectLayo
     return Layout::success(descriptorFrom(root, std::move(parsed).takeValue()));
 }
 
+Result<LocalSalsaWorkspace> LocalSalsaWorkspace::openExisting(const std::filesystem::path& workspaceRoot) {
+    auto layout = inspectLayout(workspaceRoot);
+    if (!layout) return Result<LocalSalsaWorkspace>::failure(layout.diagnostics());
+    if (!layout.value()) return Result<LocalSalsaWorkspace>::failure(
+        workspaceError("The saved workspace manifest is missing. Use Import Project to create a new project.", workspaceRoot));
+    auto descriptor = *layout.value();
+    auto directories = ensureComponentDirectories(descriptor.root, descriptor.components);
+    if (!directories) return Result<LocalSalsaWorkspace>::failure(directories.diagnostics());
+    for (const auto& recovery : WorkspaceTransactionService::recoverAll(descriptor.root, descriptor.components.transactions))
+        if (!recovery.succeeded()) return Result<LocalSalsaWorkspace>::failure(recovery.diagnostics);
+    descriptor.dataset.root = descriptor.relativeDatasetRoot
+        ? (descriptor.root / *descriptor.relativeDatasetRoot).lexically_normal() : descriptor.lastKnownDatasetRoot;
+    return Result<LocalSalsaWorkspace>::success(LocalSalsaWorkspace(std::move(descriptor)));
+}
+
 Result<WorkspaceOpenAssessment> LocalSalsaWorkspace::assess(
     const std::filesystem::path& workspaceRoot, const DatasetContext& dataset) {
     if (workspaceRoot.empty() || dataset.root.empty())

@@ -16,6 +16,8 @@ class ProgramOperation final : public ExclusiveOperationController {
     QString title() const override;
     core::ExclusiveOperationFlowDefinition flowDefinition() const override;
     QWidget *createPage(std::string_view, QWidget *) override;
+    bool compactOpening = false;
+    bool progressOnlyPage(std::string_view id) const override { return compactOpening && id == "working"; }
     void pageEntered(std::string_view) override;
     void requestCancel() override;
     std::optional<ExclusiveOperationAction> actionForEdge(std::string_view) const override;
