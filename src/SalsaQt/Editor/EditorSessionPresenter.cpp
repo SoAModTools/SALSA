@@ -157,22 +157,19 @@ void EditorSessionPresenter::select(std::optional<ed::Subject> subject) {
     });
     watcher->setFuture(
         QtConcurrent::run([backend, revision, subject = *subject, stop, language = previewLanguage_] {
-            auto result = backend->inspect(revision, subject, stop);
+            auto result = backend->inspect(revision, subject, stop, language);
             if (!result || !language.valid())
                 return result;
             auto translate = [&](core::SctTextResourceId text) {
                 return backend->translation(revision, text, language, stop);
             };
-            if (result.value().text) {
+            if (result.value().text && !result.value().message) {
                 auto target = translate(*result.value().text);
-                if (!target)
-                    return core::Result<ed::Inspection>::failure(target.diagnostics());
+                if (!target) return core::Result<ed::Inspection>::failure(target.diagnostics());
                 result.value().text = target.value();
-                if (!target.value())
-                    result.value().description = "Missing translation in the selected preview language";
             }
             for (auto &p : result.value().parameters)
-                if (p.target)
+                if (p.target && p.kind == ed::ParameterKind::IndexedText)
                     if (auto id = std::get_if<core::SctTextResourceId>(&*p.target)) {
                         auto target = translate(*id);
                         if (!target)

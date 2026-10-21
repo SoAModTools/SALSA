@@ -23,6 +23,7 @@ struct OutlineRow {
     std::optional<program::ConditionId> condition;
     std::optional<SctSequenceId> preparation;
     std::vector<SctSequenceId> supportingSequences;
+    std::optional<SctTextResourceId> previewText;
 };
 struct OutlineRequest {
     Subject parent;
@@ -58,6 +59,11 @@ struct SupportingSequence {
     SctSequenceId sequence;
     std::string label, timing;
 };
+// Read-only inspection data, independent of a formatted editing draft.
+struct MessageInspection {
+    std::string name, content;
+    std::vector<std::string> languages;
+};
 struct Inspection {
     Revision revision;
     Subject subject;
@@ -75,6 +81,7 @@ struct Inspection {
     std::vector<SupportingSequence> supportingSequences;
     std::optional<Subject> supportingOwner;
     std::optional<SctSequenceId> heldSequence;
+    std::optional<MessageInspection> message;
 };
 struct ReplaceParameter {
     SctActionId action;
@@ -254,7 +261,7 @@ class Backend {
   public:
     virtual ~Backend() = default;
     virtual Result<OutlinePage> outline(Revision, OutlineRequest, std::stop_token = {}) = 0;
-    virtual Result<Inspection> inspect(Revision, Subject, std::stop_token = {}) = 0;
+    virtual Result<Inspection> inspect(Revision, Subject, std::stop_token = {}, SctLanguageGroupId = {}) = 0;
     virtual Result<Change> replaceParameter(Revision, ReplaceParameter, std::stop_token = {}) = 0;
     virtual Result<NavigationPath> locate(Revision, Subject, ViewMode = ViewMode::Instructions) = 0;
     virtual Result<TextDraft> text(Revision, SctTextResourceId, std::stop_token = {}) = 0;

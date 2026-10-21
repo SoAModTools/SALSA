@@ -249,6 +249,8 @@ void ProgramOutlineModel::apply(const ir::Change &change) {
             [&](auto id) {
                 using T = decltype(id);
                 bool changed = change.presentationChanged;
+                changed |= node.row.previewText &&
+                    std::ranges::find(change.texts, *node.row.previewText) != change.texts.end();
                 changed |= node.row.condition && std::ranges::find(change.conditions, *node.row.condition) !=
                                                      change.conditions.end();
                 changed |=

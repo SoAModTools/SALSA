@@ -1227,6 +1227,10 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
         require(original != nullptr,"Missing requested text");
         auto t = *original;
         t.value = copy.copy(t.value);
+        for (auto language : t.languages)
+            if (std::ranges::find(out->textLanguages, language, &SctLanguageGroup::id) == out->textLanguages.end())
+                if (auto *group = d.lookup(language.value, EntityKind::Language, d.metadata.languages))
+                    out->textLanguages.push_back(*group);
         out->texts.push_back(std::move(t));
     }
     for (auto id : sequences)

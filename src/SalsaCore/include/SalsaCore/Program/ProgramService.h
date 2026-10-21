@@ -264,6 +264,7 @@ struct OutlineRow {
     std::optional<ConditionId> condition;
     std::optional<SctSequenceId> preparation;
     std::vector<SctSequenceId> supportingSequences;
+    std::optional<SctTextResourceId> previewText;
 };
 struct OutlinePage {
     ServiceStatus status;
@@ -302,6 +303,7 @@ struct ReadScope {
     ValueBuffer payload;
     std::vector<editor::OpcodeCustomization> catalog;
     std::vector<editor::LocalizedBlock> localized;
+    std::vector<SctLanguageGroup> textLanguages;
 };
 struct ProgramFragment {
     SctAuthoringProjectId project;

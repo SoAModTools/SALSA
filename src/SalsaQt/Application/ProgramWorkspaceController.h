@@ -15,9 +15,8 @@ namespace salsa::qt {
 class ExclusiveOperationCoordinator;
 class ProgramOperation;
 class EditorSessionPresenter;
-class InstructionInspector;
+class ContextInspector;
 class ScriptOutlineComponent;
-class TextEditorComponent;
 class ScriptEditingActions;
 class NavigatorComponent;
 class WorkspaceComponent;
@@ -57,7 +56,6 @@ class ProgramWorkspaceController final : public QObject {
     void publish();
     void importLegacy();
     void promoteFlow();
-    void editText();
     void inspectLowered();
     void updateTitle();
     void log(QString);
@@ -74,8 +72,7 @@ class ProgramWorkspaceController final : public QObject {
     QTabWidget *tabs_;
     QListWidget *scripts_;
     WorkspaceComponent *workspaceView_;
-    InstructionInspector *inspector_;
-    TextEditorComponent *textEditor_;
+    ContextInspector *inspector_;
     ScriptEditingActions *editing_;
     EditorSessionPresenter *editor_;
     QPlainTextEdit *activity_;

@@ -3,8 +3,7 @@
 #include "Editor/WorkspaceComponent.h"
 #include "Application/ProgramWorkspaceController.h"
 #include "Editor/EditorSessionPresenter.h"
-#include "Editor/InstructionInspector.h"
-#include "Editor/TextEditorComponent.h"
+#include "Editor/ContextInspector.h"
 #include "Editor/ScriptEditingActions.h"
 #include "Editor/ProductivityActions.h"
 #include "Editor/OrganizationComponent.h"
@@ -110,8 +109,9 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     };
     workspaceView_->importRequested = [this] { openDataset(); };
     editor_ = new EditorSessionPresenter(operations_, shell_);
-    inspector_ = new InstructionInspector(editor_, shell_);
-    dock(tr("Instruction inspector"), "programDetails", inspector_, Qt::RightDockWidgetArea);
+    inspector_ = new ContextInspector(editor_, shell_);
+    auto *inspectorDock = dock(tr("Inspector"), "programDetails", inspector_, Qt::RightDockWidgetArea);
+    inspector_->showRequested = [inspectorDock] { inspectorDock->show(); inspectorDock->raise(); };
     connect(editor_, &EditorSessionPresenter::changed, this, &ProgramWorkspaceController::refreshChanged);
     connect(editor_, &EditorSessionPresenter::diagnostic, this, &ProgramWorkspaceController::log);
     editing_=new ScriptEditingActions(editor_,shell_);
@@ -119,8 +119,6 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     auto *organization=new OrganizationComponent(editor_,shell_);
     auto *organizationDock=dock(tr("Notes and bookmarks"),"programOrganization",organization,Qt::RightDockWidgetArea);
     organizationDock->hide();organization->showRequested=[organizationDock]{organizationDock->show();organizationDock->raise();};
-    textEditor_=new TextEditorComponent(editor_,shell_);
-    auto *textDock=dock(tr("Text editor and preview"),"programTextEditor",textEditor_,Qt::BottomDockWidgetArea);
     auto *navigator=new NavigatorComponent(editor_,shell_);
     auto *navigatorDock=dock(tr("Navigator"),"programNavigator",navigator,Qt::LeftDockWidgetArea);navigatorDock->hide();
     connect(editor_,&EditorSessionPresenter::navigationRequested,this,[this](auto subject){
@@ -174,7 +172,7 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     editMenu->addAction(editing_->branchesAction());
     editMenu->addAction(editing_->timingAction());
     editMenu->addAction(editing_->structureAction());
-    editMenu->addAction(textEditor_->createAction());editMenu->addAction(textEditor_->deleteAction());
+    editMenu->addAction(inspector_->createTextAction());editMenu->addAction(inspector_->deleteTextAction());
     editMenu->addSeparator();
     editMenu->addAction(tr("Edit selected itemâ€¦"), this, [this] { editSelected(); }, QKeySequence(Qt::Key_Return));
     editMenu->addAction(editing_->insertAction());
@@ -198,7 +196,7 @@ ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QOb
     auto *routes=new RouteTools(editor_,shell_);for(auto *a:routes->actions)authoring->addAction(a);
 
     authoring->addAction(tr("Find variable uses…"), this, [navigator,navigatorDock] { navigator->showVariableSearch();navigatorDock->show();navigatorDock->raise(); });
-    authoring->addAction(tr("Edit selected textâ€¦"), this, [this,textDock] { textDock->show(); textDock->raise(); textEditor_->setFocus(); });
+    authoring->addAction(inspector_->editTextAction());
     authoring->addAction(tr("Inspect generated instructionsâ€¦"), this, [this] { inspectLowered(); });
     auto *settingsMenu = shell_->menuBar()->addMenu(tr("&Settings"));
     settingsMenu->addAction((new PerformanceSettings(shell_))->action());
@@ -352,7 +350,7 @@ bool ProgramWorkspaceController::readyToLeave() {
         operations_->focusActive();
         return false;
     }
-    if(!textEditor_->prepareToLeave())return false;
+    if(!inspector_->prepareToLeave())return false;
     if (!workspace_ || !(workspace_->status.dirty || workspace_->needsInitialSave || sessionDirty_))
         return true;
     auto answer = QMessageBox::question(shell_, tr("Save project"), tr("Save changes before leaving this workspace?"),

@@ -31,22 +31,24 @@ TextEditorComponent::TextEditorComponent(EditorSessionPresenter *session, QWidge
     layout->addWidget(preview_);
     connect(apply_, &QAction::triggered, this, [this] { apply(); });
     connect(discard_, &QAction::triggered, this, [this] { discard(); });
-    connect(create_, &QAction::triggered, this, [this] { create(); });
+    connect(create_, &QAction::triggered, this, [this] {
+        if (prepareToLeave()) create();
+    });
     connect(remove_, &QAction::triggered, this, [this] {
         if (editor_->flushPending() && draft_ && !dirty_)
             session_->execute(tr("Delete string"), ed::DeleteItem{draft_->id});
     });
-    connect(session_, &EditorSessionPresenter::inspectionChanged, this, [this] { follow(); });
     connect(session_, &EditorSessionPresenter::sessionChanged, this, [this] {
-        ++generation_;
-        draft_.reset();
-        dirty_ = false;
-        applying_ = false;
-        stale_ = false;
-        editor_->clear();
-        preview_->clear();
+        release();
     });
     connect(session_, &EditorSessionPresenter::changed, this, [this](const ed::Change &change) {
+        if (creating_ && change.suggestedSelection) {
+            creating_ = false;
+            release();
+            if (auto *id = std::get_if<core::SctTextResourceId>(&*change.suggestedSelection)) open(*id);
+            return;
+        }
+        if (loading_) { open(*loading_); return; }
         if (!draft_ || !editor_->flushPending())
             return;
         bool affected = std::ranges::find(change.texts, draft_->id) != change.texts.end();
@@ -66,43 +68,21 @@ TextEditorComponent::TextEditorComponent(EditorSessionPresenter *session, QWidge
             open(draft_->id);
     });
     connect(session_, &EditorSessionPresenter::availabilityChanged, this, [this] {
-        editor_->setEnabled(!session_->busy());
-        apply_->setEnabled(!session_->busy());
-        create_->setEnabled(!session_->busy());
-        remove_->setEnabled(!session_->busy());
-        if (!session_->busy())
+        availability();
+        if (!session_->busy()) {
             applying_ = false;
+            creating_ = false;
+        }
     });
+    availability();
 }
-void TextEditorComponent::follow() {
-    if (!session_->inspection())
-        return;
-    if (!editor_->flushPending())
-        return;
-    const auto &i = *session_->inspection();
-    std::optional<core::SctTextResourceId> text = i.text;
-    if (!text)
-        for (const auto &p : i.parameters)
-            if (p.target)
-                if (auto id = std::get_if<core::SctTextResourceId>(&*p.target)) {
-                    text = *id;
-                    break;
-                }
-    if (dirty_) {
-        if (text && text != draft_->id)
-            status_->setText(tr("Draft pinned to this string. Apply or discard before following another selection."));
-        return;
-    }
-    if (!text) {
-        ++generation_;
-        draft_.reset();
-        editor_->clear();
-        preview_->clear();
-        status_->setText(tr("Select a string or text reference"));
-        return;
-    }
-    if (text && (!draft_ || draft_->id != *text))
-        open(*text);
+void TextEditorComponent::availability() {
+    const bool idle = !session_->busy();
+    editor_->setEnabled(idle && draft_ && !loading_);
+    apply_->setEnabled(idle && draft_ && !loading_);
+    discard_->setEnabled(idle && draft_ && !loading_);
+    create_->setEnabled(idle && session_->inspection().has_value());
+    remove_->setEnabled(idle && draft_ && !loading_);
 }
 void TextEditorComponent::open(core::SctTextResourceId id) {
     if (dirty_ || !session_->backend())
@@ -110,16 +90,22 @@ void TextEditorComponent::open(core::SctTextResourceId id) {
     auto backend = session_->backend();
     auto revision = session_->revision();
     auto generation = ++generation_;
+    loading_ = id;
+    status_->setText(tr("Loading string…"));
+    availability();
     auto *watcher = new QFutureWatcher<core::Result<ed::TextDraft>>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, revision, generation] {
         auto result = watcher->result();
         watcher->deleteLater();
         if (generation != generation_ || revision != session_->revision() || dirty_)
             return;
+        loading_.reset();
         if (!result) {
             status_->setText(QString::fromStdString(result.diagnostics().front().message));
             draft_.reset();
             editor_->clear();
+            preview_->clear();
+            availability();
             return;
         }
         editor_->clear();
@@ -139,6 +125,7 @@ void TextEditorComponent::open(core::SctTextResourceId id) {
                                return true;
                            });
         preview();
+        availability();
     });
     watcher->setFuture(QtConcurrent::run([backend, revision, id] { return backend->text(revision, id); }));
 }
@@ -176,6 +163,16 @@ bool TextEditorComponent::prepareToLeave() {
     discard();
     return true;
 }
+void TextEditorComponent::release() {
+    ++generation_;
+    draft_.reset();
+    loading_.reset();
+    dirty_ = applying_ = stale_ = creating_ = false;
+    editor_->clear();
+    preview_->clear();
+    status_->setText(tr("Choose a string to edit"));
+    availability();
+}
 void TextEditorComponent::create() {
     if (!session_->inspection() || session_->busy())
         return;
@@ -204,6 +201,7 @@ void TextEditorComponent::create() {
             return;
         input.value = *value.message;
     }
+    creating_ = true;
     session_->execute(tr("Create string"), std::move(input));
 }
 void TextEditorComponent::preview() {

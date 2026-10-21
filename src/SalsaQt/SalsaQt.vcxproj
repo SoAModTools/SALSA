@@ -140,6 +140,8 @@
     <QtMoc Include="Editor\EditorSessionPresenter.h" />
     <ClCompile Include="Editor\EditorSessionPresenter.cpp" />
     <ClCompile Include="Editor\InstructionInspector.cpp" />
+    <ClCompile Include="Editor\ContextInspector.cpp" />
+    <ClInclude Include="Editor\ContextInspector.h" />
     <ClCompile Include="Editor\SupportingSequenceEditor.cpp" />
     <ClInclude Include="Editor\SupportingSequenceEditor.h" />
     <ClInclude Include="Editor\InstructionInspector.h" />

@@ -35,6 +35,38 @@ std::optional<SectionId> indexedStringParent(const ProgramData &data, const Sect
     }
     return {};
 }
+std::optional<SctTextResourceId> appendMessageExcerpt(const ProgramData &d, std::string &label, SctTextResourceId id,
+                          SctLanguageGroupId language) {
+    const Text *text = d.lookup(id.value, EntityKind::Text, d.texts);
+    if (auto *logical = logicalFor(d, id); logical && language.valid()) {
+        text = nullptr;
+        for (auto variant : logical->variants) {
+            const auto *candidate = d.lookup(variant.value, EntityKind::Text, d.texts);
+            if (std::ranges::find(candidate->languages, language) == candidate->languages.end()) continue;
+            if (text) { label += " — Ambiguous translation"; return {}; }
+            text = candidate;
+        }
+    }
+    if (!text) { label += " — Missing translation"; return {}; }
+    ValueBuffer buffer;
+    CopyValues copy{d, buffer};
+    auto value = ProgramValues::text(buffer, copy.copy(text->value));
+    if (!value) return {};
+    std::string excerpt;
+    if (auto *plain = std::get_if<spice::sct::SctPlainText>(&value.value())) excerpt = plain->utf8;
+    else if (auto *message = std::get_if<spice::sct::SctMessage>(&value.value()))
+        for (const auto &element : message->body.elements)
+            if (auto *chunk = std::get_if<spice::sct::SctTextChunk>(&element)) excerpt += chunk->utf8;
+    for (auto &ch : excerpt) if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
+    if (excerpt.size() > 120) {
+        std::size_t end = 120;
+        while (end && (static_cast<unsigned char>(excerpt[end]) & 0xc0) == 0x80) --end;
+        excerpt.resize(end);
+        excerpt += "…";
+    }
+    label += " — " + excerpt;
+    return text->id;
+}
 } // namespace
 std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequest request, std::stop_token stop) {
     return control_->submit<OutlinePage>([r, request = std::move(request), stop](auto &owner) {
@@ -73,6 +105,18 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                 row.label = alias->second;
             const auto ordinal = out.total++;
             if (ordinal >= request.offset && out.rows.size() < request.limit) {
+                // Only materialize excerpts for the requested page. A concrete
+                // language child shows itself, irrespective of preview language.
+                if (request.semantic) {
+                    if (auto *id = std::get_if<SctTextResourceId>(&row.subject))
+                        row.previewText = appendMessageExcerpt(d, row.label, *id, {});
+                    else if (auto *id = std::get_if<SectionId>(&row.subject)) {
+                        auto *section = d.lookup(id->value, EntityKind::Section, d.sections);
+                        if (section && sectionContentIs(d, *section, ValueKind::IndexedSection))
+                            row.previewText = appendMessageExcerpt(d, row.label,
+                                SctTextResourceId{d.values.find(section->content.value)->data}, request.language);
+                    }
+                }
                 if (auto *id = std::get_if<SctActionId>(&row.subject)) {
                     auto *a = d.action(*id);
                     if (a && a->kind == ActionKind::Instruction && d.values.find(a->value.value)->data == 10)
@@ -315,10 +359,23 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                     if (request.semantic) {
                         semanticSections.reserve(script->sections.size());
                         bool inStringGroup = false;
-                        for (auto sid : script->sections) {
+                        for (auto it = script->sections.begin(); it != script->sections.end(); ++it) {
+                            auto sid = *it;
                             stopped(stop);
                             auto *section = d.lookup(sid.value, EntityKind::Section, d.sections);
                             require(section, "Missing outline section");
+                            if (sectionContentIs(d, *section, ValueKind::StringGroup)) {
+                                bool hadMembers = false, hasVisibleMembers = false;
+                                for (auto member = std::next(it); member != script->sections.end(); ++member) {
+                                    const auto *s = d.lookup(member->value, EntityKind::Section, d.sections);
+                                    if (!sectionContentIs(d, *s, ValueKind::IndexedSection)) break;
+                                    hadMembers = true;
+                                    if (primarySection(*s)) { hasVisibleMembers = true; break; }
+                                }
+                                inStringGroup = true;
+                                // Preserve deliberately empty authored markers.
+                                if (hadMembers && !hasVisibleMembers) continue;
+                            }
                             if (!primarySection(*section))
                                 continue;
                             if (sectionContentIs(d, *section, ValueKind::IndexedSection) && inStringGroup)

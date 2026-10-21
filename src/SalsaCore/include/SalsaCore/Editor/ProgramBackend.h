@@ -12,7 +12,7 @@ class ProgramBackend final : public Backend {
   public:
     explicit ProgramBackend(std::shared_ptr<program::ProgramService>);
     Result<OutlinePage> outline(Revision, OutlineRequest, std::stop_token = {}) override;
-    Result<Inspection> inspect(Revision, Subject, std::stop_token = {}) override;
+    Result<Inspection> inspect(Revision, Subject, std::stop_token = {}, SctLanguageGroupId = {}) override;
     Result<Change> replaceParameter(Revision, ReplaceParameter, std::stop_token = {}) override;
     Result<NavigationPath> locate(Revision, Subject, ViewMode = ViewMode::Instructions) override;
     Result<TextDraft> text(Revision, SctTextResourceId, std::stop_token = {}) override;

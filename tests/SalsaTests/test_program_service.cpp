@@ -149,6 +149,80 @@ TEST(EditorBackendTest, SemanticStringsUseExistingGroupMarkersAndStableNavigatio
     EXPECT_EQ(backend.locate(undone.value().status.current,b.second,editor::ViewMode::Semantic).value().subjects,
               (std::vector<editor::Subject>{script,groupA,b.first}));
 }
+TEST(EditorBackendTest, ReducedMessageGroupsKeepVariantsAndInspectTheSelectedLanguage) {
+    ir::ProgramBuilder b({Project});
+    auto script = b.importedScript(baseline(), {}).value();
+    auto english = b.allocate<SctLanguageGroupId>().value();
+    auto french = b.allocate<SctLanguageGroupId>().value();
+    auto missing = b.allocate<SctLanguageGroupId>().value();
+    b.metadata().languages = {{english, "English", ""}, {french, "French", ""}, {missing, "Custom", ""}};
+    auto marker = [&](const char *name) {
+        return b.section({{}, script, name, {}, b.value(ir::ValueKind::StringGroup).value()}).value();
+    };
+    auto indexed = [&](const char *name, const char *body, SctLanguageGroupId language) {
+        ir::Text text{{}, script, b.text(ir::ValueKind::PlainText, body).value(), sct::SctTextKind::PlainString};
+        text.sourceName = name;
+        text.languages = {language};
+        auto id = b.textEntity(text).value();
+        auto preamble = b.value(ir::ValueKind::Words).value();
+        auto content = b.value(ir::ValueKind::IndexedSection, id.value, 0, std::span(&preamble, 1)).value();
+        auto section = b.section({{}, script, name, {}, content}).value();
+        return std::pair(section, id);
+    };
+    auto baseGroup = marker("default");
+    auto base = indexed("greeting", "Hello", english);
+    auto translatedGroup = marker("French");
+    auto translated = indexed("greetingF", "Bonjour", french);
+    auto partialGroup = marker("partial");
+    auto otherTranslation = indexed("greetingF2", "Salut", french);
+    auto unique = indexed("unique", "Unique", french);
+    auto empty = marker("empty");
+    auto logical = b.allocate<SctLogicalTextId>().value();
+    b.metadata().logicalTexts.push_back({logical, script, "greeting", {base.second, translated.second}});
+    // A partial group keeps its unique members even when another member is reduced.
+    auto secondBase = indexed("second", "Second", english);
+    b.metadata().logicalTexts.push_back({b.allocate<SctLogicalTextId>().value(), script, "second",
+                                        {secondBase.second, otherTranslation.second}});
+    auto program = b.finish(); ASSERT_TRUE(program) << messages(program.diagnostics());
+    auto service = std::make_shared<ir::ProgramService>();
+    auto adopted = service->adopt({}, std::move(program).takeValue()).get(); ASSERT_TRUE(adopted);
+    auto r = adopted.value().current;
+    editor::ProgramBackend backend(service);
+    auto root = backend.outline(r, {script, 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(root);
+    std::vector<editor::Subject> subjects;
+    for (const auto &row : root.value().rows) subjects.push_back(row.subject);
+    EXPECT_EQ(subjects, (std::vector<editor::Subject>{baseGroup, partialGroup, empty}));
+    auto page = backend.outline(r, {baseGroup, 0, 1, editor::ViewMode::Semantic, french}); ASSERT_TRUE(page);
+    ASSERT_EQ(page.value().rows.size(), 1u);
+    EXPECT_EQ(page.value().rows[0].subject, editor::Subject(base.first));
+    EXPECT_EQ(page.value().rows[0].previewText, translated.second);
+    auto partial = backend.outline(r, {partialGroup, 0, 128, editor::ViewMode::Semantic}); ASSERT_TRUE(partial);
+    ASSERT_EQ(partial.value().rows.size(), 1u);
+    EXPECT_EQ(partial.value().rows[0].subject, editor::Subject(unique.first));
+    auto inspection = backend.inspect(r, base.first, {}, french); ASSERT_TRUE(inspection);
+    ASSERT_TRUE(inspection.value().message);
+    EXPECT_EQ(inspection.value().text, translated.second);
+    EXPECT_EQ(inspection.value().message->content, "Bonjour");
+    EXPECT_EQ(inspection.value().message->languages, (std::vector<std::string>{"French"}));
+    auto explicitVariant = backend.inspect(r, translated.second, {}, english); ASSERT_TRUE(explicitVariant);
+    ASSERT_TRUE(explicitVariant.value().message);
+    EXPECT_EQ(explicitVariant.value().text, translated.second);
+    EXPECT_EQ(explicitVariant.value().message->content, "Bonjour");
+    auto absent = backend.inspect(r, base.first, {}, missing); ASSERT_TRUE(absent);
+    EXPECT_FALSE(absent.value().text);
+    ASSERT_TRUE(absent.value().message);
+    auto path = backend.locate(r, translated.second, editor::ViewMode::Semantic); ASSERT_TRUE(path);
+    EXPECT_EQ(path.value().subjects, (std::vector<editor::Subject>{script, baseGroup, base.first, translated.second}));
+    auto flat = backend.outline(r, {script, 0, 128, editor::ViewMode::Instructions}); ASSERT_TRUE(flat);
+    EXPECT_NE(std::ranges::find(flat.value().rows, editor::Subject(translatedGroup), &editor::OutlineRow::subject), flat.value().rows.end());
+    auto draft = backend.text(r, translated.second); ASSERT_TRUE(draft);
+    draft.value().value = sct::SctPlainText{"Changed"};
+    auto changed = backend.execute(r, editor::WriteText{draft.value()}); ASSERT_TRUE(changed);
+    auto reread = backend.inspect(changed.value().status.current, base.first, {}, french); ASSERT_TRUE(reread);
+    EXPECT_EQ(reread.value().message->content, "Changed");
+    auto undo = backend.history(changed.value().status.current, false); ASSERT_TRUE(undo);
+    EXPECT_EQ(backend.inspect(undo.value().status.current, base.first, {}, french).value().message->content, "Bonjour");
+}
 TEST(ProgramServiceTest, EditorPagesAndSelectedValuesRemainScoped) {
     Fixture f;
     auto page = f.service.outline(f.revision, {f.section, 1, 2}).get();

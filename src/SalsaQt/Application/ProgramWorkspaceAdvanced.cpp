@@ -7,8 +7,7 @@
 #include "Editor/WorkspaceComponent.h"
 #include "Application/ProgramWorkspaceController.h"
 #include "Editor/EditorSessionPresenter.h"
-#include "Editor/InstructionInspector.h"
-#include "Editor/TextEditorComponent.h"
+#include "Editor/ContextInspector.h"
 #include "Editor/ScriptEditingActions.h"
 #include "Editor/ProductivityActions.h"
 #include "Editor/OrganizationComponent.h"
@@ -22,7 +21,6 @@
 #include "Application/ExclusiveOperationCoordinator.h"
 #include "Legacy/LegacyConversionDialog.h"
 #include "Sct/ProgramValueDialog.h"
-#include "Sct/SctMessageEditorWidget.h"
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include "SalsaCore/Program/ProgramValues.h"
 #include "SalsaCore/Authoring/SctEntrypointAuthoring.h"
@@ -118,6 +116,10 @@ std::optional<ir::ValueBuffer> conditionInput(QWidget *parent, const QString &in
 }
 } // namespace
 void ProgramWorkspaceController::editSelected() {
+    if (editor_->inspection() && editor_->inspection()->message) {
+        inspector_->editTextAction()->trigger();
+        return;
+    }
     if (editor_->inspection() && editor_->inspection()->conditionTarget) {
         editing_->editAction()->trigger();
         return;
@@ -129,10 +131,6 @@ void ProgramWorkspaceController::editSelected() {
     if (!prepareSelection([this] { editSelected(); })) return;
     if (!selected_ || !selectedSubject_ || operations_->active())
         return;
-    if (!selected_->texts.empty()) {
-        editText();
-        return;
-    }
     ir::ValueId value;
     std::optional<core::SctActionId> action;
     std::optional<ir::ConditionId> condition;
@@ -419,68 +417,6 @@ std::optional<ir::ValueBuffer> ProgramWorkspaceController::chooseTarget(ir::Valu
     model->bind(editor_->backend(), workspace_->status.current, tab->script);
     dialog.exec();
     return result;
-}
-void ProgramWorkspaceController::editText() {
-    if (!prepareSelection([this] { editText(); })) return;
-    if (!selected_ || selected_->texts.empty() || operations_->active())
-        return;
-    const auto text = selected_->texts.front();
-    auto decoded = ir::ProgramValues::text(selected_->payload, text.value);
-    if (!decoded) {
-        log(errors(decoded));
-        return;
-    }
-    auto *tab = active();
-    if (!tab)
-        return;
-    auto *s = script(tab->script);
-    if (!s || !s->locator)
-        return;
-    QDialog dialog(shell_);
-    dialog.setWindowTitle(tr("Edit text"));
-    dialog.resize(720, 480);
-    auto *layout = new QVBoxLayout(&dialog);
-    auto *editor = new SctMessageEditorWidget(&dialog);
-    layout->addWidget(editor);
-    auto value = decoded.value();
-    editor->setCommitHandler([&](const auto &, const auto &, const core::SctMessageDraft &draft, auto) {
-        auto typed = core::SctMessageAuthoringProfile::materialize(draft);
-        if (!typed.succeeded())
-            return false;
-        value = *typed.message;
-        return true;
-    });
-    editor->setPlainTextCommitHandler([&](const auto &, const auto &, std::string utf8) {
-        value = spice::sct::SctPlainText{std::move(utf8)};
-        return true;
-    });
-    editor->setTextValueCommitHandler([&](const auto &, const auto &, auto typed, auto, auto) {
-        value = std::move(typed);
-        return true;
-    });
-    // Reused widget IDs are disposable display bindings. The command uses the
-    // captured authored TextResourceId, never a SPICE document lookup.
-    core::SctTextTarget target = text.supplementary
-                                     ? core::SctTextTarget(spice::sct::SctSupplementaryTextId{text.id.value})
-                                     : core::SctTextTarget(spice::sct::SctStringId{text.id.value});
-    if (!editor->bindText(*s->locator, target, value, text.kind,
-                          text.supplementary ? spice::sct::SctTextStorage::Footer
-                                             : spice::sct::SctTextStorage::IndexedSection))
-        return;
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
-        if (editor->flushPending())
-            dialog.accept();
-    });
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (dialog.exec() == QDialog::Accepted) {
-        auto b = ir::ProgramValues::text(value);
-        if (b)
-            edit({ir::ReplaceText{text.id, std::move(b).takeValue()}});
-        else
-            log(errors(b));
-    }
 }
 void ProgramWorkspaceController::inspectLowered() {
     auto *tab = active();

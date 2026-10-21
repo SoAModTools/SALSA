@@ -85,11 +85,12 @@ Result<OutlinePage> ProgramBackend::outline(Revision revision, OutlineRequest re
             kind = *r.kind == ir::ActionKind::Instruction ? RowKind::Instruction : RowKind::Construct;
         out.rows.push_back({r.subject, r.sequence, std::move(r.label), r.expandable, kind,
                             std::move(r.groupingIssue), r.color, r.bookmarked, r.chain, r.condition,
-                            r.preparation, r.supportingSequences});
+                            r.preparation, r.supportingSequences, r.previewText});
     }
     return Result<OutlinePage>::success(std::move(out));
 }
-Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, std::stop_token stop) {
+Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, std::stop_token stop,
+                                          SctLanguageGroupId language) {
     ir::ReadSelection request;
     request.descend = false;
     request.referencedText = true;
@@ -295,8 +296,43 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                 "\nBefore check instructions run in order before this expression is evaluated.";
         }
     }
-    if (!s.texts.empty())
-        out.description = "Use Edit selected text for formatted dialogue and choices.";
+    if (out.text && (std::holds_alternative<SctTextResourceId>(subject) ||
+                     std::holds_alternative<ir::SectionId>(subject))) {
+        // A concrete variant selection stays concrete. Only a message section
+        // follows the preview language; missing translations never fall back.
+        if (language.valid() && !std::holds_alternative<SctTextResourceId>(subject)) {
+            auto target = translation(revision, *out.text, language, stop);
+            if (!target) return Result<Inspection>::failure(target.diagnostics());
+            if (!target.value()) {
+                out.text.reset();
+                out.message = MessageInspection{out.title, "Missing translation in the selected localization", {}};
+            } else if (*target.value() != *out.text) {
+                auto translated = inspect(revision, *target.value(), stop);
+                if (!translated) return translated;
+                out.text = translated.value().text;
+                out.message = std::move(translated.value().message);
+            }
+        }
+        if (!out.message && out.text) {
+            const auto &text = s.texts.front();
+            auto value = ir::ProgramValues::text(s.payload, text.value);
+            if (!value) return Result<Inspection>::failure(value.diagnostics());
+            MessageInspection message;
+            message.name = text.sourceName.empty() ? out.title : text.sourceName;
+            for (auto id : text.languages)
+                if (auto at = std::ranges::find(s.textLanguages, id, &SctLanguageGroup::id); at != s.textLanguages.end())
+                    message.languages.push_back(at->name);
+            if (auto *plain = std::get_if<spice::sct::SctPlainText>(&value.value()))
+                message.content = plain->utf8;
+            else if (auto *body = std::get_if<spice::sct::SctMessage>(&value.value())) {
+                if (body->headerUtf8) message.content = *body->headerUtf8 + "\n";
+                for (const auto &element : body->body.elements)
+                    if (auto *chunk = std::get_if<spice::sct::SctTextChunk>(&element))
+                        message.content += chunk->utf8;
+            }
+            out.message = std::move(message);
+        }
+    }
     for (auto &block : s.localized)
         if (out.construct == block.action) {
             out.title = "Localized sequence";
