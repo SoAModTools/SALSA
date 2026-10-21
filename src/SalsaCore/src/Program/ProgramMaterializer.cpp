@@ -659,11 +659,11 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                         const auto target = SctActionId{ref->data};
                         require(p.find(target), "Dangling CallSubscript target");
                         if (!p.sectionEntry(target)) {
-                            require(a->sourceInstruction && a->importedCallTarget == target,
+                            require(a->importedCallTarget == target,
                                 "CallSubscript must target an indexed section entry");
                             omitted(script->context.name + ": CallSubscript action " + std::to_string(a->id.value) +
                                 " targets action " + std::to_string(target.value) +
-                                " outside an indexed section entry; preserving the original imported call.");
+                                " outside an indexed section entry; preserving the existing imported or upgraded call.");
                         }
                     }
                 if (!clones.empty())

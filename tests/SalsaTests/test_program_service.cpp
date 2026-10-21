@@ -1056,7 +1056,9 @@ TEST(ProgramPersistenceTest, AutomaticallyUpgradesSchema10WithExactBackupAndSave
     EXPECT_EQ(before.value().sourceSchema, 10u);
     EXPECT_EQ(files.read(files.path), original); // Plain loading is read-only.
     ir::ProgramService service;
-    auto opened = service.openProject({{}, files.path}).get();
+    ir::ProgramOpenRequest request{{}, files.path};
+    request.keepUpgradeBackup = true;
+    auto opened = service.openProject(request).get();
     ASSERT_TRUE(opened) << messages(opened.diagnostics());
     EXPECT_NE(messages(opened.diagnostics()).find("Original backup:"), std::string::npos);
     EXPECT_EQ(files.read(files.backup(original)), original);
@@ -1095,20 +1097,54 @@ TEST(ProgramPersistenceTest, UpgradeFailuresAndCancellationPreserveOriginalCheck
     EXPECT_EQ(files.read(files.path), original);
     EXPECT_FALSE(std::filesystem::exists(files.backup(original)));
     request.progress = {};
+    request.keepUpgradeBackup = true;
     // Never overwrite an existing backup with unexpected contents.
     std::vector<std::byte> conflict{std::byte{42}};
     ASSERT_TRUE(replaceFileAtomically(files.backup(original), conflict));
     EXPECT_FALSE(service.openProject(request).get());
     EXPECT_EQ(files.read(files.path), original);
     EXPECT_EQ(files.read(files.backup(original)), conflict);
-    for (auto bad : {schema10Checkpoint(true), schema10Checkpoint()}) {
-        if (bad == original) bad[16] = std::byte{9};
-        ASSERT_TRUE(replaceFileAtomically(files.path, bad));
-        auto rejected = service.openProject(request).get();
-        ASSERT_FALSE(rejected);
-        EXPECT_EQ(files.read(files.path), bad);
-        if (bad[16] == std::byte{10}) EXPECT_NE(messages(rejected.diagnostics()).find("needs review"), std::string::npos);
-    }
+    auto bad = original; bad[16] = std::byte{9};
+    ASSERT_TRUE(replaceFileAtomically(files.path, bad));
+    EXPECT_FALSE(service.openProject(request).get());
+    EXPECT_EQ(files.read(files.path), bad);
+}
+TEST(ProgramPersistenceTest, UpgradeChoiceDefaultsToNoBackupAndPreservesExistingCalls) {
+    CheckpointUpgradeFiles files;
+    const auto original = schema10Checkpoint(true);
+    ASSERT_TRUE(replaceFileAtomically(files.path, original));
+    ir::ProgramService service;
+    ir::ProgramOpenRequest request{{}, files.path};
+    request.keepUpgradeBackup.reset(); // Interactive opening requires an answer first.
+    auto pending = service.openProject(request).get();
+    ASSERT_FALSE(pending);
+    ASSERT_EQ(pending.diagnostics().size(), 1u);
+    EXPECT_EQ(pending.diagnostics()[0].code, DiagnosticCode::CheckpointUpgradeChoiceRequired);
+    EXPECT_EQ(files.read(files.path), original);
+    EXPECT_FALSE(std::filesystem::exists(files.backup(original)));
+    request.keepUpgradeBackup = ir::ProgramOpenRequest{}.keepUpgradeBackup;
+    ASSERT_EQ(request.keepUpgradeBackup, false);
+    auto opened = service.openProject(request).get();
+    ASSERT_TRUE(opened) << messages(opened.diagnostics());
+    EXPECT_NE(messages(opened.diagnostics()).find("outside an indexed section entry"), std::string::npos);
+    EXPECT_EQ(messages(opened.diagnostics()).find("preserved from the imported script"), std::string::npos);
+    EXPECT_FALSE(std::filesystem::exists(files.backup(original)));
+    EXPECT_TRUE(std::filesystem::is_empty(files.root / ".salsa-checkpoint-upgrades"));
+    auto current = service.checkpoint(opened.value().status.current).get(); ASSERT_TRUE(current);
+    EXPECT_EQ(current.value().program->find(SctActionId{9})->importedCallTarget, SctActionId{8});
+    ir::ProgramMaterializer materializer;
+    auto output = materializer.materialize(current.value(), opened.value().status.current, SctScriptId{2},
+        SctRealizationId{generateSctAuthoringUuid().value()});
+    ASSERT_TRUE(output) << messages(output.diagnostics());
+    EXPECT_NE(messages(output.diagnostics()).find("outside an indexed section entry"), std::string::npos);
+    auto reopened = ir::ProgramPersistence::load(files.path); ASSERT_TRUE(reopened);
+    EXPECT_EQ(reopened.value().program->find(SctActionId{9})->importedCallTarget, SctActionId{8});
+    // Editing an existing call back to an entry revokes its exceptional allowance.
+    auto changed = service.edit({opened.value().status.current,
+        {ir::ReplaceParameter{SctActionId{9}, {0, {}}, target(SctActionId{5})}}}).get();
+    ASSERT_TRUE(changed) << messages(changed.diagnostics());
+    EXPECT_FALSE(service.edit({changed.value().status.current,
+        {ir::ReplaceParameter{SctActionId{9}, {0, {}}, target(SctActionId{8})}}}).get());
 }
 
 TEST(ProgramPersistenceTest, TransactionAndAsyncOpenRejectStaleOrCancelledResults) {

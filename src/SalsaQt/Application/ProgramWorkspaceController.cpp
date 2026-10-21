@@ -81,6 +81,28 @@ QString errors(const auto &result) {
         lines << q(d.message);
     return lines.join('\n');
 }
+bool offerCheckpointUpgrade(const std::vector<core::Diagnostic> &diagnostics, ProgramOperation &op,
+                            std::function<ProgramOperation::Work(bool)> work) {
+    if (std::ranges::none_of(diagnostics, [](const auto &d) {
+        return d.code == core::DiagnosticCode::CheckpointUpgradeChoiceRequired;
+    })) return false;
+    auto keepBackup = std::make_shared<bool>(false);
+    op.offerDecision(QObject::tr("Upgrade and open"), [work, keepBackup] { return work(*keepBackup); },
+        [keepBackup](QWidget *parent) {
+            auto *page = new QWidget(parent);
+            auto *layout = new QVBoxLayout(page);
+            auto *label = new QLabel(QObject::tr("This project needs an upgrade from schema 10 to 11 before it can open."), page);
+            label->setWordWrap(true);
+            layout->addWidget(label);
+            auto *backup = new QCheckBox(QObject::tr("Keep a backup of the original checkpoint"), page);
+            backup->setChecked(false);
+            *keepBackup = false;
+            QObject::connect(backup, &QCheckBox::toggled, page, [keepBackup](bool checked) { *keepBackup = checked; });
+            layout->addWidget(backup);
+            return page;
+        });
+    return true;
+}
 } // namespace
 ProgramWorkspaceController::ProgramWorkspaceController(QMainWindow *shell) : QObject(shell), shell_(shell) {
     shell_->resize(1280, 800);
@@ -419,6 +441,12 @@ void ProgramWorkspaceController::openSavedProject(QString destination) {
             }
             install(std::any_cast<std::shared_ptr<ir::EditorWorkspace>>(std::move(value)), op);
         }, true);
+    operation->recoverFailure = [request](const auto &diagnostics, ProgramOperation &op) {
+        return offerCheckpointUpgrade(diagnostics, op, [request](bool keepBackup) mutable {
+            request.keepUpgradeBackup = keepBackup;
+            return [request](auto stop, const auto &observer) { return boxed(ir::EditorWorkspaceIO::open(request, stop, observer)); };
+        });
+    };
     operation->compactOpening = true;
     operation->diagnosticLog = [this](QString message) { log(std::move(message)); };
     (void)operations_->open(std::move(operation), shell_);
@@ -537,6 +565,10 @@ void ProgramWorkspaceController::openDataset(QString root, QString destination, 
         choice->status->setText(messages.join('\n')); choice->pending.clear(); emit native->presentationChanged();
     };
     operation->recoverFailure = [choice](const auto &diagnostics, ProgramOperation &op) {
+        if (offerCheckpointUpgrade(diagnostics, op, [choice](bool keepBackup) {
+            choice->request.keepUpgradeBackup = keepBackup;
+            return [request = choice->request](auto stop, const auto &observer) { return boxed(ir::EditorWorkspaceIO::open(request, stop, observer)); };
+        })) return true;
         for (const auto &d : diagnostics)
             if (d.code == core::DiagnosticCode::SctSourceTextSelectionRequired) choice->pending.push_back(d);
         if (!choice->pending.empty()) { op.configureAgain(); return true; }

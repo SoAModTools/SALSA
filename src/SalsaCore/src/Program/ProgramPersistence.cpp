@@ -149,7 +149,7 @@ bool live(const ProgramData &d, std::uint64_t id, EntityKind kind) {
     return id && d.directory.find(id).kind == kind;
 }
 // Loading checks occur once at the boundary, before any unsafe cross-table use.
-void linkLoaded(ProgramData &d, std::vector<Diagnostic> &diagnostics, std::stop_token stop) {
+void linkLoaded(ProgramData &d, std::vector<Diagnostic> &diagnostics, std::stop_token stop, bool upgrading = false) {
     require(d.id.valid(), "Invalid project identity");
     auto claim = [&](std::uint64_t id, EntityKind k, std::uint32_t i) {
         require(id && id <= d.highWater, "Invalid persisted identity allocator");
@@ -356,6 +356,19 @@ void linkLoaded(ProgramData &d, std::vector<Diagnostic> &diagnostics, std::stop_
     metadataIds(d.metadata.connections, EntityKind::Connection);
     metadataIds(d.metadata.logicalTexts, EntityKind::LogicalText);
     metadataIds(d.metadata.meanings, EntityKind::Meaning);
+    // Preserve pre-existing call targets when upgrading. This is a continuity
+    // allowance, not a claim that the target was verified against native source.
+    if (upgrading) for (std::uint32_t i = 0; i < d.actions.size(); ++i) {
+        auto &a = *d.actions.find(i);
+        if (a.kind != ActionKind::Instruction || d.values.find(a.value.value)->data != 11) continue;
+        for (auto parameter : d.child(a.value)) {
+            const auto *v = d.values.find(parameter.value);
+            if (v->kind != ValueKind::Parameter || v->data != 0 || v->count != 1) continue;
+            const auto *ref = d.values.find(d.child(parameter).front().value);
+            if (ref->kind == ValueKind::ActionReference && !d.sectionEntry(SctActionId{ref->data}))
+                a.importedCallTarget = SctActionId{ref->data};
+        }
+    }
     finishMetadata(d, diagnostics, false);
     for (auto &t : d.texts)
         for (auto id : t.languages)
@@ -662,14 +675,7 @@ Result<ProjectFile> ProgramPersistence::decode(std::span<const std::byte> bytes,
         require(!r.remaining, "Unexpected binary program data");
         checkStop(stop);
         report(observer, "Loading program relationships");
-        try {
-            linkLoaded(*d, diagnostics, stop);
-        } catch (const std::exception& e) {
-            if (frames.schema == 10 && std::string_view(e.what()).find("CallSubscript must target") != std::string_view::npos)
-                throw std::runtime_error("Schema 10 checkpoint needs review before upgrade: a CallSubscript targets a non-entry instruction, "
-                    "but this checkpoint has no evidence that the call was imported unchanged. Confirm its source or repair its target; the original checkpoint is unchanged.");
-            throw;
-        }
+        linkLoaded(*d, diagnostics, stop, frames.schema == 10);
         presentationShape(*d, presentation);
         checkStop(stop);
         ProjectFile out{std::shared_ptr<const Program>(new Program(std::move(d))), std::move(presentation)};
@@ -682,7 +688,7 @@ Result<ProjectFile> ProgramPersistence::decode(std::span<const std::byte> bytes,
     }
 }
 Result<ProjectFile> ProgramPersistence::load(const std::filesystem::path &path, const PersistenceLimits &limits,
-                                             std::stop_token stop, const SctLoadingObserver &observer) {
+                                             std::stop_token stop, const SctLoadingObserver &observer, bool allowUpgrade) {
     try {
         checkStop(stop);
         report(observer, "Reading program project");
@@ -690,6 +696,16 @@ Result<ProjectFile> ProgramPersistence::load(const std::filesystem::path &path, 
         require(bool(file), "Cannot open program project");
         auto size = file.tellg();
         require(size >= 0 && static_cast<std::uint64_t>(size) <= limits.encodedBytes, "Invalid project file size");
+        if (!allowUpgrade && size >= 20) {
+            std::array<unsigned char, 20> header{};
+            file.seekg(0);
+            require(bool(file.read(reinterpret_cast<char *>(header.data()), header.size())), "Truncated project header");
+            auto u32 = [&](std::size_t at) { return std::uint32_t(header[at]) | (std::uint32_t(header[at+1]) << 8) |
+                (std::uint32_t(header[at+2]) << 16) | (std::uint32_t(header[at+3]) << 24); };
+            if (std::memcmp(header.data(), "SALSAPRJ", 8) == 0 && u32(8) == 2 && u32(12) == 1 && u32(16) == 10)
+                return Result<ProjectFile>::failure({DiagnosticSeverity::Error, DiagnosticCode::CheckpointUpgradeChoiceRequired,
+                    "This checkpoint needs an upgrade from schema 10 to 11. Choose whether to keep a backup before opening.", path});
+        }
         std::vector<std::byte> bytes(static_cast<std::size_t>(size));
         file.seekg(0);
         for (std::size_t at = 0; at < bytes.size();) {
@@ -711,7 +727,7 @@ Result<ProjectFile> ProgramPersistence::load(const std::filesystem::path &path, 
 }
 Result<void> ProgramPersistence::upgrade(const std::filesystem::path &path, ProjectFile &file,
     const WorkspaceRecoveryContext &recovery, std::stop_token stop, const SctLoadingObserver &observer,
-    const std::function<bool()> &mayCommit) {
+    const std::function<bool()> &mayCommit, bool keepBackup) {
     if (file.sourceSchema == 11) return Result<void>::success();
     try {
         checkStop(stop);
@@ -736,12 +752,12 @@ Result<void> ProgramPersistence::upgrade(const std::filesystem::path &path, Proj
         if (!uuid) return Result<void>::failure(uuid.diagnostics());
         WorkspaceTransactionRequest request{uuid.value(), file.program->id().value, "checkpoint-upgrade-10-11", uuid.value(), {}};
         // Backup first. A prior backup may only be reused if it has these exact bytes.
-        request.mutations.push_back({backup, backupExists, backupExists ? std::optional(originalDigest) : std::nullopt,
+        if (keepBackup) request.mutations.push_back({backup, backupExists, backupExists ? std::optional(originalDigest) : std::nullopt,
                                      std::move(file.upgradeSource)});
         request.mutations.push_back({relative, true, originalDigest, std::move(encoded).takeValue()});
         checkStop(stop);
         require(!mayCommit || mayCommit(), "Checkpoint upgrade was superseded; original file is unchanged");
-        if (observer) observer({"Backing up and upgrading project checkpoint", 0, 0, path.filename().string(), false});
+        if (observer) observer({keepBackup ? "Backing up and upgrading project checkpoint" : "Upgrading project checkpoint", 0, 0, path.filename().string(), false});
         // Cancellation is deferred through this recoverable filesystem transaction.
         auto prepared = WorkspaceTransactionService::prepare(root, recovery.transactionsRelativeRoot, request);
         if (prepared.status != WorkspaceTransactionStatus::Prepared)
@@ -756,8 +772,16 @@ Result<void> ProgramPersistence::upgrade(const std::filesystem::path &path, Proj
         file.encodedDigest = digest.value();
         file.upgradeSource.clear();
         const auto backupUtf8 = (root / backup).generic_u8string();
-        return Result<void>::success({{DiagnosticSeverity::Info, DiagnosticCode::InvalidSctAuthoringProject,
-            "Project checkpoint upgraded from schema 10 to 11. Original backup: " + std::string(backupUtf8.begin(), backupUtf8.end())}});
+        std::vector<Diagnostic> diagnostics{{DiagnosticSeverity::Info, DiagnosticCode::InvalidSctAuthoringProject,
+            "Project checkpoint upgraded from schema 10 to 11." + (keepBackup
+                ? " Original backup: " + std::string(backupUtf8.begin(), backupUtf8.end()) : " No backup requested.")}};
+        // Rollback bytes are temporary transaction data, not a retained backup.
+        const WorkspaceCleanupCandidate completed{recovery.transactionsRelativeRoot / request.transactionId, 0,
+            "Completed checkpoint upgrade"};
+        auto cleaned = WorkspaceArtifactCleanupService::remove(root, std::span(&completed, 1));
+        if (!cleaned) diagnostics.push_back({DiagnosticSeverity::Warning, DiagnosticCode::WorkspaceCleanupFailed,
+            "Checkpoint upgraded, but temporary transaction files could not be removed."});
+        return Result<void>::success(std::move(diagnostics));
     } catch (const std::exception& e) {
         return Result<void>::failure(failure(std::string("Checkpoint upgrade: ") + e.what()));
     }

@@ -81,6 +81,7 @@ enum class DiagnosticCode {
     EvaluationVerificationFailed,
     EvaluationOperationRejected,
     EvaluationReportFailed,
+    CheckpointUpgradeChoiceRequired,
     SctSourceTextSelectionRequired,
 };
 
@@ -158,6 +159,7 @@ enum class DiagnosticCode {
     case DiagnosticCode::EvaluationUnsupported: return "EvaluationUnsupported";
     case DiagnosticCode::EvaluationVerificationFailed: return "EvaluationVerificationFailed";
     case DiagnosticCode::EvaluationOperationRejected: return "EvaluationOperationRejected";
+    case DiagnosticCode::CheckpointUpgradeChoiceRequired: return "CheckpointUpgradeChoiceRequired";
     case DiagnosticCode::EvaluationReportFailed: return "EvaluationReportFailed";
     }
     return "Unknown";

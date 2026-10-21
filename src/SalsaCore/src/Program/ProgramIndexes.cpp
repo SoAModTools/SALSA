@@ -170,13 +170,13 @@ DirectFacts actionFacts(ProgramData& d, std::span<const SctActionId> actions, st
             if (opcode == 11 && !repeated && p.data == 0 && node(d, value).kind == ValueKind::ActionReference) {
                 const auto target = SctActionId{node(d, value).data};
                 if (!d.sectionEntry(target)) {
-                    require(a.sourceInstruction && a.importedCallTarget == target,
+                    require(a.importedCallTarget == target,
                         "CallSubscript must target an indexed section entry");
                     const auto* context = d.lookup(script.value, EntityKind::Script, d.scripts);
                     diagnostics.push_back({DiagnosticSeverity::Warning, DiagnosticCode::InvalidSctAuthoringProject,
                         context->context.name + ": CallSubscript action " + std::to_string(a.id.value) +
                         " targets action " + std::to_string(target.value) +
-                        " outside an indexed section entry; preserved from the imported script."});
+                        " outside an indexed section entry; preserved from existing imported or upgraded content."});
                 }
             }
             // SALSA's existing destination rules: 5/6/7 assign Byte/Int/Float,

@@ -44,6 +44,7 @@ struct ProgramOpenRequest {
     PersistenceLimits limits;
     SctLoadingObserver progress;
     std::optional<WorkspaceRecoveryContext> recovery;
+    std::optional<bool> keepUpgradeBackup = false; // Unset requests an interactive choice; false upgrades without a retained backup.
 };
 struct ProgramOpenResult {
     ServiceStatus status;
@@ -63,12 +64,12 @@ class ProgramPersistence final {
     static Result<ProjectFile> decode(std::span<const std::byte>, const PersistenceLimits & = {}, std::stop_token = {},
                                       const SctLoadingObserver & = {});
     static Result<ProjectFile> load(const std::filesystem::path &, const PersistenceLimits & = {}, std::stop_token = {},
-                                    const SctLoadingObserver & = {});
-    // Explicit disk upgrade after read-only decoding. Keeps the exact original as
-    // a sibling backup; current checkpoints are a no-op. Called by saved opening.
+                                    const SctLoadingObserver & = {}, bool allowUpgrade = true);
+    // Explicit disk upgrade after read-only decoding. A sibling backup is opt-in;
+    // current checkpoints are a no-op. Called by saved opening.
     static Result<void> upgrade(const std::filesystem::path &, ProjectFile &, const WorkspaceRecoveryContext &,
                                 std::stop_token = {}, const SctLoadingObserver & = {},
-                                const std::function<bool()> &mayCommit = {});
+                                const std::function<bool()> &mayCommit = {}, bool keepBackup = false);
     // Prepares one artifact for the existing workspace transaction service.
     // Caller commits without cancellation, then marks this checkpoint's token saved.
     static Result<WorkspaceArtifactMutation> mutation(const Checkpoint &, const Presentation &,

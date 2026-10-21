@@ -1875,7 +1875,7 @@ std::future<Result<ProgramOpenResult>> ProgramService::openProject(ProgramOpenRe
                             "Workspace transaction recovery is blocked");
                 stopped(token);
             }
-            auto loaded = ProgramPersistence::load(request.path, request.limits, token, request.progress);
+            auto loaded = ProgramPersistence::load(request.path, request.limits, token, request.progress, request.keepUpgradeBackup.has_value());
             if (!loaded) {
                 promise->set_value(Result<ProgramOpenResult>::failure(loaded.diagnostics()));
                 return;
@@ -1888,7 +1888,7 @@ std::future<Result<ProgramOpenResult>> ProgramService::openProject(ProgramOpenRe
                     return c->loadGeneration == operation;
                 }).get();
                 return ready && ready.value();
-            });
+            }, request.keepUpgradeBackup.value_or(false));
             if (!upgraded) {
                 promise->set_value(Result<ProgramOpenResult>::failure(upgraded.diagnostics()));
                 return;

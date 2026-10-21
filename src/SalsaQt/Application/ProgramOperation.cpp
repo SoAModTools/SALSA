@@ -80,6 +80,11 @@ core::ExclusiveOperationFlowDefinition ProgramOperation::flowDefinition() const 
              {"cancelled", "working", "cancelled", "summary"}}};
 }
 QWidget *ProgramOperation::createPage(std::string_view id, QWidget *parent) {
+    if (id == "review") {
+        reviewContainer_ = new QWidget(parent);
+        new QVBoxLayout(reviewContainer_);
+        return reviewContainer_;
+    }
     if (id == "next") {
         nextContainer_ = new QWidget(parent);
         new QVBoxLayout(nextContainer_);
@@ -98,6 +103,19 @@ QWidget *ProgramOperation::createPage(std::string_view id, QWidget *parent) {
     return page;
 }
 void ProgramOperation::pageEntered(std::string_view page) {
+    if (page == "review" && reviewContainer_) {
+        auto *layout = reviewContainer_->layout();
+        while (auto *item = layout->takeAt(0)) {
+            if (item->widget()) item->widget()->deleteLater();
+            delete item;
+        }
+        if (reviewPage_) layout->addWidget(reviewPage_(reviewContainer_));
+        else {
+            auto *label = new QLabel(summary_, reviewContainer_);
+            label->setWordWrap(true);
+            layout->addWidget(label);
+        }
+    }
     choosingNext_ = page == "next";
     if (choosingNext_) {
         setCancellable(true);
@@ -163,7 +181,7 @@ std::optional<ExclusiveOperationAction> ProgramOperation::actionForEdge(std::str
     if (edge == "start")
         return ExclusiveOperationAction{tr("Import project"), ExclusiveOperationActionRole::Primary};
     if (edge == "retry")
-        return ExclusiveOperationAction{tr("Open with selected dataset"), ExclusiveOperationActionRole::Primary};
+        return ExclusiveOperationAction{retryAction_.isEmpty() ? tr("Open with selected dataset") : retryAction_, ExclusiveOperationActionRole::Primary};
     return {};
 }
 bool ProgramOperation::edgeEnabled(std::string_view edge) const {
@@ -174,8 +192,20 @@ void ProgramOperation::configureAgain() {
     raiseEvent("configure");
 }
 void ProgramOperation::offerRetry(QString message, Work work) {
+    retryAction_.clear();
+    retryWork_ = {};
+    reviewPage_ = {};
     summary_ = message;
     work_ = std::move(work);
+    reviewing_ = true;
+    setCancellable(true);
+    raiseEvent("review");
+}
+void ProgramOperation::offerDecision(QString action, std::function<Work()> prepare,
+                                     std::function<QWidget *(QWidget *)> page) {
+    retryAction_ = std::move(action);
+    retryWork_ = std::move(prepare);
+    reviewPage_ = std::move(page);
     reviewing_ = true;
     setCancellable(true);
     raiseEvent("review");
@@ -203,6 +233,7 @@ void ProgramOperation::handleEvent(std::string_view event) {
     if (event == "start" && prepareWork)
         work_ = prepareWork();
     if (event == "retry") {
+        if (retryWork_) work_ = retryWork_();
         reviewing_ = false;
         started_ = false;
         stop_ = std::stop_source{};

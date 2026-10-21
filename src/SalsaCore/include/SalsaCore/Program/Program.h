@@ -36,7 +36,7 @@ struct Action {
     std::uint32_t firstArm = 0, armCount = 0;
     std::uint64_t sourceInstruction = 0; // Qualified by owner's script baseline.
     std::uint32_t detail = UINT32_MAX; // Index into the kind-specific construct table.
-    SctActionId importedCallTarget; // Exceptional original non-entry call target; never granted to new calls.
+    SctActionId importedCallTarget; // Exceptional imported or migrated call target; never granted to new calls.
 };
 enum class CaseExit : std::uint8_t { ExitSwitch, Fallthrough };
 struct Arm {
