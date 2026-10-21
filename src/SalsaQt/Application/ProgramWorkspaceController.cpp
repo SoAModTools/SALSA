@@ -420,6 +420,7 @@ void ProgramWorkspaceController::openSavedProject(QString destination) {
             install(std::any_cast<std::shared_ptr<ir::EditorWorkspace>>(std::move(value)), op);
         }, true);
     operation->compactOpening = true;
+    operation->diagnosticLog = [this](QString message) { log(std::move(message)); };
     (void)operations_->open(std::move(operation), shell_);
 }
 void ProgramWorkspaceController::openDataset(QString root, QString destination, bool legacy) {

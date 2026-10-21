@@ -17,6 +17,9 @@ class ProgramOperation final : public ExclusiveOperationController {
     core::ExclusiveOperationFlowDefinition flowDefinition() const override;
     QWidget *createPage(std::string_view, QWidget *) override;
     bool compactOpening = false;
+    // Nonblocking notices from successful compact opens belong in the host log,
+    // not in the dialog's expanded diagnostic presentation.
+    std::function<void(QString)> diagnosticLog;
     bool progressOnlyPage(std::string_view id) const override { return compactOpening && id == "working"; }
     void pageEntered(std::string_view) override;
     void requestCancel() override;

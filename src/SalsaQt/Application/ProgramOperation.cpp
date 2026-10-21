@@ -35,8 +35,14 @@ ProgramOperation::ProgramOperation(QString name, Work work, Install install, boo
             fail(lines.join('\n'));
             return;
         }
-        for (const auto &d : result.diagnostics())
-            reportDiagnostics(QString::fromStdString(d.message));
+        for (const auto &d : result.diagnostics()) {
+            const auto message = QString::fromStdString(d.message);
+            if (compactOpening && diagnosticLog && d.severity != core::DiagnosticSeverity::Error)
+                diagnosticLog(d.severity == core::DiagnosticSeverity::Warning
+                                  ? tr("Warning: %1").arg(message) : message);
+            else
+                reportDiagnostics(message);
+        }
         preparing_ = true;
         setCancellable(true);
         try {
