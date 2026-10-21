@@ -8,6 +8,7 @@
 #include "SalsaCore/Sct/SctExpressionLanguage.h"
 #include "SpiceSCT/SctDocumentExporter.h"
 #include "SpiceSCT/SctInstructionFactory.h"
+#include "../../third-party/zstd/lib/zstd.h"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -992,6 +993,124 @@ TEST(ProgramPersistenceTest, BinaryRoundTripPreservesStructuredIdentityAndLiveCo
     ASSERT_TRUE(reopened.undo(change.value().status.current).get());
     reopened.shutdown().get();
 }
+// Frozen, hand-authored schema-10 program: two sections, a call, an annotation,
+// and saved tab/selection state. No source files or current serializer are used.
+std::vector<std::byte> schema10Checkpoint(bool interiorCall = false) {
+    constexpr std::string_view hex =
+        "2400000065343434393962352d646366302d343439612d393831352d35626466353538656661636507000000000000006400000000000000"
+        "0000000000000000000000000000000001000000010000000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000130000006669656c642f73796e7468657469632e7363740000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000002400000061343434393962352d646366302d343439612d393831352d3562646635353865666163650000000000"
+        "00000100000002000000000000000e0000004564697465642070726f6a656374010000000000000000000000000000000000000002000000"
+        "030000000000000006000000000000000000000004000000000000000c0000000000000000000000000000000a0000000500000000000000"
+        "0000000000000000010000000000000000000000000000000100000001000000000000000b00000000000000000000000100000002000000"
+        "020000000300000000000000020000000000000004000000696e69740400000000000000ffffffff01000000000000000600000000000000"
+        "0200000000000000040000006c6f6f700700000000000000ffffffff02000000000000000000000002000000040000000000000002000000"
+        "0000000000000000000100000005000000000000000700000000000000020000000000000000000000000200000009000000000000000800"
+        "0000000000000300000005000000000000000400000000000000000000000000000001000000000000000900000000000000070000000000"
+        "0000000000000300000002000000000000000800000000000000070000000000000000000000000000000300000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000000000010000000300000009000000000000000b00000053"
+        "74617274207363656e65000000000d000000417574686f726564206e6f746508000000626f6f6b6d61726b00000000000000000000000000"
+        "0000000000000000000000000000000001000000020000000000000001010300000009000000000000000100000001000000060000000000"
+        "0000010000000300000009000000000000000103000000090000000000000001000000010000000600000000000000010000000300000009"
+        "0000000000000001030000000900000000000000010200000000000000";
+    std::vector<std::byte> raw;
+    auto digit = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+    for (std::size_t i = 0; i < hex.size(); i += 2)
+        raw.push_back(std::byte((digit(hex[i]) << 4) | digit(hex[i + 1])));
+    if (interiorCall) raw[328] = std::byte{8}; // loop's second instruction, not its entry
+    std::vector<std::byte> compressed(ZSTD_compressBound(raw.size()));
+    auto size = ZSTD_compress(compressed.data(), compressed.size(), raw.data(), raw.size(), 1);
+    if (ZSTD_isError(size)) throw std::runtime_error(ZSTD_getErrorName(size));
+    compressed.resize(size);
+    std::vector<std::byte> result;
+    for (auto c : std::string_view("SALSAPRJ")) result.push_back(std::byte(c));
+    auto u32 = [&](std::uint32_t n) { for (int i = 0; i < 4; ++i) result.push_back(std::byte((n >> (i * 8)) & 255)); };
+    u32(2); u32(1); u32(10); u32(static_cast<std::uint32_t>(raw.size())); u32(static_cast<std::uint32_t>(size));
+    result.insert(result.end(), compressed.begin(), compressed.end());
+    u32(0); u32(0);
+    return result;
+}
+struct CheckpointUpgradeFiles {
+    std::filesystem::path root = std::filesystem::temp_directory_path() / generateSctAuthoringUuid().value();
+    std::filesystem::path path = root / "program.salsa";
+    CheckpointUpgradeFiles() { std::filesystem::create_directories(root); }
+    ~CheckpointUpgradeFiles() { std::error_code ec; std::filesystem::remove_all(root, ec); }
+    std::vector<std::byte> read(const std::filesystem::path &p) const {
+        std::ifstream in(p, std::ios::binary);
+        std::vector<char> chars((std::istreambuf_iterator<char>(in)), {});
+        std::vector<std::byte> bytes(chars.size());
+        std::transform(chars.begin(), chars.end(), bytes.begin(), [](char c) { return std::byte(c); });
+        return bytes;
+    }
+    std::filesystem::path backup(const std::vector<std::byte> &bytes) const {
+        auto p = path; p += ".schema-10-" + sha256(bytes).value().toHex() + ".bak"; return p;
+    }
+};
+TEST(ProgramPersistenceTest, AutomaticallyUpgradesSchema10WithExactBackupAndSavedState) {
+    CheckpointUpgradeFiles files;
+    const auto original = schema10Checkpoint();
+    ASSERT_TRUE(replaceFileAtomically(files.path, original));
+    const auto before = ir::ProgramPersistence::load(files.path);
+    ASSERT_TRUE(before) << messages(before.diagnostics());
+    EXPECT_EQ(before.value().sourceSchema, 10u);
+    EXPECT_EQ(files.read(files.path), original); // Plain loading is read-only.
+    ir::ProgramService service;
+    auto opened = service.openProject({{}, files.path}).get();
+    ASSERT_TRUE(opened) << messages(opened.diagnostics());
+    EXPECT_NE(messages(opened.diagnostics()).find("Original backup:"), std::string::npos);
+    EXPECT_EQ(files.read(files.backup(original)), original);
+    const auto upgraded = files.read(files.path);
+    EXPECT_NE(upgraded, original);
+    EXPECT_EQ(upgraded[16], std::byte{11});
+    EXPECT_EQ(opened.value().encodedDigest, sha256(upgraded).value());
+    EXPECT_EQ(opened.value().presentation.activeTab, SctScriptId{2});
+    ASSERT_EQ(opened.value().presentation.tabs.size(), 1u);
+    EXPECT_EQ(opened.value().presentation.tabs[0].selection, ir::Subject{SctActionId{9}});
+    EXPECT_EQ(opened.value().presentation.tabs[0].semantic.current, ir::Subject{SctActionId{9}});
+    auto current = service.checkpoint(opened.value().status.current).get();
+    ASSERT_TRUE(current);
+    EXPECT_EQ(current.value().program->revision(), 7u);
+    EXPECT_EQ(current.value().program->highWater(), 100u);
+    EXPECT_EQ(current.value().program->metadata().annotations.front().note, "Authored note");
+    EXPECT_EQ(current.value().program->find(SctActionId{9})->sourceInstruction, 2u);
+    EXPECT_EQ(current.value().program->find(SctActionId{9})->importedCallTarget, SctActionId{});
+    auto again = service.openProject({opened.value().status.current, files.path}).get();
+    ASSERT_TRUE(again) << messages(again.diagnostics());
+    EXPECT_EQ(files.read(files.path), upgraded);
+    EXPECT_EQ(files.read(files.backup(original)), original);
+    EXPECT_EQ(messages(again.diagnostics()).find("upgraded from"), std::string::npos);
+}
+TEST(ProgramPersistenceTest, UpgradeFailuresAndCancellationPreserveOriginalCheckpoint) {
+    CheckpointUpgradeFiles files;
+    ir::ProgramService service;
+    auto original = schema10Checkpoint();
+    ASSERT_TRUE(replaceFileAtomically(files.path, original));
+    std::stop_source cancel;
+    ir::ProgramOpenRequest request{{}, files.path};
+    request.progress = [&](const auto &p) {
+        if (p.phase == "Upgrading checkpoint schema 10 to 11") cancel.request_stop();
+    };
+    EXPECT_FALSE(service.openProject(request, cancel.get_token()).get());
+    EXPECT_EQ(files.read(files.path), original);
+    EXPECT_FALSE(std::filesystem::exists(files.backup(original)));
+    request.progress = {};
+    // Never overwrite an existing backup with unexpected contents.
+    std::vector<std::byte> conflict{std::byte{42}};
+    ASSERT_TRUE(replaceFileAtomically(files.backup(original), conflict));
+    EXPECT_FALSE(service.openProject(request).get());
+    EXPECT_EQ(files.read(files.path), original);
+    EXPECT_EQ(files.read(files.backup(original)), conflict);
+    for (auto bad : {schema10Checkpoint(true), schema10Checkpoint()}) {
+        if (bad == original) bad[16] = std::byte{9};
+        ASSERT_TRUE(replaceFileAtomically(files.path, bad));
+        auto rejected = service.openProject(request).get();
+        ASSERT_FALSE(rejected);
+        EXPECT_EQ(files.read(files.path), bad);
+        if (bad[16] == std::byte{10}) EXPECT_NE(messages(rejected.diagnostics()).find("needs review"), std::string::npos);
+    }
+}
+
 TEST(ProgramPersistenceTest, TransactionAndAsyncOpenRejectStaleOrCancelledResults) {
     Fixture f;
     auto cp = f.service.checkpoint(f.revision).get().value();

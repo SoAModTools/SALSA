@@ -4,7 +4,7 @@ WP4 supplies binary persistence for the production paged IR through `ProgramPers
 
 ## Binary contract
 
-New project files use the eight-byte `SALSAPRJ` magic followed by three little-endian u32 fields: framing version **2**, codec **1** (Zstandard), and program binary schema **11**. Earlier containers are unsupported. Unknown versions/codecs/schemas fail with a diagnostic; loading does not write or replace the original file. There is no development-schema converter. Python SALSA v7 import is the only supported legacy compatibility path. This current-schema-only policy also applies to workspace manifests, saved sessions, SCT patches, reconciliation decisions, and copied fragments/snippets: retired schema versions and field-name aliases are rejected rather than upgraded. Normal recovery of interrupted current-format transactions remains available.
+New project files use the eight-byte `SALSAPRJ` magic followed by three little-endian u32 fields: framing version **2**, codec **1** (Zstandard), and program binary schema **11**. Saved-project opening automatically upgrades supported schema **10** checkpoints to **11**, preserving the original checkpoint as a sibling backup. Other old or unknown versions/codecs/schemas are rejected without replacement. Python SALSA v7 import remains supported separately. Workspace manifests, saved sessions, SCT patches, reconciliation decisions, and copied fragments/snippets still require their current schemas; this checkpoint upgrade does not add compatibility for those formats. Normal recovery of interrupted transactions remains available.
 
 After the header, each independent record has a u32 decoded length, u32 compressed length and one complete zstd frame. A zero/zero record terminates the file; trailing bytes are rejected. Decoded records are at most 1 MiB. Frame checksums are enabled. Compression uses the pinned Zstandard 1.5.7 library at level 1, with one context, no dictionary and no worker threads. Encoder and decoder reuse bounded scratch buffers; they do not retain a worst-case compressed buffer for every record. The encoded file itself is held in memory for the existing transaction API. This framing is an integrity/container contract, not authentication or encryption.
 
@@ -26,7 +26,7 @@ The decoder checks framing and configured bounds, constructs unpublished tables,
 
 Default limits are 1 GiB encoded, 4 GiB decoded and 64 million items in one collection. These are admission limits, not a measured process-memory ceiling: owned tables, ID directories, derived indexes, captured checkpoints and encoded input also occupy memory. Saving explicitly captures a complete checkpoint; ordinary view refresh still uses scoped readers.
 
-Schema 6 adds explicit story-state classification to variable meanings, narrative order and revision-qualified interpretation decisions. These records share normal history and stable IDs; they are not a second execution model. Schema 5 introduced organization/catalog metadata. Schema 3 adds independent route-dispatch predicates, evaluation-phase samples and arm bindings on cutscene connections. Schema 2 introduced slots and connection observations. Derived cutscene queries and generated dispatch instructions are not persisted. Earlier development schemas are rejected without modifying their files; Python SALSA v7 import remains supported.
+Schema 6 adds explicit story-state classification to variable meanings, narrative order and revision-qualified interpretation decisions. These records share normal history and stable IDs; they are not a second execution model. Schema 5 introduced organization/catalog metadata. Schema 3 adds independent route-dispatch predicates, evaluation-phase samples and arm bindings on cutscene connections. Schema 2 introduced slots and connection observations. Derived cutscene queries and generated dispatch instructions are not persisted. Schemas older than 10 are rejected without modifying their files; Python SALSA v7 import remains supported.
 
 ## Save, recovery and background open
 
@@ -64,8 +64,19 @@ Schema 7 stores independent instruction/semantic view selections and expansion s
 
 ## Explicit story authoring
 
-Schema 8 persists the project-wide story-authoring enabled flag alongside existing module definitions, annotations and narrative order. New projects start disabled. Reopening restores the flag and accepted organization; it does not repeat discovery. Disabling story authoring retains those definitions and never rewrites executable content. Container framing 2 and zstd level 1 are unchanged. Older development schemas are rejected; Python SALSA v7 import remains supported.
+Schema 8 persists the project-wide story-authoring enabled flag alongside existing module definitions, annotations and narrative order. New projects start disabled. Reopening restores the flag and accepted organization; it does not repeat discovery. Disabling story authoring retains those definitions and never rewrites executable content. Container framing 2 and zstd level 1 are unchanged. Schemas older than 10 are rejected; Python SALSA v7 import remains supported.
 
 Localization metadata stores language groups, optional ByteVar[87] mappings, output inclusion, stable logical-message operand bindings and canonical-body lowering recipes. Excluded translations remain authored data. Preview-language selection is not an execution setting. See [Localizations](LanguageGroupsAndText.md).
 
 CallSubscript stores an exceptional imported non-entry target on its original action. The grant is persisted in schema 11, revoked on retargeting, and cleared when copying an action. It does not permit new calls to arbitrary instructions. The copied-fragment schema is 3; framing and compression are unchanged.
+
+
+## Automatic checkpoint upgrades
+
+Opening a schema-10 project decodes its saved IR, supplies an empty imported-call exception field, and writes schema 11 without reimporting SCT files or rerunning discovery. Authored identities, revision, allocator state, content, metadata and saved tabs are retained. Direct `ProgramPersistence::load`/`decode` calls remain read-only; `ProgramService::openProject` performs the disk upgrade before installing the project.
+
+The exact original checkpoint is kept beside the upgraded file as `<checkpoint>.schema-10-<original SHA-256>.bak`. Only the checkpoint is backed up: the upgrade does not alter the workspace manifest or source assets. Backup and replacement use the existing recoverable workspace transaction. An existing backup is reused only when its digest matches the original. Changed checkpoint bytes or an unexpected backup block replacement. The activity log records the upgrade and backup path; routine upgrades stay within compact opening progress.
+
+Cancellation and stale-operation checks run before committing. Once filesystem commit begins it finishes safely before cancellation is honored. If opening is subsequently cancelled, the disk may already contain the upgraded checkpoint and its backup. A failed commit attempts rollback; interrupted transactions are recovered on the next opening.
+
+Schema 10 did not record evidence authorizing an imported CallSubscript into the middle of a section. Such a checkpoint cannot receive that authorization merely because it is old. It stops with a review diagnostic and is not upgraded; source confirmation or target repair is needed before it can be accepted. There is no automatic source scan, guessed grant, or partial project installation. Supported migrations are explicit version-to-version conversions; this does not promise support for every developmental format.

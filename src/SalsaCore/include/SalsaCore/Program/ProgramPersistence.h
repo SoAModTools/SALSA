@@ -26,6 +26,8 @@ struct ProjectFile {
     std::shared_ptr<const Program> program;
     Presentation presentation;
     std::optional<Sha256Digest> encodedDigest;
+    std::uint32_t sourceSchema = 11;
+    std::vector<std::byte> upgradeSource; // Original encoded bytes, retained only by load for a pending upgrade.
 };
 struct PersistenceLimits {
     std::uint64_t encodedBytes = 1ull << 30;
@@ -62,6 +64,11 @@ class ProgramPersistence final {
                                       const SctLoadingObserver & = {});
     static Result<ProjectFile> load(const std::filesystem::path &, const PersistenceLimits & = {}, std::stop_token = {},
                                     const SctLoadingObserver & = {});
+    // Explicit disk upgrade after read-only decoding. Keeps the exact original as
+    // a sibling backup; current checkpoints are a no-op. Called by saved opening.
+    static Result<void> upgrade(const std::filesystem::path &, ProjectFile &, const WorkspaceRecoveryContext &,
+                                std::stop_token = {}, const SctLoadingObserver & = {},
+                                const std::function<bool()> &mayCommit = {});
     // Prepares one artifact for the existing workspace transaction service.
     // Caller commits without cancellation, then marks this checkpoint's token saved.
     static Result<WorkspaceArtifactMutation> mutation(const Checkpoint &, const Presentation &,

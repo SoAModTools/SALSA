@@ -140,6 +140,7 @@ Result<std::shared_ptr<EditorWorkspace>> EditorWorkspaceIO::open(const EditorOpe
             ProgramOpenRequest open;
             open.path = w.componentPath(projectPath(w));
             open.progress = observer;
+            open.recovery = WorkspaceRecoveryContext{w.descriptor().root, w.descriptor().components.transactions};
             auto loaded = out->service->openProject(std::move(open), stop).get();
             if (!loaded) return Result<std::shared_ptr<EditorWorkspace>>::failure(loaded.diagnostics());
             out->status = loaded.value().status;

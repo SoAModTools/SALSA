@@ -84,6 +84,7 @@ struct Unframes {
     std::vector<std::byte> current;
     std::size_t frame = 0, pos = 0;
     std::uint64_t total = 0;
+    std::uint32_t schema = 11;
     std::stop_token stop;
     SctLoadingObserver observer;
     std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> context{ZSTD_createDCtx(), ZSTD_freeDCtx};
@@ -101,7 +102,9 @@ struct Unframes {
         require(std::memcmp(magic, "SALSAPRJ", 8) == 0, "Not a SALSA project container");
         require(r.get<std::uint32_t>() == 2, "Unsupported project container version; original file is unchanged");
         require(r.get<std::uint32_t>() == 1, "Unsupported project compression codec");
-        require(r.get<std::uint32_t>() == 11, "Unsupported program binary schema");
+        schema = r.get<std::uint32_t>();
+        require(schema == 10 || schema == 11,
+                "Unsupported program binary schema; supported checkpoints are 10 and 11. Original file is unchanged.");
         for (;;) {
             checkStop(stop);
             auto n = r.get<std::uint32_t>(), c = r.get<std::uint32_t>();
@@ -620,7 +623,8 @@ Result<ProjectFile> ProgramPersistence::decode(std::span<const std::byte> bytes,
             a.kind = r.get<ActionKind>();
             a.value = r.get<ValueId>();
             a.sourceInstruction = r.get<std::uint64_t>();
-            a.importedCallTarget = r.get<SctActionId>();
+            // Schema 10 has no imported-call exception evidence. Never infer a grant.
+            if (frames.schema >= 11) a.importedCallTarget = r.get<SctActionId>();
             if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch ||
                 a.kind == ActionKind::Dispatch) {
                 a.firstArm = count32(d->arms.size());
@@ -658,10 +662,18 @@ Result<ProjectFile> ProgramPersistence::decode(std::span<const std::byte> bytes,
         require(!r.remaining, "Unexpected binary program data");
         checkStop(stop);
         report(observer, "Loading program relationships");
-        linkLoaded(*d, diagnostics, stop);
+        try {
+            linkLoaded(*d, diagnostics, stop);
+        } catch (const std::exception& e) {
+            if (frames.schema == 10 && std::string_view(e.what()).find("CallSubscript must target") != std::string_view::npos)
+                throw std::runtime_error("Schema 10 checkpoint needs review before upgrade: a CallSubscript targets a non-entry instruction, "
+                    "but this checkpoint has no evidence that the call was imported unchanged. Confirm its source or repair its target; the original checkpoint is unchanged.");
+            throw;
+        }
         presentationShape(*d, presentation);
         checkStop(stop);
         ProjectFile out{std::shared_ptr<const Program>(new Program(std::move(d))), std::move(presentation)};
+        out.sourceSchema = frames.schema;
         report(observer, "Program project ready", 1, 1);
         return Result<ProjectFile>::success(std::move(out), diagnostics);
     } catch (const std::exception &e) {
@@ -691,9 +703,63 @@ Result<ProjectFile> ProgramPersistence::load(const std::filesystem::path &path, 
         auto digest=sha256(bytes);
         if (!digest) return Result<ProjectFile>::failure(digest.diagnostics());
         decoded.value().encodedDigest=digest.value();
+        if (decoded.value().sourceSchema == 10) decoded.value().upgradeSource = std::move(bytes);
         return decoded;
     } catch (const std::exception &e) {
         return Result<ProjectFile>::failure(failure(e.what()));
+    }
+}
+Result<void> ProgramPersistence::upgrade(const std::filesystem::path &path, ProjectFile &file,
+    const WorkspaceRecoveryContext &recovery, std::stop_token stop, const SctLoadingObserver &observer,
+    const std::function<bool()> &mayCommit) {
+    if (file.sourceSchema == 11) return Result<void>::success();
+    try {
+        checkStop(stop);
+        require(file.sourceSchema == 10 && file.program && file.encodedDigest && !file.upgradeSource.empty(),
+                "Checkpoint upgrade requires the original loaded schema-10 file");
+        auto sourceDigest = sha256(file.upgradeSource);
+        require(sourceDigest && sourceDigest.value() == *file.encodedDigest, "Original checkpoint bytes do not match the loaded digest");
+        report(observer, "Upgrading checkpoint schema 10 to 11");
+        auto encoded = encode(*file.program, file.presentation, stop, observer);
+        if (!encoded) return Result<void>::failure(encoded.diagnostics());
+        auto digest = sha256(encoded.value());
+        if (!digest) return Result<void>::failure(digest.diagnostics());
+        const auto root = std::filesystem::absolute(recovery.workspaceRoot).lexically_normal();
+        const auto relative = std::filesystem::absolute(path).lexically_normal().lexically_relative(root);
+        auto locator = AssetLocator::fromRelativePath(relative);
+        if (!locator) return Result<void>::failure(locator.diagnostics());
+        const auto originalDigest = file.encodedDigest->toHex();
+        auto backup = relative;
+        backup += ".schema-10-" + originalDigest + ".bak";
+        const bool backupExists = std::filesystem::exists(root / backup);
+        auto uuid = generateSctAuthoringUuid();
+        if (!uuid) return Result<void>::failure(uuid.diagnostics());
+        WorkspaceTransactionRequest request{uuid.value(), file.program->id().value, "checkpoint-upgrade-10-11", uuid.value(), {}};
+        // Backup first. A prior backup may only be reused if it has these exact bytes.
+        request.mutations.push_back({backup, backupExists, backupExists ? std::optional(originalDigest) : std::nullopt,
+                                     std::move(file.upgradeSource)});
+        request.mutations.push_back({relative, true, originalDigest, std::move(encoded).takeValue()});
+        checkStop(stop);
+        require(!mayCommit || mayCommit(), "Checkpoint upgrade was superseded; original file is unchanged");
+        if (observer) observer({"Backing up and upgrading project checkpoint", 0, 0, path.filename().string(), false});
+        // Cancellation is deferred through this recoverable filesystem transaction.
+        auto prepared = WorkspaceTransactionService::prepare(root, recovery.transactionsRelativeRoot, request);
+        if (prepared.status != WorkspaceTransactionStatus::Prepared)
+            return Result<void>::failure(prepared.diagnostics);
+        auto committed = WorkspaceTransactionService::commitPrepared(root, recovery.transactionsRelativeRoot, request.transactionId);
+        if (committed.status != WorkspaceTransactionStatus::Verified) {
+            auto rolledBack = WorkspaceTransactionService::rollbackPrepared(root, recovery.transactionsRelativeRoot, request.transactionId);
+            committed.diagnostics.insert(committed.diagnostics.end(), rolledBack.diagnostics.begin(), rolledBack.diagnostics.end());
+            return Result<void>::failure(committed.diagnostics);
+        }
+        file.sourceSchema = 11;
+        file.encodedDigest = digest.value();
+        file.upgradeSource.clear();
+        const auto backupUtf8 = (root / backup).generic_u8string();
+        return Result<void>::success({{DiagnosticSeverity::Info, DiagnosticCode::InvalidSctAuthoringProject,
+            "Project checkpoint upgraded from schema 10 to 11. Original backup: " + std::string(backupUtf8.begin(), backupUtf8.end())}});
+    } catch (const std::exception& e) {
+        return Result<void>::failure(failure(std::string("Checkpoint upgrade: ") + e.what()));
     }
 }
 Result<WorkspaceArtifactMutation> ProgramPersistence::mutation(

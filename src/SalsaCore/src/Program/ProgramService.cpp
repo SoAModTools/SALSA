@@ -1862,11 +1862,12 @@ std::future<Result<ProgramOpenResult>> ProgramService::openProject(ProgramOpenRe
                 promise->set_value(Result<ProgramOpenResult>::failure(accepted.diagnostics()));
                 return;
             }
-            if (request.recovery) {
+            const auto recovery = request.recovery.value_or(WorkspaceRecoveryContext{
+                std::filesystem::absolute(request.path).parent_path(), ".salsa-checkpoint-upgrades"});
+            {
                 stopped(token);
                 if (request.progress)
                     request.progress({"Recovering workspace transactions", 0, 0, {}, false});
-                const auto &recovery = *request.recovery;
                 for (const auto &result :
                      WorkspaceTransactionService::recoverAll(recovery.workspaceRoot, recovery.transactionsRelativeRoot))
                     require(result.status == WorkspaceTransactionStatus::Verified ||
@@ -1881,6 +1882,18 @@ std::future<Result<ProgramOpenResult>> ProgramService::openProject(ProgramOpenRe
             }
             auto diagnostics = loaded.diagnostics();
             auto file = std::move(loaded).takeValue();
+            auto upgraded = ProgramPersistence::upgrade(request.path, file, recovery, token, request.progress, [&] {
+                auto ready = c->submit<bool>([expected, token, c, operation](auto& o) {
+                    o.match(expected, token);
+                    return c->loadGeneration == operation;
+                }).get();
+                return ready && ready.value();
+            });
+            if (!upgraded) {
+                promise->set_value(Result<ProgramOpenResult>::failure(upgraded.diagnostics()));
+                return;
+            }
+            diagnostics.insert(diagnostics.end(), upgraded.diagnostics().begin(), upgraded.diagnostics().end());
             auto result =
                 c->submit<ProgramOpenResult>([expected, token, c, operation, file = std::move(file)](auto &o) mutable {
                      require(c->loadGeneration == operation, "Program load was superseded");
