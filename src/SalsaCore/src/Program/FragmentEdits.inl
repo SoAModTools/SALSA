@@ -285,6 +285,7 @@ void SemanticTransaction::paste(const PasteFragment &e) {
         row.owner = remap(a.owner);
         row.value = value(a.value);
         row.sourceInstruction = 0;
+        row.importedCallTarget = {};
         require(a.firstArm <= s.arms.size() && a.armCount <= s.arms.size() - a.firstArm,
                 "Invalid fragment arm range");
         row.firstArm = a.armCount ? armRows.at(s.arms.at(a.firstArm).id.value) : 0;

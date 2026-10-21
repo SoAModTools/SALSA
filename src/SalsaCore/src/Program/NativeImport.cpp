@@ -155,6 +155,10 @@ public:
         const auto script = d.beginScript(std::move(baseline), std::move(context));
         auto& output = d.scripts.back();
         importingScript = script;
+        std::set<std::uint64_t> indexedEntries;
+        for (const auto& section : document.sections)
+            if (const auto* code = std::get_if<sct::SctScriptSectionContent>(&section.content); code && !code->instructions.empty())
+                indexedEntries.insert(code->instructions.front().id.value());
         // Bind every target before copying operands. Maps die with this import.
         for (const auto& section : document.sections) {
             if (const auto* code = std::get_if<sct::SctScriptSectionContent>(&section.content)) {
@@ -185,7 +189,11 @@ public:
                     }
                     auto payload = d.add(ValueKind::Instruction, instruction.opcode,
                         (instruction.skipRefresh ? 1u : 0u) | (instruction.scheduledExpression ? 2u : 0u), parameters);
-                    d.appendAction(section.body, payload, instruction.id.value(), actions.at(instruction.id.value()));
+                    auto id = d.appendAction(section.body, payload, instruction.id.value(), actions.at(instruction.id.value()));
+                    if (instruction.opcode == 11) for (const auto& p : instruction.fixedParameters)
+                        if (p.schemaIndex == 0) if (const auto* target = std::get_if<sct::SctInstructionReference>(&p.value);
+                            target && !indexedEntries.contains(target->target.value()))
+                            d.actions.find(d.directory.find(id.value).index)->importedCallTarget = actions.at(target->target.value());
                 }
                 if (section.name == "init" || section.name == "loop") {
                     Entrypoint entry; entry.id = SctEntrypointId{d.allocate()}; entry.script = script;

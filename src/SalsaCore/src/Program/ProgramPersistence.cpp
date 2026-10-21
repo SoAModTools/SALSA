@@ -37,7 +37,7 @@ struct Frames {
         w.raw("SALSAPRJ", 8);
         w.put(std::uint32_t{2});
         w.put(std::uint32_t{1});
-        w.put(std::uint32_t{10});
+        w.put(std::uint32_t{11});
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_compressionLevel, 1));
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_checksumFlag, 1));
         zcheck(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_nbWorkers, 0));
@@ -101,7 +101,7 @@ struct Unframes {
         require(std::memcmp(magic, "SALSAPRJ", 8) == 0, "Not a SALSA project container");
         require(r.get<std::uint32_t>() == 2, "Unsupported project container version; original file is unchanged");
         require(r.get<std::uint32_t>() == 1, "Unsupported project compression codec");
-        require(r.get<std::uint32_t>() == 10, "Unsupported program binary schema");
+        require(r.get<std::uint32_t>() == 11, "Unsupported program binary schema");
         for (;;) {
             checkStop(stop);
             auto n = r.get<std::uint32_t>(), c = r.get<std::uint32_t>();
@@ -514,6 +514,7 @@ Result<std::vector<std::byte>> ProgramPersistence::encode(const Program &program
             w.put(a.kind);
             w.put(value(a.value));
             w.put(a.sourceInstruction);
+            w.put(a.importedCallTarget);
             if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch ||
                 a.kind == ActionKind::Dispatch) {
                 w.put(a.armCount);
@@ -619,6 +620,7 @@ Result<ProjectFile> ProgramPersistence::decode(std::span<const std::byte> bytes,
             a.kind = r.get<ActionKind>();
             a.value = r.get<ValueId>();
             a.sourceInstruction = r.get<std::uint64_t>();
+            a.importedCallTarget = r.get<SctActionId>();
             if (a.kind == ActionKind::Conditional || a.kind == ActionKind::Switch ||
                 a.kind == ActionKind::Dispatch) {
                 a.firstArm = count32(d->arms.size());
@@ -714,7 +716,7 @@ Result<std::vector<std::byte>> ProgramPersistence::encodeFragment(const ProgramF
     try {
         std::vector<std::byte> bytes;
         binary::Writer w{[&](auto b){require(bytes.size()+b.size()<=64u*1024u*1024u,"Fragment exceeds 64 MiB");bytes.insert(bytes.end(),b.begin(),b.end());}};
-        w.raw("SALSAFRG",8);w.put(std::uint32_t{2});w.put(f.project);w.put(f.script);w.put(f.roots);
+        w.raw("SALSAFRG",8);w.put(std::uint32_t{3});w.put(f.project);w.put(f.script);w.put(f.roots);
         const auto &s=f.content;w.put(s.actions);w.put(s.sections);w.put(s.arms);w.put(s.caseLabels);w.put(s.conditions);w.put(s.loops);w.put(s.switches);w.put(s.dispatches);w.put(s.transfers);w.put(s.payload);w.put(s.texts);w.put(f.annotations);
         w.put(count32(s.sequences.size()));for(auto &seq:s.sequences){w.put(seq.id);w.put(seq.script);w.put(seq.owner);w.put(seq.role);require(bool(seq.order),"Missing fragment body");w.put(*seq.order);}
         return Result<std::vector<std::byte>>::success(std::move(bytes));
@@ -724,7 +726,7 @@ Result<std::shared_ptr<const ProgramFragment>> ProgramPersistence::decodeFragmen
     try {
         require(bytes.size()<=64u*1024u*1024u,"Fragment exceeds 64 MiB");std::size_t offset=0;
         binary::Reader r{[&](auto out){std::memcpy(out.data(),bytes.data()+offset,out.size());offset+=out.size();},bytes.size(),1000000};
-        char magic[8];r.raw(magic,8);require(std::memcmp(magic,"SALSAFRG",8)==0 && r.get<std::uint32_t>()==2,"Unsupported SALSA fragment");
+        char magic[8];r.raw(magic,8);require(std::memcmp(magic,"SALSAFRG",8)==0 && r.get<std::uint32_t>()==3,"Unsupported SALSA fragment");
         auto f=std::make_shared<ProgramFragment>();f->project=r.get<SctAuthoringProjectId>();f->script=r.get<SctScriptId>();f->roots=r.get<std::vector<SctActionId>>();auto &s=f->content;
         s.actions=r.get<std::vector<Action>>();s.sections=r.get<std::vector<Section>>();s.arms=r.get<std::vector<Arm>>();s.caseLabels=r.get<std::vector<std::int32_t>>();s.conditions=r.get<std::vector<ConditionRegion>>();s.loops=r.get<std::vector<Loop>>();s.switches=r.get<std::vector<Switch>>();s.dispatches=r.get<std::vector<Dispatch>>();s.transfers=r.get<std::vector<Transfer>>();s.payload=r.get<ValueBuffer>();s.texts=r.get<std::vector<Text>>();f->annotations=r.get<std::vector<Annotation>>();
         auto count=r.get<std::uint32_t>();require(count<=r.maxItems && count<=r.remaining,"Invalid fragment sequence count");

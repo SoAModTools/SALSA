@@ -119,7 +119,7 @@ std::future<Result<OutlinePage>> ProgramService::outline(Revision r, OutlineRequ
                 }
                 if (auto *id = std::get_if<SctActionId>(&row.subject)) {
                     auto *a = d.action(*id);
-                    if (a && a->kind == ActionKind::Instruction && d.values.find(a->value.value)->data == 10)
+                    if (a && a->kind == ActionKind::Instruction && (d.values.find(a->value.value)->data == 10 || d.values.find(a->value.value)->data == 11))
                         featureOperands(d, *a, [&](auto address, auto value) {
                             const auto *v = d.values.find(value.value);
                             if (v->kind != ValueKind::ActionReference) return;

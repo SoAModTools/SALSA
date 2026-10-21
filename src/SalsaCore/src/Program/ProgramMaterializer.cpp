@@ -650,6 +650,22 @@ Result<MaterializedScript> ProgramMaterializer::materialize(const Checkpoint &ca
                 const auto *a = p.find(actionId);
                 require(a && a->owner == id, "Dangling action or invalid sequence owner");
                 visited.insert(actionId);
+                if (a->kind == ActionKind::Instruction && p.find(a->value)->data == 11)
+                    for (auto parameter : p.children(a->value)) {
+                        const auto* v = p.find(parameter);
+                        if (v->kind != ValueKind::Parameter || v->data != 0 || v->count != 1) continue;
+                        const auto* ref = p.find(p.children(parameter).front());
+                        if (ref->kind != ValueKind::ActionReference) continue;
+                        const auto target = SctActionId{ref->data};
+                        require(p.find(target), "Dangling CallSubscript target");
+                        if (!p.sectionEntry(target)) {
+                            require(a->sourceInstruction && a->importedCallTarget == target,
+                                "CallSubscript must target an indexed section entry");
+                            omitted(script->context.name + ": CallSubscript action " + std::to_string(a->id.value) +
+                                " targets action " + std::to_string(target.value) +
+                                " outside an indexed section entry; preserving the original imported call.");
+                        }
+                    }
                 if (!clones.empty())
                     for (auto use : p.incoming(actionId)) {
                         auto *source = p.find(use.site.action);

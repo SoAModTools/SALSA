@@ -138,6 +138,20 @@ struct ProgramData {
         auto preparation = makeSequence(script, id, {}, SequenceRole::ConditionPreparation);
         conditions.push_back({id, owner, arm, preparation, result}); return id;
     }
+    const Section* sectionEntry(SctActionId target) const noexcept {
+        const auto* a = action(target);
+        const auto* s = a ? lookup(a->owner.value, EntityKind::Sequence, sequences) : nullptr;
+        if (!s || s->owner) return nullptr;
+        const auto slot = directory.find(s->id.value).index;
+        const auto* order = s->order ? s->order.get() : slot < pendingOrders.size() ? &pendingOrders[slot] : nullptr;
+        if (!order || order->empty() || order->front() != target) return nullptr;
+        const auto* script = lookup(s->script.value, EntityKind::Script, scripts);
+        if (script) for (auto id : script->sections) {
+            const auto* section = lookup(id.value, EntityKind::Section, sections);
+            if (section && section->body == s->id) return section;
+        }
+        return nullptr;
+    }
     SctActionId parentAction(const Sequence& sequence) const {
         if (!sequence.owner) return {};
         return std::visit([&](auto id) -> SctActionId {

@@ -1138,6 +1138,67 @@ TEST(EditorBackendTest, CreatesAndBindsTextWithPagedNavigationAndHistory) {
     auto original=backend.text(undo.value().status.current,textId);ASSERT_TRUE(original);
     EXPECT_EQ(std::get<sct::SctPlainText>(original.value().value).utf8,"Hello");
 }
+TEST(EditorBackendTest, SubscriptsUseSectionEntriesAndPreserveOnlyOriginalExceptionalCalls) {
+    sct::SctDocument document;
+    const auto callId = document.allocateInstructionId(), exceptionalId = document.allocateInstructionId();
+    const auto endId = document.allocateInstructionId(), loopId = document.allocateInstructionId();
+    const auto entryId = document.allocateInstructionId(), interiorId = document.allocateInstructionId();
+    auto call = [&](sct::SctInstructionId id, sct::SctInstructionId target) {
+        sct::SctDocumentInstruction i{id, 11};
+        i.fixedParameters.push_back({0, sct::SctInstructionReference{target}});
+        return i;
+    };
+    document.sections.push_back({document.allocateSectionId(), "init",
+        sct::SctScriptSectionContent{{call(callId, entryId), call(exceptionalId, interiorId), {endId, 12}}}});
+    document.sections.push_back({document.allocateSectionId(), "loop", sct::SctScriptSectionContent{{{loopId, 12}}}});
+    document.sections.push_back({document.allocateSectionId(), "A18MAIN", sct::SctScriptSectionContent{{{entryId, 12}, {interiorId, 12}}}});
+    ir::ProgramBuilder builder({Project});
+    auto script = builder.appendImported(document, baseline(), {}).value();
+    auto built = builder.finish(); ASSERT_TRUE(built) << messages(built.diagnostics());
+    EXPECT_NE(messages(built.diagnostics()).find("outside an indexed section entry"), std::string::npos);
+    auto program = built.value();
+    const auto init = program->find(program->scripts()[0].sections[0])->body;
+    const auto section = program->scripts()[0].sections[2];
+    const auto body = program->find(section)->body;
+    const auto regular = program->find(init)->order->at(0), exceptional = program->find(init)->order->at(1);
+    const auto entry = program->find(body)->order->at(0), interior = program->find(body)->order->at(1);
+    EXPECT_EQ(program->find(exceptional)->importedCallTarget, interior);
+    auto encoded = ir::ProgramPersistence::encode(*program); ASSERT_TRUE(encoded);
+    auto decoded = ir::ProgramPersistence::decode(encoded.value()); ASSERT_TRUE(decoded) << messages(decoded.diagnostics());
+    EXPECT_EQ(decoded.value().program->find(exceptional)->importedCallTarget, interior);
+    auto service = std::make_shared<ir::ProgramService>();
+    auto adopted = service->adopt({}, std::move(decoded.value().program)).get(); ASSERT_TRUE(adopted) << messages(adopted.diagnostics());
+    auto revision = adopted.value().current;
+    editor::ProgramBackend backend(service);
+    auto inspection = backend.inspect(revision, regular); ASSERT_TRUE(inspection);
+    EXPECT_EQ(inspection.value().parameters[0].name, "Subscript");
+    EXPECT_EQ(inspection.value().parameters[0].value, "A18MAIN");
+    EXPECT_TRUE(inspection.value().parameters[0].subscript);
+    auto page = backend.browse(revision, {editor::BrowseKind::Subscripts, script}); ASSERT_TRUE(page);
+    EXPECT_EQ(page.value().total, 3u);
+    EXPECT_TRUE(std::ranges::none_of(page.value().rows, [&](const auto& row) { return row.subject == editor::Subject(interior); }));
+    EXPECT_FALSE(backend.execute(revision, editor::BindReference{regular, {0, {}}, interior}));
+    EXPECT_FALSE(service->edit({revision, {ir::ReplaceParameter{regular, {0, {}}, target(interior)}}}).get());
+    auto renamed = service->edit({revision, {ir::RenameSection{section, "Renamed"}}}).get(); ASSERT_TRUE(renamed);
+    revision = renamed.value().status.current;
+    EXPECT_NE(std::ranges::find(renamed.value().actions, regular), renamed.value().actions.end());
+    EXPECT_EQ(backend.inspect(revision, regular).value().parameters[0].value, "Renamed");
+    auto checkpoint = service->checkpoint(revision).get(); ASSERT_TRUE(checkpoint);
+    ir::ProgramMaterializer materializer;
+    auto exported = materializer.exportScript(checkpoint.value(), revision, script,
+        {"f44499b5-dcf0-449a-9815-5bdf558eface"},
+        sct::SctDocumentExportOptions{sct::SctPlatform::GameCube, sct::kSctShiftJisByte7FEncoding});
+    ASSERT_TRUE(exported) << messages(exported.diagnostics());
+    EXPECT_NE(messages(exported.diagnostics()).find("outside an indexed section entry"), std::string::npos);
+    auto fragment = backend.copy(revision, {{exceptional}}); ASSERT_TRUE(fragment);
+    EXPECT_FALSE(backend.execute(revision, editor::PasteSelection{regular, fragment.value(), {}}));
+    auto repaired = backend.execute(revision, editor::BindReference{exceptional, {0, {}}, entry}); ASSERT_TRUE(repaired);
+    revision = repaired.value().status.current;
+    EXPECT_FALSE(service->checkpoint(revision).get().value().program->find(exceptional)->importedCallTarget.valid());
+    EXPECT_FALSE(service->edit({revision, {ir::ReplaceParameter{exceptional, {0, {}}, target(interior)}}}).get());
+    auto undone = backend.history(revision, false); ASSERT_TRUE(undone); revision = undone.value().status.current;
+    EXPECT_EQ(service->checkpoint(revision).get().value().program->find(exceptional)->importedCallTarget, interior);
+}
 TEST(EditorBackendTest, ImportedFooterParametersOwnTheirTextThroughEditsCopiesAndExport) {
     sct::SctDocument document;
     auto sourceText = document.allocateSupplementaryTextId();

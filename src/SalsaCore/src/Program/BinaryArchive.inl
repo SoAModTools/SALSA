@@ -6,7 +6,7 @@ template <class T> struct Fields;
         static auto tie(T &v) { return std::tie(__VA_ARGS__); }                                                        \
     };
 F(Value, v.data, v.first, v.count, v.detail, v.kind)
-F(Action, v.id, v.owner, v.kind, v.value, v.firstArm, v.armCount, v.sourceInstruction, v.detail)
+F(Action, v.id, v.owner, v.kind, v.value, v.firstArm, v.armCount, v.sourceInstruction, v.detail, v.importedCallTarget)
 F(Arm, v.id, v.owner, v.condition, v.body, v.firstLabel, v.labelCount, v.includesDefault, v.caseExit)
 F(ConditionRegion, v.id, v.owner, v.arm, v.preparation, v.result, v.skipRefresh)
 F(Loop, v.owner, v.kind, v.condition, v.initialize, v.body, v.update)

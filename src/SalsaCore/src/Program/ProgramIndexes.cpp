@@ -167,6 +167,18 @@ DirectFacts actionFacts(ProgramData& d, std::span<const SctActionId> actions, st
             Site site{a.id, sct::SctParameterAddress{static_cast<std::uint32_t>(p.data), repeated}};
             inspect(value, site, script);
             const auto opcode = instruction.data;
+            if (opcode == 11 && !repeated && p.data == 0 && node(d, value).kind == ValueKind::ActionReference) {
+                const auto target = SctActionId{node(d, value).data};
+                if (!d.sectionEntry(target)) {
+                    require(a.sourceInstruction && a.importedCallTarget == target,
+                        "CallSubscript must target an indexed section entry");
+                    const auto* context = d.lookup(script.value, EntityKind::Script, d.scripts);
+                    diagnostics.push_back({DiagnosticSeverity::Warning, DiagnosticCode::InvalidSctAuthoringProject,
+                        context->context.name + ": CallSubscript action " + std::to_string(a.id.value) +
+                        " targets action " + std::to_string(target.value) +
+                        " outside an indexed section entry; preserved from the imported script."});
+                }
+            }
             // SALSA's existing destination rules: 5/6/7 assign Byte/Int/Float,
             // 17/18 set/clear Bit; 19 is a read-modify write with unspecified result.
             if (!repeated && p.data == 0 && ((opcode >= 5 && opcode <= 7) || (opcode >= 17 && opcode <= 19))) {

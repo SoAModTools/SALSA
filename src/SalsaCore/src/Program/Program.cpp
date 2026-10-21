@@ -13,6 +13,7 @@ std::span<const Section> Program::sections() const noexcept { return data_->sect
 std::span<const Text> Program::texts() const noexcept { return data_->texts; }
 const Metadata& Program::metadata() const noexcept { return data_->metadata; }
 const Action* Program::find(SctActionId id) const noexcept { return data_->action(id); }
+const Section* Program::sectionEntry(SctActionId id) const noexcept { return data_->sectionEntry(id); }
 const Sequence* Program::find(SctSequenceId id) const noexcept { return data_->lookup(id.value, EntityKind::Sequence, data_->sequences); }
 const Script* Program::find(SctScriptId id) const noexcept { return data_->lookup(id.value, EntityKind::Script, data_->scripts); }
 const Section* Program::find(SectionId id) const noexcept { return data_->lookup(id.value, EntityKind::Section, data_->sections); }

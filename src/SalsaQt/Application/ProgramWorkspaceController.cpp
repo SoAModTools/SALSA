@@ -555,6 +555,7 @@ void ProgramWorkspaceController::openDataset(QString root, QString destination, 
         choice->request.workspace = std::filesystem::path(workspace.toStdWString());
         native->prepareOpening();
     };
+    operation->diagnosticLog = [this](QString message) { log(std::move(message)); };
     (void)operations_->open(std::make_unique<ImportOperation>(std::move(operation), std::move(converted), legacy), shell_);
 }
 void ProgramWorkspaceController::install(std::shared_ptr<ir::EditorWorkspace> prepared, ProgramOperation &op) {
@@ -976,6 +977,7 @@ void ProgramWorkspaceController::publish() {
             log(tr("Exported %1 bytes to %2").arg(exported.bytes.size()).arg(destination));
             op.finish();
         });
+    op->diagnosticLog = [this](QString message) { log(std::move(message)); };
     (void)operations_->open(std::move(op), shell_);
 }
 void ProgramWorkspaceController::importLegacy() { openDataset({}, {}, true); }

@@ -304,6 +304,7 @@ struct ReadScope {
     std::vector<editor::OpcodeCustomization> catalog;
     std::vector<editor::LocalizedBlock> localized;
     std::vector<SctLanguageGroup> textLanguages;
+    std::vector<std::pair<SctActionId, std::string>> subscriptTargets; // Derived display names for inspected calls.
 };
 struct ProgramFragment {
     SctAuthoringProjectId project;

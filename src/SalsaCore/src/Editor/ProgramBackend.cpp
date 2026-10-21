@@ -222,6 +222,7 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                 auto row = parameter(s.payload, children(s.payload, p).front(),
                                      {static_cast<std::uint32_t>(value.data), group});
                 const auto &operand = s.payload.values.at(children(s.payload, p).front().value);
+                row.subscript = v.data == 11 && value.data == 0 && !group;
                 if (operand.kind == ir::ValueKind::Unresolved && operand.detail)
                     row.textKind = static_cast<spice::sct::SctTextKind>(operand.detail - 1);
                 if (schema && value.data < schema->parameterCatalogCount) {
@@ -267,6 +268,12 @@ Result<Inspection> ProgramBackend::inspect(Revision revision, Subject subject, s
                                 }
                         } else row.value = "Unavailable string value";
                     }
+                }
+                if (row.subscript) {
+                    row.name = "Subscript";
+                    if (row.target && std::holds_alternative<SctActionId>(*row.target))
+                        for (const auto& [id, name] : s.subscriptTargets)
+                            if (id == std::get<SctActionId>(*row.target)) { row.value = name; break; }
                 }
                 out.parameters.push_back(std::move(row));
             }

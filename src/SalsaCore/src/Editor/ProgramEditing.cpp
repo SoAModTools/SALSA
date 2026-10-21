@@ -166,6 +166,17 @@ Result<Change> ProgramBackend::execute(Revision r, EditIntent intent, std::stop_
                     auto p = std::ranges::find(inspected.parameters, e.parameter, &Parameter::key);
                     if (p == inspected.parameters.end())
                         throw std::runtime_error("Missing reference operand");
+                    if (p->subscript) {
+                        bool allowed = false;
+                        BrowseRequest query; query.kind = BrowseKind::Subscripts; query.script = inspected.script;
+                        do {
+                            auto page = take(browse(r, query, stop));
+                            allowed = std::ranges::any_of(page.rows, [&](const auto& row) { return row.subject == e.target; });
+                            query.offset += page.rows.size();
+                            if (allowed || query.offset >= page.total || page.rows.empty()) break;
+                        } while (true);
+                        if (!allowed) throw std::runtime_error("Choose an indexed section entry for Subscript");
+                    }
                     ir::ValueBuffer b;
                     if (p->kind == ParameterKind::ActionTarget && std::holds_alternative<SctActionId>(e.target))
                         b.add(ir::ValueKind::ActionReference, std::get<SctActionId>(e.target).value);

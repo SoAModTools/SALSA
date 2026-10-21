@@ -132,6 +132,7 @@ void InstructionInspector::editParameter() {
         core::editor::BrowseRequest query;
         query.kind = p.kind == core::editor::ParameterKind::ActionTarget ? core::editor::BrowseKind::Actions
                                                                          : core::editor::BrowseKind::Texts;
+        if (p.subscript) query.kind = core::editor::BrowseKind::Subscripts;
         query.script = session_->inspection()->script;
         auto target = pickReference(session_, query, this);
         if (target)

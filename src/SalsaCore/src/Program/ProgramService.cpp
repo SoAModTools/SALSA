@@ -860,6 +860,19 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
                 throw;
             }
         }
+        for (const auto& change : p->actions) {
+            auto& a = *d.actions.find(change.index);
+            if (!a.importedCallTarget.valid()) continue;
+            bool unchanged = false;
+            if (a.id.valid() && a.kind == ActionKind::Instruction && d.values.find(a.value.value)->data == 11)
+                for (auto parameter : d.child(a.value)) {
+                    const auto* v = d.values.find(parameter.value);
+                    if (v->kind != ValueKind::Parameter || v->data != 0 || v->count != 1) continue;
+                    const auto* ref = d.values.find(d.child(parameter).front().value);
+                    unchanged = ref->kind == ValueKind::ActionReference && ref->data == a.importedCallTarget.value;
+                }
+            if (!unchanged) a.importedCallTarget = {};
+        }
         std::vector<SctActionId> ids(affected.begin(), affected.end());
         auto now = actionFacts(d, ids, p->diagnostics);
         for (auto use : deletedIncoming)
@@ -922,11 +935,18 @@ PreparedChange ServiceOwner::prepare(EditRequest request, std::stop_token stop) 
         for (auto &c : p->sections) {
             auto &s = d.sections[c.index];
             p->receipt.sections.push_back(s.id.valid() ? s.id : c.other.id);
+            if (s.name != c.other.name) {
+                const auto* body = d.sequence(s.body);
+                if (body && body->order && !body->order->empty())
+                    for (const auto& use : incoming(d, body->order->front()))
+                        p->receipt.actions.push_back(use.site.action);
+            }
         }
         for (auto &c : p->scripts)
             if (c.other.sections != d.scripts[c.index].sections)
                 p->receipt.scriptLayouts.push_back(d.scripts[c.index].context.id);
         unique(p->receipt.sections);
+        unique(p->receipt.actions);
         for (auto &c : p->conditions)
             p->receipt.conditions.push_back(d.conditions[c.index].id.valid() ? d.conditions[c.index].id : c.other.id);
         for (auto &c : p->texts) {
@@ -1249,6 +1269,19 @@ std::shared_ptr<const ReadScope> ServiceOwner::read(Revision expected, const Rea
             out->localized.push_back(block);
     for(const auto &custom : d.metadata.opcodes)
         if(std::ranges::any_of(out->actions,[&](const auto &a){return a.kind==ActionKind::Instruction && out->payload.values.at(a.value.value).data==custom.opcode;}))out->catalog.push_back(custom);
+    for (const auto& a : out->actions) if (a.kind == ActionKind::Instruction && out->payload.values.at(a.value.value).data == 11) {
+        const auto* live = d.action(a.id);
+        for (auto parameter : d.child(live->value)) {
+            const auto* v = d.values.find(parameter.value);
+            if (v->kind != ValueKind::Parameter || v->data != 0 || v->count != 1) continue;
+            const auto* ref = d.values.find(d.child(parameter).front().value);
+            if (ref->kind != ValueKind::ActionReference) continue;
+            const auto target = SctActionId{ref->data};
+            const auto* entry = d.sectionEntry(target);
+            out->subscriptTargets.emplace_back(target, entry ? entry->name :
+                "Non-entry target (action " + std::to_string(target.value) + ")");
+        }
+    }
     std::sort(out->actions.begin(), out->actions.end(), [](auto &a, auto &b) { return a.id < b.id; });
     return out;
 }

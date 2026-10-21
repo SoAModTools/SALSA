@@ -54,6 +54,7 @@ struct Parameter {
     std::optional<spice::sct::SctCanonicalExpression> expression;
     std::optional<spice::sct::SctTextValue> textValue;
     spice::sct::SctTextKind textKind = spice::sct::SctTextKind::SctString;
+    bool subscript = false;
 };
 struct SupportingSequence {
     SctSequenceId sequence;
@@ -122,7 +123,7 @@ struct Opcode {
     std::uint16_t code;
     std::string name;
 };
-enum class BrowseKind { Opcodes, Variable, Incoming, Texts, Incomplete, Actions, Containers, Sections };
+enum class BrowseKind { Opcodes, Variable, Incoming, Texts, Incomplete, Actions, Containers, Sections, Subscripts };
 struct BrowseRequest {
     BrowseKind kind = BrowseKind::Opcodes;
     SctScriptId script;

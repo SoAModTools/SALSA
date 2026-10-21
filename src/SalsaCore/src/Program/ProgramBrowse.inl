@@ -53,6 +53,17 @@ std::future<Result<editor::BrowsePage>> ProgramService::browse(Revision r, edito
             }
             return out;
         }
+        if (request.kind == editor::BrowseKind::Subscripts) {
+            const auto* script = d.lookup(request.script.value, EntityKind::Script, d.scripts);
+            require(script, "Choose a script");
+            for (auto id : script->sections) {
+                const auto* section = d.lookup(id.value, EntityKind::Section, d.sections);
+                const auto* body = d.sequence(section->body);
+                if (body && body->order && !body->order->empty())
+                    append(body->order->front(), [&] { return section->name; });
+            }
+            return out;
+        }
         if(request.kind==editor::BrowseKind::Sections) {
             auto *script=d.lookup(request.script.value,EntityKind::Script,d.scripts);require(script,"Choose a script");
             for(auto id:script->sections)append(id,[&]{return d.sections[d.directory.find(id.value).index].name;});return out;

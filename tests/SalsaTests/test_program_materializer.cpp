@@ -109,7 +109,7 @@ TEST(ProgramMaterializerTest, StructuredControlFlowAndLocalTemplateReuse) {
     const auto leave = b.transfer(whileLoop.body, ir::TransferKind::Break, whileId).value();
     const auto end = emit(b, root, 12);
     const auto callers = section(b, script, "internal");
-    const auto reference = b.value(ir::ValueKind::ActionReference, first.value).value();
+    const auto reference = b.value(ir::ValueKind::ActionReference, chain.value).value();
     const auto callParameter = b.value(ir::ValueKind::Parameter, 0, 0, std::span(&reference, 1)).value();
     const auto internalCall =
         b.instruction(callers, b.value(ir::ValueKind::Instruction, 11, 0, std::span(&callParameter, 1)).value())
@@ -144,7 +144,7 @@ TEST(ProgramMaterializerTest, StructuredControlFlowAndLocalTemplateReuse) {
     EXPECT_NE(target(switchInstruction, 3, 2), target(switchInstruction, 3, 3));
     EXPECT_EQ(target(at(m, location(m, doContinue)), 0), location(m, doPrep));
     EXPECT_EQ(target(at(m, location(m, leave)), 0), location(m, end));
-    EXPECT_EQ(target(at(m, location(m, internalCall)), 0), location(m, first));
+    EXPECT_EQ(target(at(m, location(m, internalCall)), 0), location(m, chain));
     EXPECT_FALSE(m.document->opaqueAttachments.size());
     auto repeated = materializer.exportScript(captured, revision, script, realizationId, options());
     ASSERT_TRUE(repeated);

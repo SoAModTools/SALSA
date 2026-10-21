@@ -36,6 +36,7 @@ struct Action {
     std::uint32_t firstArm = 0, armCount = 0;
     std::uint64_t sourceInstruction = 0; // Qualified by owner's script baseline.
     std::uint32_t detail = UINT32_MAX; // Index into the kind-specific construct table.
+    SctActionId importedCallTarget; // Exceptional original non-entry call target; never granted to new calls.
 };
 enum class CaseExit : std::uint8_t { ExitSwitch, Fallthrough };
 struct Arm {
@@ -261,6 +262,7 @@ public:
     std::span<const Text> texts() const noexcept;
     const Metadata& metadata() const noexcept;
     const Action* find(SctActionId) const noexcept;
+    const Section* sectionEntry(SctActionId) const noexcept;
     const Sequence* find(SctSequenceId) const noexcept;
     const Section* find(SectionId) const noexcept;
     const Script* find(SctScriptId) const noexcept;
