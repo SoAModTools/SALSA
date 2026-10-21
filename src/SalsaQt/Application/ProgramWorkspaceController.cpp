@@ -592,11 +592,16 @@ void ProgramWorkspaceController::install(std::shared_ptr<ir::EditorWorkspace> pr
             .arg(workspace_->catalog.childReferences)
             .arg(workspace_->catalog.characterBytes));
     QPointer<ProgramOperation> operation = &op;
-    op.cancelPresentation = [this, operation] { preserveSession_ = true; };
+    const auto generation = workspaceGeneration_;
+    op.cancelPresentation = [this, generation] {
+        if (generation != workspaceGeneration_) return;
+        preserveSession_ = true;
+        for (auto &tab : documents_) tab.view->cancelSessionRestore();
+    };
     auto at = std::make_shared<std::size_t>(0);
     auto populate = std::make_shared<std::function<void()>>();
-    *populate = [this, operation, at, populate] {
-        if (!operation) {
+    *populate = [this, operation, generation, at, populate] {
+        if (!operation || generation != workspaceGeneration_ || !workspace_) {
             *populate = {};
             return;
         }
@@ -606,23 +611,27 @@ void ProgramWorkspaceController::install(std::shared_ptr<ir::EditorWorkspace> pr
             auto *item = new QListWidgetItem(q(s.name), scripts_);
             item->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(s.id.value));
         }
-        operation->progress(tr("Building script catalog"), *at, workspace_->catalog.scripts.size());
+        if (!operation->stopped())
+            operation->progress(tr("Building script catalog"), *at, workspace_->catalog.scripts.size());
         if (*at < workspace_->catalog.scripts.size()) {
             QTimer::singleShot(0, this, *populate);
             return;
         }
         *populate = {};
-        restoreTabs(operation);
+        restoreTabs(operation, generation);
     };
     QTimer::singleShot(0, this, *populate);
 }
-void ProgramWorkspaceController::restoreTabs(QPointer<ProgramOperation> op, std::size_t at) {
-    if (!op)
+void ProgramWorkspaceController::restoreTabs(QPointer<ProgramOperation> op, std::uint64_t generation,
+                                             std::size_t at) {
+    if (!op || !workspace_ || generation != workspaceGeneration_)
         return;
-    const auto saved = workspace_->presentation.tabs;
+    const auto &saved = workspace_->presentation.tabs;
     if (op->stopped() || at >= saved.size()) {
         if (op->stopped())
             preserveSession_ = true;
+        else
+            op->progress(tr("Finishing project opening"));
         if (workspace_->presentation.activeTab)
             for (auto &t : documents_)
                 if (t.script == *workspace_->presentation.activeTab)
@@ -643,18 +652,25 @@ void ProgramWorkspaceController::restoreTabs(QPointer<ProgramOperation> op, std:
     auto tab = saved[at];
     if (!script(tab.script)) {
         log(tr("Saved script %1 is unavailable.").arg(tab.script.value));
-        restoreTabs(op, at + 1);
+        QTimer::singleShot(0, this, [this, op, generation, at] { restoreTabs(op, generation, at + 1); });
         return;
     }
-    op->progress(tr("Restoring script %1 of %2").arg(at + 1).arg(saved.size()), at, saved.size(),
+    op->progress(tr("Restoring saved tabs"), at, saved.size(),
                  q(script(tab.script)->name));
-    openScript(tab.script, [this, op, at, tab] {
+    presentScript(tab.script, [this, op, generation, at, tab] {
+        if (!op || !workspace_ || generation != workspaceGeneration_) return;
+        auto next = [this, op, generation, at] {
+            if (!op || !workspace_ || generation != workspaceGeneration_) return;
+            if (!op->stopped())
+                op->progress(tr("Restoring saved tabs"), at + 1, workspace_->presentation.tabs.size());
+            QTimer::singleShot(0, this, [this, op, generation, at] { restoreTabs(op, generation, at + 1); });
+        };
         auto i = std::ranges::find(documents_, tab.script, &Tab::script);
         if (i != documents_.end() && tab.selection && !tab.instructions.current && !tab.semantic.current && op && !op->stopped())
-            reveal(*i, *tab.selection, [this, op, at] { restoreTabs(op, at + 1); });
+            reveal(*i, *tab.selection, std::move(next));
         else
-            restoreTabs(op, at + 1);
-    });
+            next();
+    }, op);
 }
 void ProgramWorkspaceController::openScript(core::SctScriptId id, std::function<void()> completion) {
     if (!workspace_ || !script(id))
@@ -673,12 +689,26 @@ void ProgramWorkspaceController::openScript(core::SctScriptId id, std::function<
             [this, id](std::any, ProgramOperation &op) {
                 QPointer<ProgramOperation> pending = &op;
                 op.progress(tr("Building script outline"));
-                openScript(id, [pending] {
+                presentScript(id, [pending] {
                     if (pending)
                         pending->finish();
-                });
+                }, pending);
             });
         (void)operations_->open(std::move(op), shell_);
+        return;
+    }
+    presentScript(id, std::move(completion));
+}
+void ProgramWorkspaceController::presentScript(core::SctScriptId id, std::function<void()> completion,
+                                               QPointer<ProgramOperation> operation) {
+    if (!workspace_ || !script(id) || (operation && operation->stopped())) {
+        if (completion) completion();
+        return;
+    }
+    auto existing = std::ranges::find(documents_, id, &Tab::script);
+    if (existing != documents_.end()) {
+        tabs_->setCurrentWidget(existing->view);
+        if (completion) completion();
         return;
     }
     auto *tree = new ScriptOutlineComponent(editor_, tabs_);
@@ -694,9 +724,15 @@ void ProgramWorkspaceController::openScript(core::SctScriptId id, std::function<
     model->measured = [this](auto us, auto rows) {
         status_->setText(tr("Outline page: %1 rows, %2 ms").arg(rows).arg(us / 1000.0, 0, 'f', 2));
     };
-    model->ready = [model, tree, completion = std::move(completion)] {
+    model->ready = [this, model, tree, operation, owned = bool(operation), generation = workspaceGeneration_,
+                    completion = std::move(completion)] {
         auto callback = completion;
         model->ready = {};
+        if (generation != workspaceGeneration_ || (owned && !operation)) return;
+        if (operation && operation->stopped()) {
+            if (callback) callback();
+            return;
+        }
         tree->restoreSession(std::move(callback));
     };
     tree->selectionChanged = [this, tree] {

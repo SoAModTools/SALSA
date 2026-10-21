@@ -42,8 +42,10 @@ class ProgramWorkspaceController final : public QObject {
     void openSavedProject(QString workspace = {});
     void rememberWorkspace(const core::program::EditorWorkspace &);
     void install(std::shared_ptr<core::program::EditorWorkspace>, ProgramOperation &);
-    void restoreTabs(QPointer<ProgramOperation>, std::size_t = 0);
+    void restoreTabs(QPointer<ProgramOperation>, std::uint64_t generation, std::size_t = 0);
     void openScript(core::SctScriptId, std::function<void()> ready = {});
+    // Presents resident IR inside the caller's operation; never opens a dialog.
+    void presentScript(core::SctScriptId, std::function<void()> ready, QPointer<ProgramOperation> = {});
     void select(Tab &, const QModelIndex &);
     bool prepareSelection(std::function<void()>);
     void reveal(Tab &, core::program::EditorSubject, std::function<void()> = {});

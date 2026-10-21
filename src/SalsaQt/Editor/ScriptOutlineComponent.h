@@ -17,6 +17,11 @@ class ScriptOutlineComponent final : public QWidget {
     core::editor::OutlineViewState viewState(core::editor::ViewMode) const;
     void setViewStates(core::editor::OutlineViewState instructions, core::editor::OutlineViewState semantic);
     void restoreSession(std::function<void()> = {});
+    void cancelSessionRestore() {
+        ++sessionRestoreGeneration_;
+        restoringSession_ = false;
+        cancelReveal();
+    }
     void activate();
     void setSemantic(bool);
     void reveal(core::editor::Subject, std::function<void()> = {});

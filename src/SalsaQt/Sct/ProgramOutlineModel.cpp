@@ -120,8 +120,12 @@ void ProgramOutlineModel::fetchMore(const QModelIndex &parent) {
             if (diagnostic)
                 for (const auto &d : result.diagnostics())
                     diagnostic(QString::fromStdString(d.message));
-            if (!n && ready)
-                ready();
+            if (!n && ready) {
+                // Completion may clear this callback while installing/restoring
+                // a tab. Keep its captures alive on failure, as on success.
+                auto complete = ready;
+                complete();
+            }
             if (pageReady)
                 pageReady();
             return;

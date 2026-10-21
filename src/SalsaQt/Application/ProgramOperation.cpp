@@ -226,6 +226,14 @@ void ProgramOperation::finish(QString message) {
     setCancellable(false);
     summary_ = message.isEmpty() ? tr("Ready") : message;
     if (stop_.stop_requested()) { raiseEvent("cancelled"); return; }
+    if (compactOpening) {
+        // A saved-project open stays progress-only through its last presentation
+        // phase. Do not briefly construct/resize a summary page before dismissal.
+        emit activityRaised(static_cast<int>(ExclusiveOperationActivityOutcome::Completed),
+                            QStringLiteral("ProgramOperation"), summary_, {});
+        requestDismissal();
+        return;
+    }
     raiseEvent("complete");
     requestDismissal();
 }
